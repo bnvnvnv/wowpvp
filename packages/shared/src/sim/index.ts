@@ -5,3 +5,5 @@ export * from './targeting.js';
 export * from './casting.js';
 export * from './interrupt.js';
 
+export * from './projectile.js';
+export * from './aiming.js';
