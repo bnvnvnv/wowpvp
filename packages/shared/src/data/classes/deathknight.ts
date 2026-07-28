@@ -1,0 +1,470 @@
+/**
+ * 死亡骑士 —— 设计文档 9.3
+ * 定位：拉拽、减速、反法术与持续压制。生命 1200，资源符文 + 符文能量。
+ *
+ * 结构完全对齐 packages/shared/src/data/classes/warrior.ts（范本）：
+ * 一个技能一个对象、附录A#3 九项全填、counters 写人话。
+ *
+ * 数值来源：docs/source/design-spec-raw.txt 9.3 的技能表与武器方案表。
+ * 文档没有给出的次要数值（伤害系数、资源消耗、光环细节）在下面逐条注释标注。
+ */
+
+import { RANGE } from '../../constants/combat.js';
+import {
+  CastKind,
+  DispelType,
+  Resource,
+  School,
+  TargetFilter,
+  Targeting,
+} from '../../types/enums.js';
+import { asArmorId, asClassId, asSkillId, asWeaponId } from '../../types/ids.js';
+import { makeArmorSet } from '../armors.js';
+import type { ClassDef, SkillDef, WeaponDef } from '../schema.js';
+
+const CLASS_ID = asClassId('deathknight');
+
+/** 9.3 默认武器「双手符文剑」的触及距离，文档写 3.3 米，介于标准近战与延伸近战之间 */
+const RUNEBLADE_REACH = 3.3;
+
+// ── 技能 ─────────────────────────────────────────────────────────
+
+const skills: SkillDef[] = [
+  {
+    id: asSkillId('deathknight.obliterate'),
+    name: '湮灭',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: RUNEBLADE_REACH },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Physical,
+    cooldown: 6,
+    triggersGcd: true,
+    requiresFacing: true,
+    requiresLos: true,
+    // 文档明确「消耗 2 枚符文」
+    cost: { resource: Resource.Runes, amount: 2 },
+    counters:
+      '要求贴身并面向目标（6.5）；缴械后无法使用（7.3）；纯物理伤害会被减伤、护盾和物理免疫吃掉；一次吃掉 2 枚符文，符文回复约 3 秒一枚，被风筝时很难续上。',
+    effects: [
+      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 1.5 } },
+      // 文档未给出符文能量产出，按 9.3「符文 + 符文能量」的资源循环补：重击产能，冰霜技能耗能
+      { kind: 'gainResource', resource: Resource.RunicPower, amount: 15 },
+    ],
+    description: '造成 150% 武器伤害，消耗 2 枚符文并获得 15 点符文能量。',
+    vfx: 'deathknight_obliterate',
+  },
+  {
+    id: asSkillId('deathknight.death_strike'),
+    name: '死亡打击',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: 3 },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Physical,
+    cooldown: 8,
+    triggersGcd: true,
+    requiresFacing: true,
+    requiresLos: true,
+    // 文档未标注消耗，按符文体系补 1 枚
+    cost: { resource: Resource.Runes, amount: 1 },
+    counters:
+      '必须打到目标才有治疗，被缴械、失去目标或超距就完全落空；治疗量取决于「近期承受伤害」，被风筝或没挨打时几乎不回血；治疗有上限，且受 8.5 战斗抑制和降低治疗减益（如致死创伤）压制。',
+    effects: [
+      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 1.0 } },
+      // 文档只写「根据近期承受伤害恢复生命，治疗有上限」，具体窗口与系数为本实现取值
+      {
+        kind: 'healFromRecentDamage',
+        percentOfDamageTaken: 0.25,
+        window: 5,
+        maxPercentOfMaxHealth: 0.1,
+      },
+      { kind: 'gainResource', resource: Resource.RunicPower, amount: 10 },
+    ],
+    description:
+      '造成 100% 武器伤害，并根据 5 秒内承受伤害的 25% 恢复生命，最多恢复最大生命的 10%。',
+    vfx: 'deathknight_death_strike',
+  },
+  {
+    id: asSkillId('deathknight.death_grip'),
+    name: '死亡之握',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: 20 },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Shadow,
+    cooldown: 25,
+    triggersGcd: true,
+    requiresLos: true,
+    counters:
+      '不能穿墙、跨越巨大高差或把目标拉入非法区域，路径不合法时拉拽直接失败（6.4 / 13.5）；需要视线，柱子与门后即可躲开；属于魔法技能，沉默或暗影学派锁定期间不可用（7.2 / 7.3）；拉拽计入 8.2 击退/拉拽递减，短时间内连续使用效果衰减；完全免疫、法术免疫可以无视。',
+    effects: [
+      // 拉到约 3 米处；落点合法性由 sim 层按 13.5 判定，不合法则整个效果不生效
+      { kind: 'pullTarget', toDistance: 3 },
+    ],
+    description: '把目标拉到自己身前约 3 米处。无法穿墙或跨越巨大高差。',
+    vfx: 'deathknight_death_grip',
+  },
+  {
+    id: asSkillId('deathknight.chains_of_ice'),
+    name: '冰霜锁链',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: RANGE.RANGED },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Frost,
+    cooldown: 12,
+    triggersGcd: true,
+    requiresLos: true,
+    // 文档未标注消耗，作为符文能量的主要消耗口
+    cost: { resource: Resource.RunicPower, amount: 30 },
+    counters:
+      '普通减速不能被「战斗意志」解除（8.3），但属于移动限制，可被自由祝福、驱散移动限制类效果或免疫新减速的状态摆脱；减速随时间衰减，拖过 4 秒就基本失效；受减速叠加规则限制，不与其他减速叠乘；魔法技能，沉默与冰霜学派锁定期间不可用。',
+    effects: [
+      {
+        kind: 'applyAura',
+        aura: {
+          id: 'deathknight.chains_of_ice',
+          name: '冰霜锁链',
+          kind: 'debuff',
+          duration: 4,
+          dispelType: DispelType.Movement,
+          clearableByTrinket: false,
+          // 这里填的是**初始**值（减速 60% → moveSpeed 0.4），衰减交给下面的 custom handler
+          modifiers: { moveSpeed: 0.4 },
+          description: '移动速度降低 60%，并在 4 秒内逐渐恢复。',
+          vfx: 'deathknight_chains_of_ice',
+        },
+      },
+      // schema 缺口：AuraModifiers 只能表达恒定系数，没有「随时间线性衰减」的写法。
+      // 由已注册的 handler 在光环存续期间把 moveSpeed 从 0.4 线性拉回 1.0。
+      {
+        kind: 'custom',
+        handler: 'decayAuraModifier',
+        params: {
+          auraId: 'deathknight.chains_of_ice',
+          modifier: 'moveSpeed',
+          from: 0.4,
+          to: 1.0,
+          duration: 4,
+        },
+      },
+    ],
+    description: '使目标移动速度降低 60%，减速在 4 秒内逐渐衰减至消失。',
+    vfx: 'deathknight_chains_of_ice',
+  },
+  {
+    id: asSkillId('deathknight.strangulate'),
+    name: '窒息',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: 20 },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Shadow,
+    cooldown: 30,
+    triggersGcd: true,
+    requiresLos: true,
+    counters:
+      '受昏迷递减，15 秒内连续昏迷 100%→50%→25%→免疫（8.2）；可被「战斗意志」解除（8.3）；抗控型护甲缩短持续时间；需要视线，墙后无法起手；魔法技能，沉默或暗影学派锁定期间不可用；完全免疫与法术免疫直接无效。',
+    effects: [{ kind: 'stun', duration: 2 }],
+    description: '扼住目标咽喉，使其昏迷 2 秒。',
+    vfx: 'deathknight_strangulate',
+  },
+  {
+    id: asSkillId('deathknight.mind_freeze'),
+    name: '心灵冰冻',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: 15 },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Frost,
+    cooldown: 15,
+    // 7.2 专用打断不触发公共冷却，便于在进攻技能之间穿插
+    triggersGcd: false,
+    requiresLos: true,
+    counters:
+      '目标未在施法、或施法带盾牌标记（不可打断）时仍会进入冷却（7.2）；假读条可以骗掉（7.5）；打断物理射击准备条只取消本次射击，不产生学派锁定；本身是冰霜魔法，被沉默或冰霜学派锁定时无法使用（7.3）；需要视线且射程只有 15 米。',
+    effects: [{ kind: 'interrupt', schoolLockSeconds: 3 }],
+    description: '打断法术、引导或射击准备，并锁定该魔法学派 3 秒。不触发公共冷却。',
+    vfx: 'deathknight_mind_freeze',
+  },
+  {
+    id: asSkillId('deathknight.anti_magic_shell'),
+    name: '反魔法护罩',
+    classId: CLASS_ID,
+    targeting: Targeting.Self,
+    targetFilter: TargetFilter.Self,
+    range: { min: 0, max: 0 },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Shadow,
+    cooldown: 30,
+    triggersGcd: true,
+    counters:
+      '只吸收魔法伤害，对物理输出完全无效；只免疫**新的**魔法控制，护罩之前已经生效的控制不会被解除（8.4）；吸收量有限，集火可以在 4 秒内打破护盾；持续只有 4 秒，等它过去是最简单的应对。',
+    effects: [
+      {
+        kind: 'applyAura',
+        target: 'self',
+        aura: {
+          id: 'deathknight.anti_magic_shell',
+          name: '反魔法护罩',
+          kind: 'buff',
+          duration: 4,
+          dispelType: DispelType.None,
+          flags: { immuneMagicControl: true },
+          // 文档要求「吸收相当于 25% 最大生命的魔法伤害」= 1200 × 0.25 = 300。
+          // schema 缺口一：AuraDef.absorb 只支持固定值，没有 absorbPercentMaxHealth，
+          //   最大生命被熊形态之类的 maxHealth 系数改变时这里不会跟着变。
+          // schema 缺口二：absorb 没有学派过滤字段，「只吸收魔法伤害」需要 sim 层特判。
+          // 两者都应通过扩展 schema 或注册 custom handler 解决，暂用固定值占位。
+          absorb: 300,
+          description: '吸收 300 点（25% 最大生命）魔法伤害，并免疫新的魔法控制。',
+          vfx: 'deathknight_anti_magic_shell',
+        },
+      },
+    ],
+    description: '4 秒内吸收相当于 25% 最大生命的魔法伤害，并免疫新的魔法控制。',
+    vfx: 'deathknight_anti_magic_shell',
+  },
+  {
+    id: asSkillId('deathknight.deaths_advance'),
+    name: '死亡脚步',
+    classId: CLASS_ID,
+    targeting: Targeting.Self,
+    targetFilter: TargetFilter.Self,
+    range: { min: 0, max: 0 },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Shadow,
+    cooldown: 40,
+    triggersGcd: true,
+    counters:
+      '只保底移动速度，不解除也不免疫定身与昏迷，被定身或控制住依然动不了（8.3 通用解控才管定身）；不提供任何减伤；击退距离只降低 50%，强度足够的击退仍能把人打飞并中断读条（7.3）；40 秒冷却，逼出来之后有很长空窗。',
+    effects: [
+      {
+        kind: 'applyAura',
+        target: 'self',
+        aura: {
+          id: 'deathknight.deaths_advance',
+          name: '死亡脚步',
+          kind: 'buff',
+          duration: 6,
+          dispelType: DispelType.None,
+          modifiers: { knockbackTaken: 0.5 },
+          description: '移动速度不低于基础速度的 80%，受到的击退距离降低 50%。',
+          vfx: 'deathknight_deaths_advance',
+        },
+      },
+      // schema 缺口：AuraModifiers 只有乘算的 moveSpeed，没有「减速下限」这种保底语义
+      //（MOVE.MIN_SPEED_FACTOR 是全局下限 0.2，不是按光环生效的个人下限）。
+      // 由 handler 在光环存续期间把本单位的移动速度下限抬到基础速度的 80%。
+      {
+        kind: 'custom',
+        handler: 'applyMoveSpeedFloor',
+        params: { auraId: 'deathknight.deaths_advance', minFactor: 0.8, duration: 6 },
+      },
+    ],
+    description: '6 秒内移动速度不低于基础速度的 80%，受到的击退距离降低 50%。',
+    vfx: 'deathknight_deaths_advance',
+  },
+  {
+    id: asSkillId('deathknight.winter_domain'),
+    name: '凛冬领域',
+    classId: CLASS_ID,
+    targeting: Targeting.SelfCenter,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: 6 },
+    shape: { kind: 'circle', radius: 6 },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Frost,
+    cooldown: 60,
+    triggersGcd: true,
+    // 文档未标注消耗，作为符文能量的爆发出口
+    cost: { resource: Resource.RunicPower, amount: 40 },
+    counters:
+      '区域固定在释放位置，跑出 6 米即可完全躲开，也不会穿过封闭房间的完整墙体（6.4）；昏迷需要累计 4 次命中，中途离开就不会触发；触发的昏迷计入 8.2 昏迷递减，可被「战斗意志」解除；减速属于移动限制，可被自由祝福等免疫或驱散；魔法伤害会被反魔法护罩、法术免疫和吸收护盾抵消。',
+    effects: [
+      {
+        kind: 'spawnGroundArea',
+        areaId: 'deathknight.winter_domain',
+        radius: 6,
+        duration: 6,
+        tickInterval: 1,
+        onTick: [
+          // 文档只写「持续造成寒冰伤害与减速」，具体数值为本实现取值
+          { kind: 'damage', school: School.Frost, amount: { flat: 45 } },
+          {
+            kind: 'applyAura',
+            target: 'allInShape',
+            aura: {
+              id: 'deathknight.winter_domain_chill',
+              name: '凛冬彻骨',
+              kind: 'debuff',
+              duration: 2,
+              dispelType: DispelType.Movement,
+              clearableByTrinket: false,
+              modifiers: { moveSpeed: 0.7 },
+              description: '移动速度降低 30%。',
+              vfx: 'deathknight_winter_chill',
+            },
+          },
+          // 每名目标各自累计，第 4 次命中时昏迷 1.5 秒
+          { kind: 'onNthHit', count: 4, effects: [{ kind: 'stun', duration: 1.5 }] },
+        ],
+      },
+    ],
+    description:
+      '以自身为中心展开半径 6 米的凛冬领域，持续 6 秒，每秒造成寒冰伤害并减速；同一目标被命中 4 次后昏迷 1.5 秒。',
+    vfx: 'deathknight_winter_domain',
+  },
+  // 武器方案授予的技能
+  {
+    id: asSkillId('deathknight.frost_strike_fast'),
+    name: '快速冰霜打击',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: RANGE.MELEE },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Frost,
+    cooldown: 4,
+    triggersGcd: true,
+    requiresFacing: true,
+    requiresLos: true,
+    // 文档只写「获得快速冰霜打击」，冷却与数值为本实现取值
+    cost: { resource: Resource.RunicPower, amount: 20 },
+    counters:
+      '仅双持符文刃方案可用；要求贴身并面向目标；虽是武器技能但结算冰霜魔法伤害，会被反魔法护罩、法术免疫和吸收吃掉，同时缴械和冰霜学派锁定都能封住它（7.3）。',
+    effects: [{ kind: 'damage', school: School.Frost, amount: { weaponPercent: 0.9 } }],
+    description: '一次迅捷的符文刃斩击，造成 90% 武器伤害的冰霜伤害。仅双持符文刃方案可用。',
+    vfx: 'deathknight_frost_strike',
+  },
+  {
+    id: asSkillId('deathknight.rune_ward'),
+    name: '符文守护',
+    classId: CLASS_ID,
+    targeting: Targeting.Self,
+    targetFilter: TargetFilter.Self,
+    range: { min: 0, max: 0 },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Shadow,
+    cooldown: 25,
+    triggersGcd: true,
+    // 文档只写「获得符文守护」，冷却与数值为本实现取值
+    counters:
+      '仅符文剑 + 骨盾方案可用，而该方案本身输出偏低；只是减伤和小额吸收，不是免疫，控制链与持续伤害照常生效；持续 6 秒，等过期即可。',
+    effects: [
+      {
+        kind: 'applyAura',
+        target: 'self',
+        aura: {
+          id: 'deathknight.rune_ward',
+          name: '符文守护',
+          kind: 'buff',
+          duration: 6,
+          dispelType: DispelType.None,
+          modifiers: { damageTaken: 0.8 },
+          absorb: 120,
+          description: '受到伤害降低 20%，并吸收 120 点伤害。',
+          vfx: 'deathknight_rune_ward',
+        },
+      },
+    ],
+    description: '骨盾上的符文亮起，6 秒内受到伤害降低 20% 并吸收 120 点伤害。仅骨盾方案可用。',
+    vfx: 'deathknight_rune_ward',
+  },
+];
+
+// ── 武器方案（附录A#4：职业、攻击间隔、距离、优势、代价、改变的技能）──
+// 数值严格照抄 9.3「死亡骑士武器方案」表格。
+
+const weapons: WeaponDef[] = [
+  {
+    id: asWeaponId('deathknight.runeblade_2h'),
+    name: '双手符文剑',
+    classId: CLASS_ID,
+    isDefault: true,
+    handedness: 'twoHand',
+    swingInterval: 2.3,
+    swingPercent: 1.4,
+    reach: RUNEBLADE_REACH,
+    advantage: '重击和爆发高',
+    cost: '攻速慢',
+    removesSkills: [asSkillId('deathknight.frost_strike_fast'), asSkillId('deathknight.rune_ward')],
+    skillModifiers: { 'deathknight.obliterate': { damageMultiplier: 1.15 } },
+    model: 'runeblade_2h',
+  },
+  {
+    id: asWeaponId('deathknight.dual_runeblades'),
+    name: '双持符文刃',
+    classId: CLASS_ID,
+    isDefault: false,
+    handedness: 'dualWield',
+    swingInterval: 0.8,
+    swingPercent: 0.55,
+    reach: RANGE.MELEE,
+    modifiers: { resourceGain: 1.2, damageTaken: 1.05 },
+    advantage: '符文能量获取 +20%，持续压制',
+    cost: '单击低，防御 -5%',
+    grantsSkills: [asSkillId('deathknight.frost_strike_fast')],
+    removesSkills: [asSkillId('deathknight.rune_ward')],
+    model: 'dual_runeblades',
+  },
+  {
+    id: asWeaponId('deathknight.runeblade_boneshield'),
+    name: '符文剑 + 骨盾',
+    classId: CLASS_ID,
+    isDefault: false,
+    handedness: 'oneHand',
+    swingInterval: 1.8,
+    swingPercent: 0.85,
+    reach: RANGE.MELEE,
+    // schema 缺口：AuraModifiers 的 damageTaken 不分学派，文档的「法术抗性提高」
+    // 无法在 WeaponDef 上单独表达（对比 armors.ts 里另开常量的 SPELLWARD_MAGIC_DAMAGE_TAKEN），
+    // 这里先并入统一减伤，等 schema 增加按学派拆分的 damageTaken 后再拆开。
+    modifiers: { damageTaken: 0.85, block: 0.15, moveSpeed: 0.95, damageDealt: 0.9 },
+    advantage: '防御 +15%，法术抗性提高',
+    cost: '移动 -5%，输出低',
+    grantsSkills: [asSkillId('deathknight.rune_ward')],
+    removesSkills: [asSkillId('deathknight.frost_strike_fast')],
+    // 「重击降低」：湮灭伤害下调
+    skillModifiers: { 'deathknight.obliterate': { damageMultiplier: 0.85 } },
+    model: 'runeblade_boneshield',
+  },
+];
+
+export const deathknight: ClassDef = {
+  id: CLASS_ID,
+  name: '死亡骑士',
+  role: '拉拽、减速、反法术与持续压制',
+  baseHealth: 1200,
+  resources: [
+    // 符文：开局满 6 枚，约 3 秒回复 1 枚
+    { resource: Resource.Runes, max: 6, start: 6, regenPerSecond: 0.33 },
+    // 符文能量：不自然回复，靠消耗符文的重击产出
+    { resource: Resource.RunicPower, max: 100, start: 0, regenPerSecond: 0 },
+  ],
+  strengths: '抗控制、拉回目标、对法系压制',
+  weaknesses: '基础机动一般、攻击节奏偏重、依赖近身',
+  defaultWeaponId: asWeaponId('deathknight.runeblade_2h'),
+  defaultArmorId: asArmorId('deathknight.default'),
+  skills,
+  weapons,
+  armors: makeArmorSet(CLASS_ID, { defaultName: '符文板甲' }),
+  autoAttack: { ranged: false, school: School.Physical },
+};
