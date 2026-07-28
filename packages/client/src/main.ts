@@ -36,8 +36,16 @@ app.innerHTML = `
         <tr><td><kbd>Tab</kbd> <kbd>⇧Tab</kbd></td><td>循环选择目标<span class="hint">镜头前方 140°/45m</span></td></tr>
         <tr><td><kbd>左键</kbd></td><td>点击角色或姓名板选中</td></tr>
         <tr><td><kbd>F</kbd></td><td>设为焦点<span class="hint">独立于硬目标</span></td></tr>
-        <tr><td><kbd>1</kbd>–<kbd>6</kbd></td><td>释放技能</td></tr>
-        <tr><td><kbd>Esc</kbd></td><td>主动取消读条<span class="hint">假读条</span></td></tr>
+        <tr><td><kbd>1</kbd>–<kbd>8</kbd></td><td>释放技能</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>取消瞄准 / 取消读条<span class="hint">假读条</span></td></tr>
+      </table>
+      <h3>瞄准（M3）</h3>
+      <table>
+        <tr><td><kbd>5</kbd> <kbd>6</kbd></td><td>地面技能<span class="hint">进入落点预览</span></td></tr>
+        <tr><td><kbd>左键</kbd></td><td>确认落点</td></tr>
+        <tr><td><kbd>右键</kbd> <kbd>Esc</kbd></td><td>取消瞄准</td></tr>
+        <tr><td><kbd>4</kbd></td><td>自身中心<span class="hint">冰霜新星，不需选目标</span></td></tr>
+        <tr><td><kbd>7</kbd></td><td>方向直线<span class="hint">按角色面向，非镜头</span></td></tr>
       </table>
       <h3>该看什么</h3>
       <ul>
@@ -51,6 +59,10 @@ app.innerHTML = `
         <li><b>验收 #13</b>：读条中被假人战士拳击打断；<b>普通伤害不会</b>打断（#14）</li>
         <li><b>7.5</b>：不可打断的技能施法条带 🛡 虚线边框</li>
         <li><b>验收 #6</b>：选中后跑到墙后 —— 目标<b>仍然保留</b>，但技能显示「缺少视线」</li>
+        <li><b>验收 #8</b>：按 <kbd>5</kbd> 后把落点拖到墙后 —— 圆圈变<b>虚线+叉号+变暗</b>，左键点不下去</li>
+        <li><b>5.5</b>：落点拖到 30 米外会被<b>钳制到边缘</b>，技能仍可释放</li>
+        <li><b>17.2</b>：非法提示不只靠颜色 —— 虚线和叉号在色盲模式下同样可辨</li>
+        <li><b>5.4</b>：按 <kbd>7</kbd> 看方向预览，左键拖动转镜头时预览<b>不动</b>（跟角色朝向）</li>
       </ul>
     </div>
   </div>

@@ -42,6 +42,7 @@ export class CombatHud {
   private readonly playerCastBar: HTMLElement;
   private readonly skillBar: HTMLElement;
   private readonly logBox: HTMLElement;
+  private readonly aimHint: HTMLElement;
   private readonly nameplateLayer: HTMLElement;
   private nameplates = new Map<number, HTMLElement>();
 
@@ -52,6 +53,7 @@ export class CombatHud {
       <div id="nameplates"></div>
       <div id="target-frame" class="unit-frame"></div>
       <div id="focus-frame" class="unit-frame"></div>
+      <div id="aim-hint"></div>
       <div id="player-cast"></div>
       <div id="skill-bar"></div>
       <div id="combat-log"></div>
@@ -64,6 +66,27 @@ export class CombatHud {
     this.playerCastBar = this.root.querySelector('#player-cast')!;
     this.skillBar = this.root.querySelector('#skill-bar')!;
     this.logBox = this.root.querySelector('#combat-log')!;
+    this.aimHint = this.root.querySelector('#aim-hint')!;
+  }
+
+  /**
+   * 5.5：瞄准状态的文字提示。
+   *
+   * 地面指示器已经用「虚线 + 叉号 + 变暗」表达了非法（17.2：不只靠颜色），
+   * 这里再补一条文字 —— 三重冗余是有意的：颜色、形状、文字，任一条通道
+   * 受限的玩家都能拿到同样的信息。
+   */
+  setAimHint(text: string | null, illegal: boolean): void {
+    if (!text) {
+      this.aimHint.style.display = 'none';
+      this.aimHint.textContent = '';
+      this.aimHint.dataset.illegal = 'false';
+      return;
+    }
+    this.aimHint.style.display = '';
+    this.aimHint.textContent = text;
+    this.aimHint.classList.toggle('illegal', illegal);
+    this.aimHint.dataset.illegal = String(illegal);
   }
 
   update(dir: CombatDirector, camera: THREE.Camera, canvas: HTMLCanvasElement): void {

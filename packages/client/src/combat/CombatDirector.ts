@@ -1,7 +1,7 @@
 /**
  * 战斗调度器：把 shared 的战斗模拟接到客户端。
  *
- * ⚠️ M2 阶段这是**本地模拟**，不是权威服务器。它存在的意义是让 7.x 的反制链
+ * ⚠️ M2/M3 阶段这是**本地模拟**，不是权威服务器。它存在的意义是让 7.x 的反制链
  * 能被亲手操作、亲眼验证。M5 接入服务器时，这个类的职责会缩减为
  * 「把输入发出去 + 把快照画出来」，战斗规则本身一行都不用改 ——
  * 因为规则全在 shared/sim 里，这里只是调用方。
@@ -12,7 +12,13 @@ import {
   CastKind,
   School,
   TargetFilter,
+  collectShapeTargets,
+  needsGroundPlacement,
+  usesNoTarget,
+  resolveGroundPlacement,
+  shapeOrigin,
   validateCast,
+  type GroundPlacement,
   applyInterrupt,
   beginCast,
   cancelCast,
@@ -50,12 +56,21 @@ import {
 const RED = asTeamId(0);
 const BLUE = asTeamId(1);
 
-/** 玩家技能栏。选法师是因为它同时具备读条、瞬发、打断、控制和位移，反制链最完整 */
+/**
+ * 玩家技能栏。选法师是因为它一个职业就覆盖了 5.4 的多数瞄准类型 ——
+ * 直接目标（寒冰箭）、自身中心（冰霜新星）、地面目标（暴风雪、陨石）、
+ * 方向直线（闪现术）、纯自身（寒冰屏障），外加读条/瞬发/引导三种施放方式。
+ *
+ * 缺的第六类「碰撞投射物」在法师技能里没有对应项（猎人的穿透重弩箭才是），
+ * 由 projectile.test.ts 严格覆盖，见 docs/PROGRESS.md 的 M3 说明。
+ */
 const PLAYER_SKILL_IDS = [
   'mage.frostbolt',
   'mage.fire_blast',
   'mage.counterspell',
-  'mage.polymorph',
+  'mage.frost_nova',
+  'mage.blizzard',
+  'mage.meteor',
   'mage.blink',
   'mage.ice_block',
 ] as const;
@@ -94,7 +109,12 @@ export class CombatDirector {
   /** 战士假人的反应时间，秒 */
   private static readonly PUMMEL_REACTION = 0.45;
 
-  constructor(obstacles: readonly Aabb[], playerSpawn: Vec3) {
+  constructor(
+    obstacles: readonly Aabb[],
+    playerSpawn: Vec3,
+    /** 地图外边界。5.5：地面技能落点不能超出地图 */
+    private readonly mapBounds?: Aabb,
+  ) {
     this.world = createWorld(obstacles);
 
     this.player = addEntity(
@@ -116,7 +136,7 @@ export class CombatDirector {
       return s;
     });
 
-    this.info('M2 试验场：选中目标后用 1–6 释放技能。红字是失败原因。');
+    this.info('试验场：Tab 选目标，1–8 释放技能。地面技能会先进入落点预览，左键确认。');
   }
 
   private spawnDummy(cls: typeof mage, pos: Vec3, name: string): CombatEntity {
@@ -272,9 +292,66 @@ export class CombatDirector {
     })) return;
   }
 
-  castSlot(index: number): void {
+  /**
+   * 5.5：解算地面技能落点。客户端画指示器和这里的合法性判断走的是**同一个函数**，
+   * 所以「指示器显示合法 → 按下去却失败」不可能发生（验收 #8）。
+   */
+  resolveGround(skill: SkillDef, requested: Vec3): GroundPlacement {
+    return resolveGroundPlacement(this.player, requested, skill, this.world.obstacles, this.mapBounds);
+  }
+
+  /** 6.3：按形状选出会被命中的目标，供指示器高亮 */
+  previewShapeTargets(skill: SkillDef, groundPoint?: Vec3): CombatEntity[] {
+    return collectShapeTargets(this.world, this.player, {
+      origin: shapeOrigin(this.player, skill, groundPoint),
+      // ★ 角色 yaw，不是镜头 yaw（5.4 / 6.5）
+      yaw: this.player.yaw,
+      shape: skill.shape,
+      filter: skill.targetFilter,
+    });
+  }
+
+  castSlot(index: number, groundPoint?: Vec3): void {
     const skill = this.skills[index];
     if (!skill) return;
+
+    // 地面技能：先做落点合法性检查（5.5：非法位置不能确认）
+    if (needsGroundPlacement(skill)) {
+      if (!groundPoint) {
+        this.push(`${skill.name}：需要先选择落点`, 'fail');
+        return;
+      }
+      const placement = this.resolveGround(skill, groundPoint);
+      if (!placement.legal) {
+        this.push(`${skill.name} 落点非法：${FAIL_TEXT[placement.reason]}`, 'fail');
+        return;
+      }
+      const affected = this.previewShapeTargets(skill, placement.center);
+      const r = beginCast(this.world, this.store, this.player, skill, {
+        groundPoint: placement.center,
+        events: {
+          onStarted: () => this.push(`开始施放 ${skill.name}（落点已锁定）`, 'info'),
+          onCompleted: () =>
+            this.push(`${skill.name} 落地，范围内 ${affected.length} 个目标`, 'ok'),
+          onFailed: (_c, s, reason) => this.push(`${s.name} 失败：${FAIL_TEXT[reason]}`, 'fail'),
+        },
+      });
+      if (!r.ok) this.push(`${skill.name} 无法释放：${FAIL_TEXT[r.reason]}`, 'fail');
+      return;
+    }
+
+    // 5.6：自身、自身中心、方向技能都不需要选择目标，按角色位置/面向结算
+    if (usesNoTarget(skill)) {
+      const affected = this.previewShapeTargets(skill);
+      const r = beginCast(this.world, this.store, this.player, skill, {
+        events: {
+          onCompleted: () => this.push(`${skill.name} 命中 ${affected.length} 个目标`, 'ok'),
+          onFailed: (_c, s, reason) => this.push(`${s.name} 失败：${FAIL_TEXT[reason]}`, 'fail'),
+        },
+      });
+      if (!r.ok) this.push(`${skill.name} 无法释放：${FAIL_TEXT[r.reason]}`, 'fail');
+      return;
+    }
 
     const resolved = resolveSkillTarget(this.world, this.player, skill.targetFilter);
     const target = resolved.ok ? resolved.target : undefined;
@@ -363,10 +440,23 @@ export class CombatDirector {
   /** 技能栏视图：冷却与当前不可用原因 */
   skillSlots(): SkillSlotView[] {
     return this.skills.map((skill) => {
-      const resolved = resolveSkillTarget(this.world, this.player, skill.targetFilter);
-      const target = resolved.ok ? resolved.target : undefined;
-      // 用与释放时同一个 validate，保证图标显示的原因就是真实原因（15.2）
-      const blocker = validateForHud(this.world, this.player, skill, target);
+      let blocker: CastFailure;
+      if (needsGroundPlacement(skill)) {
+        // 地面技能不需要硬目标，落点在瞄准时才产生。
+        // 这里传一个必然合法的落点（脚下），让 HUD 只反映冷却/资源/沉默这类状态 ——
+        // 否则技能栏会一直显示「需要目标」，那是错的（15.2 要求提示准确）。
+        blocker = validateForHud(this.world, this.player, skill, undefined, this.player.position);
+      } else if (usesNoTarget(skill)) {
+        blocker = validateForHud(this.world, this.player, skill, undefined);
+      } else {
+        const resolved = resolveSkillTarget(this.world, this.player, skill.targetFilter);
+        blocker = validateForHud(
+          this.world,
+          this.player,
+          skill,
+          resolved.ok ? resolved.target : undefined,
+        );
+      }
       return {
         skill,
         cooldownRemaining: Math.max(0, (this.player.cooldowns.get(skill.id) ?? 0) - this.world.time),
@@ -400,7 +490,8 @@ const validateForHud = (
   caster: CombatEntity,
   skill: SkillDef,
   target: CombatEntity | undefined,
-): CastFailure => validateCast({ world, caster, skill, target, phase: 'start' });
+  groundPoint?: Vec3,
+): CastFailure => validateCast({ world, caster, skill, target, groundPoint, phase: 'start' });
 
 // ── 文案 ───────────────────────────────────────────────────────
 
@@ -420,7 +511,7 @@ export const FAIL_TEXT: Record<CastFailure, string> = {
   schoolLocked: '学派锁定',
   controlled: '无法行动',
   dead: '已死亡',
-  invalidGroundPosition: '落点非法',
+  invalidGroundPosition: '超出地图边界',
   classMismatch: '职业不匹配',
   carryingFlag: '持旗时禁用',
   alreadyCasting: '正在施法',

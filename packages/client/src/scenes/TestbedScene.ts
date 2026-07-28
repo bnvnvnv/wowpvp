@@ -22,9 +22,16 @@ import { CombatDirector } from '../combat/CombatDirector.js';
 import { AnimationController } from '../entity/AnimationController.js';
 import { CharacterView } from '../entity/CharacterView.js';
 import { CombatHud } from '../hud/CombatHud.js';
+import { FAIL_TEXT } from '../combat/CombatDirector.js';
 import { Action, InputManager, type FrameInput } from '../input/InputManager.js';
 import { GameLoop } from '../render/GameLoop.js';
 import { MapRenderer } from '../render/MapRenderer.js';
+import { AimingController, type AimInput } from '../targeting/AimingController.js';
+import { DirectionIndicator } from '../targeting/DirectionIndicator.js';
+import { GroundIndicator, screenToGround } from '../targeting/GroundIndicator.js';
+
+/** 技能栏槽位数，与 CombatDirector 的 PLAYER_SKILL_IDS 长度一致 */
+const SKILL_SLOT_COUNT = 8;
 
 export interface DebugInfo {
   fps: number;
@@ -53,6 +60,14 @@ export class TestbedScene {
   private readonly hud: CombatHud;
   /** 场上其他战斗实体的可视化 */
   private readonly dummyViews = new Map<number, CharacterView>();
+  /** M3：瞄准 */
+  private readonly aim = new AimingController();
+  private readonly groundIndicator = new GroundIndicator();
+  private readonly directionIndicator = new DirectionIndicator();
+  /** 鼠标在画布上的归一化坐标，地面技能瞄准用 */
+  private readonly ndc = new THREE.Vector2();
+  /** 本帧的一次性鼠标事件，供瞄准状态机消费 */
+  private clickFlags = { left: false, right: false };
 
   private move: MovementState;
   private characterYaw = TESTBED_SPAWN.yaw;
@@ -87,8 +102,10 @@ export class TestbedScene {
     this.input = new InputManager(canvas);
     this.move = createMovementState(TESTBED_SPAWN.position, TESTBED_SPAWN.yaw);
 
-    // M2 战斗
-    this.combat = new CombatDirector(this.obstacles, TESTBED_SPAWN.position);
+    // M2 战斗 + M3 瞄准
+    this.combat = new CombatDirector(this.obstacles, TESTBED_SPAWN.position, testbed.bounds);
+    this.scene.add(this.groundIndicator.group, this.directionIndicator.group);
+    canvas.addEventListener('mousemove', this.onCanvasMouseMove);
     this.hud = new CombatHud(canvas.parentElement ?? document.body);
     for (const e of this.combat.visibleEntities()) {
       const v = new CharacterView();
@@ -117,15 +134,29 @@ export class TestbedScene {
     this.input.dispose();
     window.removeEventListener('resize', this.onResize);
     this.canvas.removeEventListener('mousedown', this.onCanvasMouseDown);
+    this.canvas.removeEventListener('mousemove', this.onCanvasMouseMove);
     this.renderer.dispose();
   }
+
+  private onCanvasMouseMove = (ev: MouseEvent): void => {
+    const rect = this.canvas.getBoundingClientRect();
+    this.ndc.set(
+      ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+      -((ev.clientY - rect.top) / rect.height) * 2 + 1,
+    );
+  };
 
   /**
    * 5.2：左键点击角色模型设为硬目标。
    * 用射线拾取角色组，命中即选中；点空地不清除目标（5.1：硬目标持续保留）。
    */
   private onCanvasMouseDown = (ev: MouseEvent): void => {
-    if (ev.button !== 0) return;
+    // 记录给瞄准状态机（5.5：左键确认、右键取消）
+    if (ev.button === 0) this.clickFlags.left = true;
+    if (ev.button === 2) this.clickFlags.right = true;
+
+    // 瞄准期间左键只用于确认落点，不改变目标
+    if (ev.button !== 0 || this.aim.isAiming) return;
     const rect = this.canvas.getBoundingClientRect();
     const ndc = new THREE.Vector2(
       ((ev.clientX - rect.left) / rect.width) * 2 - 1,
@@ -219,11 +250,34 @@ export class TestbedScene {
     if (input.pressed.has(Action.TargetNext)) this.combat.cycleTarget(this.cam.yaw, false);
     if (input.pressed.has(Action.TargetPrev)) this.combat.cycleTarget(this.cam.yaw, true);
     if (input.pressed.has(Action.SetFocus)) this.combat.toggleFocusOnCurrent();
-    for (let i = 0; i < 6; i++) {
-      if (input.pressed.has(`skill${i + 1}` as Action)) this.combat.castSlot(i);
+
+    // ── M3 瞄准流程（5.4 / 5.5）─────────────────────────────
+    let pressedSlot: number | null = null;
+    for (let i = 0; i < SKILL_SLOT_COUNT; i++) {
+      if (input.pressed.has(`skill${i + 1}` as Action)) pressedSlot = i;
     }
-    // 7.5 假读条：Esc 主动取消
-    if (input.pressed.has(Action.CancelCast)) this.combat.cancelPlayerCast();
+    const aimInput: AimInput = {
+      pressedSlot,
+      releasedSlot: null,
+      leftClick: this.clickFlags.left,
+      rightClick: this.clickFlags.right,
+      escape: input.pressed.has(Action.CancelCast),
+    };
+    this.clickFlags.left = false;
+    this.clickFlags.right = false;
+
+    const ev = this.aim.update(aimInput, (slot) => this.combat.skills[slot]);
+    if (ev.type === 'confirm') {
+      const slot = this.combat.skills.indexOf(ev.skill);
+      // 地面技能：把当前鼠标指向的地面点作为落点
+      const ground = screenToGround(this.cam.camera, this.ndc, this.move.position);
+      this.combat.castSlot(slot, ground ? { x: ground.x, y: 0, z: ground.z } : undefined);
+    }
+
+    // 7.5 假读条：Esc 在没有瞄准时用于取消读条
+    if (input.pressed.has(Action.CancelCast) && ev.type !== 'cancel') {
+      this.combat.cancelPlayerCast();
+    }
   }
 
   /** 固定步长的模拟推进 */
@@ -289,6 +343,7 @@ export class TestbedScene {
       this.dummyViews.get(e.id as number)?.setTransform(e.position, e.yaw);
     }
 
+    this.updateIndicators();
     this.renderer.render(this.scene, this.cam.camera);
     this.hud.update(this.combat, this.cam.camera, this.canvas);
 
@@ -303,6 +358,48 @@ export class TestbedScene {
       cameraDistance: this.cam.distance,
       firstPerson: this.cam.isFirstPerson,
     });
+  }
+
+  /**
+   * 更新瞄准指示器。
+   *
+   * ★ 边界与合法性全部来自 `combat.resolveGround()`，也就是 shared 的
+   *   `resolveGroundPlacement` —— 与服务器判定同一个函数（验收 #8）。
+   *   本方法不做任何几何计算。
+   */
+  private updateIndicators(): void {
+    const skill = this.aim.pendingSkill;
+    if (!skill) {
+      this.groundIndicator.hide();
+      this.directionIndicator.hide();
+      this.hud.setAimHint(null, false);
+      return;
+    }
+
+    if (skill.targeting === 'ground') {
+      const ground = screenToGround(this.cam.camera, this.ndc, this.move.position);
+      if (!ground) {
+        this.groundIndicator.hide();
+        this.hud.setAimHint(`${skill.name}：把鼠标移到地面上选择落点`, true);
+        return;
+      }
+      const placement = this.combat.resolveGround(skill, { x: ground.x, y: 0, z: ground.z });
+      this.groundIndicator.show(placement, this.combat.player.position);
+      this.directionIndicator.hide();
+
+      // 5.5：文字提示与视觉提示同步。合法时也说明是否被钳制到最大距离
+      this.hud.setAimHint(
+        placement.legal
+          ? `${skill.name}：左键确认${placement.clamped ? `（已钳制到 ${placement.maxRange} 米边缘）` : ''}`
+          : `${skill.name}：${FAIL_TEXT[placement.reason]}`,
+        !placement.legal,
+      );
+    } else {
+      this.groundIndicator.hide();
+      // ★ 传角色 yaw，不是镜头 yaw（5.4：镜头方向不能替代角色面向）
+      this.directionIndicator.show(skill.shape, this.combat.player.position, this.characterYaw);
+      this.hud.setAimHint(`${skill.name}：沿角色面向释放`, false);
+    }
   }
 
   /** 供 HUD 显示的常量，避免 UI 层重复硬编码 */

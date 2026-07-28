@@ -32,6 +32,8 @@ export const Action = {
   Skill4: 'skill4',
   Skill5: 'skill5',
   Skill6: 'skill6',
+  Skill7: 'skill7',
+  Skill8: 'skill8',
   /** 调试：切换碰撞体与判定可视化 */
   ToggleDebug: 'toggleDebug',
 } as const;
@@ -59,6 +61,8 @@ export const DEFAULT_BINDINGS: Readonly<Record<Action, string>> = {
   [Action.Skill4]: 'Digit4',
   [Action.Skill5]: 'Digit5',
   [Action.Skill6]: 'Digit6',
+  [Action.Skill7]: 'Digit7',
+  [Action.Skill8]: 'Digit8',
   [Action.ToggleDebug]: 'F1',
 };
 

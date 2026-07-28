@@ -34,7 +34,8 @@
       #stats b.warn { color: #e0b87e; }
       #stats hr { border: 0; border-top: 1px solid #2c313d; margin: 7px 0; }
 
-      #help { top: 14px; right: 14px; max-width: 380px; }
+      #help { top: 14px; right: 14px; max-width: 360px; max-height: calc(100vh - 190px);
+              overflow-y: auto; pointer-events: auto; }
       #help h3 { font-size: 12px; color: #6f9fd0; margin: 0 0 6px; font-weight: 600; }
       #help h3 + table + h3 { margin-top: 12px; }
       #help table { border-collapse: collapse; width: 100%; }
@@ -90,12 +91,18 @@
       .bar.cast.shot { border-color: #d8b45c; box-shadow: inset 0 0 0 1px rgba(216,180,92,.35); }
       .bar.cast .shield { color: #cfd6e4; }
 
+      #aim-hint { position: absolute; left: 50%; bottom: 164px; transform: translateX(-50%);
+                  padding: 5px 12px; border-radius: 6px; font-size: 12px;
+                  background: rgba(20,23,30,.9); border: 1px solid #3a6fa0; color: #9fd0ff; }
+      #aim-hint.illegal { border-color: #8e96a8; border-style: dashed; color: #c9ced9; }
+      #aim-hint.illegal::before { content: "✕ "; }
+
       #player-cast { position: absolute; left: 50%; bottom: 132px;
                      transform: translateX(-50%); width: 320px; }
 
       #skill-bar { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
-                   display: flex; gap: 8px; pointer-events: none; }
-      #skill-bar .slot { width: 108px; padding: 6px 8px; border-radius: 8px;
+                   display: flex; gap: 6px; pointer-events: none; }
+      #skill-bar .slot { width: 92px; padding: 5px 7px; border-radius: 8px;
                          background: rgba(20,23,30,.9); border: 1px solid #2c313d;
                          border-top: 2px solid var(--school); }
       #skill-bar .slot.blocked { opacity: .5; }
