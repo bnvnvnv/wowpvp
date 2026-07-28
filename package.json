@@ -18,6 +18,7 @@
     "test:watch": "vitest",
     "docs": "tsx scripts/gen-docs.ts",
     "verify:m1": "node scripts/verify-m1.mjs",
+    "verify:m2": "node scripts/verify-m2.mjs",
     "typecheck": "tsc -b packages/shared packages/server packages/client",
     "clean": "rimraf packages/*/dist packages/*/*.tsbuildinfo"
   },
