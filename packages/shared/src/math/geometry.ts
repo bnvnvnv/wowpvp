@@ -199,7 +199,13 @@ export const nextChainTarget = <T extends HitCircle>(
 
 // ── 6.4 视线与障碍物 ─────────────────────────────────────────────
 
-/** 轴对齐包围盒。首版地图用 AABB 组合描述墙体/柱子/屋顶，足够且极快 */
+/**
+ * 轴对齐包围盒。首版地图用 AABB 组合描述墙体/柱子/屋顶，足够且极快。
+ *
+ * 这四个 flag 全部是**判定属性**。渲染用的语义标签在 `data/maps/schema.ts`
+ * 的 `MapVolume.tag` 上，判定层一律不读它 —— 靠字符串标签做判定会让
+ * 「改个渲染分类顺手改了碰撞行为」这种事悄悄发生。
+ */
 export interface Aabb {
   min: Vec3;
   max: Vec3;
@@ -207,6 +213,10 @@ export interface Aabb {
   blocksSight?: boolean;
   /** 是否阻挡移动 */
   blocksMovement?: boolean;
+  /** 顶面是否可站立。false 表示装饰体，角色和位移技能都不能落在上面 */
+  standable?: boolean;
+  /** 13.5：深水可终止坠落伤害 */
+  endsFallDamage?: boolean;
 }
 
 /**
