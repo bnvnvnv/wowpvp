@@ -1,0 +1,21 @@
+{
+  "name": "@wowpvp/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "权威服务器：房间管理、20Hz 战斗 tick、状态广播。",
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@wowpvp/shared": "workspace:*",
+    "ws": "^8.21.1"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.23.1"
+  }
+}

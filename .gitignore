@@ -1,0 +1,26 @@
+node_modules/
+dist/
+build/
+.output/
+*.tsbuildinfo
+coverage/
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# 日志
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# 本地环境变量（可能含 token，绝不提交）
+.env
+.env.*
+!.env.example
+
+# 未登记许可证的素材暂存区（见 docs/09-asset-license.md）
+assets/_incoming/

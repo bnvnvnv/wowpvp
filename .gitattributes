@@ -1,0 +1,23 @@
+# 仓库内统一 LF，检出时按平台。避免 Windows/Linux 协作时的整文件 diff。
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.glb binary
+*.gltf binary
+*.fbx binary
+*.ogg binary
+*.mp3 binary
+*.wav binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.docx binary
+
+# 自动生成的文档在 diff 中折叠显示，避免淹没真实改动
+docs/04-class-skill-matrix.md linguist-generated=true
+docs/05-equipment-system.md linguist-generated=true

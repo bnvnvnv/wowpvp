@@ -1,0 +1,20 @@
+{
+  "name": "@wowpvp/client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "浏览器客户端：three.js 渲染、镜头、输入、HUD。",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@wowpvp/shared": "workspace:*",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.185.1",
+    "vite": "^7.3.6"
+  }
+}
