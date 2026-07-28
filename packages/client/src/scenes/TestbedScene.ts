@@ -18,8 +18,10 @@ import {
 } from '@wowpvp/shared';
 
 import { CameraController } from '../camera/CameraController.js';
+import { CombatDirector } from '../combat/CombatDirector.js';
 import { AnimationController } from '../entity/AnimationController.js';
 import { CharacterView } from '../entity/CharacterView.js';
+import { CombatHud } from '../hud/CombatHud.js';
 import { Action, InputManager, type FrameInput } from '../input/InputManager.js';
 import { GameLoop } from '../render/GameLoop.js';
 import { MapRenderer } from '../render/MapRenderer.js';
@@ -46,6 +48,11 @@ export class TestbedScene {
   private readonly view = new CharacterView();
   private readonly anim = new AnimationController();
   private readonly obstacles: readonly Aabb[];
+  /** M2：战斗模拟与 HUD */
+  private readonly combat: CombatDirector;
+  private readonly hud: CombatHud;
+  /** 场上其他战斗实体的可视化 */
+  private readonly dummyViews = new Map<number, CharacterView>();
 
   private move: MovementState;
   private characterYaw = TESTBED_SPAWN.yaw;
@@ -80,6 +87,17 @@ export class TestbedScene {
     this.input = new InputManager(canvas);
     this.move = createMovementState(TESTBED_SPAWN.position, TESTBED_SPAWN.yaw);
 
+    // M2 战斗
+    this.combat = new CombatDirector(this.obstacles, TESTBED_SPAWN.position);
+    this.hud = new CombatHud(canvas.parentElement ?? document.body);
+    for (const e of this.combat.visibleEntities()) {
+      const v = new CharacterView();
+      v.setTransform(e.position, e.yaw);
+      this.dummyViews.set(e.id as number, v);
+      this.scene.add(v.group);
+    }
+    canvas.addEventListener('mousedown', this.onCanvasMouseDown);
+
     this.loop = new GameLoop(
       (dt) => this.simulate(dt),
       (alpha, dt) => this.draw(alpha, dt),
@@ -98,8 +116,33 @@ export class TestbedScene {
     this.loop.stop();
     this.input.dispose();
     window.removeEventListener('resize', this.onResize);
+    this.canvas.removeEventListener('mousedown', this.onCanvasMouseDown);
     this.renderer.dispose();
   }
+
+  /**
+   * 5.2：左键点击角色模型设为硬目标。
+   * 用射线拾取角色组，命中即选中；点空地不清除目标（5.1：硬目标持续保留）。
+   */
+  private onCanvasMouseDown = (ev: MouseEvent): void => {
+    if (ev.button !== 0) return;
+    const rect = this.canvas.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+      -((ev.clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(ndc, this.cam.camera);
+
+    let best: { id: number; dist: number } | undefined;
+    for (const [id, view] of this.dummyViews) {
+      const hits = ray.intersectObject(view.group, true);
+      if (hits.length && (!best || hits[0]!.distance < best.dist)) {
+        best = { id, dist: hits[0]!.distance };
+      }
+    }
+    if (best) this.combat.selectById(best.id);
+  };
 
   private onResize = (): void => {
     const w = this.canvas.clientWidth;
@@ -168,7 +211,19 @@ export class TestbedScene {
       this.debugVisible = !this.debugVisible;
       this.view.setHitboxVisible(this.debugVisible);
       this.mapRenderer.setDebugVisible(this.debugVisible);
+      for (const v of this.dummyViews.values()) v.setHitboxVisible(this.debugVisible);
     }
+
+    // ── M2 战斗操作 ─────────────────────────────────────────
+    // ★ Tab 用的是**镜头** yaw（5.3「当前镜头前方约 140 度范围内循环」）
+    if (input.pressed.has(Action.TargetNext)) this.combat.cycleTarget(this.cam.yaw, false);
+    if (input.pressed.has(Action.TargetPrev)) this.combat.cycleTarget(this.cam.yaw, true);
+    if (input.pressed.has(Action.SetFocus)) this.combat.toggleFocusOnCurrent();
+    for (let i = 0; i < 6; i++) {
+      if (input.pressed.has(`skill${i + 1}` as Action)) this.combat.castSlot(i);
+    }
+    // 7.5 假读条：Esc 主动取消
+    if (input.pressed.has(Action.CancelCast)) this.combat.cancelPlayerCast();
   }
 
   /** 固定步长的模拟推进 */
@@ -202,6 +257,10 @@ export class TestbedScene {
       strafe: input.strafe,
       landedFrom: this.lastLandingHeight,
     });
+
+    // ★ 战斗在移动之后推进 —— 7.3「主动移动停止原地施放的读条」
+    //   只有先算完移动才知道这一 tick 有没有位移（docs/02 §3 的 tick 顺序）
+    this.combat.update(dt, this.move.position, this.characterYaw);
   }
 
   private draw(alpha: number, dt: number): void {
@@ -226,7 +285,12 @@ export class TestbedScene {
     );
     this.view.setFirstPerson(this.cam.isFirstPerson);
 
+    for (const e of this.combat.visibleEntities()) {
+      this.dummyViews.get(e.id as number)?.setTransform(e.position, e.yaw);
+    }
+
     this.renderer.render(this.scene, this.cam.camera);
+    this.hud.update(this.combat, this.cam.camera, this.canvas);
 
     this.onDebug({
       fps: this.loop.fps,

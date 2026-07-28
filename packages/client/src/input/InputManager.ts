@@ -23,6 +23,15 @@ export const Action = {
   SelfCast: 'selfCast',
   /** 8.3 通用解控「战斗意志」 */
   Trinket: 'trinket',
+  /** 7.5 主动取消读条（假读条博弈）*/
+  CancelCast: 'cancelCast',
+  /** 技能栏 1–6 */
+  Skill1: 'skill1',
+  Skill2: 'skill2',
+  Skill3: 'skill3',
+  Skill4: 'skill4',
+  Skill5: 'skill5',
+  Skill6: 'skill6',
   /** 调试：切换碰撞体与判定可视化 */
   ToggleDebug: 'toggleDebug',
 } as const;
@@ -43,6 +52,13 @@ export const DEFAULT_BINDINGS: Readonly<Record<Action, string>> = {
   [Action.SetFocus]: 'KeyF',
   [Action.SelfCast]: 'AltLeft',
   [Action.Trinket]: 'KeyR',
+  [Action.CancelCast]: 'Escape',
+  [Action.Skill1]: 'Digit1',
+  [Action.Skill2]: 'Digit2',
+  [Action.Skill3]: 'Digit3',
+  [Action.Skill4]: 'Digit4',
+  [Action.Skill5]: 'Digit5',
+  [Action.Skill6]: 'Digit6',
   [Action.ToggleDebug]: 'F1',
 };
 

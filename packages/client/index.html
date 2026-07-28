@@ -50,6 +50,79 @@
         border-bottom-width: 2px; border-radius: 4px; padding: 0 5px;
         font: 11px/1.5 ui-monospace, monospace; color: #cfd6e4; margin-right: 3px;
       }
+
+      /* ── M2 战斗 HUD（规格书 15.1 / 15.2）───────────────────── */
+      #combat-hud { position: fixed; inset: 0; pointer-events: none; }
+      #combat-hud .unit-frame {
+        position: absolute; width: 260px; padding: 8px 10px;
+        background: rgba(20,23,30,.88); border: 1px solid #2c313d; border-radius: 8px;
+      }
+      #target-frame { top: 14px; left: 50%; transform: translateX(-50%); }
+      #focus-frame { top: 14px; left: calc(50% + 145px); }
+      .uf-label { font-size: 10px; color: #6f7A90; letter-spacing: 1px; }
+      .uf-name { font-weight: 600; margin-bottom: 4px; }
+      .uf-meta { display: flex; gap: 8px; font-size: 11px; color: #8b93a7; margin-top: 4px; }
+      .uf-meta .dbf { color: #e0a87e; }
+      .flag { color: #e0c07e; font-size: 11px; }
+
+      .bar { position: relative; height: 18px; border-radius: 4px; overflow: hidden;
+             background: #22262f; border: 1px solid #333a47; }
+      .bar i { position: absolute; inset: 0 auto 0 0; display: block; }
+      .bar span { position: relative; display: flex; align-items: center; gap: 5px;
+                  height: 100%; padding: 0 6px; font-size: 11px; }
+      .bar em { font-style: normal; color: #aab2c4; font-size: 10px; }
+      .bar.hp i { background: linear-gradient(#3f9b5d, #2e7546); }
+      .bar.mana { height: 12px; margin-top: 3px; }
+      .bar.mana span { font-size: 10px; }
+      .bar.mana.mana i { background: linear-gradient(#4a72c8, #33529a); }
+      .bar.mana.rage i { background: linear-gradient(#c44a4a, #963333); }
+      .bar.mana.energy i { background: linear-gradient(#d4c04a, #a08f33); }
+      .bar.mana.focus i { background: linear-gradient(#c98a4a, #9a6733); }
+      .bar.mana.runes i { background: linear-gradient(#6ab4d4, #4a86a0); }
+      .uf-class { color: #8b93a7; font-weight: 400; font-size: 11px; margin-left: 4px; }
+      .uf-meta .weapon { color: #9aa3b6; }
+
+      /* 15.2：可打断=正常边框；不可打断=盾牌标记；物理射击准备=独立颜色 */
+      .bar.cast { margin-top: 6px; height: 20px; }
+      .bar.cast i { background: color-mix(in srgb, var(--school) 55%, #1b1f28); }
+      .bar.cast.castable { border-color: var(--school); }
+      .bar.cast.shielded { border-color: #8e96a8; border-style: dashed; }
+      .bar.cast.shot { border-color: #d8b45c; box-shadow: inset 0 0 0 1px rgba(216,180,92,.35); }
+      .bar.cast .shield { color: #cfd6e4; }
+
+      #player-cast { position: absolute; left: 50%; bottom: 132px;
+                     transform: translateX(-50%); width: 320px; }
+
+      #skill-bar { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+                   display: flex; gap: 8px; pointer-events: none; }
+      #skill-bar .slot { width: 108px; padding: 6px 8px; border-radius: 8px;
+                         background: rgba(20,23,30,.9); border: 1px solid #2c313d;
+                         border-top: 2px solid var(--school); }
+      #skill-bar .slot.blocked { opacity: .5; }
+      #skill-bar .slot.usable { box-shadow: 0 0 0 1px color-mix(in srgb, var(--school) 45%, transparent); }
+      #skill-bar .sk-name { font-size: 12px; font-weight: 600; margin: 2px 0 1px; }
+      #skill-bar .sk-meta { font-size: 10px; color: #7d8698; }
+      #skill-bar .sk-block { font-size: 10px; color: #e08a8a; margin-top: 2px; }
+
+      #combat-log { position: absolute; left: 14px; bottom: 14px; width: 380px;
+                    font-size: 11px; font-variant-numeric: tabular-nums; }
+      .log { display: flex; gap: 6px; padding: 1px 0; color: #a8b0c2; }
+      .log span { color: #59617a; min-width: 34px; text-align: right; }
+      .log.ok { color: #8fd0a0; }
+      .log.fail { color: #e08a8a; }
+      .log.interrupt { color: #e0c07e; }
+
+      .nameplate { position: absolute; top: 0; left: 0; width: 108px; text-align: center;
+                   pointer-events: auto; cursor: pointer; }
+      .np-name { font-size: 11px; text-shadow: 0 1px 2px #000; }
+      .np-hp { height: 4px; background: #2a2f3a; border-radius: 2px; overflow: hidden; margin-top: 2px; }
+      .np-hp i { display: block; height: 100%; background: #d05a5a; }
+      .nameplate.selected .np-hp { box-shadow: 0 0 0 1px #ffd166; }
+      .nameplate.selected .np-name { color: #ffd166; font-weight: 600; }
+      .nameplate.focused .np-name { color: #9ad0ff; }
+      .np-cast { height: 4px; background: #2a2f3a; border-radius: 2px; overflow: hidden; margin-top: 2px; }
+      .np-cast i { display: block; height: 100%; background: var(--school); }
+      .np-cast.shielded { outline: 1px dashed #8e96a8; }
     </style>
   </head>
   <body>
