@@ -31,7 +31,8 @@
 | M8 | 特效、可读性、HUD、画质档位 | ⬜ 未开始 |
 | M9 | 统计、观战、重连、可访问性、素材许可 | ⬜ 未开始 |
 
-验收标准逐条状态见 [10-acceptance-tracking.md](10-acceptance-tracking.md)：**52 条中 5 条已完成**。
+验收标准逐条状态见 [10-acceptance-tracking.md](10-acceptance-tracking.md)：
+**52 条中 6 条已完成、1 条进行中、45 条未开始**。
 
 ---
 
@@ -164,13 +165,30 @@
 
 这些不阻塞 M1–M3，但在 M4 之前应该有答复。
 
-### 4. 技能名需要原创化改写
+### 4. 待设计侧确认：镜头最远距离
+
+规格书 4.1 同时要求「角色高度约占画面 4%–8%」和「不能一次看到整张地图」。
+60° FOV 下这两条互相冲突（8% 需要 21.6 米镜头距离，那样 2v2 小地图会被一眼看完）。
+当前取 18 米优先满足后者，推导过程见
+[07-client-render-camera.md](07-client-render-camera.md) §1.2，
+已登记为 [10-acceptance-tracking.md](10-acceptance-tracking.md) 的 Q7。
+**改一个常量即可切换，不涉及逻辑改动**，但 M1 开工前最好有答复。
+
+### 5. 技能名需要原创化改写
 
 当前技能名直接来自规格书，与《魔兽世界》高度重合。规格书 18.3 要求正式发布使用原创技能名。
 改动成本很低（只在 `SkillDef.name` 一个字段），但**不要拖到发布前**。
 详见 [09-asset-license.md](09-asset-license.md) §3。
 
 ---
+
+## 环境备注
+
+- 本项目在中国大陆网络环境下开发，**git 推送需要走本地代理**。
+  仓库的 `.git/config` 里已配置 `http.proxy = http://127.0.0.1:7890`（Clash 默认端口）。
+  如果你的代理端口不同，改这一项即可；不需要代理时用
+  `git config --unset http.proxy && git config --unset https.proxy` 移除。
+- Node ≥ 20，pnpm 10.x。
 
 ## 给下一个接手的人
 
