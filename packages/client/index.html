@@ -3,36 +3,53 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>wowpvp — 网页 3D 多人 PVP</title>
+    <title>wowpvp — M1 移动物理与自由镜头试验场</title>
     <style>
       :root { color-scheme: dark; }
-      * { box-sizing: border-box; }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body, #app { width: 100%; height: 100%; overflow: hidden; }
       body {
-        margin: 0;
-        font: 14px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+        font: 13px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
         background: #14161c;
         color: #e6e8ee;
       }
-      #app { max-width: 1100px; margin: 0 auto; padding: 32px 24px 64px; }
-      h1 { font-size: 22px; margin: 0 0 4px; }
-      .sub { color: #8b93a7; margin: 0 0 24px; }
-      .status { padding: 10px 14px; border-radius: 6px; margin-bottom: 24px; font-family: ui-monospace, monospace; }
-      .status.ok { background: #17301f; color: #7ee0a0; }
-      .status.err { background: #331a1a; color: #ef8a8a; }
-      .status.wait { background: #23262f; color: #8b93a7; }
-      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
-      .card { background: #1b1e26; border: 1px solid #2a2e3a; border-radius: 8px; padding: 14px 16px; }
-      .card h2 { font-size: 16px; margin: 0 0 2px; }
-      .role { color: #8b93a7; font-size: 12px; margin: 0 0 10px; }
-      .stat { display: flex; gap: 12px; font-size: 12px; color: #a8b0c2; margin-bottom: 10px; }
-      .pro { color: #7ee0a0; font-size: 12px; margin: 0 0 2px; }
-      .con { color: #e0b87e; font-size: 12px; margin: 0 0 10px; }
-      table { width: 100%; border-collapse: collapse; font-size: 12px; }
-      th, td { text-align: left; padding: 4px 6px; border-top: 1px solid #2a2e3a; }
-      th { color: #8b93a7; font-weight: 500; }
-      .note { margin-top: 32px; padding: 14px 16px; background: #1b1e26;
-              border-left: 3px solid #4a90d9; border-radius: 4px; color: #a8b0c2; }
-      code { background: #23262f; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+      #view { display: block; width: 100%; height: 100%; cursor: crosshair; }
+
+      #hud { position: fixed; inset: 0; pointer-events: none; padding: 14px; }
+      .panel {
+        position: absolute;
+        background: rgba(20, 23, 30, 0.86);
+        border: 1px solid #2c313d;
+        border-radius: 8px;
+        padding: 12px 14px;
+        backdrop-filter: blur(6px);
+      }
+
+      #stats { top: 14px; left: 14px; min-width: 260px; font-variant-numeric: tabular-nums; }
+      #stats .row { display: flex; align-items: baseline; gap: 8px; }
+      #stats .row span { color: #8b93a7; width: 84px; flex: none; }
+      #stats .row b { color: #e6e8ee; font-weight: 600; }
+      #stats .row i { color: #5f6779; font-style: normal; font-size: 11px; margin-left: auto; }
+      #stats b.ok { color: #7ee0a0; }
+      #stats b.warn { color: #e0b87e; }
+      #stats hr { border: 0; border-top: 1px solid #2c313d; margin: 7px 0; }
+
+      #help { top: 14px; right: 14px; max-width: 380px; }
+      #help h3 { font-size: 12px; color: #6f9fd0; margin: 0 0 6px; font-weight: 600; }
+      #help h3 + table + h3 { margin-top: 12px; }
+      #help table { border-collapse: collapse; width: 100%; }
+      #help td { padding: 2px 0; vertical-align: top; }
+      #help td:first-child { width: 110px; white-space: nowrap; }
+      #help .hint { color: #6b7488; margin-left: 6px; font-size: 11px; }
+      #help ul { list-style: none; }
+      #help li { color: #a8b0c2; padding: 2px 0 2px 12px; position: relative; }
+      #help li::before { content: "·"; position: absolute; left: 2px; color: #6f9fd0; }
+      #help b { color: #d9c07e; font-weight: 600; }
+      kbd {
+        display: inline-block; background: #262b36; border: 1px solid #3a4150;
+        border-bottom-width: 2px; border-radius: 4px; padding: 0 5px;
+        font: 11px/1.5 ui-monospace, monospace; color: #cfd6e4; margin-right: 3px;
+      }
     </style>
   </head>
   <body>
