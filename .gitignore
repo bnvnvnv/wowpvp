@@ -24,3 +24,6 @@ pnpm-debug.log*
 
 # 未登记许可证的素材暂存区（见 docs/09-asset-license.md）
 assets/_incoming/
+
+# 验收脚本产出的截图
+m1-*.png
