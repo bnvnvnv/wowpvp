@@ -20,6 +20,7 @@
     "verify:m1": "node scripts/verify-m1.mjs",
     "verify:m2": "node scripts/verify-m2.mjs",
     "verify:m3": "node scripts/verify-m3.mjs",
+    "verify:m4": "node scripts/verify-m4.mjs",
     "typecheck": "tsc -b packages/shared packages/server packages/client",
     "clean": "rimraf packages/*/dist packages/*/*.tsbuildinfo"
   },
