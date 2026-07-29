@@ -13,12 +13,21 @@ import { Resource, School } from '../types/enums.js';
 import type { ClassId, EntityId, SkillId, TeamId, WeaponId } from '../types/ids.js';
 
 /**
- * 状态标志。M2 手动设置，M4 之后由光环系统聚合。
+ * 状态标志。
+ *
+ * ★ M4 起由 `aura.deriveStatusFlags()` 从光环聚合产生，每 tick 写回。
+ *   当初把它单列成一个结构而不是散落在 CombatEntity 上，就是为了这一刻 ——
+ *   换实现时 casting / targeting / movement 的调用点一行都不用改。
+ *
  * 每一项都对应规格书 7.3 中断来源表或 8.x 的一条规则。
  */
 export interface StatusFlags {
-  /** 无法行动。7.3：停止法术、引导、射击准备和换装 */
+  /** 无法行动。7.3：停止法术、引导、射击准备和换装。昏迷/恐惧/变形都置位 */
   stunned: boolean;
+  /** 恐惧：无法主动控制移动方向，被系统驱赶 */
+  feared: boolean;
+  /** 定身：无法移动，但可以施法和攻击 */
+  rooted: boolean;
   /** 8.2：禁止魔法技能。**不阻止**物理射击、普通攻击和纯武器技能（验收 #17）*/
   silenced: boolean;
   /** 8.2：禁止武器攻击、瞄准射击和武器技能。**不阻止**纯魔法施法（验收 #17）*/
@@ -29,17 +38,48 @@ export interface StatusFlags {
   stealthRevealed: boolean;
   /** 旋风：无法被选中、攻击或治疗 */
   untargetable: boolean;
-  /** 12.x 是否携带旗帜 */
+
+  // ── 8.4 免疫。完全无敌/物理免疫/法术免疫必须有明显视觉区别 ──
+  /** 完全免疫（圣盾术、寒冰屏障）。夺旗中会先掉旗 */
+  immuneAll: boolean;
+  /** 物理免疫（保护祝福）*/
+  immunePhysical: boolean;
+  immuneMagic: boolean;
+  /** 免疫新的减速与定身（自由祝福）*/
+  immuneMovementImpair: boolean;
+  /** 免疫新的魔法控制（反魔法护罩）*/
+  immuneMagicControl: boolean;
+  /** 不能攻击或射击（灵龟守护）*/
+  cannotAttack: boolean;
+  /** 免疫减速和定身效果本身（剑刃风暴）*/
+  immuneSlowAndRoot: boolean;
+  /** 偏转正面投射物 */
+  deflectFrontProjectiles: boolean;
+  /** 12.6 复活保护：主动攻击/治疗/使用技能会提前结束 */
+  spawnProtection: boolean;
+
+  /** 12.x 是否携带旗帜。★ 由夺旗系统维护，不来自光环 */
   carryingFlag: boolean;
 }
 
 export const createStatusFlags = (): StatusFlags => ({
   stunned: false,
+  feared: false,
+  rooted: false,
   silenced: false,
   disarmed: false,
   stealthed: false,
   stealthRevealed: false,
   untargetable: false,
+  immuneAll: false,
+  immunePhysical: false,
+  immuneMagic: false,
+  immuneMovementImpair: false,
+  immuneMagicControl: false,
+  cannotAttack: false,
+  immuneSlowAndRoot: false,
+  deflectFrontProjectiles: false,
+  spawnProtection: false,
   carryingFlag: false,
 });
 

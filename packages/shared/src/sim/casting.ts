@@ -194,6 +194,17 @@ export type CastResult =
   | { ok: true; state: CastState | null }
   | { ok: false; reason: CastFailure };
 
+/**
+ * 施法事件回调。
+ *
+ * ⚠️ **有两个事件出口，别只接一个：**
+ *   · 瞬发技能在 `beginCast` 内部就完成了，走的是**传给 beginCast** 的 events
+ *   · 读条/引导/瞄准射击由 `tickCasting` 推进完成，走的是**传给 tickCasting** 的 events
+ *
+ * 想在「任何技能完成时」做一件事（例如结算效果），必须把**同一个**回调
+ * 同时传给两处。只接 beginCast 的话，所有读条技能都不会结算效果 ——
+ * 而且技能看起来是「完成」的，极难发现。
+ */
 export interface CastEvents {
   onStarted?: (caster: CombatEntity, state: CastState) => void;
   onCompleted?: (caster: CombatEntity, skill: SkillDef, state: CastState) => void;
