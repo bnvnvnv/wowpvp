@@ -111,11 +111,21 @@ console.log('\n── 规格书 5.1–5.3 / 验收 #4：目标选择 ──');
 
 console.log('\n── 规格书 15.2：技能图标提示不可用原因 ──');
 {
+  // Tab 到 25 米之外的目标：火焰冲击射程 25 米、寒冰箭 32 米，
+  // 同一时刻一个变灰一个可用 —— 这才验证了提示是**按各技能距离**算的，而不是一刀切
+  let dist = 0;
+  for (let i = 0; i < 6 && dist <= 25; i++) {
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(350);
+    dist = parseFloat((await targetText()).match(/([\d.]+) m/)?.[1] ?? '0');
+  }
   const slots = await slotTexts();
-  const fireBlast = slots[1] ?? '';
-  check('15.2a', '超出距离时技能图标显示原因',
-    /超出距离|冷却|资源|需要目标/.test(slots.join(' ')),
-    `火焰冲击槽：${fireBlast.trim().slice(0, 60)}`);
+  const clean = (s) => (s ?? '').replace(/\s+/g, ' ').trim();
+  const fireBlast = clean(slots[1]);
+  const frostbolt = clean(slots[0]);
+  check('15.2a', '★ 超出距离的技能显示原因，射程更远的同时仍可用',
+    dist > 25 && fireBlast.includes('超出距离') && !frostbolt.includes('超出距离'),
+    `目标 ${dist}m｜火焰冲击(25m)「${fireBlast}」｜寒冰箭(32m)「${frostbolt}」`);
 
   check('15.2b', '脱离公共冷却的技能有明确标记（7.2）',
     slots.some((s) => s.includes('脱GCD')),
@@ -155,8 +165,11 @@ console.log('\n── 规格书 7.5 / 验收 #18：假读条 ──');
   //    改为检查**日志序列**，这也更贴近 #18 的实质（取消这件事发生了没有）。
   const usable = await waitSlotUsable(0);
   await page.keyboard.press('Digit1'); // 寒冰箭 1.4s 读条
-  await page.keyboard.press('Escape'); // 立刻取消
-  await page.waitForTimeout(500);
+  // ⚠️ 战士假人有 0.45 秒反应时间：立刻取消的话它还没「决定」打断，骗不到。
+  //    等 0.25 秒让它起意，再在拳击落下之前取消 —— 这才是真正的骗打断。
+  await page.waitForTimeout(250);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(600);
 
   const lines = await logLines();
   const startIdx = lines.findIndex((l) => l.includes('开始读条'));

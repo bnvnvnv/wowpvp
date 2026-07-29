@@ -35,6 +35,9 @@ export const SCHOOL_COLOR: Record<School, string> = {
   // 上面七项已覆盖 School 全部成员
 } as Record<School, string>;
 
+/** HUD 完整重建的间隔。20Hz 与服务器 tick 同频，视觉上察觉不到 */
+const HUD_UPDATE_INTERVAL_MS = 50;
+
 export class CombatHud {
   private readonly root: HTMLElement;
   private readonly targetFrame: HTMLElement;
@@ -45,6 +48,7 @@ export class CombatHud {
   private readonly aimHint: HTMLElement;
   private readonly nameplateLayer: HTMLElement;
   private nameplates = new Map<number, HTMLElement>();
+  private lastFullUpdate = 0;
 
   constructor(container: HTMLElement) {
     this.root = document.createElement('div');
@@ -89,13 +93,27 @@ export class CombatHud {
     this.aimHint.dataset.illegal = String(illegal);
   }
 
+  /**
+   * 更新 HUD。
+   *
+   * ⚠️ **节流到 ~20Hz**。目标框、技能栏、日志、姓名板都是重建 innerHTML，
+   * 每帧做一次会让浏览器反复解析 HTML —— 实测把帧率从 25 拖到 12。
+   * 姓名板的**位置**仍然每帧更新（不重建 DOM），否则会跟不上镜头。
+   */
   update(dir: CombatDirector, camera: THREE.Camera, canvas: HTMLCanvasElement): void {
+    const now = performance.now();
+    const full = now - this.lastFullUpdate >= HUD_UPDATE_INTERVAL_MS;
+    if (full) this.lastFullUpdate = now;
+
+    // 姓名板位置每帧跟随镜头，内容按节流刷新
+    this.renderNameplates(dir, camera, canvas, full);
+    if (!full) return;
+
     this.renderUnitFrame(this.targetFrame, dir.target, dir, '目标');
     this.renderUnitFrame(this.focusFrame, dir.focus, dir, '焦点');
     this.renderPlayerCast(dir);
     this.renderSkillBar(dir.skillSlots());
     this.renderLog(dir);
-    this.renderNameplates(dir, camera, canvas);
   }
 
   // ── 15.2 目标框 ─────────────────────────────────────────────
@@ -233,7 +251,13 @@ export class CombatHud {
    * ⚠️ 未被发现的潜行目标**不出现在这里** —— `visibleEntities()` 已经过滤，
    * 而真正的保证在服务器的快照裁剪（docs/08 §4.1），这里只是第二道。
    */
-  private renderNameplates(dir: CombatDirector, camera: THREE.Camera, canvas: HTMLCanvasElement): void {
+  private renderNameplates(
+    dir: CombatDirector,
+    camera: THREE.Camera,
+    canvas: HTMLCanvasElement,
+    /** 是否重建内容。false 时只更新屏幕位置 */
+    full: boolean,
+  ): void {
     const seen = new Set<number>();
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
@@ -270,6 +294,8 @@ export class CombatHud {
       el.classList.toggle('selected', dir.target?.id === e.id);
       el.classList.toggle('focused', dir.focus?.id === e.id);
 
+      if (!full) continue;
+
       const hpPct = Math.max(0, (e.health / e.maxHealth) * 100);
       const cast = dir.castOf(e);
       el.innerHTML = `
@@ -282,6 +308,7 @@ export class CombatHud {
       `;
     }
 
+    if (!full) return;
     // 清掉已经不存在的姓名板
     for (const [key, el] of this.nameplates) {
       if (!seen.has(key)) {

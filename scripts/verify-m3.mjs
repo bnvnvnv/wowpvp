@@ -42,16 +42,17 @@ const newestLog = async () => (await logLines())[0] ?? '';
 console.log('\n── 规格书 5.4 / 验收 #7：六类瞄准可区分 ──');
 {
   const slots = await slotTexts();
-  check('#7a', '技能栏同时提供直接目标、自身中心、地面、方向、自身五类',
+  check('#7a', '技能栏同时提供直接目标、自身中心、地面、自身四类瞄准',
     slots.length === 8 && slots.some((s) => s.includes('寒冰箭'))
       && slots.some((s) => s.includes('冰霜新星')) && slots.some((s) => s.includes('暴风雪'))
-      && slots.some((s) => s.includes('闪现术')) && slots.some((s) => s.includes('寒冰屏障')),
+      && slots.some((s) => s.includes('变形术')) && slots.some((s) => s.includes('寒冰屏障')),
     slots.map((s) => s.split(' ')[1]).join(' / '));
 
+  // 槽位：1寒冰箭 2火焰冲击 3法术反制 4变形术 5冰霜新星 6暴风雪 7陨石 8寒冰屏障
   check('#7b', '★ 不需要目标的技能不再误报「需要目标」（5.6）',
-    !slots[3].includes('需要目标') && !slots[4].includes('需要目标')
+    !slots[4].includes('需要目标') && !slots[5].includes('需要目标')
       && !slots[6].includes('需要目标') && !slots[7].includes('需要目标'),
-    `冰霜新星「${slots[3]}」 暴风雪「${slots[4]}」`);
+    `冰霜新星「${slots[4]}」 暴风雪「${slots[5]}」`);
 }
 
 console.log('\n── 规格书 5.5 / 验收 #8：地面指示器与落点合法性 ──');
@@ -59,7 +60,7 @@ console.log('\n── 规格书 5.5 / 验收 #8：地面指示器与落点合法
   // 试验场中央高墙在 z ≈ -15，玩家出生在 z = 26 —— 视线穿不过去
   await page.mouse.move(700, 320);
   await page.waitForTimeout(200);
-  await page.keyboard.press('Digit5'); // 暴风雪，进入预览
+  await page.keyboard.press('Digit6'); // 暴风雪，进入预览
   await page.waitForTimeout(400);
 
   const aiming = await page.evaluate(() => {
@@ -83,7 +84,7 @@ console.log('\n── 规格书 5.5 / 验收 #8：地面指示器与落点合法
 console.log('\n── 规格书 5.5：右键 / Esc 取消瞄准 ──');
 {
   await page.waitForTimeout(1500);
-  await page.keyboard.press('Digit6'); // 陨石，进入预览
+  await page.keyboard.press('Digit7'); // 陨石，进入预览
   await page.waitForTimeout(300);
   const before = await logLines();
   await page.keyboard.press('Escape');
@@ -93,7 +94,7 @@ console.log('\n── 规格书 5.5：右键 / Esc 取消瞄准 ──');
     after.length === before.length || !after[0].includes('开始施放 陨石'),
     `取消后最新日志：${after[0] ?? '(空)'}`);
 
-  await page.keyboard.press('Digit6');
+  await page.keyboard.press('Digit7');
   await page.waitForTimeout(300);
   await page.mouse.click(700, 400, { button: 'right' });
   await page.waitForTimeout(400);
@@ -120,7 +121,7 @@ console.log('\n── 规格书 6.4 / 验收 #8：非法落点不能确认 ─�
   await page.waitForTimeout(600);
   const posText = await page.$eval('#stats', (e) => e.innerText.match(/位置\n([^\n]+)/)?.[1] ?? '');
 
-  await page.keyboard.press('Digit5'); // 暴风雪进入预览
+  await page.keyboard.press('Digit6'); // 暴风雪进入预览
   await page.waitForTimeout(400);
 
   // 扫过一串屏幕高度，找出「合法」和「非法」两种提示各出现过没有

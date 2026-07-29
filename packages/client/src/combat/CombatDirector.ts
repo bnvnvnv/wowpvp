@@ -51,27 +51,49 @@ import {
   asTeamId,
   getEntity,
   listEntities,
+  dirToYaw,
+  normalize2D,
+  sub,
+  createAuraStore,
+  createDrStore,
+  createGroundStore,
+  createProjectileStore,
+  clearAuras,
+  deriveStatusFlags,
+  resolveEffects,
+  tickAuras,
+  tickGround,
+  tickProjectiles,
+  type CombatEvent,
+  type EffectDef,
 } from '@wowpvp/shared';
+
+/** 位移类型的中文名，供战斗日志显示 */
+const DISPLACE_TEXT: Record<string, string> = {
+  charge: '冲锋位移', chargeToAlly: '援护位移', pull: '拉拽',
+  blink: '闪现', leapBackward: '后跃', shadowstep: '暗影步', knockback: '击退',
+};
 
 const RED = asTeamId(0);
 const BLUE = asTeamId(1);
 
 /**
  * 玩家技能栏。选法师是因为它一个职业就覆盖了 5.4 的多数瞄准类型 ——
- * 直接目标（寒冰箭）、自身中心（冰霜新星）、地面目标（暴风雪、陨石）、
- * 方向直线（闪现术）、纯自身（寒冰屏障），外加读条/瞬发/引导三种施放方式。
+ * 直接目标（寒冰箭、变形术）、自身中心（冰霜新星）、地面目标（暴风雪、陨石）、
+ * 纯自身（寒冰屏障），外加读条/瞬发/引导三种施放方式。
  *
  * 缺的第六类「碰撞投射物」在法师技能里没有对应项（猎人的穿透重弩箭才是），
- * 由 projectile.test.ts 严格覆盖，见 docs/PROGRESS.md 的 M3 说明。
+ * 由 projectile.test.ts 严格覆盖。闪现术（方向直线）为了给变形术腾位置移出了技能栏，
+ * 它的规则由 effects.test.ts 与 aiming.test.ts 覆盖。
  */
 const PLAYER_SKILL_IDS = [
   'mage.frostbolt',
   'mage.fire_blast',
   'mage.counterspell',
+  'mage.polymorph',   // 15 秒冷却的控制，用来演示 8.2 递减（冰霜新星 18 秒太慢）
   'mage.frost_nova',
   'mage.blizzard',
   'mage.meteor',
-  'mage.blink',
   'mage.ice_block',
 ] as const;
 
@@ -95,6 +117,12 @@ export class CombatDirector {
   readonly player: CombatEntity;
   readonly skills: SkillDef[];
   readonly log: CombatLogEntry[] = [];
+
+  /** M4：效果系统的状态容器 */
+  readonly auras = createAuraStore();
+  readonly dr = createDrStore();
+  readonly projectiles = createProjectileStore();
+  readonly ground = createGroundStore();
 
   /** 假人下一次开始施法的时间 */
   private dummyNextCast = new Map<number, number>();
@@ -123,11 +151,15 @@ export class CombatDirector {
     );
 
     // 三个假人，各自演示反制链的一环：
+    //   战士 —— 用拳击打断**你的**读条，让你体会被打断和假读条博弈
     //   牧师 —— 反复读条治疗，给你练打断和学派锁定
-    //   战士 —— 会用拳击打断**你的**读条，让你体会被打断和假读条博弈
-    //   法师 —— 读条法术，可以被变形术控住
+    //   法师 —— 读条法术，同时也是唯一会对你造成伤害的假人
+    //
+    // ★ 战士刻意放在出生点正前方 2.6 米：拳击是 3 米近战技能，
+    //   放远了它永远够不到你，7.5 的假读条博弈就演示不出来。
+    //   想避开它（例如验证控制递减）只需往后走几米。
+    this.spawnDummy(warrior, { x: playerSpawn.x, y: playerSpawn.y, z: playerSpawn.z - 2.6 }, '假人·战士');
     this.spawnDummy(priest, { x: playerSpawn.x + 6, y: playerSpawn.y, z: playerSpawn.z - 18 }, '假人·牧师');
-    this.spawnDummy(warrior, { x: playerSpawn.x - 6, y: playerSpawn.y, z: playerSpawn.z - 14 }, '假人·战士');
     this.spawnDummy(mage, { x: playerSpawn.x, y: playerSpawn.y, z: playerSpawn.z - 26 }, '假人·法师');
 
     this.skills = PLAYER_SKILL_IDS.map((id) => {
@@ -172,7 +204,9 @@ export class CombatDirector {
     tickCasting(this.world, this.store, {
       getSkill,
       events: {
-        onCompleted: (c, s) => this.push(`${c.name} 完成 ${s.name}`, 'ok'),
+        // ★ 统一的完成入口。读条/引导技能只会走到这里，
+        //   传给 beginCast 的回调对它们**不生效**（见 casting.ts 的 CastEvents 注释）
+        onCompleted: (c, s, st) => this.onCastCompleted(c, s, st),
         onFailed: (c, s, reason) => this.push(`${c.name} 的 ${s.name} 失败：${FAIL_TEXT[reason]}`, 'fail'),
         onInterrupted: (c, st, src, lock) => {
           const skillName = getSkill(st.skillId)?.name ?? st.skillId;
@@ -184,14 +218,167 @@ export class CombatDirector {
       },
     });
 
+    // ── M4：效果系统的每 tick 推进 ──────────────────────────
+    // 顺序有讲究（docs/02 §3）：光环跳 → 投射物 → 地面区域 → 派生状态标志。
+    // 状态标志必须**最后**派生，否则本 tick 新加的控制要等下一 tick 才生效。
+    for (const t of tickAuras(this.auras, this.world.time).ticks) {
+      const src = getEntity(this.world, t.sourceId);
+      const tgt = getEntity(this.world, t.targetId);
+      if (src && tgt) this.resolve(src, t.aura.def.id, t.effects, [tgt]);
+    }
+    for (const hit of tickProjectiles(this.world, this.projectiles, dt)) {
+      const src = getEntity(this.world, hit.projectile.sourceId);
+      if (src) this.resolve(src, String(hit.projectile.skillId), hit.effects, hit.targets);
+    }
+    for (const g of tickGround(this.world, this.ground)) {
+      const src = getEntity(this.world, g.sourceId);
+      if (src) this.resolve(src, g.skillId, g.effects, g.targets);
+    }
+    for (const e of listEntities(this.world)) {
+      e.flags = deriveStatusFlags(this.auras, e);
+    }
+
     this.updateDummies();
+    this.reviveInTestbed();
     pruneInvalidTargets(this.world, this.player);
+  }
+
+  /**
+   * 试验场专用：任何人死亡后立刻满血复活。
+   *
+   * ⚠️ 这是**试验场规则**，不是游戏规则。规格书 11.4 明确要求
+   * 「当前回合死亡后不能普通复活」—— 那条规则属于 M5 的回合系统，
+   * 会在 sim/match/arena.ts 里实现，与这里无关。
+   *
+   * 之所以需要它：假人法师每 3.5 秒对你打 120 点，900 血的法师 26 秒就会倒下，
+   * 而移动物理、镜头这些验收项需要几分钟的连续操作。
+   */
+  private reviveInTestbed(): void {
+    for (const e of listEntities(this.world)) {
+      if (e.alive) continue;
+      e.alive = true;
+      e.health = e.maxHealth;
+      clearAuras(this.auras, e.id);
+      e.flags = deriveStatusFlags(this.auras, e);
+      this.push(`${e.name} 已复活（试验场不结算死亡，见 11.4）`, 'info');
+    }
+  }
+
+  /**
+   * ★ 技能完成的**唯一**入口。7.4 步骤 5「成功释放才消耗资源、结算效果」。
+   *
+   * 无论瞬发还是读条，最终都汇到这里 —— 之前只接了 beginCast 的回调，
+   * 结果所有读条技能都「完成」了却不产生任何效果，日志上还看不出异常。
+   */
+  private onCastCompleted(caster: CombatEntity, skill: SkillDef, state: CastState): void {
+    const groundPoint = state.groundPoint;
+    let targets: CombatEntity[];
+
+    if (needsGroundPlacement(skill)) {
+      targets = groundPoint
+        ? collectShapeTargets(this.world, caster, {
+            origin: groundPoint, yaw: caster.yaw, shape: skill.shape, filter: skill.targetFilter,
+          })
+        : [];
+      this.push(`${skill.name} 落地，范围内 ${targets.length} 个目标`, 'ok');
+    } else if (usesNoTarget(skill)) {
+      targets = collectShapeTargets(this.world, caster, {
+        origin: shapeOrigin(caster, skill), yaw: caster.yaw,
+        shape: skill.shape, filter: skill.targetFilter,
+      });
+      this.push(`${skill.name} 命中 ${targets.length} 个目标`, 'ok');
+    } else {
+      // ★ 必须用 **CastState 里记下的目标**，不能回头去读 targets.hard。
+      //   施法开始时锁定的是谁，完成时就结算给谁 —— 这也符合 7.4 的语义。
+      //   之前从 targets.hard 重新取，导致没有硬目标的假人把技能打到了自己身上。
+      const locked = getEntity(this.world, state.targetId);
+      targets = locked ? [locked] : [];
+      if (targets.length === 0) return; // 目标已离场，7.4 步骤 6：不产生效果
+      this.push(`${caster.name} 完成 ${skill.name} → ${targets[0]!.name}`, 'ok');
+    }
+    this.resolve(caster, skill.id, skill.effects, targets, groundPoint);
+  }
+
+  /**
+   * 结算一组效果并把事件转成战斗日志。
+   * 所有效果结算的唯一入口 —— 日志格式因此只有一处需要维护。
+   */
+  private resolve(
+    source: CombatEntity,
+    skillId: string,
+    effects: readonly EffectDef[],
+    targets: readonly CombatEntity[],
+    groundPoint?: Vec3,
+  ): void {
+    const events = resolveEffects(
+      {
+        world: this.world, auras: this.auras, dr: this.dr,
+        projectiles: this.projectiles, ground: this.ground,
+        castingStore: this.store,
+        source, skillId, groundPoint,
+      },
+      effects, targets,
+    );
+    for (const ev of events) this.logEvent(ev);
+  }
+
+  private logEvent(ev: CombatEvent): void {
+    const name = (id: number | undefined) =>
+      id === undefined ? '?' : (getEntity(this.world, id as never)?.name ?? '?');
+
+    switch (ev.t) {
+      case 'damage':
+        if (ev.immune) { this.push(`${name(ev.targetId as never)} 免疫了伤害`, 'info'); break; }
+        if (ev.amount === 0 && ev.absorbed === 0) break;
+        this.push(
+          `${name(ev.sourceId as never)} → ${name(ev.targetId as never)} ${ev.amount} 点${SCHOOL_TEXT[ev.school]}伤害` +
+            (ev.absorbed > 0 ? `（吸收 ${ev.absorbed}）` : ''),
+          'ok',
+        );
+        break;
+      case 'heal':
+        this.push(`${name(ev.sourceId as never)} 治疗 ${name(ev.targetId as never)} ${ev.amount} 点`, 'ok');
+        break;
+      case 'auraApplied': {
+        const drNote = ev.drFactor !== undefined && ev.drFactor < 1 ? `（递减至 ${(ev.drFactor * 100).toFixed(0)}%）` : '';
+        this.push(`${name(ev.targetId as never)} 获得 ${ev.auraId} ${ev.duration.toFixed(1)}s${drNote}`, 'info');
+        break;
+      }
+      case 'immune':
+        this.push(
+          `${name(ev.targetId as never)} 免疫${ev.why === 'dr' ? '（控制递减已满）' : '（完全免疫）'}`,
+          'interrupt',
+        );
+        break;
+      case 'shieldBroken':
+        this.push(`${name(ev.targetId as never)} 的护盾破裂`, 'interrupt');
+        break;
+      case 'dispelled':
+        this.push(`${name(ev.sourceId as never)} 驱散了 ${name(ev.targetId as never)} 的 ${ev.auraId}`, 'ok');
+        break;
+      case 'death':
+        this.push(`${name(ev.targetId as never)} 被击杀`, 'interrupt');
+        break;
+      case 'displaced':
+        this.push(`${name(ev.targetId as never)} 被${DISPLACE_TEXT[ev.kind] ?? ev.kind}`, 'info');
+        break;
+      default:
+        break;
+    }
   }
 
   /** 假人行为：牧师和法师反复读条，战士见缝插针打断你 */
   private updateDummies(): void {
     for (const e of listEntities(this.world)) {
       if (e.id === this.player.id || !e.alive) continue;
+
+      // ★ 假人始终面向玩家。
+      //   6.5 规定近战技能要求目标位于前方 180°，拳击也不例外 ——
+      //   假人 yaw 恒为 0 时玩家站在它背后，validateCast 会判 WrongFacing，
+      //   于是它永远打断不了你，7.5 的博弈就演示不出来。
+      //   这不是给假人开后门：它和玩家受的是同一套朝向规则，只是会转身而已。
+      e.yaw = dirToYaw(normalize2D(sub(this.player.position, e.position)));
+
       const next = this.dummyNextCast.get(e.id as number) ?? Infinity;
       if (this.world.time < next || isCasting(this.store, e.id)) continue;
 
@@ -227,6 +414,19 @@ export class CombatDirector {
     const pummel = getSkill(asSkillId('warrior.pummel'))!;
     const onCooldown = (warriorDummy.cooldowns.get(pummel.id) ?? 0) > this.world.time;
     if (onCooldown) {
+      this.warriorPummelAt = null;
+      return;
+    }
+
+    // ★ 拳击是 3 米近战技能。`applyInterrupt` 只负责结算打断本身，**不检查距离** ——
+    //   距离/视线/朝向属于施法校验（validateCast）的职责。假人 AI 直接调
+    //   applyInterrupt 就绕过了这层校验，会出现「14 米外隔空打断」。
+    //   走 validateCast 而不是自己写距离判断，保证假人和玩家受同一套规则约束。
+    const canReach = validateCast({
+      world: this.world, caster: warriorDummy, skill: pummel,
+      target: this.player, phase: 'start',
+    });
+    if (canReach !== CastFailure.Ok) {
       this.warriorPummelAt = null;
       return;
     }
@@ -331,9 +531,9 @@ export class CombatDirector {
         groundPoint: placement.center,
         events: {
           onStarted: () => this.push(`开始施放 ${skill.name}（落点已锁定）`, 'info'),
-          onCompleted: () =>
-            this.push(`${skill.name} 落地，范围内 ${affected.length} 个目标`, 'ok'),
-          onFailed: (_c, s, reason) => this.push(`${s.name} 失败：${FAIL_TEXT[reason]}`, 'fail'),
+          onCompleted: (c, s, st) => this.onCastCompleted(c, s, st),
+          // 注意：不在 onFailed 里记日志。beginCast 失败时会**同时**触发回调并返回
+          // !ok，两处都记会让玩家看到重复的红字。统一在返回值处记录。
         },
       });
       if (!r.ok) this.push(`${skill.name} 无法释放：${FAIL_TEXT[r.reason]}`, 'fail');
@@ -345,8 +545,7 @@ export class CombatDirector {
       const affected = this.previewShapeTargets(skill);
       const r = beginCast(this.world, this.store, this.player, skill, {
         events: {
-          onCompleted: () => this.push(`${skill.name} 命中 ${affected.length} 个目标`, 'ok'),
-          onFailed: (_c, s, reason) => this.push(`${s.name} 失败：${FAIL_TEXT[reason]}`, 'fail'),
+          onCompleted: (c, s, st) => this.onCastCompleted(c, s, st),
         },
       });
       if (!r.ok) this.push(`${skill.name} 无法释放：${FAIL_TEXT[r.reason]}`, 'fail');
@@ -375,8 +574,7 @@ export class CombatDirector {
           const kindText = st.kind === CastKind.Channel ? '引导' : '读条';
           this.push(`开始${kindText} ${skill.name}（${skill.cast.time.toFixed(1)}s）`, 'info');
         },
-        onCompleted: () => this.push(`${skill.name} 命中 ${target?.name ?? '自己'}`, 'ok'),
-        onFailed: (_c, s, reason) => this.push(`${s.name} 失败：${FAIL_TEXT[reason]}`, 'fail'),
+        onCompleted: (c, s, st) => this.onCastCompleted(c, s, st),
       },
     });
     if (!r.ok) this.push(`${skill.name} 无法释放：${FAIL_TEXT[r.reason]}`, 'fail');
