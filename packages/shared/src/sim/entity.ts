@@ -10,7 +10,7 @@ import { GEOMETRY } from '../constants/combat.js';
 import type { Vec3 } from '../math/vec3.js';
 import type { ClassDef } from '../data/schema.js';
 import { Resource, School } from '../types/enums.js';
-import type { ClassId, EntityId, SkillId, TeamId, WeaponId } from '../types/ids.js';
+import type { ArmorId, ClassId, EntityId, SkillId, TeamId, WeaponId } from '../types/ids.js';
 
 /**
  * 状态标志。
@@ -113,6 +113,20 @@ export interface CombatEntity {
   maxResources: Map<Resource, number>;
 
   weaponId: WeaponId;
+  armorId: ArmorId;
+  /**
+   * 下一次普通攻击的时刻（绝对秒）。7.6：普通攻击按武器攻击间隔自动进行。
+   *
+   * ★ 10.7 / 验收 #34：**换装不能刷新它**。写成实体上的绝对时刻而不是
+   *   「距离下次攻击还剩多久」，就是为了让「换装顺手重置计时」这种事
+   *   必须显式赋值才能发生 —— 而那一行会很显眼。
+   */
+  nextSwingAt: number;
+  /**
+   * 攻击后摇结束的时刻。10.7：换装**不能取消攻击后摇**。
+   * 后摇期间发起换装是允许的，但换装不会让后摇提前结束。
+   */
+  swingRecoveryUntil: number;
   targets: TargetSlots;
   flags: StatusFlags;
 
@@ -156,6 +170,9 @@ export const createEntity = (
     resources,
     maxResources,
     weaponId: cls.defaultWeaponId,
+    armorId: cls.defaultArmorId,
+    nextSwingAt: 0,
+    swingRecoveryUntil: 0,
     targets: {},
     flags: createStatusFlags(),
     cooldowns: new Map(),
