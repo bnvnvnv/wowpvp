@@ -11,3 +11,6 @@ export * from './modifiers.js';
 export * from './aura.js';
 export * from './groundArea.js';
 export * from './effects/index.js';
+export * from './match/arena.js';
+export * from './match/dampening.js';
+export * from './match/room.js';
