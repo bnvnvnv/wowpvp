@@ -62,18 +62,26 @@ const releaseAll = async () => {
 };
 
 /**
- * 走到目标点附近。
+ * 走到目标点附近。**推算式导航**：按距离算出该按多久，一次按住走完，再修正一两轮。
  *
- * ★ 必须按**角色当前朝向**把世界坐标的目标向量分解成前后 + 左右分量。
- * 直接假设「W 就是 -Z」在角色被转过之后会走向完全错误的方向 ——
- * 这正是 6.5「只旋转镜头不改变角色朝向」在测试侧的镜像陷阱。
+ * ⚠️ 早先的实现是「每 55ms 读一次位置再决定按哪个键」，220 次迭代意味着
+ *    220 次 Playwright 往返。软件渲染下单次往返 ~200ms，一次导航就是 40 秒，
+ *    整个脚本跑十几分钟 —— 长时间挂着 swiftshader 渲染器会丢执行上下文，
+ *    表现为 `Cannot find context with specified id`。推算式把往返降到个位数。
+ *
+ * ★ 仍然必须按**角色当前朝向**分解方向向量。直接假设「W 就是 -Z」在角色被转过
+ *   之后会走向完全错误的方向 —— 这是 6.5「镜头朝向 ≠ 角色朝向」在测试侧的镜像。
  */
-const navigateTo = async (tx, tz, maxIterations = 220) => {
-  for (let i = 0; i < maxIterations; i++) {
+const BASE_SPEED = 7; // 8.1 基础前进速度，米/秒
+const BACKWARD_FACTOR = 0.65;
+
+const navigateTo = async (tx, tz, passes = 5) => {
+  for (let pass = 0; pass < passes; pass++) {
     const s = await read();
     const dx = tx - s.x;
     const dz = tz - s.z;
-    if (Math.hypot(dx, dz) < 0.8) break;
+    const dist = Math.hypot(dx, dz);
+    if (dist < 0.5) break;
 
     const yaw = (s.charYaw * Math.PI) / 180;
     // yaw=0 面向 -Z（与 shared 的 yawToDir 约定一致）
@@ -82,26 +90,59 @@ const navigateTo = async (tx, tz, maxIterations = 220) => {
     const f = dx * fwd.x + dz * fwd.z;
     const st = dx * right.x + dz * right.z;
 
-    if (f > 0.4) await page.keyboard.down('KeyW');
-    else if (f < -0.4) await page.keyboard.down('KeyS');
-    if (st > 0.4) await page.keyboard.down('KeyE');
-    else if (st < -0.4) await page.keyboard.down('KeyQ');
+    // ⚠️ **逐轴依次走**，不同时按下。
+    //    同时按 W 和 E 时 movement 会把输入向量归一化，每个轴只拿到 1/√2 的速度，
+    //    按分量算出来的时长就会系统性走不够 —— 楼梯用例正是这么走偏的。
+    const legs = [];
+    if (Math.abs(f) > 0.4) legs.push({ k: f > 0 ? 'KeyW' : 'KeyS', ms: msFor(Math.abs(f), f < 0) });
+    if (Math.abs(st) > 0.4) legs.push({ k: st > 0 ? 'KeyE' : 'KeyQ', ms: msFor(Math.abs(st), false) });
+    if (legs.length === 0) break;
 
-    await page.waitForTimeout(55);
+    for (const { k, ms } of legs) {
+      await page.keyboard.down(k);
+      await page.waitForTimeout(ms);
+      await page.keyboard.up(k);
+      await page.waitForTimeout(150); // 等减速停稳，避免惯性带偏下一段
+    }
     await releaseAll();
   }
-  await page.waitForTimeout(300);
 };
 
-/** 把角色朝向转到指定世界方向（弧度），用 A/D 转身 */
-const faceYaw = async (targetDeg) => {
-  for (let i = 0; i < 120; i++) {
+/**
+ * 按住一个键 `ms` 毫秒。
+ *
+ * ⚠️ 不要用 `page.keyboard.press()`：它按下到松开几乎是 0ms，而游戏每帧才采样一次输入。
+ *    软件渲染下一帧 70ms，press 的按键**根本不会被看到** —— 跳跃用例就是这么静默失败的。
+ *    这不是游戏 bug：真人按键至少几十毫秒。
+ */
+const hold = async (key, ms = 120) => {
+  await page.keyboard.down(key);
+  await page.waitForTimeout(ms);
+  await page.keyboard.up(key);
+};
+
+/** 走 `meters` 米需要按住多久（毫秒），含起步加速的粗略补偿 */
+const msFor = (meters, backward) => {
+  const speed = BASE_SPEED * (backward ? BACKWARD_FACTOR : 1);
+  return Math.min(6000, (meters / speed) * 1000 + 120);
+};
+
+/**
+ * 把角色朝向转到指定世界方向（度）。
+ * 转向速度是常量 TURN_SPEED = 3.2 rad/s，同样用推算而不是逐帧轮询。
+ */
+const TURN_SPEED_DEG = (3.2 * 180) / Math.PI;
+
+const faceYaw = async (targetDeg, passes = 3) => {
+  for (let pass = 0; pass < passes; pass++) {
     const s = await read();
-    let d = ((targetDeg - s.charYaw + 540) % 360) - 180;
-    if (Math.abs(d) < 4) break;
+    const d = ((targetDeg - s.charYaw + 540) % 360) - 180;
+    if (Math.abs(d) < 2.5) break;
+    // yaw 增大 = 向左转（A）
     await page.keyboard.down(d > 0 ? 'KeyA' : 'KeyD');
-    await page.waitForTimeout(40);
+    await page.waitForTimeout((Math.abs(d) / TURN_SPEED_DEG) * 1000);
     await releaseAll();
+    await page.waitForTimeout(120);
   }
 };
 
@@ -168,23 +209,42 @@ console.log('\n── 规格书 8.1：基础速度 ──');
 
 console.log('\n── 规格书 13.5 / 验收 #44：楼梯贴地、低障碍跨越、陡坡不可爬 ──');
 {
-  // 试验场楼梯：x=-14，z 从 14.6 升到 9.2，五级各 0.35 米，顶部平台 1.75 米
-  await navigateTo(-14, 18);
-  // 面朝 -Z 正对楼梯，否则会斜着蹭上去
-  await faceYaw(0);
-  const atBottom = await read();
+  // 试验场楼梯：x=-14，z 从 14.6 升到 9.2，五级各 0.35 米，顶部平台 1.75 米。
+  //
+  // ⚠️ 这一段**不用 navigateTo**，改为从已知状态出发的确定序列。
+  //    楼梯宽 5 米（x ∈ [-16.5, -11.5]），要求正对 -Z 走上去；
+  //    而 navigateTo 之后的朝向会有若干度残差，斜着蹭上楼梯就会从侧边滑下来，
+  //    被误判成「爬楼梯时弹跳」。用例因此变得时好时坏 —— 那比没有测试更糟。
+  //
+  //    重载页面把角色放回出生点 (0, 26)、朝向 0°，再**只用侧移**横移到楼梯中线：
+  //    Q/E 侧移按定义不改变角色朝向（4.2），所以整段序列完全确定。
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForTimeout(1800);
+  await hold('KeyQ', 2150); // 左移约 14 米，到楼梯中线 x ≈ -14
+  await page.waitForTimeout(350);
 
-  let airborne = 0;
-  let samples = 0;
+  const atBottom = await read();
+  const startNote = `起点 (${atBottom.x.toFixed(1)}, ${atBottom.z.toFixed(1)}) 朝向 ${atBottom.charYaw}°`;
+
+  // 试验场几何：楼梯占 z ∈ [9.2, 14.6]，顶部平台 z ∈ [4.5, 8.5]、高 1.75。
+  // ⚠️ 单次采样间隔里角色已经走了约 1.8 米，所以只统计**还在楼梯段上**的采样 ——
+  //    走出平台远端边缘后的下落是正确物理，不该算作「爬楼梯时弹跳」。
+  //    逐帧级别的严格断言在 movement.test.ts（120 帧内离地 0 次）。
+  const STAIRS_Z_MIN = 8.6;
+  let airborneOnStairs = 0;
+  let stairSamples = 0;
   let maxY = atBottom.y;
   await page.keyboard.down('KeyW');
   for (let i = 0; i < 26; i++) {
     await page.waitForTimeout(60);
     const r = await read();
-    samples++;
-    if (!r.grounded) airborne++;
     maxY = Math.max(maxY, r.y);
-    if (r.z < 6.5) break; // 到平台就停，别走过头掉下去（掉下去是正确物理，不是 bug）
+    if (r.z > STAIRS_Z_MIN) {
+      stairSamples++;
+      if (!r.grounded) airborneOnStairs++;
+    } else if (r.y > 1.5) {
+      break; // 已经站上顶部平台，目的达到
+    }
   }
   await page.keyboard.up('KeyW');
   await page.waitForTimeout(300);
@@ -192,12 +252,12 @@ console.log('\n── 规格书 13.5 / 验收 #44：楼梯贴地、低障碍跨�
   check(
     '#44a', '五级楼梯可以走上去',
     maxY > 1.6,
-    `最高 y=${maxY.toFixed(2)}（平台高 1.75）`,
+    `最高 y=${maxY.toFixed(2)}（顶部平台 1.75）｜${startNote}`,
   );
   check(
     '#44b', '走楼梯全程贴地，不进入跳跃状态',
-    airborne === 0,
-    `${samples} 次采样中离地 ${airborne} 次`,
+    stairSamples > 0 && airborneOnStairs === 0,
+    `楼梯段 ${stairSamples} 次采样中离地 ${airborneOnStairs} 次｜${startNote}`,
   );
 
   // 陡坡：cliff 在 x∈[-26,-14], z∈[-28,-20]，高 3 米
@@ -207,7 +267,7 @@ console.log('\n── 规格书 13.5 / 验收 #44：楼梯贴地、低障碍跨�
   let cliffMaxY = beforeCliff.y;
   for (let i = 0; i < 20; i++) {
     await page.keyboard.down('KeyW');
-    await page.keyboard.press('Space');
+    await hold('Space');
     await page.waitForTimeout(90);
     cliffMaxY = Math.max(cliffMaxY, (await read()).y);
   }
@@ -226,7 +286,7 @@ console.log('\n── 规格书 13.5 / 验收 #45：跳跃不增速、无二段�
   await navigateTo(0, 20);
   await page.waitForTimeout(400);
   const base = await read();
-  await page.keyboard.press('Space');
+  await hold('Space');
   let peak = base.y;
   for (let i = 0; i < 22; i++) {
     await page.waitForTimeout(35);
@@ -243,7 +303,7 @@ console.log('\n── 规格书 13.5 / 验收 #45：跳跃不增速、无二段�
   await page.keyboard.down('KeyW');
   await page.waitForTimeout(1400);
   const preJump = await read();
-  await page.keyboard.press('Space');
+  await hold('Space');
   let maxAir = preJump.speed;
   for (let i = 0; i < 16; i++) {
     const k = i % 2 === 0 ? 'KeyQ' : 'KeyE';
