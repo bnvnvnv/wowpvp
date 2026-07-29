@@ -37,6 +37,11 @@ pnpm dev:client          # 客户端，默认 http://localhost:5173
 
 pnpm test                # 单元测试（几何、命中、施法状态机、数据完整性）
 pnpm typecheck           # 全量类型检查
+
+# 阶段验收脚本（每个里程碑一支，对应 docs/10 的验收标准）
+pnpm verify:m1           # M1–M4 驱动真实浏览器，需要先跑起客户端
+pnpm verify:m5           # M5–M7 是纯逻辑，直接跑
+pnpm verify:m7           # 夺旗：跑一整局真实比赛（真地图、真碰撞、20Hz）
 ```
 
 ## 仓库结构

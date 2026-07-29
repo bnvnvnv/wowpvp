@@ -14,5 +14,7 @@ export * from './effects/index.js';
 export * from './match/arena.js';
 export * from './match/dampening.js';
 export * from './match/room.js';
+export * from './match/flag.js';
+export * from './match/respawn.js';
 export * from './loadout.js';
 export * from './arsenal.js';
