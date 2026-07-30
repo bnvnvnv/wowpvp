@@ -183,9 +183,18 @@ export type ServerMessage =
   | { t: 'CastInterrupted'; casterId: EntityId; source: InterruptSource
       schoolLock?: { school: School; until: number } }
   | { t: 'CastFailed'; skillId: SkillId; reason: CastFailure }
-  | { t: 'Damage'; sourceId: EntityId; targetId: EntityId; amount: number; school: School
+  /**
+   * ★★ `sourceId` 可空：**被看不见的人打了一下，仍然要收到伤害数字**。
+   *
+   *   14.1 要求有命中反馈，而 docs/08 §4 要求未被发现的潜行者「对该客户端
+   *   根本不存在」。两条同时成立的唯一写法就是**发伤害但抹掉来源** ——
+   *   整条不发会让玩家莫名掉血（违反 14.1），带上来源则泄露了实体存在
+   *   （违反验收 #5，而且 verify:m10 第 1 条验的是「不出现在传输字节里」）。
+   */
+  | { t: 'Damage'; sourceId?: EntityId; targetId: EntityId; amount: number; school: School
       absorbed: number; immune: boolean }
-  | { t: 'Heal'; sourceId: EntityId; targetId: EntityId; amount: number; overheal: number }
+  /** `sourceId` 可空，理由同 Damage */
+  | { t: 'Heal'; sourceId?: EntityId; targetId: EntityId; amount: number; overheal: number }
   | { t: 'AuraApplied'; targetId: EntityId; auraId: string; duration: number; stacks: number }
   | { t: 'AuraRemoved'; targetId: EntityId; auraId: string
       reason: 'expired' | 'dispelled' | 'broken' | 'cancelled' | 'shieldBroken' }

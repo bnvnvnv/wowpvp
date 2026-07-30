@@ -175,7 +175,51 @@ console.log('\n── 验收 #5 / #36：裁剪发生在快照层，不是客户�
     cdLeak.length === 0 && ownCd.length > 0,
     `蓝方看到红方冷却＝${cdLeak.length} 份；红方看到自己的冷却＝${ownCd.length} 份`);
 
-  void blueId;
+  /**
+   * ★★ 14.1 与验收 #5 的交叉点：被**看不见的人**打了一下，
+   *   伤害数字要收到，攻击者 id 不能收到。
+   *
+   *   此前的实现是「事件引用了不可见实体就整条不发」，于是玩家莫名掉血 ——
+   *   已登记为已知偏差 #4。现在改成**抹掉来源**（`sourceId` 可空）。
+   */
+  {
+    const redE = match.world.entities.get(redId)!;
+    const blueE = match.world.entities.get(blueId)!;
+
+    /**
+     * ⚠️ **必须让他真的打出一发伤害**，不能直接改 `health` ——
+     *    改 health 不产生 `damage` 事件，于是「没有泄露 sourceId」会因为
+     *    **一条 Damage 都没发**而平凡成立。第一版就是那么写的。
+     *    所以：站到贴脸、资源给满、走 CastRequest 放一个真技能。
+     */
+    blueE.position = { ...redE.position, z: redE.position.z + 2 };
+    for (const [r, max] of redE.maxResources) redE.resources.set(r, max);
+    redE.cooldowns.clear();
+    redE.gcdUntil = 0;
+    redE.targets.hard = blueId;
+
+    applyAura(match.auras, redE, STEALTH_AURA, redId, match.world.time);
+    const loop = server.rooms.loopOf('cull')!;
+    loop.advance();               // 让潜行光环派生进 flags
+    blue.clear();
+
+    // ★ 走**真实客户端**的路径发施法请求
+    red.send({ t: 'CastRequest', skillId: 'mage.fire_blast' as never, targetId: blueId });
+    for (let i = 0; i < 6; i++) { loop.advance(); await sleep(20); }
+    await sleep(200);
+
+    const dmg = blue.msgs.filter((m) => m.t === 'Damage');
+    const leaksSource = blue.raw.some(
+      (f) => f.includes('"Damage"') && f.includes(`"sourceId":${redId}`),
+    );
+    check('1c', '★★ 被不可见者攻击：伤害可见但来源被抹掉（14.1 × 验收 #5）',
+      dmg.length > 0 && !leaksSource,
+      `蓝方收到 ${dmg.length} 条 Damage（必须 >0，否则这条平凡成立）；` +
+      `带潜行者 sourceId 的帧＝${leaksSource ? '有（泄露）' : '无'}`);
+
+    clearAuras(match.auras, redId);
+  }
+
   red.close(); blue.close();
 }
 

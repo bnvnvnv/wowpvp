@@ -455,21 +455,53 @@ export class MatchLoop {
       const viewer = this.viewerOf(s.playerId);
       if (!viewer) continue;
       for (const msg of messages) {
-        if (this.leaksTo(msg, viewer)) continue;
-        s.send(msg);
+        const safe = this.redactFor(msg, viewer);
+        if (safe) s.send(safe);
       }
     }
   }
 
-  private leaksTo(msg: ServerMessage, viewer: CombatEntity): boolean {
-    for (const id of referencedEntities(msg)) {
+  /**
+   * 把一条消息裁成对这个接收者安全的形式。
+   *
+   * ★★ **优先「抹掉来源」，其次才是「整条不发」。**
+   *   `Damage` / `Heal` 的 `sourceId` 是可空的，正是为了这一刻：
+   *   被未被发现的潜行者打了一下，玩家**应该**看到伤害数字（14.1 命中反馈），
+   *   但**不应该**知道是谁打的（验收 #5）。整条丢弃会让他莫名掉血。
+   *
+   * ⚠️ 只有当**目标**本身不可见时才整条丢弃 —— 那时这条事件与他无关，
+   *   而且 targetId 没有可抹的余地（抹掉就没有内容了）。
+   *
+   * @returns 可发送的消息；返回 undefined 表示这条对他必须完全隐藏
+   */
+  private redactFor(msg: ServerMessage, viewer: CombatEntity): ServerMessage | undefined {
+    const ctx = this.match.ctf ? { ctf: this.match.ctf.state } : undefined;
+    const visible = (id: EntityId | undefined): boolean => {
+      if (id === undefined) return true;
       const e = this.match.world.entities.get(id);
-      if (!e) continue;
-      if (!isVisibleTo(e, viewer, this.match.ctf ? { ctf: this.match.ctf.state } : undefined)) {
-        return true;
+      if (!e) return true; // 已离场的实体不构成泄露
+      return isVisibleTo(e, viewer, ctx);
+    };
+
+    switch (msg.t) {
+      case 'Damage':
+      case 'Heal': {
+        // 目标看不见 → 这条与他无关，整条不发
+        if (!visible(msg.targetId)) return undefined;
+        // 来源看不见 → 抹掉来源，数字照发（14.1）
+        if (!visible(msg.sourceId)) {
+          const { sourceId: _drop, ...rest } = msg;
+          return rest as ServerMessage;
+        }
+        return msg;
+      }
+      default: {
+        for (const id of referencedEntities(msg)) {
+          if (!visible(id)) return undefined;
+        }
+        return msg;
       }
     }
-    return false;
   }
 
   /**
@@ -563,10 +595,13 @@ const removalReason = (
   }
 };
 
-/** 一条消息里提到的全部实体 id。可见性判断用 */
+/**
+ * 一条消息里提到的全部实体 id。可见性判断用。
+ * ★ `Damage` / `Heal` 不在这里 —— 它们走 `redactFor()` 的抹来源分支，
+ *   而不是「有一个看不见就整条丢」。
+ */
 const referencedEntities = (msg: ServerMessage): EntityId[] => {
   switch (msg.t) {
-    case 'Damage': case 'Heal': return [msg.sourceId, msg.targetId];
     case 'AuraApplied': case 'AuraRemoved': return [msg.targetId];
     case 'Death': return msg.killerId !== undefined ? [msg.entityId, msg.killerId] : [msg.entityId];
     case 'CastStarted': return [msg.casterId];
