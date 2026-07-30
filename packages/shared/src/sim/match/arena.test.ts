@@ -303,7 +303,10 @@ describe('8.5 / 验收 #27 决胜阶段', () => {
       resolve: () => {},
     };
     dealDamage(ctx, target, 200, School.Physical, { bypassImmunity: true });
-    expect(target.health).toBe(before - 200);
+    // 目标是法师，双手法杖的代价是 damageTaken 1.08 → 200 × 1.08 = 216。
+    // ★ bypassImmunity 绕开的是**免疫**，不是全部承伤修正 ——
+    //   8.5 只要求压迫伤害「不可完全免疫」，没说它无视装备。
+    expect(target.health).toBe(before - Math.round(200 * 1.08));
   });
 
   it('决胜阶段有硬上限兜底，不会无限拖下去', () => {

@@ -23,7 +23,7 @@ import {
 } from '../aura.js';
 import { applyDr, onControlEndedEarly } from '../dr.js';
 import { gainResource, spendResource, type CombatEntity } from '../entity.js';
-import { damageTakenFor } from '../modifiers.js';
+import { damageTakenFor, equipmentDamageTakenFor } from '../modifiers.js';
 import { isBehind } from '../../math/geometry.js';
 import { applyInterrupt } from '../interrupt.js';
 import { registerEffect, type EffectContext } from './registry.js';
@@ -94,13 +94,14 @@ export const dealDamage = (
     ctx.events.push({
       t: 'damage', sourceId: ctx.source.id, targetId: target.id,
       amount: 0, school, absorbed: 0, overkill: 0, immune: true,
+      preventedByEquipment: 0,
     });
     return 0;
   }
 
   // 攻击方的输出修正（casterScoped 的易伤在这里生效）
-  const attackerMods = effectiveModifiersOf(ctx.auras, ctx.source.id, ctx.world.time);
-  const targetMods = effectiveModifiersOf(ctx.auras, target.id, ctx.world.time, ctx.source.id);
+  const attackerMods = effectiveModifiersOf(ctx.auras, ctx.source, ctx.world.time);
+  const targetMods = effectiveModifiersOf(ctx.auras, target, ctx.world.time, ctx.source.id);
 
   let amount = rawAmount * attackerMods.damageDealt * damageTakenFor(targetMods, school);
 
@@ -110,8 +111,16 @@ export const dealDamage = (
   }
   amount = Math.max(0, Math.round(amount));
 
+  // 16.2「护甲减少伤害」：装备已经乘进 amount 里了，这里反推它挡掉了多少。
+  // 用装备**单独**的系数而不是总减伤，才不会把防御技能的功劳记给护甲。
+  const equipFactor = equipmentDamageTakenFor(targetMods, school);
+  const preventedByEquipment =
+    equipFactor > 0 ? Math.max(0, Math.round(amount / equipFactor - amount)) : 0;
+
   // 吸收护盾先吃（14.3）
-  const { absorbed, remaining, broken } = consumeAbsorb(ctx.auras, target.id, amount, school);
+  const { absorbed, remaining, broken, byShieldSource } = consumeAbsorb(
+    ctx.auras, target.id, amount, school,
+  );
   for (const b of broken) {
     ctx.events.push({ t: 'shieldBroken', targetId: target.id, auraId: b.def.id });
   }
@@ -124,6 +133,8 @@ export const dealDamage = (
   ctx.events.push({
     t: 'damage', sourceId: ctx.source.id, targetId: target.id,
     amount: dealt, school, absorbed, overkill, immune: false,
+    preventedByEquipment,
+    ...(byShieldSource.length > 0 ? { absorbedBy: byShieldSource } : {}),
   });
 
   // 8.2：受到一定伤害可提前解除恐惧/变形/定身
@@ -153,8 +164,8 @@ export const dealHeal = (
 ): number => {
   if (!target.alive || rawAmount <= 0) return 0;
 
-  const casterMods = effectiveModifiersOf(ctx.auras, ctx.source.id, ctx.world.time);
-  const targetMods = effectiveModifiersOf(ctx.auras, target.id, ctx.world.time);
+  const casterMods = effectiveModifiersOf(ctx.auras, ctx.source, ctx.world.time);
+  const targetMods = effectiveModifiersOf(ctx.auras, target, ctx.world.time);
 
   // 8.5：治疗受竞技场战斗抑制影响
   const amount = Math.max(
@@ -217,8 +228,8 @@ export const applyControl = (
   }
 
   // 抗控型护甲：控制持续时间降低（10.8）
-  const targetMods = effectiveModifiersOf(ctx.auras, target.id, ctx.world.time);
-  const casterMods = effectiveModifiersOf(ctx.auras, ctx.source.id, ctx.world.time);
+  const targetMods = effectiveModifiersOf(ctx.auras, target, ctx.world.time);
+  const casterMods = effectiveModifiersOf(ctx.auras, ctx.source, ctx.world.time);
   let duration = baseDuration * targetMods.ccDurationTaken * casterMods.ccDurationDealt;
 
   // 8.2 控制递减
@@ -250,6 +261,7 @@ export const applyControl = (
   ctx.events.push({
     t: 'auraApplied', sourceId: ctx.source.id, targetId: target.id,
     auraId: def.id, duration, drFactor,
+    auraKind: def.kind, drCategory: def.drCategory,
   });
 };
 
@@ -305,6 +317,7 @@ registerEffect('applyAura', (ctx, e, targets) => {
     ctx.events.push({
       t: 'auraApplied', sourceId: ctx.source.id, targetId: t.id,
       auraId: e.aura.id, duration, drFactor,
+      auraKind: e.aura.kind, drCategory: e.aura.drCategory,
     });
   }
 });
@@ -353,12 +366,16 @@ registerEffect('interrupt', (ctx, e, targets) => {
   if (!store) return;
   for (const t of targets) {
     const out = applyInterrupt(ctx.world, store, t, e.schoolLockSeconds);
-    if (out.interrupted) {
-      ctx.events.push({
-        t: 'custom', handler: out.schoolLock ? `interrupt:${out.schoolLock.school}` : 'interrupt:physical',
-        sourceId: ctx.source.id, targetId: t.id,
-      });
-    }
+    // ★ 落空也发事件。16.1 要统计「打断成功率」，只发成功的话没有分母 ——
+    //   而「打断落空」正是 7.5 假读条博弈的结果，是这条统计最该反映的东西。
+    ctx.events.push({
+      t: 'interrupt', sourceId: ctx.source.id, targetId: t.id,
+      success: out.interrupted,
+      ...(out.schoolLock
+        ? { school: out.schoolLock.school, lockedUntil: out.schoolLock.until }
+        : {}),
+      ...(out.reason ? { reason: out.reason } : {}),
+    });
   }
 });
 
@@ -374,8 +391,11 @@ registerEffect('dispel', (ctx, e, targets) => {
       e.canRemoveImmunity,
     );
     for (const r of removed) {
-      ctx.events.push({ t: 'dispelled', sourceId: ctx.source.id, targetId: t.id, auraId: r.aura.def.id });
       const cat = r.aura.def.drCategory;
+      ctx.events.push({
+        t: 'dispelled', sourceId: ctx.source.id, targetId: t.id, auraId: r.aura.def.id,
+        auraKind: r.aura.def.kind, drCategory: cat,
+      });
       if (cat) onControlEndedEarly(ctx.dr, t.id, cat, ctx.world.time);
     }
   }

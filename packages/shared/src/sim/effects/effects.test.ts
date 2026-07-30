@@ -9,7 +9,7 @@ import type { AuraDef, EffectDef } from '../../data/schema.js';
 import { box } from '../../data/maps/schema.js';
 import { vec3 } from '../../math/vec3.js';
 import { DispelType, DrCategory, School } from '../../types/enums.js';
-import { asSkillId, asTeamId } from '../../types/ids.js';
+import { asArmorId, asSkillId, asTeamId } from '../../types/ids.js';
 import {
   aurasOf, createAuraStore, deriveStatusFlags, effectiveModifiersOf, tickAuras,
   type AuraStore,
@@ -17,7 +17,7 @@ import {
 import { applyDr, createDrStore, drFactor, type DrStore } from '../dr.js';
 import { createEntity, type CombatEntity } from '../entity.js';
 import { createGroundStore, type GroundStore } from '../groundArea.js';
-import { aggregateModifiers } from '../modifiers.js';
+import { aggregateModifiers, damageTakenFor } from '../modifiers.js';
 import { createProjectileStore, type ProjectileStore } from '../projectile.js';
 import { addEntity, allocEntityId, createWorld, type World } from '../world.js';
 import {
@@ -81,11 +81,79 @@ describe('注册表完整性', () => {
   });
 });
 
+/**
+ * 本组固定装备的系数。`caster` 是法师（双手法杖 damageDealt 1.12），
+ * `target` 是战士（单手剑 + 盾牌 damageTaken 0.87）。
+ *
+ * ★ M9 之前 `WeaponDef.modifiers` 是死数据，这两项谁都不生效，所以下面的
+ *   期望值曾经就是原始值。补上「装备修正进入战斗计算」后它们真的会乘进
+ *   每一发伤害里 —— 期望值改成走 `hit()`，让装备系数**显式**出现在测试里，
+ *   而不是把 97 这种数字直接写死。
+ *
+ * ⚠️ `mult`（背刺加成）必须作为参数传进来一起算：`dealDamage` 全程只在最后
+ *    取整一次，先 round(97.44)=97 再 ×1.5 会得到 145.5，与实现的 146 不符。
+ */
+const EQUIP_DAMAGE_DEALT = 1.12;
+const EQUIP_DAMAGE_TAKEN = 0.87;
+const hit = (raw: number, mult = 1): number =>
+  Math.round(raw * EQUIP_DAMAGE_DEALT * EQUIP_DAMAGE_TAKEN * mult);
+
 describe('伤害结算', () => {
   it('造成伤害并扣减生命', () => {
     const before = target.health;
     run([{ kind: 'damage', school: School.Fire, amount: { flat: 100 } }]);
-    expect(target.health).toBe(before - 100);
+    expect(target.health).toBe(before - hit(100));
+  });
+
+  /**
+   * ★ M9 的回归守卫：装备修正必须真的进入战斗计算。
+   *
+   *   这条 bug 活过了 M6–M8 整八个里程碑：`ArmorDef.modifiers` / `WeaponDef.modifiers`
+   *   是完整的数据，`LoadoutPanel` 也照着它给玩家显示「受到伤害 −8%」，
+   *   但 `effectiveModifiersOf()` 只聚合光环，装备一项都不读 ——
+   *   于是 10.8 承诺的五种护甲原型在对局里完全等价。
+   *
+   *   M6 的测试断言的是装备栏账目和验收 #34 那五条「换装不做什么」，
+   *   没有一条问过「换上防御护甲后同一发伤害是不是真的更低」。这条就是那一问。
+   */
+  it('★ 换上守护型护甲后，同一发伤害真的更低（10.8 / 验收 #32）', () => {
+    const baseline = target.health;
+    run([{ kind: 'damage', school: School.Physical, amount: { flat: 200 } }]);
+    const withDefaultArmor = baseline - target.health;
+
+    // 换上守护型护甲（damageTaken 0.85）。★ 只改这一个字段，其余状态一律不碰
+    target.armorId = asArmorId('warrior.guardian');
+    target.health = target.maxHealth;
+    const before = target.health;
+    run([{ kind: 'damage', school: School.Physical, amount: { flat: 200 } }]);
+    const withGuardianArmor = before - target.health;
+
+    expect(withGuardianArmor).toBeLessThan(withDefaultArmor);
+  });
+
+  /**
+   * ★ 10.8 的横向取舍必须在**数值上**成立，不能只写在 advantage/cost 文案里。
+   *
+   *   抗法型护甲的优势原本只存在于一个从未被引用的常量
+   *   （`SPELLWARD_MAGIC_DAMAGE_TAKEN`）里，modifiers 只有 `damageTaken: 1.12`
+   *   这一条纯代价 —— 装备修正一旦生效，它就是件全面**下位**装备。
+   */
+  it('★ 抗法型护甲减法术、不减物理（damageTakenBySchool，验收 #32）', () => {
+    target.armorId = asArmorId('warrior.spellward');
+
+    target.health = target.maxHealth;
+    let before = target.health;
+    run([{ kind: 'damage', school: School.Fire, amount: { flat: 200 } }]);
+    const magic = before - target.health;
+
+    target.health = target.maxHealth;
+    before = target.health;
+    run([{ kind: 'damage', school: School.Physical, amount: { flat: 200 } }]);
+    const physical = before - target.health;
+
+    // 法术吃 0.82，物理吃 1.12 —— 优势与代价必须同时可观测
+    expect(magic).toBeLessThan(hit(200));
+    expect(physical).toBeGreaterThan(hit(200));
   });
 
   it('生命归零时死亡并发出事件', () => {
@@ -112,7 +180,7 @@ describe('伤害结算', () => {
     run([{ kind: 'damage', school: School.Physical, amount: { flat: 100 } }]);
     expect(target.health).toBe(h0);
     run([{ kind: 'damage', school: School.Fire, amount: { flat: 100 } }]);
-    expect(target.health).toBe(h0 - 100);
+    expect(target.health).toBe(h0 - hit(100));
   });
 
   it('★ 14.3 吸收护盾先吃伤害，耗尽时发出破裂事件', () => {
@@ -121,11 +189,12 @@ describe('伤害结算', () => {
 
     let events = run([{ kind: 'damage', school: School.Fire, amount: { flat: 100 } }]);
     expect(target.health).toBe(h0); // 全被吸收
-    expect(events.find((e) => e.t === 'damage')).toMatchObject({ absorbed: 100, amount: 0 });
+    expect(events.find((e) => e.t === 'damage')).toMatchObject({ absorbed: hit(100), amount: 0 });
     expect(events.some((e) => e.t === 'shieldBroken')).toBe(false);
 
     events = run([{ kind: 'damage', school: School.Fire, amount: { flat: 100 } }]);
-    expect(target.health).toBe(h0 - 50); // 剩 50 护盾，穿透 50
+    // 护盾 150 先吃掉第一发的 hit(100)=97，只剩 53；第二发 97 里穿透 44
+    expect(target.health).toBe(h0 - (hit(100) - (150 - hit(100))));
     expect(events.some((e) => e.t === 'shieldBroken')).toBe(true);
   });
 
@@ -136,7 +205,7 @@ describe('伤害结算', () => {
     const h0 = target.health;
     // 物理伤害不被这个护盾吸收
     run([{ kind: 'damage', school: School.Physical, amount: { flat: 100 } }]);
-    expect(target.health).toBe(h0 - 100);
+    expect(target.health).toBe(h0 - hit(100));
   });
 
   it('6.5 背刺加成只在背后生效', () => {
@@ -144,12 +213,12 @@ describe('伤害结算', () => {
     caster.position = vec3(0, 0, 5);
     const h0 = target.health;
     run([{ kind: 'damage', school: School.Physical, amount: { flat: 100 }, behindBonus: 0.5 }]);
-    expect(target.health).toBe(h0 - 150);
+    expect(target.health).toBe(h0 - hit(100, 1.5));
 
     caster.position = vec3(0, 0, -10); // 移到正面
     const h1 = target.health;
     run([{ kind: 'damage', school: School.Physical, amount: { flat: 100 }, behindBonus: 0.5 }]);
-    expect(target.health).toBe(h1 - 100);
+    expect(target.health).toBe(h1 - hit(100));
   });
 });
 
@@ -171,7 +240,7 @@ describe('治疗与 8.5 战斗抑制', () => {
     setDampening({ amount: 0.5 });
     const h0 = target.health;
     run([{ kind: 'damage', school: School.Fire, amount: { flat: 100 } }]);
-    expect(target.health).toBe(h0 - 100);
+    expect(target.health).toBe(h0 - hit(100));
   });
 });
 
@@ -342,6 +411,46 @@ describe('8.4 / 17.1 效果叠加规则（验收 #23）', () => {
   it('★ 三个团队减伤取最强，不相乘', () => {
     const m = aggregateModifiers([{ damageTaken: 0.7 }, { damageTaken: 0.75 }, { damageTaken: 0.6 }]);
     expect(m.damageTaken).toBe(0.6); // 不是 0.315
+  });
+
+  /**
+   * ★ 装备与光环**分池**，这是 M9 补装备生效时最关键的一个决定。
+   *
+   *   8.4 / 17.1 的「取最强」防的是「同类**团队**减伤通过**多职业**重复叠加」——
+   *   几个人往同一个目标身上堆效果。护甲只穿一件、由本人独占选择，
+   *   结构上无法叠加，所以不适用那条规则。
+   *
+   *   如果丢进同一个池子：护甲 0.85 会被任何一个 0.5 的防御技能完全盖掉 ——
+   *   于是「开了防御技能时护甲不起作用」，10.8 承诺的横向取舍会在
+   *   最需要它的那几秒里凭空消失。这条测试就是拦住那次重构的。
+   */
+  it('★ 装备减伤与光环减伤分池相乘，不被「取最强」吞掉', () => {
+    const m = aggregateModifiers([{ damageTaken: 0.5 }], [{ damageTaken: 0.85 }]);
+    expect(m.damageTaken).toBeCloseTo(0.5 * 0.85, 5); // 不是 0.5
+    // 单列装备系数，供 16.2「护甲减少伤害」把功劳与防御技能分开
+    expect(m.equipmentDamageTaken).toBeCloseTo(0.85, 5);
+  });
+
+  it('★ 两件装备之间仍然相乘（盾牌 + 守护型护甲）', () => {
+    const m = aggregateModifiers([], [{ damageTaken: 0.87 }, { damageTaken: 0.85 }]);
+    expect(m.equipmentDamageTaken).toBeCloseTo(0.87 * 0.85, 5);
+  });
+
+  it('★ 装备的分学派承伤覆盖全局，物理仍吃全局代价（抗法型护甲）', () => {
+    const m = aggregateModifiers([], [{
+      damageTaken: 1.12,
+      damageTakenBySchool: { [School.Fire]: 0.82 },
+    }]);
+    expect(damageTakenFor(m, School.Fire)).toBeCloseTo(0.82, 5);
+    expect(damageTakenFor(m, School.Physical)).toBeCloseTo(1.12, 5);
+  });
+
+  it('★ 光环单列某学派、装备只给全局时，两者相乘而不是互相顶掉', () => {
+    const m = aggregateModifiers(
+      [{ damageTakenBySchool: { [School.Fire]: 0.5 } }],
+      [{ damageTaken: 0.9 }],
+    );
+    expect(damageTakenFor(m, School.Fire)).toBeCloseTo(0.45, 5);
   });
 
   it('★ 受到治疗降低取最强 —— 致死打击 + 毒刃不叠乘', () => {
@@ -553,4 +662,4 @@ const dispellableBuff = (): AuraDef => ({
 
 /** 取某时刻的实际移动速度倍率，用于 decay 测试 */
 const effectiveMoveSpeedAt = (store: AuraStore, e: CombatEntity, t: number): number =>
-  effectiveModifiersOf(store, e.id, t).moveSpeed;
+  effectiveModifiersOf(store, e, t).moveSpeed;

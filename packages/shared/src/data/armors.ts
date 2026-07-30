@@ -6,9 +6,27 @@
  * 用工厂生成而不是手写 8×6 个对象，可以保证没有任何一件是全面上位（验收 #32）。
  */
 
-import { ArmorArchetype } from '../types/enums.js';
+import { ArmorArchetype, School, isMagicSchool } from '../types/enums.js';
 import { asArmorId, type ArmorId, type ClassId } from '../types/ids.js';
 import type { AuraModifiers, ArmorDef } from './schema.js';
+
+/** 抗法型的减伤只对法术生效，按 school 区分，不能写成全局 damageTaken */
+export const SPELLWARD_MAGIC_DAMAGE_TAKEN = 0.82;
+/**
+ * 抗法型对**魔法控制**时长的削减。
+ *
+ * ⚠️ 目前**尚未接入**：schema 只有全局的 `ccDurationTaken`，没有
+ *   `ccDurationTakenBySchool`，而 `applyControl()` 也拿不到控制的学派。
+ *   写成全局 0.8 会让它顺带削减物理控制，那是抗控型护甲（Tenacity）的身份，
+ *   两件护甲会互相踩线 —— 宁可少表达一半优势，也不要表达错。
+ *
+ *   已登记为 docs/10-acceptance-tracking.md 的 schema 缺口；
+ *   与 deathknight.ts / paladin.ts 里另开常量绕开的是同一类问题。
+ *   接入前抗法型的优势只有「法术伤害承受降低」，其 advantage 文案已照此收窄。
+ */
+export const SPELLWARD_MAGIC_CC_DURATION = 0.8;
+
+const MAGIC_SCHOOLS: readonly School[] = Object.values(School).filter(isMagicSchool);
 
 interface ArchetypeTemplate {
   suffix: string;
@@ -48,8 +66,23 @@ const TEMPLATES: readonly ArchetypeTemplate[] = [
     suffix: 'spellward',
     name: '抗法型护甲',
     archetype: ArmorArchetype.SpellWard,
-    modifiers: { damageTaken: 1.12 },
-    advantage: '法术伤害与魔法控制承受降低',
+    /**
+     * ★ 全局 `damageTaken: 1.12` 是**代价**（物理防御降低），
+     *   优势由 `damageTakenBySchool` 逐个魔法学派给出。
+     *
+     *   顺序很重要：`damageTakenFor()` 让单列的学派**覆盖**全局值，
+     *   所以魔法伤害吃 0.82、物理伤害吃 1.12，正是 10.8 要的横向取舍。
+     *   写成单一的全局 damageTaken 会让抗法护甲连物理伤害一起减
+     *   （schema v1.1 加 damageTakenBySchool 的原话就是这个理由）。
+     */
+    modifiers: {
+      damageTaken: 1.12,
+      damageTakenBySchool: MAGIC_SCHOOLS.reduce<Partial<Record<School, number>>>(
+        (acc, s) => ((acc[s] = SPELLWARD_MAGIC_DAMAGE_TAKEN), acc),
+        {},
+      ),
+    },
+    advantage: '法术伤害承受降低',
     cost: '物理防御明显降低',
   },
   {
@@ -61,10 +94,6 @@ const TEMPLATES: readonly ArchetypeTemplate[] = [
     cost: '输出、治疗与资源效率降低',
   },
 ];
-
-/** 抗法型的减伤只对法术生效，sim 层按 school 区分；这里单列出来避免误用为全局减伤 */
-export const SPELLWARD_MAGIC_DAMAGE_TAKEN = 0.82;
-export const SPELLWARD_MAGIC_CC_DURATION = 0.8;
 
 export interface ArmorSetOptions {
   /** 职业默认护甲的名字，例如「板甲」「皮甲」 */
@@ -84,7 +113,7 @@ export const makeArmorSet = (classId: ClassId, opts: ArmorSetOptions): ArmorDef[
     name: opts.defaultName,
     classId,
     isDefault: true,
-    archetype: ArmorArchetype.Guardian,
+    archetype: ArmorArchetype.Baseline,
     modifiers: opts.defaultModifiers ?? {},
     advantage: '标准化基线，无任何倾向',
     cost: '没有专精优势',

@@ -9,8 +9,10 @@
  *   随手改成相乘会让 5v5 里三个减伤叠出 90% 免伤。
  */
 
+import { getArmor, getWeapon } from '../data/index.js';
 import type { AuraModifiers } from '../data/schema.js';
 import { School } from '../types/enums.js';
+import type { ArmorId, WeaponId } from '../types/ids.js';
 
 /** 聚合后的最终修正。字段含义与 AuraModifiers 一致，但保证已经过叠加规则处理 */
 export interface EffectiveModifiers {
@@ -33,6 +35,17 @@ export interface EffectiveModifiers {
   resourceGain: number;
   maxHealth: number;
   absorbDone: number;
+
+  /**
+   * **只来自装备**的承伤系数。0.92 表示当前武器 + 护甲合计减伤 8%。
+   *
+   * 单列它不是为了参与结算（它已经乘进 `damageTaken` 里了），而是为了
+   * 16.2 的「护甲减少伤害」统计项能算出「这一发伤害里有多少是被装备挡掉的」——
+   * 否则只能拿总减伤反推，会把防御技能的功劳记到护甲头上。
+   */
+  equipmentDamageTaken: number;
+  /** 按学派区分的装备承伤系数。抗法护甲只减法术，不能连物理一起记账 */
+  equipmentDamageTakenBySchool: Partial<Record<School, number>>;
 }
 
 export const neutralModifiers = (): EffectiveModifiers => ({
@@ -55,6 +68,8 @@ export const neutralModifiers = (): EffectiveModifiers => ({
   resourceGain: 1,
   maxHealth: 1,
   absorbDone: 1,
+  equipmentDamageTaken: 1,
+  equipmentDamageTakenBySchool: {},
 });
 
 /**
@@ -70,9 +85,22 @@ export const neutralModifiers = (): EffectiveModifiers => ({
  * | 攻速/施法速度 | 相乘 | 没有「多职业叠加」问题，都是自己身上的效果 |
  * | 闪避/招架/格挡 | 加算 | 本来就是概率，加算最直观 |
  * | 最大生命 | 相乘 | 只有形态切换会改它，不存在叠加 |
+ *
+ * ★ **装备走 `equipment` 参数，与光环分池。**
+ *
+ *   上表的「取最强」是为了执行 8.4 / 17.1 的「同类**团队**减伤、加速和治疗增益
+ *   不能通过**多职业**重复无限叠加」—— 它防的是几个人往同一个目标身上堆效果。
+ *
+ *   护甲和武器各只有一件、由本人独占选择，**结构上无法叠加**，所以不适用那条规则。
+ *   把它们丢进同一个池子会产生一个很隐蔽的后果：任何一个减伤光环（比如 0.5）
+ *   都会把板甲的 0.92 完全盖掉 —— 于是「开了防御技能时护甲不起作用」。
+ *   10.8 承诺的横向取舍会在最需要它的那几秒里消失。
+ *
+ *   因此装备池独立相乘，再与光环池的结果相乘。
  */
 export const aggregateModifiers = (
   sources: readonly (AuraModifiers | undefined)[],
+  equipment: readonly (AuraModifiers | undefined)[] = [],
 ): EffectiveModifiers => {
   const out = neutralModifiers();
 
@@ -90,9 +118,6 @@ export const aggregateModifiers = (
     if (m.moveSpeed !== undefined) {
       if (m.moveSpeed < 1) strongestSlow = Math.min(strongestSlow, m.moveSpeed);
       else if (m.moveSpeed > 1) strongestHaste = Math.max(strongestHaste, m.moveSpeed);
-    }
-    if (m.moveSpeedFloor !== undefined) {
-      out.moveSpeedFloor = Math.max(out.moveSpeedFloor, m.moveSpeedFloor);
     }
 
     if (m.damageTaken !== undefined) {
@@ -114,32 +139,105 @@ export const aggregateModifiers = (
       else if (m.healingTaken > 1) healingAmplification *= m.healingTaken;
     }
 
-    if (m.damageDealt !== undefined) out.damageDealt *= m.damageDealt;
-    if (m.healingDone !== undefined) out.healingDone *= m.healingDone;
-    if (m.attackSpeed !== undefined) out.attackSpeed *= m.attackSpeed;
-    if (m.castSpeed !== undefined) out.castSpeed *= m.castSpeed;
-    if (m.healCastSpeed !== undefined) out.healCastSpeed *= m.healCastSpeed;
-    if (m.knockbackTaken !== undefined) out.knockbackTaken *= m.knockbackTaken;
-    if (m.ccDurationTaken !== undefined) out.ccDurationTaken *= m.ccDurationTaken;
-    if (m.ccDurationDealt !== undefined) out.ccDurationDealt *= m.ccDurationDealt;
-    if (m.resourceGain !== undefined) out.resourceGain *= m.resourceGain;
-    if (m.maxHealth !== undefined) out.maxHealth *= m.maxHealth;
-    if (m.absorbDone !== undefined) out.absorbDone *= m.absorbDone;
-
-    if (m.dodgeFront !== undefined) out.dodgeFront += m.dodgeFront;
-    if (m.parry !== undefined) out.parry += m.parry;
-    if (m.block !== undefined) out.block += m.block;
+    applyMultiplicative(out, m);
   }
 
-  out.moveSpeed = strongestSlow * strongestHaste;
-  out.damageTaken = strongestDamageReduction * damageAmplification;
-  out.healingTaken = strongestHealingReduction * healingAmplification;
+  // ── 装备池：各字段一律相乘，不参与上面的「取最强」──────────────
+  let equipMoveSpeed = 1;
+  let equipHealingTaken = 1;
+  for (const m of equipment) {
+    if (!m) continue;
+
+    if (m.moveSpeed !== undefined) equipMoveSpeed *= m.moveSpeed;
+    if (m.damageTaken !== undefined) out.equipmentDamageTaken *= m.damageTaken;
+    if (m.healingTaken !== undefined) equipHealingTaken *= m.healingTaken;
+    if (m.damageTakenBySchool) {
+      for (const [school, v] of Object.entries(m.damageTakenBySchool)) {
+        if (v === undefined) continue;
+        const s = school as School;
+        out.equipmentDamageTakenBySchool[s] = (out.equipmentDamageTakenBySchool[s] ?? 1) * v;
+      }
+    }
+
+    applyMultiplicative(out, m);
+  }
+
+  out.moveSpeed = strongestSlow * strongestHaste * equipMoveSpeed;
+  out.damageTaken = strongestDamageReduction * damageAmplification * out.equipmentDamageTaken;
+  out.healingTaken = strongestHealingReduction * healingAmplification * equipHealingTaken;
+
+  // 装备的分学派承伤要乘进对应学派的最终系数。
+  // ★ 未被光环单列的学派也必须落地，否则抗法护甲对「没人给我上过法术易伤」的
+  //   那些学派就白穿了 —— 所以这里以装备的 key 为准补齐，而不是只改已有 key。
+  for (const [school, v] of Object.entries(out.equipmentDamageTakenBySchool)) {
+    if (v === undefined) continue;
+    const s = school as School;
+    // 光环若没单列该学派，基准是光环的全局承伤系数
+    const auraPart = out.damageTakenBySchool[s] ?? strongestDamageReduction * damageAmplification;
+    out.damageTakenBySchool[s] = auraPart * v;
+  }
+  // 光环单列、装备没列的学派，仍要吃装备的全局减伤
+  for (const [school, v] of Object.entries(out.damageTakenBySchool)) {
+    if (v === undefined) continue;
+    const s = school as School;
+    if (out.equipmentDamageTakenBySchool[s] !== undefined) continue;
+    out.damageTakenBySchool[s] = v * out.equipmentDamageTaken;
+  }
+
   return out;
 };
+
+/**
+ * 两个池子共用的字段：本来就是相乘或加算，不存在「取最强」问题。
+ * 抽出来是为了让装备池不必抄一遍 —— 抄一遍迟早会漏掉新加的字段。
+ */
+const applyMultiplicative = (out: EffectiveModifiers, m: AuraModifiers): void => {
+  if (m.moveSpeedFloor !== undefined) {
+    out.moveSpeedFloor = Math.max(out.moveSpeedFloor, m.moveSpeedFloor);
+  }
+  if (m.damageDealt !== undefined) out.damageDealt *= m.damageDealt;
+  if (m.healingDone !== undefined) out.healingDone *= m.healingDone;
+  if (m.attackSpeed !== undefined) out.attackSpeed *= m.attackSpeed;
+  if (m.castSpeed !== undefined) out.castSpeed *= m.castSpeed;
+  if (m.healCastSpeed !== undefined) out.healCastSpeed *= m.healCastSpeed;
+  if (m.knockbackTaken !== undefined) out.knockbackTaken *= m.knockbackTaken;
+  if (m.ccDurationTaken !== undefined) out.ccDurationTaken *= m.ccDurationTaken;
+  if (m.ccDurationDealt !== undefined) out.ccDurationDealt *= m.ccDurationDealt;
+  if (m.resourceGain !== undefined) out.resourceGain *= m.resourceGain;
+  if (m.maxHealth !== undefined) out.maxHealth *= m.maxHealth;
+  if (m.absorbDone !== undefined) out.absorbDone *= m.absorbDone;
+
+  if (m.dodgeFront !== undefined) out.dodgeFront += m.dodgeFront;
+  if (m.parry !== undefined) out.parry += m.parry;
+  if (m.block !== undefined) out.block += m.block;
+};
+
+/**
+ * 当前装备贡献的修正。10.6：默认武器/护甲也算装备 —— 它们同样有 modifiers。
+ *
+ * ★ 返回数组而不是合并结果，是为了让它只能被喂给 `aggregateModifiers` 的
+ *   `equipment` 参数，而不会被误当成一份「已经聚合好的修正」直接用。
+ */
+export const equipmentModifiersOf = (
+  weaponId: WeaponId,
+  armorId: ArmorId,
+): readonly (AuraModifiers | undefined)[] => [
+  getWeapon(weaponId)?.modifiers,
+  getArmor(armorId)?.modifiers,
+];
 
 /** 某学派的实际承伤系数。未单列的学派回落到全局 damageTaken */
 export const damageTakenFor = (m: EffectiveModifiers, school: School): number =>
   m.damageTakenBySchool[school] ?? m.damageTaken;
+
+/**
+ * 某学派**只来自装备**的承伤系数。供 16.2「护甲减少伤害」记账。
+ *
+ * 有了它就能把一发伤害拆成「装备挡掉的」和「防御技能挡掉的」两部分：
+ * 已结算的伤害 d 对应的无装备伤害是 d / f，装备挡掉了 d × (1/f − 1)。
+ */
+export const equipmentDamageTakenFor = (m: EffectiveModifiers, school: School): number =>
+  m.equipmentDamageTakenBySchool[school] ?? m.equipmentDamageTaken;
 
 /**
  * 最终移动速度倍率。

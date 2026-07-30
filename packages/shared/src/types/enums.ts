@@ -214,6 +214,14 @@ export type FlagState = (typeof FlagState)[keyof typeof FlagState];
 
 // ── 10.8 护甲横向方案 ────────────────────────────────────────────
 export const ArmorArchetype = {
+  /**
+   * 标准化基线：职业默认护甲，无任何倾向（10.6：不可删除、永不掉落）。
+   *
+   * ★ 它必须是独立一项，不能借用 Guardian。`enemyLoadoutView()` 会把 archetype
+   *   暴露给对手（10.6 / 验收 #36）—— 标成「守护型」等于告诉对手你在减伤，
+   *   而实际上你毫无倾向。给对手错误情报比不给情报更糟。
+   */
+  Baseline: 'baseline',
   /** 进攻型：攻击/法术/资源效率提高，防御或受到治疗降低 */
   Offense: 'offense',
   /** 守护型：物理防御和爆发承受提高，移动/攻速/施法速度降低 */
