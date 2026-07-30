@@ -108,5 +108,29 @@ const paintStats = (d: DebugInfo): void => {
   `;
 };
 
-const scene = new TestbedScene(canvas, paintStats);
-scene.start();
+/**
+ * ★ 两个场景并存（docs/13 判断二）。`?net=<房间名>` 进联网场景，
+ *   不带参数进试验场 —— 试验场是 M1–M9 共 141 项验收的载体，**默认路径不能变**。
+ *
+ *   其余参数：`server`（默认 ws://<当前主机>:8080）、`team`、`class`、`name`。
+ *   例：`?net=r1&team=blue&class=warrior`
+ */
+const params = new URLSearchParams(location.search);
+const room = params.get('net');
+
+if (room !== null) {
+  const { NetworkScene } = await import('./scenes/NetworkScene.js');
+  const net = new NetworkScene(canvas, {
+    url: params.get('server') ?? `ws://${location.hostname}:8080`,
+    roomId: room || 'r1',
+    name: params.get('name') ?? '玩家',
+    team: (params.get('team') === 'blue' ? 'blue' : 'red'),
+    classId: params.get('class') ?? 'mage',
+  });
+  // ★ 暴露给验收脚本读联网状态。与试验场的 onDebug 是同一个用途
+  (globalThis as Record<string, unknown>).__net = net;
+  net.start();
+} else {
+  const scene = new TestbedScene(canvas, paintStats);
+  scene.start();
+}

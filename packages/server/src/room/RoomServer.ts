@@ -476,4 +476,21 @@ export class RoomServer {
   stopAll(): void {
     for (const sr of this.rooms.values()) sr.loop?.stop();
   }
+
+  /**
+   * 验收脚本用：拿到一局的模拟状态。
+   *
+   * ★ `verify:m10` 的作弊测试需要**制造**一个作弊场景（让某人潜行、
+   *   让某人掉血），然后从**客户端收到的字节**里断言看不到 ——
+   *   也就是「白盒地布置，黑盒地断言」。没有这个入口就只能靠技能去凑，
+   *   而那样测的是技能而不是裁剪。
+   */
+  matchOf(roomId: string): Match | undefined {
+    return this.rooms.get(roomId)?.match;
+  }
+
+  /** 验收脚本用：某个房间当前的循环（用于单步推进） */
+  loopOf(roomId: string): MatchLoop | undefined {
+    return this.rooms.get(roomId)?.loop;
+  }
 }
