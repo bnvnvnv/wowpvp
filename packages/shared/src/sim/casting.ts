@@ -121,9 +121,10 @@ export const validateCast = (ctx: CastContext): CastFailure => {
 
   // ⚠️ 检查顺序说明：7.4 步骤 1 把「资源」列在「距离/视线/朝向」之前，这里照办。
   // 后果是一个怒气为 0 的战士站在 30 米外，收到的提示是「资源不足」而不是「超出距离」。
-  // 两者都为真，但后者更可操作。M8 做 HUD 时若要满足 15.2 的提示质量，
-  // 建议另加一个 describeCastBlockers() 返回**全部**当前阻碍项供图标叠加显示，
-  // 而不是改这里的门禁顺序 —— 门禁顺序改了会影响 CastFailure 的语义与统计归因。
+  // 两者都为真，但后者更可操作。
+  // ★ M11：这个问题的解法是下面的 `describeCastBlockers()` —— 它返回**全部**
+  //   当前阻碍项供 HUD 叠加显示，而**不改**这里的门禁顺序。
+  //   门禁顺序改了会影响 CastFailure 的语义与统计归因，而顺序本身是 7.4 规定的。
 
   // ── 地面技能：落点合法性（6.4 / 验收 #8）──────────────────────
   if (skill.targeting === Targeting.Ground) {
@@ -179,6 +180,93 @@ export const validateCast = (ctx: CastContext): CastFailure => {
   }
 
   return CastFailure.Ok;
+};
+
+/**
+ * 列出**当前全部**阻碍项，而不是第一个。技术债 #3 / 规格书 15.2。
+ *
+ * ★★ **它与 `validateCast()` 是两件事，不要合并：**
+ *
+ *   · `validateCast()` 是**门禁** —— 返回单一 `CastFailure`，顺序由 7.4 步骤 1
+ *     规定（资源在距离之前）。它的返回值还是统计归因的依据，改顺序会连带改统计。
+ *   · 本函数是**提示** —— 给 HUD 用，要回答「我现在到底缺什么」。
+ *
+ *   一个怒气为 0 的战士站在 30 米外，门禁说「资源不足」（正确且符合 7.4），
+ *   但玩家更需要知道的是「你还太远」。两个答案都对，服务的问题不同 ——
+ *   所以解法是**并排加一个函数**，而不是改门禁顺序。
+ *
+ * ★ 返回顺序按「玩家最该先解决的」排：位置 → 视线 → 朝向 → 资源 → 冷却 → 状态。
+ *   ⚠️ 这个顺序**只影响显示**，不影响任何判定。
+ *
+ * @returns 全部成立的阻碍项。可释放时为空数组
+ */
+export const describeCastBlockers = (ctx: CastContext): CastFailure[] => {
+  const { caster, skill, target, world } = ctx;
+  const now = world.time;
+  const out: CastFailure[] = [];
+
+  // 死亡是压倒性的，其余都不必再提
+  if (!caster.alive) return [CastFailure.Dead];
+
+  // ── 位置类（玩家最该先解决的）────────────────────────────
+  const needsTarget =
+    skill.targeting === Targeting.Direct || skill.targeting === Targeting.Ground;
+  if (skill.targeting === Targeting.Ground) {
+    if (!ctx.groundPoint) out.push(CastFailure.NoTarget);
+    else {
+      const d = Math.hypot(
+        ctx.groundPoint.x - caster.position.x,
+        ctx.groundPoint.z - caster.position.z,
+      );
+      if (d > skill.range.max) out.push(CastFailure.OutOfRange);
+    }
+  } else if (needsTarget) {
+    if (!target) out.push(CastFailure.NoTarget);
+    else {
+      const hostile = target.team !== caster.team;
+      const wrongSide =
+        (skill.targetFilter === TargetFilter.Enemy && !hostile) ||
+        (skill.targetFilter === TargetFilter.Ally && hostile);
+      if (!isSelectableBy(target, caster) || wrongSide) out.push(CastFailure.InvalidTarget);
+      else {
+        if (!inRange(hitCircleOf(caster), hitCircleOf(target), skill.range.max, skill.range.min)) {
+          const withinMin =
+            skill.range.min > 0 &&
+            inRange(hitCircleOf(caster), hitCircleOf(target), skill.range.min, 0);
+          out.push(withinMin ? CastFailure.TooClose : CastFailure.OutOfRange);
+        }
+        if (
+          skill.requiresLos &&
+          !hasLineOfSight(hitCircleOf(caster), hitCircleOf(target), world.obstacles)
+        ) {
+          out.push(CastFailure.NoLineOfSight);
+        }
+        if (skill.requiresFacing && !isFacing(caster.position, caster.yaw, target.position)) {
+          out.push(CastFailure.WrongFacing);
+        }
+      }
+    }
+  }
+
+  // ── 资源与冷却 ───────────────────────────────────────────
+  if (skill.cost && getResource(caster, skill.cost.resource) < skill.cost.amount) {
+    out.push(CastFailure.NotEnoughResource);
+  }
+  if (isOnCooldown(caster, skill.id, now)) out.push(CastFailure.OnCooldown);
+  if (skill.triggersGcd && isOnGcd(caster, now)) out.push(CastFailure.OnGlobalCooldown);
+
+  // ── 状态类 ───────────────────────────────────────────────
+  if (caster.flags.stunned && !skill.usableWhileStunned) out.push(CastFailure.Controlled);
+  if (caster.flags.silenced && isMagicSchool(skill.school)) out.push(CastFailure.Silenced);
+  if (caster.flags.disarmed && isWeaponSkill(skill)) out.push(CastFailure.Disarmed);
+  if (isMagicSchool(skill.school) && isSchoolLocked(caster, skill.school, now)) {
+    out.push(CastFailure.SchoolLocked);
+  }
+  if (skill.forbiddenWhileCarryingFlag && caster.flags.carryingFlag) {
+    out.push(CastFailure.CarryingFlag);
+  }
+
+  return out;
 };
 
 /**
