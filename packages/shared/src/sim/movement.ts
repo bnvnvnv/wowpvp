@@ -445,7 +445,8 @@ export const teleportTo = (
   prev: MovementState,
   target: Vec3,
   obstacles: readonly Aabb[],
-  radius = GEOMETRY.HITBOX_RADIUS,
+  // 显式 `: number` —— GEOMETRY 是 `as const`，只写默认值会把参数推断成字面量 0.45
+  radius: number = GEOMETRY.HITBOX_RADIUS,
 ): MovementState => {
   // 落点合法性已由 geometry.clampDisplacement 保证，这里只负责贴地。
   // 探测范围要足够大：闪现到平台边缘时目标点可能悬在半空。

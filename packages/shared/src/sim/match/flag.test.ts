@@ -8,12 +8,13 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { CTF } from '../../constants/combat.js';
+import { warrior } from '../../data/index.js';
 import { ctfMap } from '../../data/maps/index.js';
 import type { Vec3 } from '../../math/vec3.js';
 import { FlagState } from '../../types/enums.js';
 import { asEntityId, TEAM_BLUE, TEAM_RED, type EntityId, type TeamId } from '../../types/ids.js';
 import { createAuraStore, deriveStatusFlags, tickAuras, type AuraStore } from '../aura.js';
-import { createStatusFlags, type CombatEntity } from '../entity.js';
+import { createEntity, type CombatEntity } from '../entity.js';
 import { addEntity, createWorld, type World } from '../world.js';
 import {
   beginFlagInteract,
@@ -55,31 +56,22 @@ let ctf: CtfState;
 let auras: AuraStore;
 let nextId = 1;
 
+/**
+ * ★ 走真实的 `createEntity()` 工厂，不手搓对象字面量。
+ *
+ *   原先这里是一个 `as CombatEntity` 的手写实体，它已经和真实类型漂移得很远：
+ *   缺 radius / height / maxResources，多出 velocity / grounded，
+ *   `resources` 写成了 `{}` 而真实类型是 `Map`（任何一次 getResource 都会出错），
+ *   weaponId 是解析不出装备的 `'w'`。`as` 断言把这些全掩盖了，
+ *   而当时 shared 的测试文件不在类型检查范围内，所以连断言的破洞也没人发现。
+ *
+ *   用工厂之后，实体形状变化会**自动**同步到这里。
+ */
 const spawn = (team: TeamId, position: Vec3, name = `e${nextId}`): CombatEntity => {
-  const e: CombatEntity = {
-    id: asEntityId(nextId++),
-    name,
-    team,
-    classId: 'warrior' as CombatEntity['classId'],
-    position: { ...position },
-    velocity: { x: 0, y: 0, z: 0 },
-    yaw: 0,
-    grounded: true,
-    alive: true,
-    health: 100,
-    maxHealth: 100,
-    resources: {},
-    cooldowns: new Map(),
-    schoolLocks: new Map(),
-    gcdUntil: 0,
-    flags: createStatusFlags(),
-    targets: {},
-    isPet: false,
-    weaponId: 'w' as CombatEntity['weaponId'],
-    armorId: 'a' as CombatEntity['armorId'],
-    nextSwingAt: 0,
-    swingRecoveryUntil: 0,
-  } as CombatEntity;
+  const e = createEntity(asEntityId(nextId++), warrior, team, position, { name });
+  // 这些测试只关心「掉了多少血」，用 100 好算
+  e.health = 100;
+  e.maxHealth = 100;
   return addEntity(world, e);
 };
 
