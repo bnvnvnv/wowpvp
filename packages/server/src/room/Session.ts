@@ -25,6 +25,7 @@ import {
   parseClientMessage,
   takeInputsForTick,
   type ClientMessage,
+  type EntityId,
   type InputMessage,
   type ServerMessage,
 } from '@wowpvp/shared';
@@ -71,21 +72,38 @@ export class Session {
   phase: SessionPhase = SessionPhase.Lobby;
   /** 所在房间。未加入时为 undefined */
   roomId?: string;
+  /**
+   * 11.4 死亡观战正在跟随谁。合法性由 RoomServer 用 `spectatableFor()` 校验过。
+   * ★ 只在**自己已死**时生效 —— 活着的人跟随别人就是透视。
+   */
+  following?: EntityId;
 
   /**
    * 本 tick 还没消费的移动输入。
    *
-   * ★ 用队列而不是「只留最新一条」，是为了**确认序号**：60fps 的客户端在一个
-   *   20Hz 的 tick 里会发三条，`ackSeq` 必须推进到其中最大的那个，
-   *   否则客户端会以为前两条丢了，反复重放已经被服务器采纳的输入。
-   *   上限与「丢最旧的」策略由 `takeInputsForTick()` 管（见 codec.ts）。
+   * ★★ **协议契约：客户端每个服务器 tick 发送恰好一条 `Input`（固定指令帧）。**
    *
-   * ⚠️ **但这一 tick 的移动只会用其中最新那条的方向。**
-   *   `tickWorld` 每个实体每 tick 只积分**一次**（固定 `SIM.TICK_DT`），
-   *   没有「一个 tick 内走三个子步」的入口。所以高帧率客户端预测出来的
-   *   轨迹与服务器判定会有**亚 tick 级**的偏差 —— 这是 A5「预测与纠正」
-   *   要正面处理的问题（docs/08 §5 第 6 步的重放用的正是各自的 dt），
-   *   不是这里能糊过去的。**没有在这里假装它不存在。**
+   *   `tickWorld` 每个实体每 tick 只积分**一次**，步长固定为 `SIM.TICK_DT`。
+   *   如果客户端按渲染帧发（60fps → 一个 tick 三条），服务器又只能积一次，
+   *   两端就会有**亚 tick 级**的轨迹偏差 —— 而 docs/08 §5 第 6 步的
+   *   预测重放正是靠「两端跑同一份 movement」才成立的。
+   *
+   *   三种解法里选了**固定指令帧**，理由是服务器开销最小且收敛是精确的：
+   *
+   *   | 方案 | 服务器开销 | 收敛 |
+   *   |---|---|---|
+   *   | tick 内多次子步积分 | 每人每 tick 最多 5 次 stepMovement | 精确，但要改 sim |
+   *   | 合成一条等效输入 | 1 次 | **不精确** —— 加速度下「一大步」≠「三小步」|
+   *   | **固定指令帧（选用）** | **1 次** | **精确** —— 两端同一步长、同一份代码 |
+   *
+   *   客户端在渲染帧上采样输入，累加成 50ms 的指令帧发出，并用**同样的
+   *   `TICK_DT`** 做预测积分；渲染平滑由插值负责，不由积分步长负责。
+   *   代价是输入被量化到 50ms —— 对目标制战斗可接受，docs/08 §1 本来就写了
+   *   「目标制战斗不需要 60Hz」。这条契约由 A5 的 `Predictor` 履约。
+   *
+   * ★ 仍然用**队列**而不是单个字段，是为了 `ackSeq`：客户端偶尔跑快发了两条时，
+   *   ack 必须推进到其中最大的那个，否则它会以为丢包并反复重放已被采纳的输入。
+   *   上限与「丢最旧的」策略由 `takeInputsForTick()` 管（见 codec.ts）。
    */
   private inputQueue: InputMessage[] = [];
 

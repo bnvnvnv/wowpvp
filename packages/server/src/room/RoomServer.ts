@@ -18,9 +18,13 @@ import {
   ArenaPreset,
   MAP_BY_ID,
   asMapId,
+  SwapKind,
   canStart,
   createMatch,
+  entityOfPlayer,
+  isVisibleTo,
   joinRoom,
+  spectatableFor,
   createRoom,
   leaveMatch,
   markDisconnected,
@@ -34,6 +38,7 @@ import {
   type ClientMessage,
   type Room,
   type RoomPlayerView,
+  type EntityId,
   type Match,
   type ServerMessage,
   type TeamId,
@@ -41,7 +46,7 @@ import {
 
 import { randomUUID } from 'node:crypto';
 
-import { MatchLoop } from '../MatchLoop.js';
+import { MatchLoop, type MatchCommand } from '../MatchLoop.js';
 import {
   createReconnectRegistry,
   graceRemaining,
@@ -151,15 +156,91 @@ export class RoomServer {
       case 'SetReady': return this.onSetReady(session, msg.ready);
       case 'LeaveMatch': return this.onLeave(session);
       case 'CastRequest': return this.onCastRequest(session, msg);
-      default:
+      case 'CancelCast': return this.enqueue(session, { t: 'CancelCast' });
+      case 'SetTarget': return this.onSetTarget(session, msg.slot, msg.entityId);
+      case 'TabTarget': return this.enqueue(session, { t: 'TabTarget', reverse: msg.reverse });
+      case 'SwapWeapon':
+        return this.enqueue(session, { t: 'Swap', kind: SwapKind.Weapon, slot: msg.slot });
+      case 'SwapArmor':
+        return this.enqueue(session, { t: 'Swap', kind: SwapKind.Armor, slot: msg.slot });
+      case 'InteractStart':
+        // ⚠️ 协议的 entityId 在交互里其实是「掉落物 id」，见 MatchLoop.beginInteract
+        return this.enqueue(session, { t: 'InteractStart', dropId: msg.entityId as number });
+      case 'InteractCancel': return this.enqueue(session, { t: 'InteractCancel' });
+      case 'SpectateFollow': return this.onSpectateFollow(session, msg.entityId);
+
+      case 'UseTrinket':
         /**
-         * ★ 诚实地拒绝，而不是静默丢弃。
-         *   A3 只接线到「加入房间 → 开局 → 收快照 + 移动 + 施法」。
-         *   换装、拾取、道具、观战跟随要等 A5 —— 静默丢弃会让客户端
-         *   以为发出去了，而那种「没反应」的 bug 最难查。
+         * ★ 诚实地拒绝。`useTrinket()` 规则在 `effects/combat.ts` 里写好了，
+         *   但它需要一个 `EffectContext` —— 也就是说它是**效果结算**，
+         *   而效果结算只有 `tickWorld` 一个出口（A2 的教训）。
+         *   要接它得先在 tick 里加一步，那是一次显眼的改动，不在这里偷做。
+         *   ⚠️ 顺带一提：这个函数至今**只有测试调用过**，客户端也没接。
          */
-        session.reject(msg.t, 'A3 尚未接线这条消息');
+        return session.reject('UseTrinket', '解控饰品尚未接入 tick（需要新增一个结算步骤）');
+
+      case 'UseConsumable':
+        // ★ 这不是没接线，是**规则本身还没有**：PROGRESS.md 技术债 #6
+        //   「消耗品没有使用路径」，schema 缺口，排在 M11。
+        return session.reject('UseConsumable', '消耗品使用路径尚未定义（技术债 #6，M11）');
+
+      default:
+        session.reject((msg as ClientMessage).t, '未知消息');
     }
+  }
+
+  /** 战斗指令排队。★ 统一走这里，省得每条都写一遍「比赛在不在」 */
+  private enqueue(session: Session, cmd: MatchCommand): void {
+    const sr = this.roomOf(session);
+    if (!sr?.loop) { session.reject(cmd.t, '比赛未进行'); return; }
+    sr.loop.enqueue(session.playerId, cmd);
+  }
+
+  /**
+   * ★★ **选目标是一道安全边界，不是一次状态设置。**
+   *
+   *   验收 #5：未被发现的潜行目标不能被点击、Tab、姓名板或小地图选中。
+   *   客户端的过滤挡不住改前端的人 —— 他可以直接发一条
+   *   `SetTarget{entityId: 猜的}` 来**探测**某个 id 存不存在。
+   *   所以服务器必须自己判一次可见性（`verify:m10` 第 7 条验的就是这个）。
+   *
+   * ★ 拒绝理由必须是**笼统的**：codec.ts 明说「不要在拒绝 SetTarget 时说
+   *   『实体 7 不在你的可见集合里』，那等于确认了实体 7 存在」。
+   *   所以不论「不存在」还是「看不见」，回的都是同一句「目标无效」。
+   */
+  private onSetTarget(
+    session: Session,
+    slot: 'hard' | 'focus',
+    entityId: EntityId | null,
+  ): void {
+    const sr = this.roomOf(session);
+    if (!sr?.loop || !sr.match) { session.reject('SetTarget', '比赛未进行'); return; }
+
+    if (entityId !== null) {
+      const viewer = entityOfPlayer(sr.match, session.playerId);
+      const target = sr.match.world.entities.get(entityId);
+      const visible = viewer && target && isVisibleTo(
+        target, viewer, sr.match.ctf ? { ctf: sr.match.ctf.state } : undefined,
+      );
+      if (!visible) { session.reject('SetTarget', '目标无效'); return; }
+    }
+    sr.loop.enqueue(session.playerId, { t: 'SetTarget', slot, entityId });
+  }
+
+  /**
+   * 11.4 死亡观战：只能跟随**己方存活玩家**。
+   * ★ 用 `spectatableFor()` 判，而不是自己写一遍「同队且活着」——
+   *   那条规则的另一半（不能自由镜头穿墙找潜行目标）就靠它。
+   */
+  private onSpectateFollow(session: Session, entityId: EntityId): void {
+    const sr = this.roomOf(session);
+    if (!sr?.match) { session.reject('SpectateFollow', '比赛未进行'); return; }
+    const viewer = entityOfPlayer(sr.match, session.playerId);
+    if (!viewer) { session.reject('SpectateFollow', '不在这局里'); return; }
+
+    const allowed = spectatableFor(sr.match.world, viewer).some((e) => e.id === entityId);
+    if (!allowed) { session.reject('SpectateFollow', '不能跟随该目标'); return; }
+    session.following = entityId;
   }
 
   // ── 房间阶段 ──────────────────────────────────────────────────

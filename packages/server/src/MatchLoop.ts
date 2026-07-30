@@ -21,12 +21,24 @@
  */
 
 import {
+  INTERACT_RANGE,
   SIM,
+  SwapKind,
   assertNoHiddenEntities,
+  beginFlagInteract,
+  beginPickup,
+  beginSwap,
   buildSnapshot,
+  buildSpectatorSnapshot,
+  cancelCast,
+  cancelFlagInteract,
+  distance2D,
   isVisibleTo,
+  setHardTarget,
+  tabTarget,
   tickDepsOf,
   tickWorld,
+  toggleFocus,
   type CastIntent,
   type CombatEntity,
   type CombatEvent,
@@ -36,6 +48,22 @@ import {
   type ServerMessage,
   type TeamId,
 } from '@wowpvp/shared';
+
+/**
+ * 战斗期的非施法指令。
+ *
+ * ★ 与 `ClientMessage` **刻意不同构**：协议是「客户端说了什么」，
+ *   这里是「服务器要做什么」。中间隔着一层校验（可见性、槽位存在与否），
+ *   所以 `SwapWeapon{slot}` 到这里已经变成了「换哪一件」的意图，
+ *   而不可见目标的 `SetTarget` 根本走不到这里。
+ */
+export type MatchCommand =
+  | { t: 'SetTarget'; slot: 'hard' | 'focus'; entityId: EntityId | null }
+  | { t: 'TabTarget'; reverse: boolean }
+  | { t: 'CancelCast' }
+  | { t: 'Swap'; kind: SwapKind; slot: number }
+  | { t: 'InteractStart'; dropId: number }
+  | { t: 'InteractCancel' };
 
 import { takeExpired, type ReconnectRegistry } from './room/reconnect.js';
 import type { Session } from './room/Session.js';
@@ -73,6 +101,22 @@ export class MatchLoop {
 
   /** 本 tick 收到的技能请求。每 tick 消费后清空 */
   private readonly pendingCasts = new Map<EntityId, CastIntent>();
+
+  /**
+   * 本 tick 收到的其他战斗指令（选目标、换装、交互…）。
+   *
+   * ★★ **和技能请求一样排队，不是收到就立刻改世界。**
+   *   这些指令确实不结算效果（所以不像 A2 那样有「两个完成出口」的风险），
+   *   立刻执行也能跑。但排队有两个实打实的好处：
+   *
+   *   · **确定性** —— 一个 tick 的结果只取决于「上一 tick 的世界 + 本 tick 的
+   *     指令集」，不取决于网络包在两个 tick 之间的到达时刻。回放和复现都靠这个。
+   *   · **一致的语义** —— 施法是「意图 → 下一 tick 生效」，选目标却是「立刻生效」
+   *     的话，客户端预测要为两类操作写两套时序假设，而 A5 要复现的正是这套时序。
+   *
+   *   代价同样是延后一帧（~16–50ms），与施法一致。
+   */
+  private pendingCommands: { playerId: string; cmd: MatchCommand }[] = [];
 
   constructor(
     readonly match: Match,
@@ -115,6 +159,7 @@ export class MatchLoop {
     this.tick++;
     const outbound: ServerMessage[] = [];
 
+    this.applyCommands();
     const inputs = this.collectInputs();
     const result = tickWorld(
       tickDepsOf(this.match, inputs, this.pendingCasts),
@@ -184,7 +229,17 @@ export class MatchLoop {
       const taken = s.takeInputs();
       const latest = taken[taken.length - 1];
       if (!latest) continue;
-      // ⚠️ 只用最新一条的方向 —— 原因与代价见 Session.inputQueue 的注释
+      /**
+       * 按契约每 tick 恰好一条（见 `Session.inputQueue`）。客户端偶尔跑快
+       * 发了两条时取**最新**那条 —— 保留最新更接近他此刻的真实意图，
+       * 也不给「攒一堆输入换取位移」留口子。
+       *
+       * ★★ **注意这里没有用 `latest.dt`，用的是 `SIM.TICK_DT`（见 advance）。**
+       *   这不是疏忽，是 docs/08 那条作弊向量的**结构性**答案：
+       *   「客户端发 dt=100 就能瞬移」在这里**写不出来** —— 服务器的步长
+       *   根本不来自客户端。codec 里对 dt 的范围校验是第二道防线，
+       *   不是唯一一道。`verify:m10` 第 5 条验的就是这件事。
+       */
       inputs.set(entityId, {
         forward: latest.forward,
         strafe: latest.strafe,
@@ -202,6 +257,111 @@ export class MatchLoop {
     // ★ 一个实体一 tick 只有一个请求（后一个覆盖前一个）——
     //   与客户端 CombatDirector.requestCast 同语义
     this.pendingCasts.set(entityId, intent);
+  }
+
+  /** 其他战斗指令排队。合法性由 RoomServer 在收到时校验（要能回 Rejected）*/
+  enqueue(playerId: string, cmd: MatchCommand): void {
+    this.pendingCommands.push({ playerId, cmd });
+  }
+
+  /**
+   * 在 tick 开头按到达顺序执行本 tick 的指令。
+   *
+   * ⚠️ 这些函数都只**设置状态或启动进度**（选目标、开始换装、开始交互），
+   *    没有一个会结算效果 —— 效果结算只有 `tickWorld` 一个出口（A2 的教训）。
+   *    往这里加分支前先确认这一点还成立。
+   */
+  private applyCommands(): void {
+    const commands = this.pendingCommands;
+    this.pendingCommands = [];
+
+    for (const { playerId, cmd } of commands) {
+      const e = this.viewerOf(playerId);
+      if (!e) continue;
+
+      switch (cmd.t) {
+        case 'SetTarget':
+          if (cmd.slot === 'focus') toggleFocus(this.match.world, e, cmd.entityId ?? undefined);
+          else setHardTarget(this.match.world, e, cmd.entityId ?? undefined);
+          break;
+
+        case 'TabTarget':
+          tabTarget(
+            this.match.world, e,
+            {
+              /**
+               * ⚠️ **这里用的是角色朝向，而 5.3 要的是镜头前方 140°。**
+               *   协议里根本没有镜头朝向 —— `InputMessage.characterYaw` 特意
+               *   注明了「**角色**朝向，不是镜头朝向（6.5）」。所以服务器端的
+               *   Tab **做不到**符合 5.3，这是一个已知偏差，不是疏忽。
+               *
+               * ★ 正确的架构多半是让**客户端**算 Tab（它有镜头），
+               *   再发一条 `SetTarget` —— 而 `SetTarget` 服务器是校验可见集合的，
+               *   所以既符合 5.3 又不给作弊留口子。本分支是没有客户端时的兜底。
+               */
+              viewYaw: e.yaw,
+              isCasting: (x) => this.match.casting.has(x.id),
+            },
+            cmd.reverse,
+          );
+          break;
+
+        case 'CancelCast':
+          cancelCast(this.match.world, this.match.casting, e);
+          break;
+
+        case 'Swap': {
+          const loadout = this.match.loadouts.get(e.id);
+          if (!loadout) break;
+          const itemId = cmd.kind === SwapKind.Weapon
+            ? loadout.spareWeapons[cmd.slot]
+            : loadout.spareArmors[cmd.slot];
+          if (itemId === undefined) break;
+          beginSwap(e, loadout, this.match.swaps, cmd.kind, itemId, this.match.world.time);
+          break;
+        }
+
+        case 'InteractStart':
+          this.beginInteract(e, cmd.dropId);
+          break;
+
+        case 'InteractCancel': {
+          this.match.pickups.delete(e.id);
+          for (const flag of Object.values(this.match.ctf?.state.flags ?? {})) {
+            if (flag.interactorId === e.id) cancelFlagInteract(flag);
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  /**
+   * 交互：先试旗帜（靠距离），再试军械箱掉落（靠 id）。
+   *
+   * ⚠️ **协议这里有个坑**：`InteractStart` 只带一个 `entityId`，
+   *    但旗帜**不是实体**（没有 EntityId），军械箱掉落用的是自己的 `dropId`。
+   *    所以这个字段实际在身兼两职。要干净的话得给协议加一个可辨识联合
+   *    （`{kind:'flag'|'drop'}`），那是改 protocol.ts 的事 ——
+   *    **记在这里，没有假装它是干净的。**
+   */
+  private beginInteract(e: CombatEntity, dropId: number): void {
+    const now = this.match.world.time;
+
+    if (this.match.ctf) {
+      const { state, deps } = this.match.ctf;
+      for (const flag of Object.values(state.flags)) {
+        if (distance2D(e.position, flag.position) > INTERACT_RANGE) continue;
+        const r = beginFlagInteract(state, e, flag, now,
+          (p) => deps.captureZoneContains(e.team, p));
+        if (r.ok) return;
+      }
+    }
+
+    const loadout = this.match.loadouts.get(e.id);
+    if (loadout) {
+      beginPickup(e, loadout, this.match.arsenal, this.match.pickups, dropId, now);
+    }
   }
 
   // ── 断线超时 ──────────────────────────────────────────────────
@@ -324,9 +484,21 @@ export class MatchLoop {
     for (const s of this.deps.sessions()) {
       const viewer = this.viewerOf(s.playerId);
       if (!viewer) continue;
-      const snapshot = buildSnapshot(snapDeps, viewer);
+
+      /**
+       * ★ 11.4：**死了**才走观战视角，活着的人跟随别人就是透视。
+       *   `buildSpectatorSnapshot` 复用被跟随者的裁剪结果，所以观战者
+       *   看到的不会比那个队友更多；跟随目标不合法时它返回 undefined,
+       *   那就退回自己的视角，而不是降级成自由镜头（11.4 明确不允许）。
+       */
+      const following = !viewer.alive && s.following !== undefined
+        ? m.world.entities.get(s.following)
+        : undefined;
+      const snapshot = (following && buildSpectatorSnapshot(snapDeps, viewer, following))
+        ?? buildSnapshot(snapDeps, viewer);
+
       assertNoHiddenEntities(
-        snapshot, m.world, viewer,
+        snapshot, m.world, following ?? viewer,
         m.ctf ? { ctf: m.ctf.state } : undefined,
       );
       s.send({

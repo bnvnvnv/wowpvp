@@ -182,6 +182,131 @@ describe('A3：两个真客户端从房间跑到快照', () => {
     c.close();
   });
 
+  /**
+   * ★★ `verify:m10` 第 7 条的单进程预演：对**不在自己可见集合里**的目标
+   *   发 `SetTarget` 必须被拒绝。
+   *
+   *   这不只是「参数校验」—— 改前端的人可以拿 `SetTarget` 当**探针**，
+   *   一个个试 id 来确认场上有谁。所以拒绝理由必须是笼统的：
+   *   说「实体 9999 不可见」就等于确认了 9999 存在。
+   */
+  it('★★ 对不可见/不存在的目标发 SetTarget → 被拒绝，且理由不泄露该 id', async () => {
+    const red = await TestClient.connect(server.port);
+    const blue = await TestClient.connect(server.port);
+    await readyUp(red, 'r5', '红方', 'red', 'mage');
+    await readyUp(blue, 'r5', '蓝方', 'blue', 'warrior');
+    await red.waitFor('MatchStart');
+
+    red.received.length = 0;
+    red.send({ t: 'SetTarget', slot: 'hard', entityId: 9999 as never });
+    const rejected = await red.waitFor('Rejected');
+
+    expect(rejected.what).toBe('SetTarget');
+    expect(rejected.reason, '拒绝理由泄露了被探测的实体 id').not.toContain('9999');
+    expect(red.open, '被拒绝不该掉线').toBe(true);
+
+    red.close();
+    blue.close();
+  });
+
+  /** ★ 选中**看得见**的敌人是允许的 —— 否则上一条测试可能只是「全都拒绝」*/
+  it('★ 选中可见的敌人不会被拒绝（证明上一条不是一刀切）', async () => {
+    const red = await TestClient.connect(server.port);
+    const blue = await TestClient.connect(server.port);
+    await readyUp(red, 'r6', '红方', 'red', 'mage');
+    await readyUp(blue, 'r6', '蓝方', 'blue', 'warrior');
+    const blueStart = await blue.waitFor('MatchStart');
+    await red.waitFor('Snapshot');
+
+    red.received.length = 0;
+    red.send({ t: 'SetTarget', slot: 'hard', entityId: blueStart.you });
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(
+      red.received.filter((m) => m.t === 'Rejected'),
+      '选中一个看得见的敌人被拒绝了',
+    ).toEqual([]);
+
+    red.close();
+    blue.close();
+  });
+
+  /**
+   * ★★ `verify:m10` 第 5 条的单进程预演：客户端伪造一个大 `dt` 不能瞬移。
+   *
+   *   这条能过**不是因为校验拦住了**，而是因为服务器的积分步长根本不来自
+   *   客户端 —— `MatchLoop` 用的是 `SIM.TICK_DT`。所以这里发的 dt 再大也
+   *   只是个被忽略的字段。测的是这个**结构性**事实：哪天有人「顺手」改成
+   *   用 `latest.dt` 积分，这条会立刻红。
+   */
+  it('★★ 伪造大 dt 不能加速移动（服务器步长不来自客户端）', async () => {
+    const red = await TestClient.connect(server.port);
+    const blue = await TestClient.connect(server.port);
+    await readyUp(red, 'r8', '红方', 'red', 'mage');
+    await readyUp(blue, 'r8', '蓝方', 'blue', 'warrior');
+    const start = await red.waitFor('MatchStart');
+    await red.waitFor('Snapshot');
+
+    // 一路狂发「全速前进」，且把 dt 顶到协议允许的上限（0.25）——
+    // 若服务器拿它当步长，速度会是正常的 5 倍
+    let seq = 1;
+    const pump = setInterval(() => {
+      red.send({
+        t: 'Input', seq: seq++, dt: 0.24,
+        forward: 1, strafe: 0, characterYaw: 0, jump: false,
+      });
+    }, 10);
+    await new Promise((r) => setTimeout(r, 600));
+    clearInterval(pump);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const snaps = red.received.filter((m) => m.t === 'Snapshot');
+    const posOf = (s: typeof snaps[number]) =>
+      s.entities.find((e) => e.id === start.you)!.position;
+    const first = snaps[0]!;
+    const last = snaps[snaps.length - 1]!;
+    const dx = posOf(last).x - posOf(first).x;
+    const dz = posOf(last).z - posOf(first).z;
+    const moved = Math.hypot(dx, dz);
+    const simElapsed = last.time - first.time;
+
+    // BASE_SPEED = 7 m/s。留 1.5 倍余量给加速度与可能的移速加成；
+    // dt 若被采信，速度会是 0.24/0.05 ≈ 4.8 倍，远超这个上限
+    const cap = 7 * simElapsed * 1.5;
+    expect(simElapsed, '模拟时间没推进，这条测试就没意义').toBeGreaterThan(0.2);
+    /**
+     * ★ 先证明**他确实在动**。否则「位移没超上限」可以因为角色压根没动而
+     *   平凡地成立 —— 那样这条测试永远不会红，比没有测试更糟。
+     */
+    expect(moved, '角色根本没动，上限断言是平凡成立的').toBeGreaterThan(0.5);
+    expect(
+      moved,
+      `位移 ${moved.toFixed(2)}m 超过了 ${simElapsed.toFixed(2)}s 内的合理上限 ` +
+      `${cap.toFixed(2)}m —— 服务器可能采信了客户端的 dt`,
+    ).toBeLessThanOrEqual(cap);
+
+    red.close();
+    blue.close();
+  });
+
+  /** ★ 没有规则的东西**诚实拒绝**，不静默丢弃（消耗品是 M11 的 schema 缺口）*/
+  it('★ UseConsumable 被拒绝并指出原因（技术债 #6）', async () => {
+    const red = await TestClient.connect(server.port);
+    const blue = await TestClient.connect(server.port);
+    await readyUp(red, 'r7', '红方', 'red', 'mage');
+    await readyUp(blue, 'r7', '蓝方', 'blue', 'warrior');
+    await red.waitFor('MatchStart');
+
+    red.received.length = 0;
+    red.send({ t: 'UseConsumable', slot: 0 });
+    const rejected = await red.waitFor('Rejected');
+    expect(rejected.what).toBe('UseConsumable');
+    expect(red.open).toBe(true);
+
+    red.close();
+    blue.close();
+  });
+
   /** ★ 阶段鉴权：比赛开始后再发 SelectClass 是越权 */
   it('★ 战斗中发 SelectClass 被拒绝（阶段鉴权）', async () => {
     const red = await TestClient.connect(server.port);
