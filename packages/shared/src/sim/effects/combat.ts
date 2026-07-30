@@ -9,9 +9,10 @@
  *   · 治疗与吸收受竞技场战斗抑制影响（8.5）
  */
 
-import { getWeapon } from '../../data/index.js';
+import { getSkill, getWeapon } from '../../data/index.js';
 import type { AuraDef, EffectDef, Magnitude } from '../../data/schema.js';
 import { DrCategory, School } from '../../types/enums.js';
+import { asSkillId } from '../../types/ids.js';
 import {
   applyAura,
   applyDamageToBreakables,
@@ -23,7 +24,7 @@ import {
 } from '../aura.js';
 import { applyDr, onControlEndedEarly } from '../dr.js';
 import { gainResource, spendResource, type CombatEntity } from '../entity.js';
-import { damageTakenFor, equipmentDamageTakenFor } from '../modifiers.js';
+import { ccDurationTakenFor, damageTakenFor, equipmentDamageTakenFor } from '../modifiers.js';
 import { isBehind } from '../../math/geometry.js';
 import { applyInterrupt } from '../interrupt.js';
 import { registerEffect, type EffectContext } from './registry.js';
@@ -230,7 +231,16 @@ export const applyControl = (
   // 抗控型护甲：控制持续时间降低（10.8）
   const targetMods = effectiveModifiersOf(ctx.auras, target, ctx.world.time);
   const casterMods = effectiveModifiersOf(ctx.auras, ctx.source, ctx.world.time);
-  let duration = baseDuration * targetMods.ccDurationTaken * casterMods.ccDurationDealt;
+  /**
+   * ★★ 控制的学派来自**技能**，不是效果本身 —— 控制类 `EffectDef` 里没有
+   *   school 字段（`schema.ts`）。所以从 `ctx.skillId` 反查 `SkillDef.school`。
+   *
+   * ★ 查不到就是 undefined（光环周期跳、投射物二段效果等），
+   *   `ccDurationTakenFor` 会回落到全局系数 —— 与加这个字段之前的行为一致。
+   */
+  const school = getSkill(asSkillId(ctx.skillId))?.school;
+  let duration =
+    baseDuration * ccDurationTakenFor(targetMods, school) * casterMods.ccDurationDealt;
 
   // 8.2 控制递减
   let drFactor = 1;

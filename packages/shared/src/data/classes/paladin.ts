@@ -456,10 +456,19 @@ const weapons: WeaponDef[] = [
     reach: RANGE.MEDIUM,
     // 7.6：普通攻击走远程圣光弹规则
     isRanged: true,
-    // 文档的「物理防御 -12%」只针对物理，AuraModifiers.damageTaken 是全学派乘算，
-    // 这里按全局近似；要精确表达需要按 school 拆分的承伤修正（参考 armors.ts 的
-    // SPELLWARD_MAGIC_DAMAGE_TAKEN 也是用常量绕开的同一个缺口）。
-    modifiers: { damageTaken: 1.12, healingDone: 1.1, castSpeed: 0.85 },
+    /**
+     * 文档写的是「**物理**防御 -12%」。
+     * ★ M11：原注释说「按全局近似，要精确表达需要按 school 拆分的承伤修正」——
+     *   `damageTakenBySchool` 早已进 v1.1 并实现，数据没跟上。现在精确表达：
+     *   只有物理承伤 +12%，魔法承伤不变。近似写法此前让这把武器**连魔法也多挨 12%**，
+     *   比文档描述的更弱。
+     */
+    modifiers: {
+      damageTaken: 1,
+      damageTakenBySchool: { [School.Physical]: 1.12 },
+      healingDone: 1.1,
+      castSpeed: 0.85,
+    },
     advantage: '治疗 +10%，读条时间 -15%',
     cost: '物理防御 -12%，近战输出低',
     grantsSkills: [asSkillId('paladin.holy_bolt')],

@@ -397,10 +397,15 @@ const weapons: WeaponDef[] = [
     swingPercent: 0.6,
     reach: 28,
     isRanged: true,
-    // 「攻击和控制 +12%」：攻击用 damageDealt；控制时长加成没有对应字段
-    //（AuraModifiers 只有承受方向的 ccDurationTaken），暂时只体现在 advantage 文案。
-    // 「治疗与护盾 -10%」：治疗用 healingDone；吸收量没有对应的 absorb 修正字段（schema 缺口）。
-    modifiers: { damageDealt: 1.12, healingDone: 0.9 },
+    /**
+     * 「攻击和控制 +12%」。
+     * ★ M11：控制那一半原注释说「没有对应字段，暂时只体现在 advantage 文案」——
+     *   而**施加方向**的 `ccDurationDealt` 早已进 schema 且 `combat.ts` 的
+     *   `applyControl()` 已经在读它。原注释只看了承受方向的 `ccDurationTaken`。
+     *   现在补上，advantage 文案终于名副其实。
+     * ⚠️ 「护盾 -10%」仍然缺字段：`AuraModifiers` 没有吸收量修正 —— 这一条**保留**为已知缺口。
+     */
+    modifiers: { damageDealt: 1.12, ccDurationDealt: 1.12, healingDone: 0.9 },
     advantage: '攻击和控制 +12%',
     cost: '治疗与护盾 -10%',
     grantsSkills: [asSkillId('priest.mind_spike')],

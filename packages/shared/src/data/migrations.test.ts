@@ -18,6 +18,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { deathknight, paladin } from './index.js';
 import { asTeamId, TEAM_BLUE, TEAM_RED, type EntityId } from '../types/ids.js';
+import { School } from '../types/enums.js';
+import { ccDurationTakenFor, neutralModifiers } from '../sim/modifiers.js';
 import { vec3 } from '../math/vec3.js';
 import { applyAura, createAuraStore, effectiveModifiersOf, type AuraStore } from '../sim/aura.js';
 import { createEntity, type CombatEntity } from '../sim/entity.js';
@@ -158,6 +160,46 @@ describe('★ 保护祝福：受益者掉旗（原 dropFlagOnTarget）', () => {
      *   而圣骑士自己并没有获得免疫 —— 写成 self 等于规则反了。
      */
     expect(drop?.kind === 'dropFlag' && drop.target).toBe('target');
+  });
+});
+
+describe('★★ M11-2a：抗法护甲只削减**魔法**控制时长', () => {
+  /**
+   * ★★ 这条测试的重点不是「减免生效了」，而是「**它没有顺带削减物理控制**」。
+   *
+   *   10.9 / 验收 #32 要求「没有任何一件护甲是全面上位」。抗法（Spellward）
+   *   的身份是削减魔法控制，抗控（Tenacity）才是削减所有控制。
+   *   如果抗法也减物理，两件护甲就踩线了 —— 而这正是当初宁可
+   *   「少表达一半优势」也不肯写成全局 `ccDurationTaken` 的原因。
+   */
+  const spellwardOf = (cls: typeof paladin) =>
+    cls.armors.find((a) => (a.id as string).endsWith('spellward'));
+
+  it('★★ 魔法学派被削减到 0.8，而物理学派不受影响', () => {
+    const armor = spellwardOf(paladin);
+    expect(armor, '找不到抗法型护甲').toBeDefined();
+
+    const byS = armor!.modifiers?.ccDurationTakenBySchool;
+    expect(byS, '抗法护甲没有接入 ccDurationTakenBySchool').toBeDefined();
+
+    expect(byS![School.Fire], '魔法控制没有被削减').toBeCloseTo(0.8, 6);
+    expect(byS![School.Shadow]).toBeCloseTo(0.8, 6);
+    // ★ 这一条才是它与抗控型的分界线
+    expect(
+      byS![School.Physical],
+      '抗法护甲削减了物理控制 —— 它踩了抗控型护甲的身份（10.9 / 验收 #32）',
+    ).toBeUndefined();
+  });
+
+  it('★ 聚合后：未单列的学派回落到全局系数', () => {
+    const m = neutralModifiers();
+    m.ccDurationTaken = 1;
+    m.ccDurationTakenBySchool = { [School.Fire]: 0.8 };
+
+    expect(ccDurationTakenFor(m, School.Fire)).toBeCloseTo(0.8, 6);
+    expect(ccDurationTakenFor(m, School.Physical)).toBeCloseTo(1, 6);
+    // 学派未知（光环周期跳施加的控制）→ 回落全局，与加字段之前的行为一致
+    expect(ccDurationTakenFor(m, undefined)).toBeCloseTo(1, 6);
   });
 });
 

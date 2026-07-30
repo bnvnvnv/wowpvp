@@ -15,14 +15,15 @@ export const SPELLWARD_MAGIC_DAMAGE_TAKEN = 0.82;
 /**
  * 抗法型对**魔法控制**时长的削减。
  *
- * ⚠️ 目前**尚未接入**：schema 只有全局的 `ccDurationTaken`，没有
- *   `ccDurationTakenBySchool`，而 `applyControl()` 也拿不到控制的学派。
- *   写成全局 0.8 会让它顺带削减物理控制，那是抗控型护甲（Tenacity）的身份，
- *   两件护甲会互相踩线 —— 宁可少表达一半优势，也不要表达错。
+ * ★ M11 已接入。此前它是个**只定义、无人引用**的常量：schema 当时只有全局的
+ *   `ccDurationTaken`，写成全局 0.8 会让抗法护甲顺带削减物理控制 ——
+ *   那是抗控型（Tenacity）的身份，两件护甲会互相踩线，而 10.9 / 验收 #32
+ *   要求「没有任何一件是全面上位」。当时的选择是**宁可少表达一半优势，
+ *   也不要表达错**，于是 advantage 文案收窄成只提伤害。
  *
- *   已登记为 docs/10-acceptance-tracking.md 的 schema 缺口；
- *   与 deathknight.ts / paladin.ts 里另开常量绕开的是同一类问题。
- *   接入前抗法型的优势只有「法术伤害承受降低」，其 advantage 文案已照此收窄。
+ *   现在 `ccDurationTakenBySchool` 进了 schema（判据：「按学派区分」这个
+ *   需求出现了第二次），`applyControl()` 也能从 `SkillDef.school` 拿到学派，
+ *   所以这一半优势可以正确表达了。
  */
 export const SPELLWARD_MAGIC_CC_DURATION = 0.8;
 
@@ -81,8 +82,14 @@ const TEMPLATES: readonly ArchetypeTemplate[] = [
         (acc, s) => ((acc[s] = SPELLWARD_MAGIC_DAMAGE_TAKEN), acc),
         {},
       ),
+      // ★ 只削减**魔法**控制。物理控制（拳击、冲锋昏迷…）不受影响 ——
+      //   那是抗控型护甲的领域，两者不能互相取代（10.9 / 验收 #32）
+      ccDurationTakenBySchool: MAGIC_SCHOOLS.reduce<Partial<Record<School, number>>>(
+        (acc, s) => ((acc[s] = SPELLWARD_MAGIC_CC_DURATION), acc),
+        {},
+      ),
     },
-    advantage: '法术伤害承受降低',
+    advantage: '法术伤害与魔法控制时长降低',
     cost: '物理防御明显降低',
   },
   {

@@ -28,6 +28,8 @@ export interface EffectiveModifiers {
   healCastSpeed: number;
   knockbackTaken: number;
   ccDurationTaken: number;
+  /** 按学派拆分的控制时长承受乘算。未单列的学派回落到 ccDurationTaken */
+  ccDurationTakenBySchool: Partial<Record<School, number>>;
   ccDurationDealt: number;
   dodgeFront: number;
   parry: number;
@@ -61,6 +63,7 @@ export const neutralModifiers = (): EffectiveModifiers => ({
   healCastSpeed: 1,
   knockbackTaken: 1,
   ccDurationTaken: 1,
+  ccDurationTakenBySchool: {},
   ccDurationDealt: 1,
   dodgeFront: 0,
   parry: 0,
@@ -202,6 +205,15 @@ const applyMultiplicative = (out: EffectiveModifiers, m: AuraModifiers): void =>
   if (m.healCastSpeed !== undefined) out.healCastSpeed *= m.healCastSpeed;
   if (m.knockbackTaken !== undefined) out.knockbackTaken *= m.knockbackTaken;
   if (m.ccDurationTaken !== undefined) out.ccDurationTaken *= m.ccDurationTaken;
+    if (m.ccDurationTakenBySchool) {
+      for (const [school, v] of Object.entries(m.ccDurationTakenBySchool)) {
+        if (v === undefined) continue;
+        const s2 = school as School;
+        // ★ 与 damageTakenBySchool 同一套聚合语义：削减取最强，延长相乘
+        const cur = out.ccDurationTakenBySchool[s2] ?? 1;
+        out.ccDurationTakenBySchool[s2] = v < 1 ? Math.min(cur, v) : cur * v;
+      }
+    }
   if (m.ccDurationDealt !== undefined) out.ccDurationDealt *= m.ccDurationDealt;
   if (m.resourceGain !== undefined) out.resourceGain *= m.resourceGain;
   if (m.maxHealth !== undefined) out.maxHealth *= m.maxHealth;
@@ -229,6 +241,18 @@ export const equipmentModifiersOf = (
 /** 某学派的实际承伤系数。未单列的学派回落到全局 damageTaken */
 export const damageTakenFor = (m: EffectiveModifiers, school: School): number =>
   m.damageTakenBySchool[school] ?? m.damageTaken;
+
+/**
+ * 某学派的实际控制时长系数（10.8）。未单列的学派回落到全局 `ccDurationTaken`。
+ *
+ * ★ 学派未知（例如光环周期跳施加的控制）时调用方传 undefined，
+ *   于是回落到全局值 —— 与旧行为完全一致，不会因为「查不到学派」而漏掉减免。
+ */
+export const ccDurationTakenFor = (
+  m: EffectiveModifiers,
+  school: School | undefined,
+): number =>
+  (school !== undefined ? m.ccDurationTakenBySchool[school] : undefined) ?? m.ccDurationTaken;
 
 /**
  * 某学派**只来自装备**的承伤系数。供 16.2「护甲减少伤害」记账。

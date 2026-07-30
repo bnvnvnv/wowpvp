@@ -17,12 +17,16 @@ import {
   School,
   TargetFilter,
   Targeting,
+  isMagicSchool,
 } from '../../types/enums.js';
 import { asArmorId, asClassId, asSkillId, asWeaponId } from '../../types/ids.js';
 import { makeArmorSet } from '../armors.js';
 import type { ClassDef, SkillDef, WeaponDef } from '../schema.js';
 
 const CLASS_ID = asClassId('deathknight');
+
+/** 反魔法护罩「只吸收魔法伤害」的学派集合。★ 从 School 派生，加新学派不会漏 */
+const MAGIC_SCHOOLS_DK: School[] = Object.values(School).filter(isMagicSchool);
 
 /** 9.3 默认武器「双手符文剑」的触及距离，文档写 3.3 米，介于标准近战与延伸近战之间 */
 const RUNEBLADE_REACH = 3.3;
@@ -222,12 +226,17 @@ const skills: SkillDef[] = [
           duration: 4,
           dispelType: DispelType.None,
           flags: { immuneMagicControl: true },
-          // 文档要求「吸收相当于 25% 最大生命的魔法伤害」= 1200 × 0.25 = 300。
-          // schema 缺口一：AuraDef.absorb 只支持固定值，没有 absorbPercentMaxHealth，
-          //   最大生命被熊形态之类的 maxHealth 系数改变时这里不会跟着变。
-          // schema 缺口二：absorb 没有学派过滤字段，「只吸收魔法伤害」需要 sim 层特判。
-          // 两者都应通过扩展 schema 或注册 custom handler 解决，暂用固定值占位。
-          absorb: 300,
+          /**
+           * 文档要求「吸收相当于 25% 最大生命的**魔法**伤害」。
+           *
+           * ★ M11：这里原本写死 `absorb: 300`（按 1200 基础生命算），并注明
+           *   两个 schema 缺口。**两个缺口早已被 v1.1 填上且 sim 已实现**
+           *   （`aura.ts` 换算 absorbPercentMaxHealth、按 absorbSchools 过滤），
+           *   只是数据一直没跟上 —— 于是护罩既不随最大生命变化，
+           *   也会**照单全收物理伤害**，而技能描述写的是「魔法伤害」。
+           */
+          absorbPercentMaxHealth: 0.25,
+          absorbSchools: MAGIC_SCHOOLS_DK,
           description: '吸收 300 点（25% 最大生命）魔法伤害，并免疫新的魔法控制。',
           vfx: 'deathknight_anti_magic_shell',
         },
@@ -429,10 +438,18 @@ const weapons: WeaponDef[] = [
     swingInterval: 1.8,
     swingPercent: 0.85,
     reach: RANGE.MELEE,
-    // schema 缺口：AuraModifiers 的 damageTaken 不分学派，文档的「法术抗性提高」
-    // 无法在 WeaponDef 上单独表达（对比 armors.ts 里另开常量的 SPELLWARD_MAGIC_DAMAGE_TAKEN），
-    // 这里先并入统一减伤，等 schema 增加按学派拆分的 damageTaken 后再拆开。
-    modifiers: { damageTaken: 0.85, block: 0.15, moveSpeed: 0.95, damageDealt: 0.9 },
+    /**
+     * ★ M11：原注释说「等 schema 增加按学派拆分的 damageTaken 后再拆开」——
+     *   `damageTakenBySchool` 早已进 v1.1 且 `modifiers.ts` 已实现，数据没跟上。
+     *   现在把「法术抗性提高」真的拆出来：物理减伤 0.9，魔法额外再减到 0.85。
+     */
+    modifiers: {
+      damageTaken: 0.9,
+      damageTakenBySchool: MAGIC_SCHOOLS_DK.reduce<Partial<Record<School, number>>>(
+        (acc, s) => ((acc[s] = 0.85), acc), {},
+      ),
+      block: 0.15, moveSpeed: 0.95, damageDealt: 0.9,
+    },
     advantage: '防御 +15%，法术抗性提高',
     cost: '移动 -5%，输出低',
     grantsSkills: [asSkillId('deathknight.rune_ward')],
