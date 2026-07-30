@@ -138,23 +138,20 @@ const skills: SkillDef[] = [
           duration: 4,
           dispelType: DispelType.Movement,
           clearableByTrinket: false,
-          // 这里填的是**初始**值（减速 60% → moveSpeed 0.4），衰减交给下面的 custom handler
+          // 初始值（减速 60% → moveSpeed 0.4）。衰减由下面的 decay 表达
           modifiers: { moveSpeed: 0.4 },
+          /**
+           * M11：原本是一条 `custom` handler（`decayAuraModifier`）。
+           * ★ 但那个 handler **从来没有被注册过** —— 它落在 `displacement.ts`
+           *   的 custom 兜底分支里，只发一条事件、不产生任何效果。
+           *   也就是说「减速逐渐恢复」这条规则写在数据里、写在描述里，
+           *   但**四个阶段以来一次都没有生效过**：减速全程是恒定的 60%。
+           *   schema v1.1 的 `AuraDef.decay` 已经能表达它，sim 也实现了
+           *   （`aura.ts` 的 `withDecay()`），所以这里改成纯数据。
+           */
+          decay: { field: 'moveSpeed', from: 0.4, to: 1.0, duration: 4 },
           description: '移动速度降低 60%，并在 4 秒内逐渐恢复。',
           vfx: 'deathknight_chains_of_ice',
-        },
-      },
-      // schema 缺口：AuraModifiers 只能表达恒定系数，没有「随时间线性衰减」的写法。
-      // 由已注册的 handler 在光环存续期间把 moveSpeed 从 0.4 线性拉回 1.0。
-      {
-        kind: 'custom',
-        handler: 'decayAuraModifier',
-        params: {
-          auraId: 'deathknight.chains_of_ice',
-          modifier: 'moveSpeed',
-          from: 0.4,
-          to: 1.0,
-          duration: 4,
         },
       },
     ],
@@ -263,18 +260,16 @@ const skills: SkillDef[] = [
           kind: 'buff',
           duration: 6,
           dispelType: DispelType.None,
-          modifiers: { knockbackTaken: 0.5 },
+          /**
+           * M11：`moveSpeedFloor` 原本是一条 `custom`（`applyMoveSpeedFloor`）——
+           * 同样从未注册，于是「速度不低于基础的 80%」一直没生效：
+           * 死亡脚步期间照样能被减速到全局下限 20%。
+           * schema v1.1 的 `moveSpeedFloor` 已实现（`modifiers.ts` 按 Math.max 聚合）。
+           */
+          modifiers: { knockbackTaken: 0.5, moveSpeedFloor: 0.8 },
           description: '移动速度不低于基础速度的 80%，受到的击退距离降低 50%。',
           vfx: 'deathknight_deaths_advance',
         },
-      },
-      // schema 缺口：AuraModifiers 只有乘算的 moveSpeed，没有「减速下限」这种保底语义
-      //（MOVE.MIN_SPEED_FACTOR 是全局下限 0.2，不是按光环生效的个人下限）。
-      // 由 handler 在光环存续期间把本单位的移动速度下限抬到基础速度的 80%。
-      {
-        kind: 'custom',
-        handler: 'applyMoveSpeedFloor',
-        params: { auraId: 'deathknight.deaths_advance', minFactor: 0.8, duration: 6 },
       },
     ],
     description: '6 秒内移动速度不低于基础速度的 80%，受到的击退距离降低 50%。',

@@ -74,17 +74,17 @@ const skills: SkillDef[] = [
           duration: 4,
           dispelType: DispelType.Magic,
           clearableByTrinket: false,
+          /**
+           * M11：原本是一条 `custom`（`paladin.judgementVulnerability`），
+           * 而这个光环当时**连 modifiers 都没有** —— 易伤完全没有生效过。
+           * schema v1.1 的 `casterScoped` 已实现（`aura.ts` 在结算时比对伤害来源），
+           * 所以「只对该圣骑士生效的 +10% 承伤」现在是纯数据。
+           */
+          modifiers: { damageTaken: 1.1 },
+          casterScoped: true,
           description: '受到该圣骑士造成的伤害提高 10%。',
           vfx: 'paladin_judgement',
         },
-      },
-      // AuraModifiers.damageTaken 是「对所有伤害来源」的全局乘算，无法表达
-      // 「只对施加者生效」。需要新增按施法者作用域的修正（如 damageTakenFromCaster）
-      // 或一个 applyAura 的 casterScoped 标记后，这条 custom 才能删掉。
-      {
-        kind: 'custom',
-        handler: 'paladin.judgementVulnerability',
-        params: { auraId: 'paladin.judgement', damageTakenFromCaster: 1.1 },
       },
     ],
     description: '投出神圣审判造成伤害，并使目标 4 秒内额外承受 10% 来自你的伤害。',
@@ -241,9 +241,16 @@ const skills: SkillDef[] = [
           vfx: 'paladin_blessing_of_protection',
         },
       },
-      // 需要一个作用于「效果目标」的掉旗 EffectDef kind（例如 { kind: 'dropFlag'; target }）；
-      // 目前 schema 只有 SkillDef.dropsFlagOnUse 这个作用于施法者的布尔标记。
-      { kind: 'custom', handler: 'paladin.dropFlagOnTarget', params: { reason: 'immunePhysical' } },
+      /**
+       * M11：原本是 `custom`（`paladin.dropFlagOnTarget`）。schema v1.1 的
+       * `{ kind: 'dropFlag'; target }` 已经存在且 handler 已注册
+       * （`effects/displacement.ts`），所以这里是直接替换。
+       *
+       * ★ 与 `SkillDef.dropsFlagOnUse` 的分工：那个作用于**施法者**，
+       *   这个作用于**受益者** —— 保护祝福是给别人加免疫，掉旗的是那个别人。
+       *   12.3 要求「获得完全免疫时掉旗」，两边都要覆盖才完整。
+       */
+      { kind: 'dropFlag', target: 'target' },
     ],
     description: '使友方 4 秒内免疫物理伤害，期间无法进行物理攻击。旗手获得时立即掉旗。',
     vfx: 'paladin_blessing_of_protection',
