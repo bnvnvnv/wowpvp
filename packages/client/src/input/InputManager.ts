@@ -42,6 +42,12 @@ export const Action = {
   FlagInteract: 'flagInteract',
   /** 10.7 切换备用武器（15.3 战场装备栏）*/
   CycleWeapon: 'cycleWeapon',
+  /** 17.2 循环色盲模式。★ 与画质同理：验收要逐项人工比对，需要一个能随时切的键 */
+  CycleColorblind: 'cycleColorblind',
+  /** 17.2 循环界面缩放 */
+  CycleUiScale: 'cycleUiScale',
+  /** 11.4 观战：切换到下一个己方存活队友 */
+  SpectateNext: 'spectateNext',
 } as const;
 export type Action = (typeof Action)[keyof typeof Action];
 
@@ -73,6 +79,9 @@ export const DEFAULT_BINDINGS: Readonly<Record<Action, string>> = {
   [Action.CycleQuality]: 'F2',
   [Action.FlagInteract]: 'KeyG',
   [Action.CycleWeapon]: 'KeyB',
+  [Action.CycleColorblind]: 'F3',
+  [Action.CycleUiScale]: 'F4',
+  [Action.SpectateNext]: 'KeyV',
 };
 
 /** 角色转向速度，弧度/秒。A/D 未按右键时用它转身 */

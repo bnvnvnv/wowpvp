@@ -53,6 +53,31 @@
         font: 11px/1.5 ui-monospace, monospace; color: #cfd6e4; margin-right: 3px;
       }
 
+      /* ── M9 可访问性（规格书 17.2）─────────────────────────────
+         界面缩放与语义色都走 CSS 自定义属性，由 CombatHud.applyAccessibility()
+         写在 #combat-hud 上。★ 挂在根节点上是有意的：15.1 的四区加装备栏共五块
+         面板，逐块应用一定会漏，而漏掉的那块只有把缩放调到 2.0 的人才会发现。
+         下面的默认值仅在 JS 还没写入时生效。                              */
+      #combat-hud {
+        --ui-scale: 1;
+        --c-hostile: #e5484d;
+        --c-friendly: #30a46c;
+        --c-neutral: #f5d90a;
+        --c-danger: #e5484d;
+        --c-own-flag: #e5484d;
+        --c-enemy-flag: #3e63dd;
+      }
+      /* 17.2 界面缩放。★ 姓名板层排除在外 —— 它的 transform 是**投影坐标**，
+         再套一层 scale 会让姓名板与 3D 里的角色错位。缩放要的是「UI 更大」，
+         不是「把整个画面放大」。 */
+      #combat-hud > *:not(#nameplates) {
+        transform-origin: top left;
+        zoom: var(--ui-scale);
+      }
+      /* 17.2 第三句：四项各自独立。这两条 class 由 applyAccessibility 切换 */
+      #combat-hud.no-damage-numbers .damage-number { display: none !important; }
+      #combat-hud.no-screen-flash .screen-flash { display: none !important; }
+
       /* ── M2 战斗 HUD（规格书 15.1 / 15.2）───────────────────── */
       #combat-hud { position: fixed; inset: 0; pointer-events: none; }
       #combat-hud .unit-frame {

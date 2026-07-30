@@ -31,6 +31,14 @@ import { DirectionIndicator } from '../targeting/DirectionIndicator.js';
 import { GroundIndicator, screenToGround } from '../targeting/GroundIndicator.js';
 import { QualityController } from '../render/QualityController.js';
 import { QualityTier } from '../render/quality.js';
+import {
+  ColorblindMode,
+  DEFAULT_ACCESSIBILITY,
+  loadAccessibility,
+  saveAccessibility,
+  type AccessibilitySettings,
+} from '../settings/accessibility.js';
+import { SpectateController } from '../spectate/SpectateController.js';
 import { StatusMarkers } from '../vfx/StatusMarkers.js';
 import { CtfDemo } from '../combat/CtfDemo.js';
 import { CombatHud as Hud } from '../hud/CombatHud.js';
@@ -72,6 +80,10 @@ export class TestbedScene {
   private readonly statusMarkers = new Map<number, StatusMarkers>();
   /** M8：三档画质（F2 循环）*/
   private readonly quality: QualityController;
+  /** M9 / 17.2：可访问性设置。从 localStorage 恢复，切换后立即持久化 */
+  private access: AccessibilitySettings = { ...DEFAULT_ACCESSIBILITY };
+  /** M9 / 11.4：观战。★ 只能跟随己方存活队友，没有自由镜头状态 */
+  private readonly spectate = new SpectateController();
   private sun!: THREE.DirectionalLight;
   /** 场景经过的总时间，驱动标记的运动 */
   private elapsed = 0;
@@ -139,6 +151,8 @@ export class TestbedScene {
     this.scene.add(this.groundIndicator.group, this.directionIndicator.group);
     canvas.addEventListener('mousemove', this.onCanvasMouseMove);
     this.hud = new CombatHud(canvas.parentElement ?? document.body);
+    // 17.2：恢复上次的可访问性设置。★ 损坏的设置会被 normalize 回落到默认值
+    this.setAccessibility(loadAccessibility(globalThis.localStorage));
     for (const e of this.combat.visibleEntities()) {
       const v = new CharacterView();
       v.setTransform(e.position, e.yaw);
@@ -160,6 +174,32 @@ export class TestbedScene {
 
   start(): void {
     this.loop.start();
+  }
+
+  /**
+   * 17.2：应用并持久化一份可访问性设置。
+   *
+   * ★ 只有这一个入口。HUD 的缩放/色板都从 `this.access` 读，
+   *   所以不存在「改了设置但某处没跟上」的状态 —— 那是设置类功能最常见的 bug。
+   */
+  setAccessibility(next: AccessibilitySettings): void {
+    this.access = next;
+    this.hud.applyAccessibility(next);
+    saveAccessibility(globalThis.localStorage, next);
+  }
+
+  /** 供验收脚本读取当前设置 */
+  get accessibility(): AccessibilitySettings {
+    return this.access;
+  }
+
+  /** 供验收脚本检查观战状态（11.4）*/
+  get spectateState(): { active: boolean; following: number | null; candidates: number } {
+    return {
+      active: this.spectate.active,
+      following: this.spectate.following,
+      candidates: this.spectate.available(this.combat.world, this.combat.player).length,
+    };
   }
 
   dispose(): void {
@@ -383,6 +423,29 @@ export class TestbedScene {
       // ★ 注意这里**没有**任何「低画质就隐藏 X」的分支 ——
       //   关键元素的可见性根本不经过画质档位，见 render/quality.ts
       console.info(`[画质] ${tier}`);
+    }
+
+    // ── M9 / 17.2 可访问性 ───────────────────────────────────
+    if (input.pressed.has(Action.CycleColorblind)) {
+      const modes = Object.values(ColorblindMode);
+      const next = modes[(modes.indexOf(this.access.colorblind) + 1) % modes.length]!;
+      this.setAccessibility({ ...this.access, colorblind: next });
+      console.info(`[色盲模式] ${next}`);
+    }
+    if (input.pressed.has(Action.CycleUiScale)) {
+      const steps = [1, 1.25, 1.5, 2];
+      const next = steps[(steps.indexOf(this.access.uiScale) + 1) % steps.length]!;
+      this.setAccessibility({ ...this.access, uiScale: next });
+      console.info(`[界面缩放] ${next}`);
+    }
+
+    // ── M9 / 11.4 观战 ──────────────────────────────────────
+    // ★ 只能跟随己方存活队友。试验场里三个假人都在蓝队，所以名单通常是空的 ——
+    //   这是**正确**的结果：11.4 不允许观战敌人。规则由 SpectateController
+    //   与 shared 的 spectatableFor() 保证，这里只负责按键与提示。
+    if (input.pressed.has(Action.SpectateNext)) {
+      const t = this.spectate.cycle(this.combat.world, this.combat.player);
+      console.info(t ? `[观战] 跟随 ${t.name}` : '[观战] 没有可跟随的己方存活队友（11.4）');
     }
 
     // ── M2 战斗操作 ─────────────────────────────────────────

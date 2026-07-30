@@ -195,6 +195,11 @@ const isQualityTier = (v: unknown): v is QualityTier =>
  *
  * ★ 17.2 只要求「**减弱**镜头震动」，所以 0 是允许的（完全关闭）——
  *   与「降低特效」不同，震动本身不携带任何战斗信息，关掉它不影响公平。
+ *
+ * ⚠️ **本项目目前没有镜头震动效果**，所以这个函数还没有接线对象。
+ *    它已实现并被测试覆盖，是为了在引入震动时有一个**唯一入口** ——
+ *    震动一旦分散在多处实现，「减弱震动」这个设置就会只减弱其中一部分。
+ *    见 docs/PROGRESS.md 的 M9 已知不足。
  */
 export const shakeAmplitude = (base: number, s: AccessibilitySettings): number =>
   base * clamp01(s.cameraShake);

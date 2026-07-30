@@ -21,6 +21,7 @@ import {
   CastKind,
   Resource,
   School,
+  distance2D,
   getClass,
   type CastState,
   type CombatEntity,
@@ -31,6 +32,13 @@ import { Minimap } from './Minimap.js';
 import { ModeHud } from './ModeHud.js';
 import { PartyFrame, type PartyMemberView } from './PartyFrame.js';
 import { LoadoutPanel } from './LoadoutPanel.js';
+import {
+  DEFAULT_ACCESSIBILITY,
+  clampUiScale,
+  paletteFor,
+  showNamePlate,
+  type AccessibilitySettings,
+} from '../settings/accessibility.js';
 
 /** 14.2 八属性视觉语言的颜色。HUD 与特效共用同一张表 */
 export const SCHOOL_COLOR: Record<School, string> = {
@@ -58,6 +66,13 @@ export class CombatHud {
   private readonly nameplateLayer: HTMLElement;
   private nameplates = new Map<number, HTMLElement>();
   private lastFullUpdate = 0;
+  /**
+   * M9 / 17.2：当前可访问性设置。
+   *
+   * ★ HUD 持有它而不是每次调用都传进来 —— 界面缩放和色板是**全局**属性，
+   *   逐调用传参会让「某个面板忘了应用缩放」变成一个很容易犯的错。
+   */
+  private access: AccessibilitySettings = { ...DEFAULT_ACCESSIBILITY };
   /** M8：15.1 四区的其余三块 + 15.3 装备栏 */
   readonly party: PartyFrame;
   readonly minimap: Minimap;
@@ -79,6 +94,7 @@ export class CombatHud {
     container.appendChild(this.root);
 
     this.nameplateLayer = this.root.querySelector('#nameplates')!;
+    this.applyAccessibility(this.access);
     this.targetFrame = this.root.querySelector('#target-frame')!;
     this.focusFrame = this.root.querySelector('#focus-frame')!;
     this.playerCastBar = this.root.querySelector('#player-cast')!;
@@ -91,6 +107,40 @@ export class CombatHud {
     this.minimap = new Minimap(this.root);
     this.modeHud = new ModeHud(this.root);
     this.loadout = new LoadoutPanel(this.root);
+  }
+
+  /**
+   * 17.2：应用一份可访问性设置。
+   *
+   * ★ 界面缩放与色板都走 **CSS 自定义属性**，而不是逐个元素改 style。
+   *   理由：15.1 的四区 + 装备栏一共五块面板，逐个应用一定会漏 ——
+   *   而漏掉的那块在缩放到 2.0 时会明显对不齐，却只有放大了玩的人才发现。
+   *   挂在根节点上，新加的面板自动继承。
+   *
+   * ★ 这里只写**颜色与尺寸**。虚线、叉号、字形那些非颜色通道不受任何设置影响
+   *   （17.2 第二句），`AccessibilitySettings` 上根本没有它们的开关。
+   */
+  applyAccessibility(s: AccessibilitySettings): void {
+    this.access = s;
+    const p = paletteFor(s.colorblind);
+    const style = this.root.style;
+
+    style.setProperty('--ui-scale', String(clampUiScale(s.uiScale)));
+    style.setProperty('--c-hostile', p.hostile);
+    style.setProperty('--c-friendly', p.friendly);
+    style.setProperty('--c-neutral', p.neutral);
+    style.setProperty('--c-danger', p.danger);
+    style.setProperty('--c-own-flag', p.ownFlag);
+    style.setProperty('--c-enemy-flag', p.enemyFlag);
+
+    // 17.2 第三句的四项各自独立生效，用 class 而不是合成一个「特效强度」
+    this.root.classList.toggle('no-damage-numbers', !s.damageNumbers);
+    this.root.classList.toggle('no-screen-flash', !s.screenFlash);
+  }
+
+  /** 当前设置。供设置面板与验收脚本读取 */
+  get accessibility(): AccessibilitySettings {
+    return this.access;
   }
 
   /**
@@ -322,7 +372,15 @@ export class CombatHud {
     const h = canvas.clientHeight;
     const v = new THREE.Vector3();
 
-    for (const e of dir.visibleEntities()) {
+    // 17.2 姓名板密度需要「按距离排第几」——远处的姓名板才是造成拥挤的那些
+    const entities = dir.visibleEntities();
+    const nameplateRank = new Map<number, number>();
+    [...entities]
+      .sort((a, b) =>
+        distance2D(a.position, dir.player.position) - distance2D(b.position, dir.player.position))
+      .forEach((e, i) => nameplateRank.set(e.id as number, i));
+
+    for (const e of entities) {
       const key = e.id as number;
       seen.add(key);
 
@@ -331,6 +389,24 @@ export class CombatHud {
       const behind = v.z > 1;
       const x = (v.x * 0.5 + 0.5) * w;
       const y = (-v.y * 0.5 + 0.5) * h;
+
+      /**
+       * 17.2 姓名板密度。★ 当前目标**永不**被密度裁掉 ——
+       * 15.2 要求姓名板给出目标状态，一起藏掉就不是「降低密度」而是
+       * 「失去目标信息」（判据在 settings/accessibility.ts 里，不在这里重写）。
+       */
+      if (!showNamePlate(
+        {
+          isCurrentTarget: dir.target?.id === e.id,
+          distanceRank: nameplateRank.get(key) ?? 0,
+          total: nameplateRank.size,
+        },
+        this.access,
+      )) {
+        const existing = this.nameplates.get(key);
+        if (existing) existing.style.display = 'none';
+        continue;
+      }
 
       let el = this.nameplates.get(key);
       if (!el) {
