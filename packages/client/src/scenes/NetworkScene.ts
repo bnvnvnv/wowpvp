@@ -29,8 +29,10 @@ import {
   createMovementState,
   type EntityId,
   type MapDef,
+  type EntitySnapshot,
   type MovementInput,
   type ServerMessage,
+  type TeamId,
 } from '@wowpvp/shared';
 
 import { CameraController } from '../camera/CameraController.js';
@@ -44,6 +46,7 @@ import { QualityTier } from '../render/quality.js';
 import { Connection } from '../net/Connection.js';
 import { Interpolator } from '../net/Interpolator.js';
 import { Predictor } from '../net/Predictor.js';
+import { pickTabTargetFromSnapshot } from '../net/snapshotTargeting.js';
 
 export interface NetworkSceneOptions {
   url: string;
@@ -96,6 +99,11 @@ export class NetworkScene {
   private readonly lastRemotePos = new Map<number, { x: number; y: number; z: number }>();
 
   private selfId: EntityId | null = null;
+  /** 自己的队伍与当前硬目标 —— Tab 循环要用 */
+  private selfTeam: TeamId | null = null;
+  private currentTargetId: EntityId | undefined;
+  /** 最近一份快照的实体列表，Tab 从它里面挑 */
+  private lastEntities: readonly EntitySnapshot[] = [];
   private started = false;
   private characterYaw = 0;
   private pendingInput: FrameInput | null = null;
@@ -207,6 +215,8 @@ export class NetworkScene {
         this.snapshotCount++;
         this.serverTime = msg.time;
         this.interp.push(msg.time, msg.entities);
+        this.lastEntities = msg.entities;
+        this.selfTeam = msg.entities.find((e) => e.id === msg.you)?.team ?? this.selfTeam;
 
         const me = msg.entities.find((e) => e.id === msg.you);
         if (me && this.predictor) {
@@ -265,6 +275,32 @@ export class NetworkScene {
       this.quality.cycle();
       this.quality.applyToLight(this.sun);
     }
+    // 5.3：Tab 正序、Shift+Tab 反序
+    if (input.pressed.has(Action.TargetNext)) this.tabTarget(false);
+    if (input.pressed.has(Action.TargetPrev)) this.tabTarget(true);
+  }
+
+  /**
+   * 5.3 Tab 选目标 —— **在客户端算，发一条 `SetTarget` 给服务器**。
+   *
+   * ★★ 理由见 `net/snapshotTargeting.ts` 的文件头：5.3 要的是**镜头**前方 140°，
+   *   而协议里没有镜头朝向，服务器做不出符合规格的 Tab。放在客户端不放宽
+   *   安全边界 —— 服务器对 `SetTarget` 是校验可见集合的。
+   */
+  private tabTarget(reverse: boolean): void {
+    if (this.selfId === null || this.selfTeam === null || !this.predictor) return;
+    const picked = pickTabTargetFromSnapshot({
+      selfId: this.selfId,
+      selfPosition: this.predictor.position,
+      selfTeam: this.selfTeam,
+      // ★ 镜头 yaw，不是角色 yaw（5.3）
+      viewYaw: this.cam.yaw,
+      entities: this.lastEntities,
+      ...(this.currentTargetId !== undefined ? { currentTargetId: this.currentTargetId } : {}),
+    }, reverse);
+    if (picked === undefined) return; // 5.3：没有候选时保持原目标不变
+    this.currentTargetId = picked;
+    this.conn.send({ t: 'SetTarget', slot: 'hard', entityId: picked });
   }
 
   /**

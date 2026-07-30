@@ -84,14 +84,26 @@ export const pruneInvalidTargets = (world: World, actor: CombatEntity): void => 
 
 // ── 5.3 Tab 循环 ─────────────────────────────────────────────────
 
-export interface TabCandidate {
-  entity: CombatEntity;
+/**
+ * 排序所需的**最小**信息。
+ *
+ * ★★ 刻意**不含实体本身** —— 5.3 的优先级规则只需要这几个量，
+ *   而客户端只有**快照**（`EntitySnapshot`），没有 `CombatEntity`。
+ *   把规则写成只依赖这个形状，客户端就能复用**同一个** `sortTabCandidates()`，
+ *   而不必照着 5.3 再实现一遍排序 —— 那一遍必然会漂移。
+ */
+export interface TabRanking {
+  id: EntityId;
   /** 与视线中心的夹角，弧度。越小越靠近屏幕中心 */
   angleFromCenter: number;
   distance: number;
   visible: boolean;
   casting: boolean;
   isFlagCarrier: boolean;
+}
+
+export interface TabCandidate extends TabRanking {
+  entity: CombatEntity;
 }
 
 export interface TabOptions {
@@ -136,6 +148,7 @@ export const collectTabCandidates = (
 
     out.push({
       entity: e,
+      id: e.id,
       angleFromCenter,
       distance: d,
       // 5.3：被完整墙体遮挡的目标可以保持已选中，但不优先进入新的 Tab 候选
@@ -157,7 +170,7 @@ export const collectTabCandidates = (
 const CENTER_BUCKET = 20 * DEG;
 const DISTANCE_BUCKET = 8;
 
-export const sortTabCandidates = (candidates: TabCandidate[]): TabCandidate[] =>
+export const sortTabCandidates = <T extends TabRanking>(candidates: readonly T[]): T[] =>
   [...candidates].sort((a, b) => {
     const ca = Math.floor(a.angleFromCenter / CENTER_BUCKET);
     const cb = Math.floor(b.angleFromCenter / CENTER_BUCKET);
@@ -174,13 +187,33 @@ export const sortTabCandidates = (candidates: TabCandidate[]): TabCandidate[] =>
     // 同档内用精确值收敛，保证排序稳定且确定
     if (a.angleFromCenter !== b.angleFromCenter) return a.angleFromCenter - b.angleFromCenter;
     if (a.distance !== b.distance) return a.distance - b.distance;
-    return (a.entity.id as number) - (b.entity.id as number);
+    return (a.id as number) - (b.id as number);
   });
 
 /**
  * 执行一次 Tab 切换。返回新的硬目标；没有候选时返回 undefined 且**保持原目标不变**。
  * `reverse` 对应 Shift+Tab。
  */
+/**
+ * 从已排序的候选里挑「下一个」。
+ *
+ * ★ 抽出来是为了让客户端复用同一套循环语义（含「当前目标不在候选里就从头开始」
+ *   这条边界）—— 客户端只有快照，但循环规则应当一模一样。
+ */
+export const nextTabPick = <T extends TabRanking>(
+  sorted: readonly T[],
+  currentId: EntityId | undefined,
+  reverse = false,
+): T | undefined => {
+  if (sorted.length === 0) return undefined;
+  const currentIndex = sorted.findIndex((c) => c.id === currentId);
+  const next = currentIndex === -1
+    // 当前目标不在候选里（可能被墙挡住或已超距）→ 从头开始
+    ? (reverse ? sorted.length - 1 : 0)
+    : (currentIndex + (reverse ? -1 : 1) + sorted.length) % sorted.length;
+  return sorted[next];
+};
+
 export const tabTarget = (
   world: World,
   actor: CombatEntity,
@@ -188,20 +221,11 @@ export const tabTarget = (
   reverse = false,
 ): CombatEntity | undefined => {
   const sorted = sortTabCandidates(collectTabCandidates(world, actor, opts));
-  if (sorted.length === 0) return undefined;
+  const picked = nextTabPick(sorted, actor.targets.hard, reverse);
+  if (!picked) return undefined;
 
-  const currentIndex = sorted.findIndex((c) => c.entity.id === actor.targets.hard);
-  let next: number;
-  if (currentIndex === -1) {
-    // 当前目标不在候选里（可能被墙挡住或已超距）→ 从头开始
-    next = reverse ? sorted.length - 1 : 0;
-  } else {
-    next = (currentIndex + (reverse ? -1 : 1) + sorted.length) % sorted.length;
-  }
-
-  const picked = sorted[next]!.entity;
-  actor.targets.hard = picked.id;
-  return picked;
+  actor.targets.hard = picked.entity.id;
+  return picked.entity;
 };
 
 // ── 5.6 技能取目标 ───────────────────────────────────────────────
