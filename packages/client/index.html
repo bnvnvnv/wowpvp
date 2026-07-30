@@ -34,7 +34,8 @@
       #stats b.warn { color: #e0b87e; }
       #stats hr { border: 0; border-top: 1px solid #2c313d; margin: 7px 0; }
 
-      #help { top: 14px; right: 14px; max-width: 360px; max-height: calc(100vh - 190px);
+      /* M8：让开右上角的小地图（168px + 间距）*/
+      #help { top: 196px; right: 14px; max-width: 360px; max-height: calc(100vh - 560px);
               overflow-y: auto; pointer-events: auto; }
       #help h3 { font-size: 12px; color: #6f9fd0; margin: 0 0 6px; font-weight: 600; }
       #help h3 + table + h3 { margin-top: 12px; }
@@ -130,6 +131,70 @@
       .np-cast { height: 4px; background: #2a2f3a; border-radius: 2px; overflow: hidden; margin-top: 2px; }
       .np-cast i { display: block; height: 100%; background: var(--school); }
       .np-cast.shielded { outline: 1px dashed #8e96a8; }
+
+      /* ── M8 HUD（规格书 15.1 / 15.3 / 15.4）───────────────────── */
+      /* 15.1 左侧：最多 12 名队友 */
+      /* 15.1 左侧。试验场里 #stats 占了左上角，队伍框让到它下面 */
+      #party-frame { position: absolute; left: 14px; top: 350px; width: 176px;
+                     display: flex; flex-direction: column; gap: 4px; }
+      .pf-member { background: rgba(20,23,30,.86); border: 1px solid #2c313d;
+                   border-radius: 6px; padding: 4px 6px; }
+      .pf-member.dead { opacity: .45; }
+      .pf-top { display: flex; align-items: center; gap: 4px; font-size: 11px; }
+      .pf-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pf-class { color: #7d8698; font-size: 10px; }
+      .pf-flag { color: #ffd76a; margin-left: auto; }
+      .pf-dead { color: #e08a8a; margin-left: auto; }
+      .pf-bar { height: 6px; border-radius: 3px; overflow: hidden; background: #22262f;
+                margin-top: 3px; }
+      .pf-bar i { display: block; height: 100%; background: #4fbf70; }
+      .pf-bar.res i { background: #5a8fd0; }
+      .pf-ctrls { display: flex; gap: 3px; min-height: 12px; margin-top: 2px; }
+      .pf-ctrl { font-size: 11px; color: #d0a8ff; }
+
+      /* 15.1 右上：小地图 */
+      #minimap { position: absolute; right: 14px; top: 14px; }
+
+      /* 15.4 模式专属 */
+      #mode-hud { position: absolute; left: 50%; transform: translateX(-50%); top: 110px;
+                  min-width: 240px; text-align: center; background: rgba(20,23,30,.86);
+                  border: 1px solid #2c313d; border-radius: 8px; padding: 6px 12px;
+                  font-size: 12px; color: #b9c1d1; }
+      .mh-row { margin: 2px 0; }
+      .mh-row.urgent { color: #ffb86a; font-weight: 600; }
+      .mh-score { font-size: 18px; font-weight: 700; display: flex; gap: 10px;
+                  justify-content: center; align-items: baseline; }
+      .mh-vs { font-size: 11px; color: #6f7a90; font-weight: 400; }
+      .team.red { color: #ff8a7a; }
+      .team.blue { color: #7ab8ff; }
+      .mh-flag { font-size: 11px; margin: 1px 0; }
+      .mh-flag.red { color: #ff9c8a; }
+      .mh-flag.blue { color: #8fc4ff; }
+      .mh-msg { color: #ffd76a; font-size: 11px; }
+      .mh-glyph { display: inline-block; width: 12px; font-weight: 700; }
+
+      /* 15.3 战场装备栏 */
+      #loadout-panel { position: absolute; right: 14px; bottom: 14px; width: 250px;
+                       background: rgba(20,23,30,.9); border: 1px solid #2c313d;
+                       border-radius: 8px; padding: 8px 10px; font-size: 11px; }
+      .lp-title { font-size: 10px; letter-spacing: 1px; color: #6f7a90; margin-bottom: 5px; }
+      .lp-section-label { font-size: 10px; color: #7d8698; margin: 5px 0 3px; }
+      .lp-item { border: 1px solid #2c313d; border-radius: 5px; padding: 3px 5px; margin-bottom: 3px; }
+      .lp-item.current { border-color: #4a6f8f; background: rgba(74,111,143,.14); }
+      .lp-item.empty { color: #5d6577; text-align: center; }
+      .lp-item-name { font-weight: 600; }
+      .lp-tag { font-size: 9px; color: #6fd0ff; font-weight: 400; }
+      .lp-adv { color: #9ad48f; font-size: 10px; }
+      .lp-cost { color: #d8a07e; font-size: 10px; }
+      .lp-swap { margin-top: 6px; }
+      .lp-swap-label { font-size: 10px; color: #b9c1d1; }
+      .lp-bar { height: 6px; border-radius: 3px; background: #22262f; overflow: hidden; margin-top: 2px; }
+      .lp-bar i { display: block; height: 100%; background: #d0a85a; }
+      .lp-warn { font-size: 9px; color: #d8a07e; margin-top: 2px; }
+      .lp-interrupt { margin-top: 5px; color: #e08a8a; font-size: 10px; }
+      .lp-compare { margin-top: 6px; border-top: 1px solid #2c313d; padding-top: 5px; }
+      .lp-compare-label { font-size: 9px; color: #6f7a90; }
+      .lp-diff { font-size: 10px; color: #c9d1e0; }
     </style>
   </head>
   <body>

@@ -56,6 +56,16 @@ import {
   sub,
   aurasOf,
   createAuraStore,
+  createLoadout,
+  createLoadoutStore,
+  createSwapStore,
+  ownLoadoutView,
+  tickSwaps,
+  addWeapon,
+  availableWeapons,
+  beginSwap,
+  SwapKind,
+  type LoadoutView,
   createDrStore,
   createGroundStore,
   createProjectileStore,
@@ -120,6 +130,10 @@ export class CombatDirector {
   readonly skills: SkillDef[];
   readonly log: CombatLogEntry[] = [];
 
+  /** M6/M8：战场装备栏（15.3）*/
+  readonly loadouts = createLoadoutStore();
+  readonly swaps = createSwapStore();
+
   /** M4：效果系统的状态容器 */
   readonly auras = createAuraStore();
   readonly dr = createDrStore();
@@ -170,7 +184,15 @@ export class CombatDirector {
       return s;
     });
 
+    // M8：给玩家一份真实的装备栏（15.3）。默认武器 + 一把本职业备用武器，
+    // 这样换装进度条与「新旧对比」在试验场里有东西可看
+    const loadout = createLoadout(this.player.classId);
+    const spare = mage.weapons.find((w) => !w.isDefault);
+    if (spare) addWeapon(loadout, spare.id);
+    this.loadouts.set(this.player.id, loadout);
+
     this.info('试验场：Tab 选目标，1–8 释放技能。地面技能会先进入落点预览，左键确认。');
+    this.info('M8：F2 切画质，G 与旗帜交互，B 切换备用武器。');
   }
 
   private spawnDummy(cls: typeof mage, pos: Vec3, name: string): CombatEntity {
@@ -240,6 +262,13 @@ export class CombatDirector {
       e.flags = deriveStatusFlags(this.auras, e);
     }
 
+    // 15.3：换装有时间与中断窗口（10.7）。事件用于 HUD 的中断原因提示
+    for (const ev of tickSwaps(this.world.entities, this.swaps, this.world.time)) {
+      const who = getEntity(this.world, ev.entityId);
+      if (ev.result === 'completed') this.push(`${who?.name ?? ''} 完成换装`, 'ok');
+      else this.push(`${who?.name ?? ''} 换装中断：${ev.result}`, 'fail');
+    }
+
     this.updateDummies();
     this.reviveInTestbed();
     pruneInvalidTargets(this.world, this.player);
@@ -272,7 +301,21 @@ export class CombatDirector {
    * 无论瞬发还是读条，最终都汇到这里 —— 之前只接了 beginCast 的回调，
    * 结果所有读条技能都「完成」了却不产生任何效果，日志上还看不出异常。
    */
+  /**
+   * ★ 12.3 / 验收 #40：技能效果结算**之前**的钩子。
+   *
+   * 规格书说「使用完全无敌、消失或潜行时**先掉旗，再播放对应技能表现**」——
+   * 顺序写反会出现一帧「旗帜跟着隐形角色消失」。
+   * `flag.ts` 的 `dropFlagBeforeSkill()` 实现了这条规则，但客户端得**真的调它**：
+   * M8 接线时就漏了这一步，结果带旗开寒冰屏障旗帜还在手上 ——
+   * 单元测试全绿，是浏览器里带旗按了一次 8 键才发现的。
+   */
+  onBeforeSkillEffects?: (caster: CombatEntity, skill: SkillDef) => void;
+
   private onCastCompleted(caster: CombatEntity, skill: SkillDef, state: CastState): void {
+    // ★ 必须在效果结算前 —— 先掉旗，再播放技能表现（12.3）
+    if (skill.dropsFlagOnUse) this.onBeforeSkillEffects?.(caster, skill);
+
     const groundPoint = state.groundPoint;
     let targets: CombatEntity[];
 
@@ -692,6 +735,30 @@ export class CombatDirector {
       }
     }
     return best;
+  }
+
+  /** 15.3：玩家自己的装备栏视图 */
+  playerLoadoutView(): LoadoutView {
+    const l = this.loadouts.get(this.player.id);
+    if (!l) throw new Error('玩家没有装备栏');
+    return ownLoadoutView(this.player, l, this.swaps, this.world.time);
+  }
+
+  /**
+   * 15.3：切换到下一件备用武器。
+   *
+   * ★ 走的是 shared 的 `beginSwap()` —— 换装的时间、中断窗口和
+   *   10.7 的五项禁止利用全在那边保证（验收 #34）。这里只挑目标物品。
+   */
+  cyclePlayerWeapon(): string | null {
+    const l = this.loadouts.get(this.player.id);
+    if (!l) return null;
+    const all = availableWeapons(l);
+    if (all.length < 2) return '没有备用武器';
+    const i = all.indexOf(this.player.weaponId);
+    const next = all[(i + 1) % all.length]!;
+    const r = beginSwap(this.player, l, this.swaps, SwapKind.Weapon, next, this.world.time);
+    return r.ok ? null : r.reason;
   }
 
   distanceTo(e: CombatEntity): number {

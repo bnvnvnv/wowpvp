@@ -1,8 +1,12 @@
 /**
- * 战斗 HUD。规格书 15.1 / 15.2，验收 #4 / #6。
+ * 战斗 HUD。规格书 15.1–15.4，验收 #4 / #6 / #35。
  *
- * M2 只做「目标与施法条」这一块（15.2）。完整 HUD（队伍框、小地图、
- * 装备栏、模式专属信息）是 M8。
+ * M2 只做了「目标与施法条」（15.2）。M8 补齐 15.1 的四区、15.3 战场装备栏
+ * 与 15.4 模式专属信息 —— 后三块各自一个文件，本类只负责组合与节流：
+ *   左侧队友   → PartyFrame.ts
+ *   右上小地图 → Minimap.ts
+ *   模式专属   → ModeHud.ts   ★ 竞技场与夺旗是两个不相交的视图类型
+ *   装备栏     → LoadoutPanel.ts
  *
  * 15.2 的四条硬要求，缺一条就是验收不过：
  *   - 目标框显示职业、生命、资源、旗手状态
@@ -22,6 +26,11 @@ import {
   type CombatEntity,
 } from '@wowpvp/shared';
 import { FAIL_TEXT, SCHOOL_TEXT, type CombatDirector, type SkillSlotView } from '../combat/CombatDirector.js';
+import { CONTROL_VISUALS, type ControlKind } from '../vfx/status.js';
+import { Minimap } from './Minimap.js';
+import { ModeHud } from './ModeHud.js';
+import { PartyFrame, type PartyMemberView } from './PartyFrame.js';
+import { LoadoutPanel } from './LoadoutPanel.js';
 
 /** 14.2 八属性视觉语言的颜色。HUD 与特效共用同一张表 */
 export const SCHOOL_COLOR: Record<School, string> = {
@@ -49,6 +58,11 @@ export class CombatHud {
   private readonly nameplateLayer: HTMLElement;
   private nameplates = new Map<number, HTMLElement>();
   private lastFullUpdate = 0;
+  /** M8：15.1 四区的其余三块 + 15.3 装备栏 */
+  readonly party: PartyFrame;
+  readonly minimap: Minimap;
+  readonly modeHud: ModeHud;
+  readonly loadout: LoadoutPanel;
 
   constructor(container: HTMLElement) {
     this.root = document.createElement('div');
@@ -71,6 +85,53 @@ export class CombatHud {
     this.skillBar = this.root.querySelector('#skill-bar')!;
     this.logBox = this.root.querySelector('#combat-log')!;
     this.aimHint = this.root.querySelector('#aim-hint')!;
+
+    // M8：15.1 左侧 / 右上，15.3 装备栏，15.4 模式专属
+    this.party = new PartyFrame(this.root);
+    this.minimap = new Minimap(this.root);
+    this.modeHud = new ModeHud(this.root);
+    this.loadout = new LoadoutPanel(this.root);
+  }
+
+  /**
+   * 15.1 左侧：把实体列表转成队友视图。
+   *
+   * ★ 六项（生命、职业、资源、控制、死亡、旗手）在 `PartyMemberView` 里都是必填 ——
+   *   漏一项是编译错误。
+   */
+  static partyViewOf(members: readonly CombatEntity[]): PartyMemberView[] {
+    return members.map((e) => {
+      const cls = getClass(e.classId);
+      const primary = cls?.resources[0]?.resource;
+      const controls: ControlKind[] = [];
+      // 与 3D 场景用同一套判定：恐惧优先于昏迷（7.3 把两者都置 stunned，
+      // 但 14.3 要求它们视觉不同，所以不能同时显示）
+      if (e.flags.feared) controls.push('feared');
+      else if (e.flags.stunned) controls.push('stunned');
+      if (e.flags.rooted) controls.push('rooted');
+      if (e.flags.silenced) controls.push('silenced');
+      if (e.flags.disarmed) controls.push('disarmed');
+
+      return {
+        id: e.id as number,
+        name: e.name,
+        className: cls?.name ?? '',
+        health: e.health,
+        maxHealth: e.maxHealth,
+        ...(primary === undefined
+          ? {}
+          : {
+              resource: {
+                current: e.resources.get(primary) ?? 0,
+                max: e.maxResources.get(primary) ?? 1,
+                label: RESOURCE_TEXT[primary] ?? String(primary),
+              },
+            }),
+        controls,
+        dead: !e.alive,
+        carryingFlag: e.flags.carryingFlag,
+      };
+    });
   }
 
   /**
@@ -159,9 +220,7 @@ export class CombatHud {
       <div class="uf-meta">
         <span>${dist.toFixed(1)} m</span>
         <span class="weapon" title="10.6：敌人可见当前武器，但看不到备用装备">${esc(weapon?.name ?? '')}</span>
-        ${unit.flags.silenced ? '<span class="dbf">沉默</span>' : ''}
-        ${unit.flags.disarmed ? '<span class="dbf">缴械</span>' : ''}
-        ${unit.flags.stunned ? '<span class="dbf">昏迷</span>' : ''}
+        ${controlBadges(unit)}
       </div>
       ${cast ? this.castBarHtml(cast, dir) : ''}
     `;
@@ -338,3 +397,29 @@ const castPct = (cast: CastState, now: number): number => {
 
 const esc = (s: string): string =>
   s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+
+/**
+ * 15.2：「当前目标框显示……主要控制递减」。
+ *
+ * ★ 原来这里只列了沉默/缴械/昏迷三项，**漏了定身和恐惧** ——
+ *   而 14.3 恰恰要求这几种控制彼此可区分。漏项的后果是玩家在目标框里
+ *   看不出对手被定住了，只能靠 3D 场景里的脚部锁链判断。
+ *
+ * ★ 复用 `CONTROL_VISUALS` 的字形表 —— 目标框、队伍框和 3D 场景
+ *   用的是**同一个字符**，玩家不需要学三套符号（17.2）。
+ */
+const controlBadges = (unit: CombatEntity): string => {
+  const kinds: ControlKind[] = [];
+  // 7.3 把恐惧也置为 stunned，但 14.3 要求两者视觉不同：恐惧优先
+  if (unit.flags.feared) kinds.push('feared');
+  else if (unit.flags.stunned) kinds.push('stunned');
+  if (unit.flags.rooted) kinds.push('rooted');
+  if (unit.flags.silenced) kinds.push('silenced');
+  if (unit.flags.disarmed) kinds.push('disarmed');
+  return kinds
+    .map((k) => {
+      const v = CONTROL_VISUALS[k];
+      return `<span class="dbf" data-control="${k}">${v.glyph} ${v.label}</span>`;
+    })
+    .join('');
+};

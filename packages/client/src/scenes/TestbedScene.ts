@@ -32,6 +32,10 @@ import { GroundIndicator, screenToGround } from '../targeting/GroundIndicator.js
 import { QualityController } from '../render/QualityController.js';
 import { QualityTier } from '../render/quality.js';
 import { StatusMarkers } from '../vfx/StatusMarkers.js';
+import { CtfDemo } from '../combat/CtfDemo.js';
+import { CombatHud as Hud } from '../hud/CombatHud.js';
+import type { MinimapBlip } from '../hud/ModeHud.js';
+import { FlagMarkers } from '../vfx/FlagMarkers.js';
 import type { ControlKind } from '../vfx/status.js';
 
 /** 技能栏槽位数，与 CombatDirector 的 PLAYER_SKILL_IDS 长度一致 */
@@ -71,6 +75,9 @@ export class TestbedScene {
   private sun!: THREE.DirectionalLight;
   /** 场景经过的总时间，驱动标记的运动 */
   private elapsed = 0;
+  /** M8：夺旗演示，用来把 M7 的规则接到真实操作与 15.4 HUD 上 */
+  private readonly ctf: CtfDemo;
+  private readonly flagMarkers: FlagMarkers;
   /** M3：瞄准 */
   private readonly aim = new AimingController();
   private readonly groundIndicator = new GroundIndicator();
@@ -120,6 +127,15 @@ export class TestbedScene {
     //   结果玩家身上的控制标记永远不会更新（一直是构造时的 visible=false）。
     //   编译通过、测试全绿，只有截图比对才看得出来
     this.addStatusMarkers(this.combat.player.id as number, this.view);
+    // M8：夺旗演示（12.x 的客户端接线）。规则全部走 shared 的 flag.ts
+    this.ctf = new CtfDemo(this.combat.world);
+    // ★ 12.3 / 验收 #40：带旗使用无敌/潜行技能时先掉旗，再播放技能表现
+    this.combat.onBeforeSkillEffects = (caster, skill) => {
+      void skill;
+      this.ctf.onSkillThatDropsFlag(caster, this.combat.world.time);
+    };
+    this.flagMarkers = new FlagMarkers();
+    this.scene.add(this.flagMarkers.group);
     this.scene.add(this.groundIndicator.group, this.directionIndicator.group);
     canvas.addEventListener('mousemove', this.onCanvasMouseMove);
     this.hud = new CombatHud(canvas.parentElement ?? document.body);
@@ -255,6 +271,60 @@ export class TestbedScene {
     }
   }
 
+  /**
+   * 15.1 四区里的其余三块 + 15.3 装备栏 + 15.4 模式专属。
+   *
+   * ★ 这里给 `renderCtf()` 的是**真的** `CtfState` 派生出来的视图，
+   *   不是写死的演示数据 —— 旗帜状态、旗手姓名、聚焦层数全部来自 flag.ts。
+   *   附录A#7：不能用占位图冒充完成。
+   */
+  private updateHudPanels(): void {
+    const player = this.combat.player;
+
+    // 15.1 左侧：己方队友。试验场里只有玩家自己一个人在红队
+    const allies = this.combat
+      .allEntities()
+      .filter((e) => (e.team as number) === (player.team as number));
+    this.hud.party.render(Hud.partyViewOf(allies));
+
+    // 15.4 夺旗 HUD
+    this.hud.modeHud.renderCtf({
+      scoreRed: this.ctf.scoreOf(player.team),
+      scoreBlue: this.ctf.scoreOf(this.combat.visibleEntities()[0]?.team ?? player.team),
+      scoreToWin: this.ctf.ctf.scoreToWin,
+      timeRemaining: Math.max(0, 720 - this.combat.world.time),
+      flags: this.ctf.views(),
+      focusStacks: this.ctf.ctf.focusStacks,
+      message: this.ctf.lastMessage,
+    });
+
+    // 15.1 右上：小地图。★ 传进去的列表已经过可见性过滤 ——
+    // Minimap 自己拿不到世界状态，所以不可能画出未被发现的潜行者（验收 #5）
+    const blips: MinimapBlip[] = [
+      { x: player.position.x, z: player.position.z, kind: 'self' },
+      ...this.combat.visibleEntities().map<MinimapBlip>((e) => ({
+        x: e.position.x,
+        z: e.position.z,
+        kind: (e.team as number) === (player.team as number) ? 'ally' : 'enemy',
+        team: e.team,
+      })),
+      // 15.4：小地图**永久**显示双方旗手与掉落旗帜
+      ...this.ctf.carriedFlags().map<MinimapBlip>((f) => ({
+        x: f.position.x, z: f.position.z, kind: 'flagCarrier', team: f.team,
+        ...(f.carrierName ? { label: f.carrierName } : {}),
+      })),
+      ...this.ctf.droppedFlags().map<MinimapBlip>((f) => ({
+        x: f.position.x, z: f.position.z, kind: 'droppedFlag', team: f.team,
+      })),
+    ];
+    this.hud.minimap.draw(blips, player.position.x, player.position.z, this.characterYaw);
+
+    // 15.3 战场装备栏。★ 用的是 `ownLoadoutView()` —— 自己的视图。
+    // 敌人的备用装备本项目**取不到**：`enemyLoadoutView()` 的返回类型里
+    // 根本没有那个字段（M6 已在数据层钉死，验收 #36）
+    this.hud.loadout.render(this.combat.playerLoadoutView(), this.combat.world.time);
+  }
+
   private addLights(): void {
     // three r155+ 默认使用物理光照单位，强度不要照搬旧版数值 —— 容易直接过曝成白板
     this.scene.add(new THREE.HemisphereLight(0xa8bcd8, 0x3a4250, 0.85));
@@ -298,6 +368,14 @@ export class TestbedScene {
       this.view.setHitboxVisible(this.debugVisible);
       this.mapRenderer.setDebugVisible(this.debugVisible);
       for (const v of this.dummyViews.values()) v.setHitboxVisible(this.debugVisible);
+    }
+    if (input.pressed.has(Action.CycleWeapon)) {
+      const err = this.combat.cyclePlayerWeapon();
+      if (err) this.hud.loadout.showInterrupt('cancelled', this.combat.world.time);
+      void err;
+    }
+    if (input.pressed.has(Action.FlagInteract)) {
+      this.ctf.interact(this.combat.player, this.combat.world.time);
     }
     if (input.pressed.has(Action.CycleQuality)) {
       const tier = this.quality.cycle();
@@ -407,6 +485,10 @@ export class TestbedScene {
 
     this.updateIndicators();
     this.updateStatusMarkers(dt);
+    this.ctf.tick(this.combat.world.time);
+    this.flagMarkers.cameraDistance = this.cam.distance;
+    this.flagMarkers.update(this.ctf.views(), this.elapsed);
+    this.updateHudPanels();
     this.renderer.render(this.scene, this.cam.camera);
     this.hud.update(this.combat, this.cam.camera, this.canvas);
 

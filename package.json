@@ -24,6 +24,7 @@
     "verify:m5": "tsx scripts/verify-m5.ts",
     "verify:m6": "tsx scripts/verify-m6.ts",
     "verify:m7": "tsx scripts/verify-m7.ts",
+    "verify:m8": "node scripts/verify-m8.mjs",
     "typecheck": "tsc -b packages/shared packages/server packages/client",
     "clean": "rimraf packages/*/dist packages/*/*.tsbuildinfo"
   },

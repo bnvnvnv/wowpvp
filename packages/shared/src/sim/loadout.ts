@@ -328,6 +328,18 @@ export interface LoadoutView {
   currentArmor: ArmorDef | undefined;
   spareWeapons: (WeaponDef | undefined)[];
   spareArmors: (ArmorDef | undefined)[];
+  /**
+   * ★ **可切换的全部**装备（默认 + 备用），供 15.3 的装备栏列表使用。
+   *
+   * 为什么不能让 UI 自己拼 `[currentWeapon, ...spareWeapons]`：
+   * 换到备用武器之后，`spareWeapons` 里**仍然**含着那件武器
+   * （`availableWeapons()` 的语义是"手上加包里"，不随装备变化增删），
+   * 于是列表会把当前武器显示两遍，同时默认武器凭空消失 ——
+   * 而 10.6 明确要求默认装备永远在列表里。
+   * 这个字段直接来自 `availableWeapons()`，两个问题一起消失。
+   */
+  allWeapons: (WeaponDef | undefined)[];
+  allArmors: (ArmorDef | undefined)[];
   swapProgress: { kind: SwapKind; remaining: number } | null;
 }
 
@@ -344,6 +356,8 @@ export const ownLoadoutView = (
     currentArmor: getArmor(entity.armorId),
     spareWeapons: loadout.spareWeapons.map(getWeapon),
     spareArmors: loadout.spareArmors.map(getArmor),
+    allWeapons: availableWeapons(loadout).map(getWeapon),
+    allArmors: availableArmors(loadout).map(getArmor),
     swapProgress: s ? { kind: s.kind, remaining: Math.max(0, s.endsAt - now) } : null,
   };
 };

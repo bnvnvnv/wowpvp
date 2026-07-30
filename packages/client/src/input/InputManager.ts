@@ -38,6 +38,10 @@ export const Action = {
   ToggleDebug: 'toggleDebug',
   /** 17.1 三档画质循环。★ 验收 #48 要逐档人工检查，需要一个能随时切的键 */
   CycleQuality: 'cycleQuality',
+  /** 12.1 与旗帜交互（拔旗/归还/交旗）*/
+  FlagInteract: 'flagInteract',
+  /** 10.7 切换备用武器（15.3 战场装备栏）*/
+  CycleWeapon: 'cycleWeapon',
 } as const;
 export type Action = (typeof Action)[keyof typeof Action];
 
@@ -67,6 +71,8 @@ export const DEFAULT_BINDINGS: Readonly<Record<Action, string>> = {
   [Action.Skill8]: 'Digit8',
   [Action.ToggleDebug]: 'F1',
   [Action.CycleQuality]: 'F2',
+  [Action.FlagInteract]: 'KeyG',
+  [Action.CycleWeapon]: 'KeyB',
 };
 
 /** 角色转向速度，弧度/秒。A/D 未按右键时用它转身 */

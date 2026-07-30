@@ -42,6 +42,7 @@ pnpm typecheck           # 全量类型检查
 pnpm verify:m1           # M1–M4 驱动真实浏览器，需要先跑起客户端
 pnpm verify:m5           # M5–M7 是纯逻辑，直接跑
 pnpm verify:m7           # 夺旗：跑一整局真实比赛（真地图、真碰撞、20Hz）
+pnpm verify:m8           # 表现层：HUD 四区、逐档画质、带旗开无敌先掉旗
 ```
 
 ## 仓库结构
