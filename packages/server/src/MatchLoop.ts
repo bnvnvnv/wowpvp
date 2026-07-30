@@ -478,6 +478,8 @@ export class MatchLoop {
       tick: this.tick,
       dampening: m.arena?.dampening.amount ?? 0,
       suddenDeath: m.arena?.dampening.suddenDeath ?? false,
+      // 13.4：把「这一 tick 是瞬移过来的」带进快照，插值器据此瞬移而非滑行
+      movement: m.movement,
       ...(m.ctf ? { ctf: m.ctf.state } : {}),
     };
 

@@ -24,6 +24,7 @@ import { isFriendly, isHiddenFromViewer, type CombatEntity } from '../sim/entity
 import { aurasOf, type AuraStore } from '../sim/aura.js';
 import { enemyLoadoutView, type Loadout, type SwapStore } from '../sim/loadout.js';
 import type { CtfState } from '../sim/match/flag.js';
+import type { MovementState } from '../sim/movement.js';
 import { listEntities, type World } from '../sim/world.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -106,6 +107,17 @@ export interface AuraSnapshot {
   remaining: number | null;
 }
 
+/**
+ * 重放所需的权威移动状态。★ 字段就是 `stepMovement()` 会从上一帧读走的那些 ——
+ * 加字段前先确认它真的参与积分，否则只是白占带宽。
+ */
+export interface SelfMovementSnapshot {
+  velocity: Vec3;
+  grounded: boolean;
+  airSpeedCap: number;
+  fallStartY: number;
+}
+
 export interface EntitySnapshot {
   id: EntityId;
   name: string;
@@ -121,6 +133,32 @@ export interface EntitySnapshot {
   maxResources: Readonly<Record<string, number>>;
   auras: readonly AuraSnapshot[];
   carryingFlag: boolean;
+  /**
+   * 本 tick 这个实体是**瞬移**过来的（闪现、击退、位置纠正、复活）。
+   *
+   * ★★ **13.4 的硬要求靠它：「传送、位置纠正和大位移不能被识别为高速跑步」。**
+   *   客户端对其他玩家做 100ms 插值，两帧之间位置差得远时它分不清
+   *   「跑得快」和「闪现了」—— 插过去的话角色会以 40 米/秒滑行，
+   *   而 `AnimationController` 会把那个速度判成冲刺。
+   *
+   * ★ 用**服务器的事实**而不是客户端的距离阈值来判：距离启发式在
+   *   「20 米闪现」和「网络抖动导致两帧间隔变长」之间会猜错，
+   *   而 `MovementState.teleported`（M1 就留了）是权威的。
+   */
+  teleported: boolean;
+  /**
+   * 自己的完整移动状态。★ 只有**自己**有这个字段（与 `cooldowns` 同理）。
+   *
+   * ★★ **没有它，客户端预测永远无法精确收敛。**
+   *   docs/08 §5 第 6 步要「从权威状态出发重放剩余输入」，而 `stepMovement`
+   *   读的**不止位置**：速度（有加速度）、是否着地、空中速度上限、起跳高度
+   *   都参与下一步的积分。只发位置的话，重放会从「正确的位置 + 错误的速度」
+   *   出发，于是每次对账都差一点点 —— 而那个「一点点」看起来就像网络抖动，
+   *   查起来极难。（这条是 `Predictor` 的重放不变量测试逼出来的。）
+   *
+   * ★ 只发给自己，所以 12v12 的快照里也只有一份 —— 不是每个实体都带。
+   */
+  selfMovement?: SelfMovementSnapshot;
   /**
    * 技能冷却。★ 只有**自己**有这个字段。
    * docs/08 §4.3：敌方技能冷却不发 —— 规格书没要求，而且会削弱博弈。
@@ -197,6 +235,13 @@ export interface SnapshotDeps {
   dampening: number;
   suddenDeath: boolean;
   ctf?: CtfState;
+  /**
+   * 每个实体的移动状态，用来取 `teleported`（13.4，见 `EntitySnapshot.teleported`）。
+   *
+   * ★ 可选：纯规则测试和不驱动移动的调用方（试验场）不需要构造它。
+   *   没传就一律 `teleported: false` —— 那对「位置由别处驱动」的实体是对的。
+   */
+  movement?: ReadonlyMap<EntityId, MovementState>;
 }
 
 /**
@@ -251,6 +296,7 @@ const snapshotEntity = (
     classId: e.classId,
     position: { ...e.position },
     yaw: e.yaw,
+    teleported: deps.movement?.get(e.id)?.teleported ?? false,
     health: e.health,
     maxHealth: e.maxHealth,
     alive: e.alive,
@@ -269,6 +315,19 @@ const snapshotEntity = (
 
   // docs/08 §4.3：只有自己能看到自己的冷却
   if (isSelf) snap.cooldowns = Object.fromEntries(e.cooldowns);
+
+  // docs/08 §5 第 6 步：只有自己需要重放，所以也只有自己带完整移动状态
+  if (isSelf) {
+    const m = deps.movement?.get(e.id);
+    if (m) {
+      snap.selfMovement = {
+        velocity: { ...m.velocity },
+        grounded: m.grounded,
+        airSpeedCap: m.airSpeedCap,
+        fallStartY: m.fallStartY,
+      };
+    }
+  }
 
   return snap;
 };
