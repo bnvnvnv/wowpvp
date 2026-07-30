@@ -188,18 +188,31 @@ export const isHostile = (a: CombatEntity, b: CombatEntity): boolean => a.team !
 export const isFriendly = (a: CombatEntity, b: CombatEntity): boolean => a.team === b.team;
 
 /**
+ * 5.3 / 验收 #5：`target` 是否因**潜行未被发现**而对 `viewer` 隐形。
+ *
+ * ★ 单列成一个谓词，是为了让「能否选中」（本文件的 `isSelectableBy`）与
+ *   「能否进快照」（`net/visibility.ts`）**共用同一条判据**。
+ *   两处各写一遍迟早会漂移，而漂移的方向一定是快照比选中更宽松 ——
+ *   那正好就是验收 #5 要防的透视。
+ *
+ * 注：`stealthRevealed` 是一个全局标志而不是「按队伍分别记录」。
+ * 本作固定两队（TEAM_RED / TEAM_BLUE），己方永远看得见自己人潜行，
+ * 所以「被发现」等价于「被敌方那一队发现」，一个布尔值就够。
+ */
+export const isHiddenFromViewer = (target: CombatEntity, viewer: CombatEntity): boolean =>
+  target.flags.stealthed && !target.flags.stealthRevealed && isHostile(viewer, target);
+
+/**
  * 5.3 / 验收 #5：能否被 `viewer` 选中。
  *
  * ⚠️ 服务器还必须在快照层把不可见的潜行者**整个裁掉**
- * （docs/08 §4.1）—— 只在这里过滤是不够的，改客户端就能绕过。
- * 这个函数负责的是「同一份可见集合内的合法性」。
+ * （docs/08 §4.1，见 `net/visibility.ts`）—— 只在这里过滤是不够的，
+ * 改客户端就能绕过。这个函数负责的是「同一份可见集合内的合法性」。
  */
 export const isSelectableBy = (target: CombatEntity, viewer: CombatEntity): boolean => {
   if (!target.alive) return false;
   if (target.flags.untargetable) return false;
-  if (target.flags.stealthed && !target.flags.stealthRevealed && isHostile(viewer, target)) {
-    return false;
-  }
+  if (isHiddenFromViewer(target, viewer)) return false;
   return true;
 };
 

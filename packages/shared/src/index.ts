@@ -6,3 +6,4 @@ export * from './data/schema.js';
 export * from './data/index.js';
 export * from './data/maps/index.js';
 export * from './sim/index.js';
+export * from './net/index.js';
