@@ -1,12 +1,14 @@
 /**
- * 权威服务器入口。
+ * 权威服务器入口。docs/08。
  *
- * ⚠️ 当前是 **M0 工程连通性验证**，不是游戏服务器。
- * 它只做一件事：接受 WebSocket 连接，把 shared 层的职业数据发给客户端 ——
- * 用来证明「同一份 shared 代码能同时跑在 Node 和浏览器里」这个架构前提成立。
+ * ★ 本文件只做**传输与装配**：起 HTTP/WS、把每条连接交给 `RoomServer`、
+ *   把原始帧喂给 `Session`。协议分发在 Session，房间规则在 shared/sim/match/room.ts，
+ *   模拟顺序在 shared/sim/tick.ts —— 这里一条游戏规则都没有。
  *
- * 真正的房间管理、20Hz 权威 tick 和状态广播是 M1–M5 的工作，
- * 见 docs/01-development-plan.md 与 docs/08-network-protocol.md。
+ * ⚠️ 从 M0 的连通性桩改过来时**去掉了 `Roster` 消息**：它不在 `ServerMessage`
+ *    联合里，而 `protocol.ts` 是协议的唯一定义。职业数据由客户端从
+ *    `@wowpvp/shared` 直接 import（同一份代码两端都能跑，这正是 M0 要证明的事），
+ *    不需要走网络。
  */
 
 import { createServer } from 'node:http';
@@ -14,67 +16,99 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 import { ALL_CLASSES, SIM, validateData } from '@wowpvp/shared';
 
-const PORT = Number(process.env.PORT ?? 8080);
+import { RoomServer } from './room/RoomServer.js';
+import type { SessionSocket } from './room/Session.js';
 
-/** 启动前先跑一遍数据体检 —— 数据坏了就不该启动 */
-const issues = validateData();
-if (issues.length > 0) {
-  console.error('职业数据校验失败，服务器拒绝启动：');
-  for (const i of issues) console.error(`  ${i.where}: ${i.problem}`);
-  process.exit(1);
+/** 把 `ws` 的 WebSocket 适配成 Session 需要的三件事 */
+const adapt = (socket: WebSocket): SessionSocket => ({
+  send: (data) => { if (socket.readyState === socket.OPEN) socket.send(data); },
+  close: () => socket.close(),
+  get closed() { return socket.readyState !== socket.OPEN; },
+});
+
+export interface StartedServer {
+  port: number;
+  rooms: RoomServer;
+  close: () => Promise<void>;
 }
 
-const httpServer = createServer((_req, res) => {
-  res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
-  res.end('wowpvp server — M0 连通性验证。WebSocket 在同端口。\n');
-});
+/**
+ * 起一个服务器。
+ *
+ * ★ 抽成函数而不是写在模块顶层，是为了让集成测试能起**真的**服务器
+ *   （随机端口、用完关掉）。A6 的 `verify:m10` 也走这个入口 ——
+ *   测试跑的和线上跑的是同一段启动代码。
+ */
+export const startServer = async (port = 0): Promise<StartedServer> => {
+  const rooms = new RoomServer();
 
-const wss = new WebSocketServer({ server: httpServer });
-
-/** M0 阶段的握手载荷：职业名录 + 模拟参数 */
-const buildRoster = () => ({
-  t: 'Roster' as const,
-  tickRate: SIM.TICK_RATE,
-  classes: ALL_CLASSES.map((c) => ({
-    id: c.id,
-    name: c.name,
-    role: c.role,
-    baseHealth: c.baseHealth,
-    resources: c.resources.map((r) => r.resource),
-    strengths: c.strengths,
-    weaknesses: c.weaknesses,
-    skillCount: c.skills.length,
-    weapons: c.weapons.map((w) => ({
-      id: w.id,
-      name: w.name,
-      isDefault: w.isDefault,
-      swingInterval: w.swingInterval,
-      swingPercent: w.swingPercent,
-      reach: w.reach,
-      advantage: w.advantage,
-      cost: w.cost,
-    })),
-  })),
-});
-
-wss.on('connection', (socket: WebSocket) => {
-  console.log(`客户端已连接（当前 ${wss.clients.size} 个）`);
-  socket.send(JSON.stringify(buildRoster()));
-
-  socket.on('message', (raw) => {
-    // M0 阶段还没有协议处理，只回显以便确认双向通道可用
-    console.log('收到消息：', raw.toString().slice(0, 200));
+  const httpServer = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('wowpvp server —— WebSocket 在同端口。\n');
   });
 
-  socket.on('close', () => {
-    console.log(`客户端已断开（剩余 ${wss.clients.size} 个）`);
-  });
-});
+  const wss = new WebSocketServer({ server: httpServer });
 
-httpServer.listen(PORT, () => {
-  console.log(`wowpvp server 已启动`);
-  console.log(`  HTTP      http://localhost:${PORT}`);
-  console.log(`  WebSocket ws://localhost:${PORT}`);
-  console.log(`  职业数据  ${ALL_CLASSES.length} 个职业，` +
-    `${ALL_CLASSES.reduce((n, c) => n + c.skills.length, 0)} 个技能，校验通过`);
-});
+  wss.on('connection', (socket: WebSocket) => {
+    const session = rooms.connect(adapt(socket));
+
+    socket.on('message', (raw) => {
+      /**
+       * ★★ **这里必须 try/catch。**
+       *   `Session.handleRaw` 自己不抛（畸形包走返回值），但 `ws` 的
+       *   message 处理器一旦抛异常就是**未捕获异常**，会带走整个进程 ——
+       *   而这个进程里跑着别人的比赛。一条坏包不该拖垮整个房间，
+       *   更不该拖垮整台服务器。
+       */
+      try {
+        session.handleRaw(raw.toString());
+      } catch (err) {
+        console.error('处理消息时异常（连接保持）：', err);
+        session.reject('internal', '服务器处理该消息时出错');
+      }
+    });
+
+    socket.on('close', () => rooms.disconnect(session));
+    // ★ 传输层错误也当断线处理，否则连接半死不活地留在房间名单里
+    socket.on('error', () => rooms.disconnect(session));
+  });
+
+  await new Promise<void>((resolve) => httpServer.listen(port, resolve));
+  const addr = httpServer.address();
+  const actualPort = typeof addr === 'object' && addr ? addr.port : port;
+
+  return {
+    port: actualPort,
+    rooms,
+    close: async () => {
+      rooms.stopAll();
+      for (const c of wss.clients) c.terminate();
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    },
+  };
+};
+
+// ── 直接运行时才真的起服务 ───────────────────────────────────────
+// ★ 被测试 import 时不能顺手占用 8080
+
+const isMain = process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js');
+
+if (isMain) {
+  /** 启动前先跑一遍数据体检 —— 数据坏了就不该启动 */
+  const issues = validateData();
+  if (issues.length > 0) {
+    console.error('职业数据校验失败，服务器拒绝启动：');
+    for (const i of issues) console.error(`  ${i.where}: ${i.problem}`);
+    process.exit(1);
+  }
+
+  const port = Number(process.env.PORT ?? 8080);
+  startServer(port).then((s) => {
+    console.log('wowpvp server 已启动');
+    console.log(`  HTTP      http://localhost:${s.port}`);
+    console.log(`  WebSocket ws://localhost:${s.port}`);
+    console.log(`  tick      ${SIM.TICK_RATE} Hz（定步长 ${SIM.TICK_DT.toFixed(3)}s）`);
+    console.log(`  职业数据  ${ALL_CLASSES.length} 个职业，校验通过`);
+  });
+}
