@@ -55,7 +55,7 @@ import { settleDeaths, type DeathSettlement } from './death.js';
 import { resolveEffects, type CombatEvent } from './effects/index.js';
 import { tickGround, type GroundStore } from './groundArea.js';
 import { tickPickups, type ArsenalStore, type PickupStore, type PickupTickEvent } from './arsenal.js';
-import { tickSwaps, type LoadoutStore, type SwapStore, type SwapTickEvent } from './loadout.js';
+import { takeConsumable, tickSwaps, type LoadoutStore, type SwapStore, type SwapTickEvent } from './loadout.js';
 import { tickArena, type ArenaEvents, type ArenaState } from './match/arena.js';
 import { tickFlags, type CtfDeps, type CtfState, type FlagEvent } from './match/flag.js';
 import { tickRespawn, type RespawnEvent, type RespawnState } from './match/respawn.js';
@@ -66,8 +66,11 @@ import { pruneInvalidTargets } from './targeting.js';
 import { tickProjectiles, type ProjectileStore } from './projectile.js';
 import {
   ingestCombatEvents, ingestFlagEvents, ingestPickupEvents, ingestSwapEvents,
-  sampleTick, type StatsStore,
+  recordItemBuff, sampleTick, type StatsStore,
 } from './stats.js';
+import { getConsumable } from '../data/consumables.js';
+import type { ConsumableDef } from '../data/schema.js';
+import type { ConsumableId } from '../types/ids.js';
 import { getEntity, listEntities, type World } from './world.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -124,6 +127,14 @@ export interface TickDeps {
    *   放进 tick 之后，「只接一个出口」在结构上写不出来。
    */
   castRequests?: ReadonlyMap<EntityId, CastIntent>;
+  /**
+   * 本 tick 每个实体要使用的消耗品槽位（10.1）。
+   *
+   * ★★ 和技能请求同理：**消耗品的效果也必须由 tick 结算**。
+   *   调用方自己调 `resolveEffects()` 就开出了第二个结算出口 ——
+   *   而 A2 的教训正是「第二个出口会静默地少做一半事」。
+   */
+  consumableRequests?: ReadonlyMap<EntityId, number>;
   /** 地图碰撞几何。默认取 `world.obstacles` */
   obstacles?: readonly Aabb[];
 
@@ -182,6 +193,8 @@ export interface TickEventSinks {
   onFlag?: (ev: FlagEvent) => void;
   onRespawn?: (ev: RespawnEvent) => void;
   onDeathSettled?: (ev: DeathSettlement) => void;
+  /** 一个消耗品被使用（10.1）。客户端据此播表现，服务器据此广播 */
+  onConsumable?: (entityId: EntityId, def: ConsumableDef) => void;
 }
 
 export interface TickResult {
@@ -192,6 +205,8 @@ export interface TickResult {
   flags: FlagEvent[];
   respawns: RespawnEvent[];
   deaths: DeathSettlement[];
+  /** 本 tick 被使用的消耗品（10.1）*/
+  consumables: { entityId: EntityId; consumableId: ConsumableId }[];
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -213,7 +228,7 @@ export const tickWorld = (
   sinks: TickEventSinks = {},
 ): TickResult => {
   const result: TickResult = {
-    events: [], swaps: [], pickups: [], flags: [], respawns: [], deaths: [],
+    events: [], swaps: [], pickups: [], flags: [], respawns: [], deaths: [], consumables: [],
   };
   const obstacles = deps.obstacles ?? deps.world.obstacles;
 
@@ -286,6 +301,29 @@ export const tickWorld = (
       ...(intent.groundPoint ? { groundPoint: intent.groundPoint } : {}),
       events: castEvents,
     });
+  }
+
+  // ── 1b. 消耗品使用（10.1）。与技能请求同属「applyInputs」───
+  for (const [id, slot] of deps.consumableRequests ?? []) {
+    const user = getEntity(deps.world, id);
+    const loadout = deps.loadouts.get(id);
+    if (!user || !loadout) continue;
+    const consumableId = takeConsumable(user, loadout, slot);
+    if (consumableId === undefined) continue;
+    const def = getConsumable(consumableId as string);
+    if (!def) continue;
+
+    resolve(id, def.id as string, def.effects, [id]);
+    /**
+     * ★ 16.2「增益期间击杀」的窗口就在这里登记。
+     *   `recordItemBuff()` 从 M9 起就留着这个入口，但在此之前
+     *   **没有任何调用方** —— 于是 `killsDuringBuff` 结构上恒为 0
+     *   （已登记为已知偏差 #2）。接上之后它才有真实来源。
+     */
+    if (deps.stats) recordItemBuff(deps.stats, id, deps.world.time + def.buffSeconds);
+    if (def.cooldown > 0) user.cooldowns.set(def.id as never, deps.world.time + def.cooldown);
+    result.consumables.push({ entityId: id, consumableId });
+    sinks.onConsumable?.(id, def);
   }
 
   // ── 2. movement ─────────────────────────────────────────────

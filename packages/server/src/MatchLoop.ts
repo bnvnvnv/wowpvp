@@ -117,6 +117,8 @@ export class MatchLoop {
    *   代价同样是延后一帧（~16–50ms），与施法一致。
    */
   private pendingCommands: { playerId: string; cmd: MatchCommand }[] = [];
+  /** 本 tick 的消耗品使用请求（10.1）。与技能请求同样由 tickWorld 结算 */
+  private readonly pendingConsumables = new Map<EntityId, number>();
 
   constructor(
     readonly match: Match,
@@ -162,7 +164,7 @@ export class MatchLoop {
     this.applyCommands();
     const inputs = this.collectInputs();
     const result = tickWorld(
-      tickDepsOf(this.match, inputs, this.pendingCasts),
+      { ...tickDepsOf(this.match, inputs, this.pendingCasts), consumableRequests: this.pendingConsumables },
       SIM.TICK_DT,
       {
         cast: {
@@ -193,6 +195,7 @@ export class MatchLoop {
       },
     );
     this.pendingCasts.clear();
+    this.pendingConsumables.clear();
 
     for (const ev of result.flags) {
       const flag = this.match.ctf?.state.flags[ev.flagTeam as number];
@@ -262,6 +265,13 @@ export class MatchLoop {
   /** 其他战斗指令排队。合法性由 RoomServer 在收到时校验（要能回 Rejected）*/
   enqueue(playerId: string, cmd: MatchCommand): void {
     this.pendingCommands.push({ playerId, cmd });
+  }
+
+  /** 10.1：使用消耗品。★ 与施法同样只排意图，结算在 tickWorld 里 */
+  requestConsumable(playerId: string, slot: number): void {
+    const entityId = this.match.entityOf.get(playerId);
+    if (entityId === undefined) return;
+    this.pendingConsumables.set(entityId, slot);
   }
 
   /**

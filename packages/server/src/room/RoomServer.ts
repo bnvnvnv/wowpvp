@@ -179,10 +179,13 @@ export class RoomServer {
          */
         return session.reject('UseTrinket', '解控饰品尚未接入 tick（需要新增一个结算步骤）');
 
-      case 'UseConsumable':
-        // ★ 这不是没接线，是**规则本身还没有**：PROGRESS.md 技术债 #6
-        //   「消耗品没有使用路径」，schema 缺口，排在 M11。
-        return session.reject('UseConsumable', '消耗品使用路径尚未定义（技术债 #6，M11）');
+      case 'UseConsumable': {
+        // ★ M11：消耗品使用路径已接上（技术债 #6）
+        const sr = this.roomOf(session);
+        if (!sr?.loop) { session.reject('UseConsumable', '比赛未进行'); return; }
+        sr.loop.requestConsumable(session.playerId, msg.slot);
+        return;
+      }
 
       default:
         session.reject((msg as ClientMessage).t, '未知消息');

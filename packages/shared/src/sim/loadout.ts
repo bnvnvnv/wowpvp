@@ -132,6 +132,41 @@ export const addArmor = (loadout: Loadout, armorId: ArmorId): void => {
 };
 
 /**
+ * 10.1 / 10.6：拾起一个消耗品。上限 `EQUIP.MAX_CONSUMABLES`（2 个）。
+ *
+ * ★ 满了就**拿不走**，而不是顶掉旧的 —— 与武器/护甲满槽时「弹出对比让玩家选」
+ *   是同一个立场：不替玩家做丢弃决定。消耗品没有对比界面，所以直接拒绝。
+ */
+export const addConsumable = (loadout: Loadout, id: ConsumableId): boolean => {
+  if (loadout.consumables.length >= EQUIP.MAX_CONSUMABLES) return false;
+  loadout.consumables.push(id);
+  return true;
+};
+
+/**
+ * 取出一个待使用的消耗品（按槽位）。**只负责取出，不结算效果。**
+ *
+ * ★★ 效果结算必须走 `tickWorld` 那**唯一的出口**（A2 的教训）——
+ *   所以这里只把 id 弹出来交给调用方，由 tick 在自己的结算步里处理。
+ *   在这里直接 `resolveEffects()` 会开出第二个结算入口。
+ *
+ * @returns 弹出的消耗品 id；槽位为空或角色无法行动时返回 undefined
+ */
+export const takeConsumable = (
+  entity: CombatEntity,
+  loadout: Loadout,
+  slot: number,
+): ConsumableId | undefined => {
+  if (!entity.alive) return undefined;
+  // 7.3 硬控制禁止一切主动动作 —— 与换装同一条规则
+  if (entity.flags.stunned) return undefined;
+  const id = loadout.consumables[slot];
+  if (id === undefined) return undefined;
+  loadout.consumables.splice(slot, 1);
+  return id;
+};
+
+/**
  * 10.5：「装备栏已满时先弹出对比，玩家选择替换对象或取消；
  *        **取消后地面装备仍在**。」
  *

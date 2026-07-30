@@ -289,8 +289,12 @@ describe('A3：两个真客户端从房间跑到快照', () => {
     blue.close();
   });
 
-  /** ★ 没有规则的东西**诚实拒绝**，不静默丢弃（消耗品是 M11 的 schema 缺口）*/
-  it('★ UseConsumable 被拒绝并指出原因（技术债 #6）', async () => {
+  /**
+   * ★ M11 把消耗品接上了（技术债 #6），所以 `UseConsumable` **不再被拒绝**。
+   *   ⚠️ 这条测试原本断言「被拒绝」—— 接线之后它红了，而红得对：
+   *      改的是产品行为，测试就该跟着改，不是把它删掉。
+   */
+  it('★ UseConsumable 已接线：不再被拒绝（技术债 #6）', async () => {
     const red = await TestClient.connect(server.port);
     const blue = await TestClient.connect(server.port);
     await readyUp(red, 'r7', '红方', 'red', 'mage');
@@ -298,9 +302,37 @@ describe('A3：两个真客户端从房间跑到快照', () => {
     await red.waitFor('MatchStart');
 
     red.received.length = 0;
-    red.send({ t: 'UseConsumable', slot: 0 });
+    red.send({ t: 'UseConsumable', slot: 0 });   // 槽位是空的，但路径应当通
+    await new Promise((r) => setTimeout(r, 250));
+
+    expect(
+      red.received.filter((m) => m.t === 'Rejected'),
+      'UseConsumable 仍在被拒绝 —— 使用路径没接上',
+    ).toEqual([]);
+    expect(red.open).toBe(true);
+
+    red.close();
+    blue.close();
+  });
+
+  /**
+   * ★★ 与上一条成对：**没有规则的东西仍然要诚实拒绝**，不静默丢弃。
+   *   解控饰品的规则写在 `effects/combat.ts` 里，但它需要一个 EffectContext ——
+   *   也就是说它是效果结算，而结算只有 tickWorld 一个出口。接它要先在 tick 里
+   *   加一步，那是显眼的改动，不该在路由层偷做。
+   */
+  it('★★ UseTrinket 仍被诚实拒绝，且理由说明为什么', async () => {
+    const red = await TestClient.connect(server.port);
+    const blue = await TestClient.connect(server.port);
+    await readyUp(red, 'r9', '红方', 'red', 'mage');
+    await readyUp(blue, 'r9', '蓝方', 'blue', 'warrior');
+    await red.waitFor('MatchStart');
+
+    red.received.length = 0;
+    red.send({ t: 'UseTrinket' });
     const rejected = await red.waitFor('Rejected');
-    expect(rejected.what).toBe('UseConsumable');
+    expect(rejected.what).toBe('UseTrinket');
+    expect(rejected.reason.length, '拒绝要说明原因，不能是空话').toBeGreaterThan(0);
     expect(red.open).toBe(true);
 
     red.close();

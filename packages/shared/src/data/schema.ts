@@ -21,7 +21,7 @@ import type {
   TargetFilter,
   Targeting,
 } from '../types/enums.js';
-import type { ArmorId, ClassId, SkillId, WeaponId } from '../types/ids.js';
+import type { ArmorId, ClassId, ConsumableId, SkillId, WeaponId } from '../types/ids.js';
 
 // ════════════════════════════════════════════════════════════════
 //  范围形状
@@ -468,6 +468,36 @@ export interface SkillModifier {
   rangeMultiplier?: number;
   /** 背刺加成的**增量**（不是乘算）。双剑「背后加成降低」→ -0.2 */
   behindBonusDelta?: number;
+}
+
+/**
+ * 消耗品（10.1 临时增益道具）。
+ *
+ * ★★ **这个类型此前根本不存在** —— `DropKind` 里有 `'consumable'`、
+ *   `Loadout.consumables` 也在、`stats.recordItemBuff()` 也留好了入口，
+ *   但**没有名字、没有效果、没有持续时间**，也从没有代码创建过一个消耗品掉落。
+ *   于是 16.2 的「增益期间击杀」结构上恒为 0（已登记为已知偏差 #2）。
+ *
+ * ★ 与 `WeaponDef` / `ArmorDef` 的区别：那两者是**持续**的装备修正，
+ *   消耗品是**一次性**触发一组效果 —— 所以它带 `effects` 而不是 `modifiers`。
+ *   增益本身由效果里的 `applyAura` 表达，持续时间就是那个光环的时长。
+ */
+export interface ConsumableDef {
+  id: ConsumableId;
+  name: string;
+  /** 10.2：职业归属。不匹配的玩家看得到但拿不走 */
+  classId?: ClassId;
+  /** 使用后触发的效果。增益走 applyAura */
+  effects: EffectDef[];
+  /**
+   * 增益窗口时长，秒。★ 16.2 的「增益期间击杀」按它计窗口。
+   * 与效果里光环的时长应当一致 —— 分开写是因为一个消耗品可以施加多个光环。
+   */
+  buffSeconds: number;
+  /** 使用后进入的冷却，秒。0 表示不进冷却 */
+  cooldown: number;
+  description: string;
+  vfx?: string;
 }
 
 export interface ArmorDef {
