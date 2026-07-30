@@ -25,7 +25,8 @@
     "verify:m6": "tsx scripts/verify-m6.ts",
     "verify:m7": "tsx scripts/verify-m7.ts",
     "verify:m8": "node scripts/verify-m8.mjs",
-    "typecheck": "tsc -b packages/shared packages/server packages/client && tsc -p packages/shared/tsconfig.test.json",
+    "typecheck": "tsc -b packages/shared packages/server packages/client && pnpm typecheck:tests",
+    "typecheck:tests": "tsc -p packages/shared/tsconfig.test.json && tsc -p packages/server/tsconfig.test.json && tsc -p packages/client/tsconfig.test.json",
     "clean": "rimraf packages/*/dist packages/*/*.tsbuildinfo"
   },
   "devDependencies": {

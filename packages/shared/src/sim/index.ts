@@ -19,3 +19,4 @@ export * from './match/respawn.js';
 export * from './loadout.js';
 export * from './arsenal.js';
 export * from './stats.js';
+export * from './death.js';

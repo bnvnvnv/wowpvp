@@ -61,6 +61,8 @@ import {
   createSwapStore,
   ownLoadoutView,
   tickSwaps,
+  createPickupStore,
+  settleDeaths,
   addWeapon,
   availableWeapons,
   beginSwap,
@@ -133,6 +135,21 @@ export class CombatDirector {
   /** M6/M8：战场装备栏（15.3）*/
   readonly loadouts = createLoadoutStore();
   readonly swaps = createSwapStore();
+  /**
+   * 拾取进度。试验场还没接军械箱，所以它始终是空的 ——
+   * 但 M9 的死亡结算需要它（17.3：拾取进度不能跨越死亡活下来），
+   * 而且军械箱接客户端时这里就是它的落点。
+   */
+  readonly pickups = createPickupStore();
+
+  /**
+   * 本 tick 产生的全部战斗事件。
+   *
+   * ★ M9 起需要它：死亡结算（`settleDeaths`）和战后统计都是这个事件流的
+   *   **消费者**，而 `resolve()` 每次调用只拿到自己那一批。
+   *   在 tick 开头清空、在 tick 末尾统一消费。
+   */
+  private tickEvents: CombatEvent[] = [];
 
   /** M4：效果系统的状态容器 */
   readonly auras = createAuraStore();
@@ -184,15 +201,26 @@ export class CombatDirector {
       return s;
     });
 
-    // M8：给玩家一份真实的装备栏（15.3）。默认武器 + 一把本职业备用武器，
-    // 这样换装进度条与「新旧对比」在试验场里有东西可看
-    const loadout = createLoadout(this.player.classId);
-    const spare = mage.weapons.find((w) => !w.isDefault);
-    if (spare) addWeapon(loadout, spare.id);
-    this.loadouts.set(this.player.id, loadout);
+    this.grantDemoLoadout();
 
     this.info('试验场：Tab 选目标，1–8 释放技能。地面技能会先进入落点预览，左键确认。');
     this.info('M8：F2 切画质，G 与旗帜交互，B 切换备用武器。');
+  }
+
+  /**
+   * M8：给玩家一份真实的装备栏（15.3）。默认武器 + 一把本职业备用武器，
+   * 这样换装进度条与「新旧对比」在试验场里有东西可看。
+   *
+   * ★ 抽成方法是因为它有**两个**调用点：开局一次，试验场假复活后一次
+   *   （10.10 会在死亡时正确地清掉临时装备，见 `reviveInTestbed()`）。
+   */
+  private grantDemoLoadout(): void {
+    const loadout = createLoadout(this.player.classId);
+    const spare = mage.weapons.find((w) => !w.isDefault);
+    if (spare) addWeapon(loadout, spare.id);
+    this.player.weaponId = loadout.defaultWeaponId;
+    this.player.armorId = loadout.defaultArmorId;
+    this.loadouts.set(this.player.id, loadout);
   }
 
   private spawnDummy(cls: typeof mage, pos: Vec3, name: string): CombatEntity {
@@ -222,6 +250,8 @@ export class CombatDirector {
     this.player.yaw = playerYaw;
 
     this.world.time += dt;
+    // 本 tick 的事件流从空开始。死亡结算在 tick 末尾消费它
+    this.tickEvents = [];
 
     // ★ casting 必须在 movement 之后 —— 7.3「主动移动停止原地施放的读条」，
     //   先算完移动才知道这一 tick 有没有位移（docs/02 §3 的 tick 顺序）
@@ -269,6 +299,23 @@ export class CombatDirector {
       else this.push(`${who?.name ?? ''} 换装中断：${ev.result}`, 'fail');
     }
 
+    /**
+     * ★ M9：死亡结算。**必须排在 `tickSwaps()` 之后** ——
+     *   上面那个循环靠「实体已死」发出 `result: 'death'` 的换装中断事件
+     *   （17.3 的「换装瞬间死亡」），而 `settleDeaths()` 会清掉进行中的换装。
+     *   放前面会把那条事件吃掉，于是 HUD 的中断提示静默消失。
+     *
+     *   这次接线补的是 10.10：临时装备随死亡失效。规则从 M6 起就写好了
+     *   （`loadout.onDeath()`），但**在此之前从来没有人调用它**。
+     */
+    for (const settled of settleDeaths(
+      { world: this.world, loadouts: this.loadouts, swaps: this.swaps, pickups: this.pickups },
+      this.tickEvents,
+    )) {
+      const who = getEntity(this.world, settled.entityId);
+      this.push(`${who?.name ?? ''} 的临时装备已失效（10.10）`, 'info');
+    }
+
     this.updateDummies();
     this.reviveInTestbed();
     pruneInvalidTargets(this.world, this.player);
@@ -291,6 +338,16 @@ export class CombatDirector {
       e.health = e.maxHealth;
       clearAuras(this.auras, e.id);
       e.flags = deriveStatusFlags(this.auras, e);
+      /**
+       * ★ 连带补上演示装备。
+       *
+       *   M9 接上 10.10 之后，死亡会正确地清掉临时装备 —— 而这个假复活
+       *   是**试验场规则**（见本方法头部）。真实对局里死了就是死了，
+       *   装备该没就没；但试验场既然凭空把人救活，就得把它的演示素材
+       *   一起恢复，否则被假人打死一次之后 15.3 的装备栏就再也没东西可看，
+       *   而那是 M8 验收 #35 正在验的对象。
+       */
+      if (e.id === this.player.id) this.grantDemoLoadout();
       this.push(`${e.name} 已复活（试验场不结算死亡，见 11.4）`, 'info');
     }
   }
@@ -365,6 +422,7 @@ export class CombatDirector {
       effects, targets,
     );
     for (const ev of events) this.logEvent(ev);
+    this.tickEvents.push(...events);
   }
 
   private logEvent(ev: CombatEvent): void {

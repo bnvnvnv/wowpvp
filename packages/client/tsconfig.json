@@ -7,5 +7,7 @@
     "types": ["vite/client"]
   },
   "include": ["src/**/*"],
+  // 测试不进构建产物。类型检查由 tsconfig.test.json 负责（挂在 pnpm typecheck 上）
+  "exclude": ["**/*.test.ts"],
   "references": [{ "path": "../shared" }]
 }
