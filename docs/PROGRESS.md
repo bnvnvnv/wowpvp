@@ -4,7 +4,7 @@
 > 每完成一块工作都要更新这里。宁可写「未完成」，也不要写「已完成（待完善）」（附录A#7）。
 
 **最后更新**：2026-07-30
-**当前里程碑**：M0–M9 **全部完成**。52 条验收标准全部通过
+**当前里程碑**：M0–M10 **全部完成**（M10 = 联网对战）。52 条验收标准全部通过；M11 技术债进行中
 
 ---
 
@@ -25,12 +25,13 @@ F2 切画质 / F3 切色盲模式 / F4 切界面缩放。
 战场装备栏与军械箱争夺、夺旗七态状态机与波次复活、
 **战后统计与七项最佳玩家、快照视野裁剪、死亡结算、断线重连**。
 
-**669 个单元测试 + 141 项端到端验收全绿**
-（M1 14 + M2 14 + M3 12 + M4 7 + M5 11 + M6 13 + M7 23 + M8 12 + M9 35）。
+**759 个单元测试 + 154 项端到端验收全绿**
+（M1 14 + M2 14 + M3 12 + M4 7 + M5 11 + M6 13 + M7 23 + M8 12 + M9 35 + **M10 13**）。
 
-**还没有的**：**联网对战** —— 服务器目前仍是 M0 的连通性桩加一个重连模块，
-所有对局都跑在客户端本地模拟里。M9 交付的是**权威服务器需要的那几块料**
-（快照裁剪、重连令牌、统计折叠），不是服务器本身。
+**M10 之后**：权威服务器跑起来了 —— 20Hz 定步长循环、按接收者裁剪的快照广播、
+客户端预测与纠正。`?net=<房间>` 进联网场景，不带参数仍进试验场
+（试验场是 M1–M9 共 141 项验收的载体，**默认路径没有变**）。
+⚠️ 联网场景**还没有 HUD**，原因见 M10 章节的「判断二验出了一个结论」。
 表现层刻意保持**全程序化**，没有任何外部美术素材 —— 画面朴素是有意的取舍
 （理由与重启条件见 [09-asset-license.md](09-asset-license.md) §5）。
 
@@ -67,6 +68,8 @@ M9 期间发现 `tsc -b` 把 `*.test.ts` 也编进了 `packages/*/dist`，
 | **M7** | 夺旗战场：旗帜状态机、战场聚焦、波次复活、可缩放大图 | ✅ **已完成** |
 | **M8** | 特效、可读性、完整 HUD、画质档位 | ✅ **已完成** |
 | **M9** | 统计、观战、重连、可访问性、素材许可 | ✅ **已完成** |
+| **M10** | 联网对战：权威服务器 + 客户端预测 | ✅ **已完成** |
+| **M11** | 技术债：custom 收敛、schema 缺口、数值配平 | 🔄 **进行中** |
 
 验收标准逐条状态见 [10-acceptance-tracking.md](10-acceptance-tracking.md)：
 **52 条全部已完成**，另登记 3 条已知偏差（均不影响任何一条验收标准成立）。
@@ -680,6 +683,74 @@ export const hiddenAtQuality = (role: DecorativeRole, quality: QualityTier): boo
 4. **军械箱接客户端** —— 补上 M6 唯一没有浏览器接线的部分
 5. **战后统计界面与观战镜头** —— 数据都在，缺的是 UI
 
+## M10 已交付清单（联网对战）
+
+### 代码
+
+| 模块 | 文件 | 说明 |
+|---|---|---|
+| 协议定义 | `shared/src/net/protocol.ts` | 18 条客户端消息 / 19 条服务器消息，**字段名黑名单**挡住「客户端发结果」 |
+| 编解码与入站校验 | `shared/src/net/codec.ts` | `parseClientMessage()` 是不受信任输入的唯一入口，**返回错误不抛异常** |
+| **权威 tick 顺序** | `shared/src/sim/tick.ts` | docs/02 §3 的 11 条顺序约束，**唯一定义处**。服务器与客户端共用 |
+| 施法目标解算 | `shared/src/sim/castResolve.ts` | 5.4 / 7.4 步骤 6，从客户端搬进 shared |
+| 开局装配 | `shared/src/sim/match/setup.ts` | 从房间名单 + 地图建出全套 sim 容器与实体 |
+| 连接生命周期 | `server/src/room/Session.ts` | 解析 → 阶段鉴权 → 排队。**没有任何一处因消息内容 close()** |
+| 房间与路由 | `server/src/room/RoomServer.ts` | 规则复用 `sim/match/room.ts`，本层只做传输 |
+| **20Hz 定步长循环** | `server/src/MatchLoop.ts` | 累加器补帧；每个客户端单独 `buildSnapshot(deps, viewer)` |
+| 客户端预测与纠正 | `client/src/net/Predictor.ts` | docs/08 §5 七步；三档纠正（忽略 / 平滑 / 瞬移） |
+| 远端插值 | `client/src/net/Interpolator.ts` | 100ms 缓冲；13.4 的三条瞬移路径 |
+| 连接与重连 | `client/src/net/Connection.ts` | 令牌在 `MatchStart` 时存下，重连第一条发 `Reconnect` |
+| 联网场景 | `client/src/scenes/NetworkScene.ts` | `?net=<房间>` 进入，与试验场并存 |
+
+### 验证
+
+```
+M10 验收：13/13 通过     （scripts/verify-m10.ts，真服务器 + 真 ws 客户端）
+M1–M9  ：141/141 不掉
+单元测试：759
+```
+
+★ `verify:m10` 的每一条都是「试着做坏事，然后断言它没得逞」，
+且断言的对象是**客户端真实收到的字节**，不是「客户端没画出来」。
+
+### ★★ 本阶段抓到的五个真 bug —— 四个是「规则写对了但没生效」
+
+1. **A2：`pendingCasts` 是死代码。** 声明了、接进了 `tickWorld`、每 tick 也
+   `clear()` 了，但**没有任何地方往里写** —— `castSlot()` 仍直连 `beginCast()`。
+   于是施法有两条完成路径，`verify:m4` 的「陨石落地」日志因此消失。
+2. **A2：瞬发技能击杀不触发 `settleDeaths`。** `tickEvents` 变成只写字段，
+   10.10「临时装备随死亡失效」静默失效 —— 被试验场的假复活掩盖。
+3. **A5：快照缺 `selfMovement`，预测永远无法收敛。** `reconcile` 只重置位置却
+   沿用本地当前速度，而 `stepMovement` 有加速度。**误差只有 0.24 米，
+   表现像网络抖动**，而两端代码确实是同一份 —— 是重放不变量测试逼出来的。
+4. **A3：`startMatch()` 排在查地图之前。** 地图 id 配错时 `room.started`
+   已置 true 而 `match` 是 undefined，房间从此卡死且拒绝所有人加入。
+   教训是**先做可能失败的事，再改状态**。
+5. **M11-1：四个 `custom` handler 从未注册**，四条规则四个阶段没生效过（见技术债 §1）。
+
+### ★★ 判断二验出了一个结论：表现层确实偷偷依赖了模拟内部状态
+
+docs/13 判断二说「如果表现层能同时吃本地模拟和远端快照，说明它没有偷偷依赖
+模拟内部状态」。**验出来的答案是：它依赖了。** `CombatHud.update()` 收的是
+`CombatDirector`，并直接读 `dir.world` / `dir.player` 等 **12 个 sim 内部成员**。
+所以 `NetworkScene` 目前只画世界不画 HUD —— 共用 HUD 需要先把那 12 个成员
+抽成接口再让快照视图实现它，那是一次独立重构。
+
+### 已知不足（有意的边界）
+
+- **HUD 未共用**（上一节）。战斗事件消息已在广播，但客户端还没有消费者
+- **事件裁剪是保守版**：事件引用了不可见实体就整条不发。代价是
+  「被看不见的人打了一下看不到伤害数字」，与 14.1 的命中反馈冲突。
+  正解多半是「发伤害但抹掉 sourceId」，需要给协议加可空字段
+- **服务器端 `TabTarget` 用角色朝向**，而 5.3 要镜头前方 140° —— 协议里没有
+  镜头朝向。正解是客户端算 Tab 再发 `SetTarget`（服务器已校验可见集合）
+- **`InteractStart.entityId` 身兼两职**（旗帜靠距离、掉落物靠 id），
+  干净做法是给协议加可辨识联合
+- **`UseTrinket` / `UseConsumable` 未接线** —— 前者需要在 tick 里加一步结算，
+  后者是技术债 §6 的 schema 缺口
+
+---
+
 ## 技术债
 
 ### 1. custom handler 待收敛（11 处，M4 未做）
@@ -692,32 +763,66 @@ M4 实现了效果系统但**没有做这次迁移** —— `custom` 处理器�
 不产生实际效果。这是有意的取舍：先让主链跑通并被验证，再逐个迁移。
 迁移时每改一个就该补一条测试。
 
-| handler | 所在 | 迁移方案 | 优先级 |
-|---|---|---|---|
-| `decayAuraModifier` | 死亡骑士·冰霜锁链 | → `AuraDef.decay`（v1.1 已加） | 高 |
-| `applyMoveSpeedFloor` | 死亡骑士·死亡脚步 | → `AuraModifiers.moveSpeedFloor`（v1.1 已加） | 高 |
-| `rogue.requireOutOfCombat` | 盗贼·潜行 | → `SkillDef.requires: [{ kind: 'outOfCombat' }]`（v1.1 已加） | 高 |
-| `rogue.requireRecentParry` | 盗贼·反击刺 | → `requires: [{ kind: 'recentlyParried' }]`（v1.1 已加） | 高 |
-| `rogue.clearSlowAndRoot` | 盗贼·消失 | → `{ kind: 'dispel', types: [Movement], count: 'all', from: 'ally' }`（v1.1 已加） | 高 |
-| `paladin.judgementVulnerability` | 圣骑士·审判 | → `AuraDef.casterScoped`（v1.1 已加） | 高 |
-| `paladin.dropFlagOnTarget` | 圣骑士·保护祝福 | → `{ kind: 'dropFlag', target: 'target' }`（v1.1 已加） | 高 |
-| `druid.prowl` | 德鲁伊·猎豹形态 | → `requires: [{ kind: 'outOfCombat' }, { kind: 'notCarryingFlag' }]` | 高 |
-| `hunter.sustainAutoShot` | 猎人·自动射击 | 保留 —— 普攻循环本就属于 sim 层常驻状态，不是一次性效果 | 低 |
-| `priest.leapOfFaithLandingGuard` | 牧师·信仰飞跃 | 保留 —— 落点合法性校验属于 sim 层，但可考虑抽成通用的 `landingGuard` | 中 |
-| `druid.wild_charge` | 德鲁伊·野性冲锋 | 保留 —— 一个键按形态分三种位移，确实无法数据化 | 低 |
+| handler | 所在 | 迁移方案 | 优先级 | 状态 |
+|---|---|---|---|---|
+| `decayAuraModifier` | 死亡骑士·冰霜锁链 | → `AuraDef.decay`（v1.1 已加） | 高 | ✅ M11 已迁 |
+| `applyMoveSpeedFloor` | 死亡骑士·死亡脚步 | → `AuraModifiers.moveSpeedFloor`（v1.1 已加） | 高 | ✅ M11 已迁 |
+| `paladin.judgementVulnerability` | 圣骑士·审判 | → `AuraDef.casterScoped`（v1.1 已加） | 高 | ✅ M11 已迁 |
+| `paladin.dropFlagOnTarget` | 圣骑士·保护祝福 | → `{ kind: 'dropFlag', target: 'target' }`（v1.1 已加） | 高 | ✅ M11 已迁 |
+| `rogue.requireOutOfCombat` | 盗贼·潜行 | ~~`requires: [{outOfCombat}]`~~ | 高 | ⛔ 阻塞，见下 |
+| `rogue.requireRecentParry` | 盗贼·反击刺 | ~~`requires: [{recentlyParried}]`~~ | 高 | ⛔ 阻塞，见下 |
+| `rogue.clearSlowAndRoot` | 盗贼·消失 | ~~`dispel types:[Movement]`~~ | 高 | ⛔ 方案有误，见下 |
+| `druid.prowl` | 德鲁伊·猎豹形态 | ~~`requires: [...]`~~ | 高 | ⛔ 语义不符，见下 |
+| `hunter.sustainAutoShot` | 猎人·自动射击 | 保留 —— 普攻循环本就属于 sim 层常驻状态，不是一次性效果 | 低 | 保留 |
+| `priest.leapOfFaithLandingGuard` | 牧师·信仰飞跃 | 保留 —— 落点合法性校验属于 sim 层，但可考虑抽成通用的 `landingGuard` | 中 | 保留 |
+| `druid.wild_charge` | 德鲁伊·野性冲锋 | 保留 —— 一个键按形态分三种位移，确实无法数据化 | 低 | 保留 |
 
-> 判断标准（见 [11-contributing.md](11-contributing.md) §4）：同一类 custom 出现三次以上，
-> 说明 schema 缺一个正式 kind。上表里「前置条件」类出现了 4 次 —— 这就是为什么 v1.1 加了 `ConditionDef`。
+**当前：11 → 7 处。**
+
+#### ⚠️ 上表原本过于乐观 —— M11 核查后的修正
+
+★★ **被迁走的那 4 条，此前从来没有生效过。** `custom` 兜底实现「只记事件、
+不产生效果」，而这 4 个 handler 名在 `shared/src/sim/` 里**一个都不存在**。
+于是「减速逐渐恢复」「速度下限 80%」「审判易伤」「受益者掉旗」四条规则
+写在数据里、写在技能描述里，却四个阶段一次都没发生过 —— 而单测与九支验收
+全绿，因为**从来没有人测过它们**。迁移时补了 `data/migrations.test.ts`。
+
+剩下 4 条**不是数据编辑能解决的**，路线图「降到 3 处以下」这条判据**不可达**：
+
+- ★★ **`SkillDef.requires` / `ConditionDef` 是死 schema —— 全仓零个读取方。**
+  `validateCast()` 从不读它，也不存在 `canCast()`。把 `requires` 写进数据会得到
+  **静默被忽略的配置**，比现在**更糟**：连 custom 那条兜底事件都没了。
+- `outOfCombat` 没有数据源：`CombatEntity` 上没有 `inCombat` / `lastDamageAt`。
+- `recentlyParried`：**招架从未被掷判过**。`combat.ts` 里没有任何闪避/招架判定，
+  `parry` 只是个聚合数字。没有招架事件，就谈不上「最近招架过」。
+- `rogue.clearSlowAndRoot` 的方案**有误**：定身被 `applyControl()` 标成
+  `dispelType: 'magic'` 而非 `'movement'`，movement 型驱散点不到它。
+  ⚠️ 同一个 bug 已经随 `leapBackward.clearsSlow` 发出去了。
+- `druid.prowl` 语义不符：`requires` 是**施法时**的门禁，而 prowl 需要的是
+  形态期间的**持续监视**（脱战即获得潜行）。
+
+**要真正降到 3 处以下，前置是三件引擎工作**：战斗状态追踪、`requires` 的读取、
+闪避/招架系统。它们各自都是独立的一步，不属于「纯迁移」。
 
 ### 2. 数值是占位值，需要一轮专门配平
 
 规格书 9.x 只给了少数具体数值（武器伤害百分比、冷却、持续时间），
 大量伤害/治疗量只有「造成基础神圣伤害」「恢复大量生命」这类描述。
 
-当前各职业文件里的 `flat` 数值是按生命/资源基线估的**占位值**，代码中逐条注释标明。
+当前各职业文件里的 `flat` 数值是按生命/资源基线估的**占位值**。
 规格书 9. 开头也明确说了「以下数值用于首轮可玩原型和规则验收，不代表最终平衡结果」。
 
-**配平必须在 M4（技能真正跑起来）之后做**，在此之前调数字没有意义。
+> ⚠️ **更正（M11 核查）**：本节原文写「代码中逐条注释标明」——**实际没有**。
+> 8 个职业文件里共 19 处 `flat:`，**一条占位说明都没有**；仅有的 5 条相关注释
+> 全部是关于**资源消耗**的（「文档未给出符文能量产出…」之类）。
+> 也就是说接手配平的人在代码里**找不到这些伤害数字的由来**，
+> 唯一的书面依据是本节这句「按各职业生命/资源基线估」。
+> 数值位置：19 处 `flat:` 分布在 dk/druid/mage/paladin/priest 五个文件
+> （hunter/rogue/warrior 是纯物理，走 `WeaponDef.swingPercent`）；
+> 另有各技能 `cost.amount`、`ClassDef.baseHealth`、`data/armors.ts` 的护甲模板、
+> 以及 `constants/combat.ts` 的全局常量。
+
+**配平必须在 M10（真实对局跑起来）之后做**，在此之前调数字没有意义。
 调整时必须保持技能的瞄准类型、反制窗口和职业定位不变（规格书 9. 前言）。
 
 ### 3. 施法失败原因的优先级
@@ -744,11 +849,11 @@ M8 做 HUD 时若要满足 15.2 的提示质量，建议**另加**一个 `descri
 
 ### 5. 抗法型护甲的魔法控制削减缺 schema 支持（M9 发现）
 
-`data/armors.ts` 的 `SPELLWARD_MAGIC_CC_DURATION = 0.8` 目前**未接入**：
-schema 只有全局 `ccDurationTaken`，没有 `ccDurationTakenBySchool`，
-而 `applyControl()` 也拿不到控制的学派。
-迁移方案：给 `AuraModifiers` 加 `ccDurationTakenBySchool`，
-并把施法技能的 `school` 传进 `applyControl()`。优先级：中。
+✅ **M11 已完成。** `AuraModifiers.ccDurationTakenBySchool` 进了 schema，
+`applyControl()` 从 `ctx.skillId` 反查 `SkillDef.school`，抗法护甲已接上，
+advantage 文案改回「法术伤害与魔法控制时长降低」。
+★ 配的测试重点不是「减免生效了」，而是**「物理学派必须是 undefined」**——
+那才是抗法型与抗控型的分界线（10.9 / 验收 #32）。
 ★ 与上表「前置条件类 custom 出现 4 次」是同一个判断标准 ——
 「按学派区分」这个需求已经在 `damageTakenBySchool` 出现过一次，
 再出现一次就该正式加进 schema。
@@ -760,10 +865,27 @@ schema 只有全局 `ccDurationTaken`，没有 `ccDurationTakenBySchool`，
 后果：16.2 的「增益期间击杀」结构上恒为 0（已登记为已知偏差）。
 `stats.ts` 的 `recordItemBuff()` 已留好唯一入口。优先级：中。
 
+> ⚠️ **更正（M11 核查）：缺口比「没有使用路径」更大 —— 连数据类型都不存在。**
+> `data/schema.ts` 里**没有 `ConsumableDef`**：没有名字、没有效果表、没有持续时间、
+> 没有冷却。而且**从来没有任何代码创建过 `kind: 'consumable'` 的掉落物**，
+> `Loadout.consumables` 至今只被赋值过 `[]`，也没有 `addConsumable` / `useConsumable`。
+> 所以这一项的实际工作量是「新增一个数据类型 + 注册表 + 拾取 + 使用 + 统计接线」，
+> 不是「补一个函数」。
+
 ### 7. 技能名需要原创化改写
 
 当前技能名直接来自规格书，与《魔兽世界》高度重合。规格书 18.3 要求正式发布使用原创技能名。
-改动成本很低（只在 `SkillDef.name` 一个字段），但**不要拖到发布前**。
+**不要拖到发布前。**
+
+> ⚠️ **更正（M11 核查）：不是「只在 `SkillDef.name` 一个字段」。**
+> 91 个技能里 **85 个**可辨识借用（79 个逐字相同，6 个明显派生），只有 6 个
+> 武器授予技能是原创的。更要紧的是 **`SkillId` 字符串同样是 WoW 派生的**
+> （`death_grip` / `psychic_scream` / `mortal_strike` / `kidney_shot`…），
+> 而它们是**承重的**：光环 id、`vfx` key、`WeaponDef.grantsSkills` / `removesSkills`、
+> `skillModifiers` 的记录键全都引用它们。18.3 说的是「技能名称」——
+> 如果 id 与 vfx key 也算，这就不是一次字段替换，而是一次跨数据层的重命名。
+>
+> ★ 这一项需要**创作决定**（起什么名、什么风格基调），不适合自动生成。
 详见 [09-asset-license.md](09-asset-license.md) §3。
 
 ---
