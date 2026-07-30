@@ -35,15 +35,24 @@ pnpm install
 pnpm dev:server          # 权威服务器，默认 ws://localhost:8080
 pnpm dev:client          # 客户端，默认 http://localhost:5173
 
-pnpm test                # 单元测试（几何、命中、施法状态机、数据完整性）
-pnpm typecheck           # 全量类型检查
+pnpm test                # 单元测试（669 条：几何、命中、施法状态机、统计、快照裁剪…）
+pnpm typecheck           # 全量类型检查，★ 含测试文件本身（见下）
 
 # 阶段验收脚本（每个里程碑一支，对应 docs/10 的验收标准）
 pnpm verify:m1           # M1–M4 驱动真实浏览器，需要先跑起客户端
-pnpm verify:m5           # M5–M7 是纯逻辑，直接跑
+pnpm verify:m5           # M5–M7 / M9 是纯逻辑，直接跑
 pnpm verify:m7           # 夺旗：跑一整局真实比赛（真地图、真碰撞、20Hz）
 pnpm verify:m8           # 表现层：HUD 四区、逐档画质、带旗开无敌先掉旗
+pnpm verify:m9           # 统计与安全边界：潜行不进快照、战后统计、七项最佳玩家
 ```
+
+**三层验证各有分工，缺一层就会漏一类 bug**（这是九个里程碑攒出来的经验）：
+
+| 层 | 命令 | 它能抓到什么 |
+|---|---|---|
+| 单元测试 | `pnpm test` | **规则**对不对 |
+| 端到端验收 | `pnpm verify:m1`…`m9` | 规则**有没有被调用**。本项目四次遇到「规则写对了、单测全绿、但没人调用它」 |
+| 类型检查 | `pnpm typecheck` | **测试自己有没有说谎**。测试文件不过类型检查时，import 一个不存在的导出会得到 `undefined` 而非报错 —— 测试可能因为错误的原因通过 |
 
 ## 仓库结构
 
@@ -62,6 +71,7 @@ wowpvp/
 │  ├─ 09-asset-license.md       素材许可清单（附录A#6 要求）
 │  ├─ 10-acceptance-tracking.md 52 条验收标准追踪表
 │  ├─ 11-contributing.md        扩展指南：如何加职业/技能/武器/地图
+│  ├─ 12-fairness-review.md     公平性设计审查（验收 #52）
 │  └─ PROGRESS.md               完成情况与下一步
 └─ packages/
    ├─ shared/   纯逻辑：数据定义、几何命中、战斗模拟核心（可单测，无渲染依赖）

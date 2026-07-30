@@ -27,7 +27,8 @@
     "verify:m8": "node scripts/verify-m8.mjs",
     "typecheck": "tsc -b packages/shared packages/server packages/client && pnpm typecheck:tests",
     "typecheck:tests": "tsc -p packages/shared/tsconfig.test.json && tsc -p packages/server/tsconfig.test.json && tsc -p packages/client/tsconfig.test.json",
-    "clean": "rimraf packages/*/dist packages/*/*.tsbuildinfo"
+    "clean": "rimraf packages/*/dist packages/*/*.tsbuildinfo",
+    "verify:m9": "tsx scripts/verify-m9.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

@@ -41,6 +41,7 @@
 | [06-modes-and-maps.md](06-modes-and-maps.md) | 模式规则、回合与旗帜状态机、地图数据格式与公平约束 | 2、3、11、12 章 |
 | [07-client-render-camera.md](07-client-render-camera.md) | 镜头、输入、移动物理、动画状态机、特效与可读性、画质档位 | 4、13、14 章 |
 | [08-network-protocol.md](08-network-protocol.md) | 消息定义、权威边界、**视野裁剪（安全边界）**、预测与纠正、断线重连 | — （规格书不规定） |
+| [12-fairness-review.md](12-fairness-review.md) | 公平性设计审查：等级/永久装备/付费属性/外观稀有度四项逐条判据 | 17.1（验收 #52）|
 
 ### 自动生成的检查表
 
