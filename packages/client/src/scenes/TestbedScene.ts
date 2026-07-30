@@ -29,6 +29,10 @@ import { MapRenderer } from '../render/MapRenderer.js';
 import { AimingController, type AimInput } from '../targeting/AimingController.js';
 import { DirectionIndicator } from '../targeting/DirectionIndicator.js';
 import { GroundIndicator, screenToGround } from '../targeting/GroundIndicator.js';
+import { QualityController } from '../render/QualityController.js';
+import { QualityTier } from '../render/quality.js';
+import { StatusMarkers } from '../vfx/StatusMarkers.js';
+import type { ControlKind } from '../vfx/status.js';
 
 /** 技能栏槽位数，与 CombatDirector 的 PLAYER_SKILL_IDS 长度一致 */
 const SKILL_SLOT_COUNT = 8;
@@ -60,6 +64,13 @@ export class TestbedScene {
   private readonly hud: CombatHud;
   /** 场上其他战斗实体的可视化 */
   private readonly dummyViews = new Map<number, CharacterView>();
+  /** M8：控制状态与护盾标记，每个实体一份 */
+  private readonly statusMarkers = new Map<number, StatusMarkers>();
+  /** M8：三档画质（F2 循环）*/
+  private readonly quality: QualityController;
+  private sun!: THREE.DirectionalLight;
+  /** 场景经过的总时间，驱动标记的运动 */
+  private elapsed = 0;
   /** M3：瞄准 */
   private readonly aim = new AimingController();
   private readonly groundIndicator = new GroundIndicator();
@@ -83,8 +94,9 @@ export class TestbedScene {
   ) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // ★ 17.1 三档画质。默认最高，F2 循环 —— 验收 #48 要逐档人工检查
+    this.quality = new QualityController(this.renderer, QualityTier.High);
 
     this.scene.background = new THREE.Color(0x232a35);
     // 雾要推到地图边界之外：70×70 的场地对角线约 99 米，太近的雾会让远端墙体糊掉，
@@ -104,6 +116,10 @@ export class TestbedScene {
 
     // M2 战斗 + M3 瞄准
     this.combat = new CombatDirector(this.obstacles, TESTBED_SPAWN.position, testbed.bounds);
+    // ★ 必须用玩家的**真实实体 id**。这里曾经写死 0，而实体 id 从 1 开始分配 ——
+    //   结果玩家身上的控制标记永远不会更新（一直是构造时的 visible=false）。
+    //   编译通过、测试全绿，只有截图比对才看得出来
+    this.addStatusMarkers(this.combat.player.id as number, this.view);
     this.scene.add(this.groundIndicator.group, this.directionIndicator.group);
     canvas.addEventListener('mousemove', this.onCanvasMouseMove);
     this.hud = new CombatHud(canvas.parentElement ?? document.body);
@@ -112,6 +128,7 @@ export class TestbedScene {
       v.setTransform(e.position, e.yaw);
       this.dummyViews.set(e.id as number, v);
       this.scene.add(v.group);
+      this.addStatusMarkers(e.id as number, v);
     }
     canvas.addEventListener('mousedown', this.onCanvasMouseDown);
 
@@ -200,14 +217,52 @@ export class TestbedScene {
     this.scene.add(coarse);
   }
 
+  /** 每个角色挂一份控制状态与护盾标记（14.3）*/
+  private addStatusMarkers(id: number, view: CharacterView): void {
+    const m = new StatusMarkers();
+    view.group.add(m.group);
+    this.statusMarkers.set(id, m);
+  }
+
+  /**
+   * 每帧刷新控制状态与护盾标记。
+   *
+   * ★ 这个方法**不看画质** —— 控制状态和护盾都是 14.4 点名不能隐藏的关键信息。
+   *   `quality` 只被传进去用来**放大**低画质下的标记（controlMarkerScale），
+   *   没有任何一条路径能让它们消失。
+   */
+  private updateStatusMarkers(dt: number): void {
+    this.elapsed += dt;
+    const dist = this.cam.distance;
+
+    for (const e of this.combat.allEntities()) {
+      const m = this.statusMarkers.get(e.id as number);
+      if (!m) continue;
+
+      const active = new Set<ControlKind>();
+      // 7.3：昏迷/恐惧/变形都置 stunned，但恐惧还额外置 feared ——
+      // 14.3 要求两者视觉不同，所以恐惧时只显示恐惧，不叠一个昏迷标记
+      if (e.flags.feared) active.add('feared');
+      else if (e.flags.stunned) active.add('stunned');
+      if (e.flags.rooted) active.add('rooted');
+      if (e.flags.silenced) active.add('silenced');
+      if (e.flags.disarmed) active.add('disarmed');
+
+      m.update(active, this.quality.current, dist, dt, this.elapsed);
+
+      const shield = this.combat.shieldOf(e.id);
+      m.setShield(shield?.remaining, shield?.initial ?? 1, dist);
+    }
+  }
+
   private addLights(): void {
     // three r155+ 默认使用物理光照单位，强度不要照搬旧版数值 —— 容易直接过曝成白板
     this.scene.add(new THREE.HemisphereLight(0xa8bcd8, 0x3a4250, 0.85));
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.12));
     const sun = new THREE.DirectionalLight(0xfff0dd, 1.1);
+    this.sun = sun;
     sun.position.set(24, 40, 16);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
+    this.quality.applyToLight(sun);
     const c = sun.shadow.camera;
     c.left = -45;
     c.right = 45;
@@ -243,6 +298,13 @@ export class TestbedScene {
       this.view.setHitboxVisible(this.debugVisible);
       this.mapRenderer.setDebugVisible(this.debugVisible);
       for (const v of this.dummyViews.values()) v.setHitboxVisible(this.debugVisible);
+    }
+    if (input.pressed.has(Action.CycleQuality)) {
+      const tier = this.quality.cycle();
+      this.quality.applyToLight(this.sun);
+      // ★ 注意这里**没有**任何「低画质就隐藏 X」的分支 ——
+      //   关键元素的可见性根本不经过画质档位，见 render/quality.ts
+      console.info(`[画质] ${tier}`);
     }
 
     // ── M2 战斗操作 ─────────────────────────────────────────
@@ -344,6 +406,7 @@ export class TestbedScene {
     }
 
     this.updateIndicators();
+    this.updateStatusMarkers(dt);
     this.renderer.render(this.scene, this.cam.camera);
     this.hud.update(this.combat, this.cam.camera, this.canvas);
 

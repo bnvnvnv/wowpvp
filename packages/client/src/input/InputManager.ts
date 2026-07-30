@@ -36,6 +36,8 @@ export const Action = {
   Skill8: 'skill8',
   /** 调试：切换碰撞体与判定可视化 */
   ToggleDebug: 'toggleDebug',
+  /** 17.1 三档画质循环。★ 验收 #48 要逐档人工检查，需要一个能随时切的键 */
+  CycleQuality: 'cycleQuality',
 } as const;
 export type Action = (typeof Action)[keyof typeof Action];
 
@@ -64,6 +66,7 @@ export const DEFAULT_BINDINGS: Readonly<Record<Action, string>> = {
   [Action.Skill7]: 'Digit7',
   [Action.Skill8]: 'Digit8',
   [Action.ToggleDebug]: 'F1',
+  [Action.CycleQuality]: 'F2',
 };
 
 /** 角色转向速度，弧度/秒。A/D 未按右键时用它转身 */
@@ -129,7 +132,7 @@ export class InputManager {
   private attach(): void {
     const onKeyDown = (e: KeyboardEvent) => {
       // Tab 默认会切换焦点，必须阻止
-      if (e.code === 'Tab' || e.code === 'Space' || e.code === 'F1') e.preventDefault();
+      if (['Tab', 'Space', 'F1', 'F2'].includes(e.code)) e.preventDefault();
       if (this.down.has(e.code)) return; // 忽略系统的按键重复
       this.down.add(e.code);
       for (const a of Object.values(Action)) {

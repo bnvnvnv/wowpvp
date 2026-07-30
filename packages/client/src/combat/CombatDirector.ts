@@ -54,6 +54,7 @@ import {
   dirToYaw,
   normalize2D,
   sub,
+  aurasOf,
   createAuraStore,
   createDrStore,
   createGroundStore,
@@ -66,6 +67,7 @@ import {
   tickProjectiles,
   type CombatEvent,
   type EffectDef,
+  type EntityId,
 } from '@wowpvp/shared';
 
 /** 位移类型的中文名，供战斗日志显示 */
@@ -668,6 +670,28 @@ export class CombatDirector {
     return listEntities(this.world).filter(
       (e) => e.id !== this.player.id && isSelectableBy(e, this.player),
     );
+  }
+
+  /** 含玩家自己的全部实体。M8 的状态标记要挂在所有人身上，包括自己 */
+  allEntities(): CombatEntity[] {
+    return listEntities(this.world);
+  }
+
+  /**
+   * 某个实体身上最强的吸收护盾。14.3 的护盾四态靠它驱动。
+   *
+   * 取「剩余量最大」的那一个 —— 同时有多个护盾时，玩家关心的是
+   * 「还能扛多少」，而不是某一个具体法术的剩余。
+   */
+  shieldOf(id: EntityId): { remaining: number; initial: number } | undefined {
+    let best: { remaining: number; initial: number } | undefined;
+    for (const a of aurasOf(this.auras, id)) {
+      if (a.absorbRemaining <= 0) continue;
+      if (!best || a.absorbRemaining > best.remaining) {
+        best = { remaining: a.absorbRemaining, initial: a.absorbInitial };
+      }
+    }
+    return best;
   }
 
   distanceTo(e: CombatEntity): number {
