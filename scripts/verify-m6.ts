@@ -147,10 +147,13 @@ console.log('\n── 规格书 10.5：拾取的时间与中断规则 ──');
   beginPickup(w2, l2b, store2, pickups2, dropId, 0.1);
   const ev = tickPickups(world.entities, loadouts2, store2, pickups2, EQUIP.PICKUP_SECONDS + 0.2);
 
+  // ★ 断言「**这一件**被拿走了」，不是「地面空了」——
+  //   M11 给军械箱加了消耗品掉落后，地上本来就还会有别的东西。
+  //   按意图收紧，而不是把数字从 0 改成 1（下次再加一种掉落又会红）。
   check('10.5b', '★ 多人同时拾取只有第一个完成者成功，其余收到明确失败反馈',
     ev.filter((e) => e.result === 'completed').length === 1 &&
     ev.filter((e) => e.result === 'taken').length === 1 &&
-    store2.drops.length === 0,
+    !store2.drops.some((d) => d.id === dropId),
     ev.map((e) => `${world.entities.get(e.entityId)?.name}＝${e.result}`).join('，'));
 }
 
@@ -317,7 +320,10 @@ console.log('\n── 一整局武装竞技场的装备争夺 ──');
 
   // 双方各自拾取属于自己的那件
   for (const [e, l] of [[a, la], [b, lb]] as const) {
-    const mine = store.drops.find((d) => (d.classId as string) === (e.classId as string));
+    // ★ 只找**本职业的装备**。消耗品没有 classId（人人可用），自然不会被选中
+    const mine = store.drops.find(
+      (d) => d.classId !== undefined && (d.classId as string) === (e.classId as string),
+    );
     if (!mine) continue;
     const r = beginPickup(e, l, store, pickups, mine.id, 6);
     timeline.push(`${e.name} 起手拾取＝${r.ok}`);
@@ -325,8 +331,10 @@ console.log('\n── 一整局武装竞技场的装备争夺 ──');
   const ev = tickPickups(world.entities, loadouts, store, pickups, 6 + EQUIP.PICKUP_SECONDS + 0.01);
   for (const x of ev) timeline.push(`${world.entities.get(x.entityId)?.name}＝${x.result}`);
 
-  check('M6', '★ 双方各自拾到本职业装备，互不干扰，地面清空',
-    la.spareWeapons.length === 1 && lb.spareWeapons.length === 1 && store.drops.length === 0,
+  // ★ 判据是「**职业装备**都被拿走了」。消耗品无人拾取会留在地上，那是对的
+  check('M6', '★ 双方各自拾到本职业装备，互不干扰，职业装备已清空',
+    la.spareWeapons.length === 1 && lb.spareWeapons.length === 1 &&
+    !store.drops.some((d) => d.classId !== undefined),
     `${timeline.join('，')}；战士获得 ${la.spareWeapons.length} 件、法师获得 ${lb.spareWeapons.length} 件`);
 }
 
