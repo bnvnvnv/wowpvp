@@ -26,7 +26,8 @@ import {
   type CastState,
   type CombatEntity,
 } from '@wowpvp/shared';
-import { FAIL_TEXT, SCHOOL_TEXT, type CombatDirector, type SkillSlotView } from '../combat/CombatDirector.js';
+import { FAIL_TEXT, SCHOOL_TEXT } from '../combat/CombatDirector.js';
+import type { CombatView, HudSkillSlot, HudUnit } from './CombatView.js';
 import { CONTROL_VISUALS, type ControlKind } from '../vfx/status.js';
 import { Minimap } from './Minimap.js';
 import { ModeHud } from './ModeHud.js';
@@ -211,7 +212,7 @@ export class CombatHud {
    * 每帧做一次会让浏览器反复解析 HTML —— 实测把帧率从 25 拖到 12。
    * 姓名板的**位置**仍然每帧更新（不重建 DOM），否则会跟不上镜头。
    */
-  update(dir: CombatDirector, camera: THREE.Camera, canvas: HTMLCanvasElement): void {
+  update(dir: CombatView, camera: THREE.Camera, canvas: HTMLCanvasElement): void {
     const now = performance.now();
     const full = now - this.lastFullUpdate >= HUD_UPDATE_INTERVAL_MS;
     if (full) this.lastFullUpdate = now;
@@ -231,8 +232,8 @@ export class CombatHud {
 
   private renderUnitFrame(
     el: HTMLElement,
-    unit: CombatEntity | undefined,
-    dir: CombatDirector,
+    unit: HudUnit | undefined,
+    dir: CombatView,
     label: string,
   ): void {
     if (!unit) {
@@ -281,11 +282,11 @@ export class CombatHud {
    * ★ 不可打断带**盾牌标记**（7.5：避免玩家浪费打断后误以为系统失效）
    * ★ 物理射击准备用**独立颜色**，因为它的反制方式与法术不同（缴械有效、沉默无效）
    */
-  private castBarHtml(cast: CastState, dir: CombatDirector): string {
+  private castBarHtml(cast: CastState, dir: CombatView): string {
     const skill = dir.skills.find((s) => s.id === cast.skillId)
       ?? { name: String(cast.skillId), school: cast.school };
     const total = Math.max(0.01, cast.endsAt - cast.startedAt);
-    const remaining = Math.max(0, cast.endsAt - dir.world.time);
+    const remaining = Math.max(0, cast.endsAt - dir.now);
     const pct = Math.min(100, ((total - remaining) / total) * 100);
 
     const isPhysicalShot = cast.kind === CastKind.AimedShot;
@@ -305,7 +306,7 @@ export class CombatHud {
     `;
   }
 
-  private renderPlayerCast(dir: CombatDirector): void {
+  private renderPlayerCast(dir: CombatView): void {
     const cast = dir.playerCast;
     if (!cast) {
       this.playerCastBar.style.display = 'none';
@@ -320,7 +321,7 @@ export class CombatHud {
 
   // ── 15.2 技能栏 ─────────────────────────────────────────────
 
-  private renderSkillBar(slots: SkillSlotView[]): void {
+  private renderSkillBar(slots: readonly HudSkillSlot[]): void {
     this.skillBar.innerHTML = slots
       .map((s, i) => {
         const usable = s.blocker === CastFailure.Ok && s.cooldownRemaining <= 0;
@@ -346,7 +347,7 @@ export class CombatHud {
       .join('');
   }
 
-  private renderLog(dir: CombatDirector): void {
+  private renderLog(dir: CombatView): void {
     this.logBox.innerHTML = dir.log
       .slice(0, 14)
       .map((l) => `<div class="log ${l.kind}"><span>${l.time.toFixed(1)}</span>${esc(l.text)}</div>`)
@@ -361,7 +362,7 @@ export class CombatHud {
    * 而真正的保证在服务器的快照裁剪（docs/08 §4.1），这里只是第二道。
    */
   private renderNameplates(
-    dir: CombatDirector,
+    dir: CombatView,
     camera: THREE.Camera,
     canvas: HTMLCanvasElement,
     /** 是否重建内容。false 时只更新屏幕位置 */
@@ -373,7 +374,7 @@ export class CombatHud {
     const v = new THREE.Vector3();
 
     // 17.2 姓名板密度需要「按距离排第几」——远处的姓名板才是造成拥挤的那些
-    const entities = dir.visibleEntities();
+    const entities = dir.visibleUnits();
     const nameplateRank = new Map<number, number>();
     [...entities]
       .sort((a, b) =>
@@ -438,7 +439,7 @@ export class CombatHud {
         <div class="np-hp"><i style="width:${hpPct}%"></i></div>
         ${cast ? `<div class="np-cast ${cast.interruptible ? '' : 'shielded'}"
              style="--school:${SCHOOL_COLOR[cast.school] ?? '#ccc'}">
-             <i style="width:${castPct(cast, dir.world.time)}%"></i>
+             <i style="width:${castPct(cast, dir.now)}%"></i>
            </div>` : ''}
       `;
     }
@@ -484,7 +485,7 @@ const esc = (s: string): string =>
  * ★ 复用 `CONTROL_VISUALS` 的字形表 —— 目标框、队伍框和 3D 场景
  *   用的是**同一个字符**，玩家不需要学三套符号（17.2）。
  */
-const controlBadges = (unit: CombatEntity): string => {
+const controlBadges = (unit: HudUnit): string => {
   const kinds: ControlKind[] = [];
   // 7.3 把恐惧也置为 stunned，但 14.3 要求两者视觉不同：恐惧优先
   if (unit.flags.feared) kinds.push('feared');

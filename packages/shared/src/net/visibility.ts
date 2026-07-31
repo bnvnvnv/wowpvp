@@ -118,6 +118,23 @@ export interface SelfMovementSnapshot {
   fallStartY: number;
 }
 
+/**
+ * 快照里可显示的状态标志（15.2 目标框 / 14.3 控制标记 / 8.4 免疫的视觉区别）。
+ * ★ 见 `EntitySnapshot.flags` 的注释：潜行相关字段刻意不在这里。
+ */
+export interface DisplayFlags {
+  stunned: boolean;
+  feared: boolean;
+  rooted: boolean;
+  silenced: boolean;
+  disarmed: boolean;
+  carryingFlag: boolean;
+  /** 8.4 三种免疫要有明显视觉区别 */
+  immuneAll: boolean;
+  immunePhysical: boolean;
+  immuneMagic: boolean;
+}
+
 export interface EntitySnapshot {
   id: EntityId;
   name: string;
@@ -133,6 +150,21 @@ export interface EntitySnapshot {
   maxResources: Readonly<Record<string, number>>;
   auras: readonly AuraSnapshot[];
   carryingFlag: boolean;
+  /**
+   * 可显示的状态标志。15.2 要求目标框显示状态，14.3 / M8 的控制标记也读它。
+   *
+   * ★★ **不是整个 `StatusFlags`，只是能显示的那一部分。**
+   *   `stealthed` / `stealthRevealed` **刻意不在这里** —— 未被发现的潜行者
+   *   压根不进快照（`isVisibleTo`），而**进了快照的潜行者**（队友、旗手）
+   *   把「他在潜行」发出去是安全的；但把这两个字段做成通用字段会诱使
+   *   将来有人「顺手也发给敌人」，那就退回到 docs/08 §4.1 明确否掉的
+   *   「发 stealthed 让客户端别画」那条路上了。
+   *
+   * ⚠️ 在此之前快照**根本没有状态标志** —— 联网场景的 HUD 因此无法显示
+   *   「昏迷 / 沉默 / 缴械」，而 15.2 要求它显示。这是接 HUD 时才暴露的缺口，
+   *   与 `teleported`、`selfMovement` 是同一类：**规则在，数据没传**。
+   */
+  flags: DisplayFlags;
   /**
    * 本 tick 这个实体是**瞬移**过来的（闪现、击退、位置纠正、复活）。
    *
@@ -308,6 +340,17 @@ const snapshotEntity = (
       remaining: Number.isFinite(a.expiresAt) ? Math.max(0, a.expiresAt - deps.world.time) : null,
     })),
     carryingFlag: e.flags.carryingFlag,
+    flags: {
+      stunned: e.flags.stunned,
+      feared: e.flags.feared,
+      rooted: e.flags.rooted,
+      silenced: e.flags.silenced,
+      disarmed: e.flags.disarmed,
+      carryingFlag: e.flags.carryingFlag,
+      immuneAll: e.flags.immuneAll,
+      immunePhysical: e.flags.immunePhysical,
+      immuneMagic: e.flags.immuneMagic,
+    },
     equipment: friendly
       ? allyEquipment(e, deps)
       : enemyEquipment(e, deps),

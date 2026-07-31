@@ -779,6 +779,14 @@ export class CombatDirector {
     });
   }
 
+  /**
+   * ★ 实现 `CombatView`（HUD 的窄接口）所需的两个成员。
+   *   `CombatEntity` 结构上已经满足 `HudUnit`，所以不需要任何适配层 ——
+   *   这正是那个接口按「HUD 真的读什么」来定义、而不是照抄 CombatEntity 的收益。
+   */
+  get now(): number { return this.world.time; }
+  visibleUnits(): CombatEntity[] { return this.visibleEntities(); }
+
   /** 场上所有可见实体，供姓名板绘制 */
   visibleEntities(): CombatEntity[] {
     return listEntities(this.world).filter(

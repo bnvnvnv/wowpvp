@@ -54,6 +54,10 @@ const toSnapshot = (e: {
   maxResources: {},
   auras: [],
   carryingFlag: false,
+  flags: {
+    stunned: false, feared: false, rooted: false, silenced: false, disarmed: false,
+    carryingFlag: false, immuneAll: false, immunePhysical: false, immuneMagic: false,
+  },
   equipment: { currentWeaponId: undefined, armorArchetype: undefined, swapping: false },
 });
 

@@ -14,12 +14,11 @@
  *   差别只在「世界状态从哪来」。这本身就是一次验证：如果表现层能同时
  *   吃本地模拟和远端快照，说明它确实没有偷偷依赖模拟内部状态。
  *
- * ⚠️ **HUD 目前还没共用。** `CombatHud.update()` 收的是 `CombatDirector`，
- *    并且直接读 `dir.world` / `dir.player` 这些 **sim 内部类型** ——
- *    也就是说表现层里恰恰有一处「偷偷依赖了模拟内部状态」。共用它需要先把
- *    那 12 个成员抽成一个接口，再让快照视图实现它。那是一次独立的重构，
- *    不和网络代码混在一个提交里（与 A2 拆分 tick 重构是同一个理由）。
- *    在此之前本场景只画世界，不画 HUD —— **没有假装它已经共用了。**
+ * ★★ **HUD 已共用（M11）。** M10 接这个场景时验出「表现层确实偷偷依赖了
+ *    模拟内部状态」—— `CombatHud.update()` 收 `CombatDirector` 并直读
+ *    `dir.world` / `dir.player`。M11 把那些依赖收敛成 `hud/CombatView.ts`
+ *    的窄接口，`CombatDirector` 与 `net/SnapshotCombatView` 各实现一份，
+ *    于是**同一个 CombatHud 两边都能喂**。判断二的那句话到此才真正兑现。
  */
 
 import * as THREE from 'three';
@@ -47,6 +46,8 @@ import { Connection } from '../net/Connection.js';
 import { Interpolator } from '../net/Interpolator.js';
 import { Predictor } from '../net/Predictor.js';
 import { pickTabTargetFromSnapshot } from '../net/snapshotTargeting.js';
+import { CombatHud } from '../hud/CombatHud.js';
+import { SnapshotCombatView } from '../net/SnapshotCombatView.js';
 
 export interface NetworkSceneOptions {
   url: string;
@@ -82,6 +83,9 @@ export class NetworkScene {
   private readonly loop: GameLoop;
   private readonly quality: QualityController;
   private readonly conn: Connection;
+  /** ★ 与试验场**同一个** HUD 类，喂的是快照视图而不是 CombatDirector */
+  private readonly hud: CombatHud;
+  private readonly view = new SnapshotCombatView();
 
   private mapRenderer?: MapRenderer;
   private map?: MapDef;
@@ -129,6 +133,13 @@ export class NetworkScene {
 
     this.cam = new CameraController(canvas.clientWidth / canvas.clientHeight);
     this.input = new InputManager(canvas);
+    this.hud = new CombatHud(canvas.parentElement ?? document.body);
+    // 点姓名板选人 → 发 SetTarget（服务器仍会校验可见集合）
+    this.view.onSelect = (id) => {
+      this.currentTargetId = id;
+      this.view.targetId = id;
+      this.conn.send({ t: 'SetTarget', slot: 'hard', entityId: id });
+    };
 
     this.conn = new Connection(opts.url, {
       onMessage: (m) => this.onMessage(m),
@@ -217,6 +228,10 @@ export class NetworkScene {
         this.interp.push(msg.time, msg.entities);
         this.lastEntities = msg.entities;
         this.selfTeam = msg.entities.find((e) => e.id === msg.you)?.team ?? this.selfTeam;
+        this.view.ingest(
+          { tick: msg.tick, you: msg.you, entities: msg.entities, match: msg.match },
+          msg.time,
+        );
 
         const me = msg.entities.find((e) => e.id === msg.you);
         if (me && this.predictor) {
@@ -237,7 +252,22 @@ export class NetworkScene {
       }
 
       case 'Rejected':
-        console.warn(`[服务器拒绝] ${msg.what}：${msg.reason}`);
+        // ★ 拒绝要让玩家看得见，否则「按了没反应」是最难查的一类问题
+        this.view.push(`${msg.what} 被拒绝：${msg.reason}`, 'fail');
+        break;
+
+      // 战斗事件 → 战斗日志。★ 与试验场同一套文案由 HUD 渲染
+      case 'Damage':
+        this.view.push(`${this.nameOf(msg.sourceId)} → ${this.nameOf(msg.targetId)} ${msg.amount} 点伤害`, 'ok');
+        break;
+      case 'Heal':
+        this.view.push(`${this.nameOf(msg.sourceId)} 治疗 ${this.nameOf(msg.targetId)} ${msg.amount} 点`, 'ok');
+        break;
+      case 'Death':
+        this.view.push(`${this.nameOf(msg.entityId)} 被击杀`, 'interrupt');
+        break;
+      case 'CastFailed':
+        this.view.push(`施法失败：${msg.reason}`, 'fail');
         break;
 
       default:
@@ -287,6 +317,12 @@ export class NetworkScene {
    *   而协议里没有镜头朝向，服务器做不出符合规格的 Tab。放在客户端不放宽
    *   安全边界 —— 服务器对 `SetTarget` 是校验可见集合的。
    */
+  /** 实体名，供战斗日志。★ 来源不可见时服务器会抹掉 sourceId（已知偏差 #4）*/
+  private nameOf(id: EntityId | undefined): string {
+    if (id === undefined) return '某个看不见的敌人';
+    return this.lastEntities.find((e) => e.id === id)?.name ?? '?';
+  }
+
   private tabTarget(reverse: boolean): void {
     if (this.selfId === null || this.selfTeam === null || !this.predictor) return;
     const picked = pickTabTargetFromSnapshot({
@@ -300,6 +336,7 @@ export class NetworkScene {
     }, reverse);
     if (picked === undefined) return; // 5.3：没有候选时保持原目标不变
     this.currentTargetId = picked;
+    this.view.targetId = picked;
     this.conn.send({ t: 'SetTarget', slot: 'hard', entityId: picked });
   }
 
@@ -331,6 +368,8 @@ export class NetworkScene {
     this.drawRemotes(dt);
 
     this.renderer.render(this.scene, this.cam.camera);
+    // ★ 与试验场同一个调用 —— 只是喂的 CombatView 实现不同
+    this.hud.update(this.view, this.cam.camera, this.canvas);
   }
 
   private drawSelf(dt: number): void {
