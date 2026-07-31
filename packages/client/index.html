@@ -128,12 +128,14 @@
 
       #skill-bar { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
                    display: flex; gap: 6px; pointer-events: none; }
-      #skill-bar .slot { width: 92px; padding: 5px 7px; border-radius: 8px;
+      #skill-bar .slot { width: 108px; padding: 5px 7px; border-radius: 8px;
                          background: rgba(20,23,30,.9); border: 1px solid #2c313d;
                          border-top: 2px solid var(--school); }
       #skill-bar .slot.blocked { opacity: .5; }
       #skill-bar .slot.usable { box-shadow: 0 0 0 1px color-mix(in srgb, var(--school) 45%, transparent); }
-      #skill-bar .sk-name { font-size: 12px; font-weight: 600; margin: 2px 0 1px; }
+      #skill-bar .sk-head { display: flex; align-items: center; gap: 6px; margin: 2px 0 1px; }
+      #skill-bar .sk-icon { flex: none; display: block; }
+      #skill-bar .sk-name { font-size: 12px; font-weight: 600; white-space: nowrap; }
       #skill-bar .sk-meta { font-size: 10px; color: #7d8698; }
       #skill-bar .sk-block { font-size: 10px; color: #e08a8a; margin-top: 2px; }
 

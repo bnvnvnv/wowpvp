@@ -172,8 +172,13 @@ console.log('\n── 规格书 7.5 / 验收 #18：假读条 ──');
   await page.waitForTimeout(600);
 
   const lines = await logLines();
-  const startIdx = lines.findIndex((l) => l.includes('开始读条'));
-  const cancelIdx = lines.findIndex((l) => l.includes('主动取消'));
+  /**
+   * ⚠️ 必须认**玩家自己**那条读条 —— 假人牧师也会产生「开始读条」，
+   *   而它出现在玩家取消之后还是之前取决于时序。第一版只找「开始读条」，
+   *   于是这条测试**偶发失败**，看起来像回归实则是断言不够精确。
+   */
+  const startIdx = lines.findIndex((l) => l.includes('开始读条 霜矢'));
+  const cancelIdx = lines.findIndex((l) => l.includes('你主动取消了'));
   // 日志是倒序的（最新在前），所以「取消」的下标应当小于「开始读条」
   const sequenceOk = startIdx >= 0 && cancelIdx >= 0 && cancelIdx < startIdx;
 

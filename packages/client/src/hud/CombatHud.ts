@@ -28,6 +28,7 @@ import {
 } from '@wowpvp/shared';
 import { FAIL_TEXT, SCHOOL_TEXT } from '../combat/CombatDirector.js';
 import type { CombatView, HudSkillSlot, HudUnit } from './CombatView.js';
+import { skillIconSvg } from './skillIcon.js';
 import { CONTROL_VISUALS, type ControlKind } from '../vfx/status.js';
 import { Minimap } from './Minimap.js';
 import { ModeHud } from './ModeHud.js';
@@ -335,7 +336,7 @@ export class CombatHud {
         return `
           <div class="slot ${usable ? 'usable' : 'blocked'}" style="--school:${color}">
             <kbd>${i + 1}</kbd>
-            <div class="sk-name">${esc(s.skill.name)}</div>
+            <div class="sk-head">${skillIconSvg(s.skill, 26)}<div class="sk-name">${esc(s.skill.name)}</div></div>
             <div class="sk-meta">
               ${s.skill.cast.kind === CastKind.Instant ? '瞬发' : `${s.skill.cast.time}s`}
               · ${s.skill.range.max === 0 ? '自身' : `${s.skill.range.max}m`}

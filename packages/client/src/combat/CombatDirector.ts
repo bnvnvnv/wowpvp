@@ -540,7 +540,7 @@ export class CombatDirector {
         const lockText = lock
           ? `，${SCHOOL_TEXT[lock.school]}学派锁定 ${(lock.until - this.world.time).toFixed(1)}s`
           : '';
-        this.push(`${warriorDummy.name} 用拳击打断了你的 ${n}${lockText}`, 'interrupt');
+        this.push(`${warriorDummy.name} 用${pummel.name}打断了你的 ${n}${lockText}`, 'interrupt');
       },
     });
 
@@ -548,7 +548,7 @@ export class CombatDirector {
     warriorDummy.cooldowns.set(pummel.id, this.world.time + pummel.cooldown);
     if (!out.interrupted) {
       this.push(
-        `${warriorDummy.name} 的拳击落空（你骗到了！），仍进入 ${pummel.cooldown}s 冷却`,
+        `${warriorDummy.name} 的${pummel.name}落空（你骗到了！），仍进入 ${pummel.cooldown}s 冷却`,
         'ok',
       );
     }
