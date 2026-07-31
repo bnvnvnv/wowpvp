@@ -111,6 +111,20 @@ export const validateCast = (ctx: CastContext): CastFailure => {
     return CastFailure.CarryingFlag;
   }
 
+  /**
+   * ★★ `SkillDef.requires`（schema v1.1 的 `ConditionDef`）。
+   *
+   *   ⚠️ **这个字段在 M11 之前是死 schema —— 全仓零个读取方。**
+   *   它被 v1.1 加进来是为了收敛「前置条件」类的 `custom` handler，
+   *   但 `validateCast()` 从来没有读过它。后果比「功能缺失」更糟：
+   *   把 `requires` 写进数据会得到**静默被忽略的配置**，
+   *   而作者以为自己表达了一条规则。
+   */
+  for (const cond of skill.requires ?? []) {
+    const fail = checkCondition(ctx, cond, now);
+    if (fail !== CastFailure.Ok) return fail;
+  }
+
   if (phase === 'start') {
     if (isOnCooldown(caster, skill.id, now)) return CastFailure.OnCooldown;
     if (skill.triggersGcd && isOnGcd(caster, now)) return CastFailure.OnGlobalCooldown;
@@ -180,6 +194,36 @@ export const validateCast = (ctx: CastContext): CastFailure => {
   }
 
   return CastFailure.Ok;
+};
+
+/**
+ * 判定一条前置条件。★ 不认识的 kind 一律**放行** ——
+ * 拦下来会让「schema 加了新 kind 但 sim 还没跟上」表现为技能突然不能放，
+ * 而放行只是少一道限制，且 `data.test.ts` 会在别处发现它。
+ */
+const checkCondition = (
+  ctx: CastContext, cond: NonNullable<SkillDef['requires']>[number], now: number,
+): CastFailure => {
+  const { caster, target } = ctx;
+  switch (cond.kind) {
+    case 'outOfCombat':
+      return now - caster.lastCombatAt >= cond.seconds ? CastFailure.Ok : CastFailure.InCombat;
+    case 'minResource':
+      return getResource(caster, cond.resource) >= cond.amount
+        ? CastFailure.Ok : CastFailure.NotEnoughResource;
+    case 'notCarryingFlag':
+      return caster.flags.carryingFlag ? CastFailure.CarryingFlag : CastFailure.Ok;
+    case 'targetCasting':
+      // ★ 仅提示用（7.2 规定打断落空也进冷却），所以这里**不拦**
+      return CastFailure.Ok;
+    default:
+      /**
+       * `inForm` / `notInForm` / `recentlyParried` 目前在 sim 里**没有数据源**
+       * （形态状态与招架判定都还不存在）。放行而不是拦下 —— 见函数头。
+       * ⚠️ 已登记在 PROGRESS 技术债：它们各自需要一个独立特性。
+       */
+      return CastFailure.Ok;
+  }
 };
 
 /**

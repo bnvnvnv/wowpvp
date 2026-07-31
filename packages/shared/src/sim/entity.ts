@@ -130,6 +130,17 @@ export interface CombatEntity {
   targets: TargetSlots;
   flags: StatusFlags;
 
+  /**
+   * 最近一次「参与战斗」的时刻（造成或受到伤害）。用于判定脱战。
+   *
+   * ★★ 规格书多处依赖「脱战」：潜行「**脱战 4 秒后** 1 秒进入」（9.x 盗贼表）、
+   *   猎豹形态「**脱战可潜行**」。而在 M11 之前**没有任何地方记录战斗状态** ——
+   *   `ConditionDef` 里的 `outOfCombat` 因此是一条永远判不出来的条件。
+   *
+   * ★ `-Infinity` 表示「从未进入过战斗」，于是开局即视为脱战。
+   */
+  lastCombatAt: number;
+
   /** 技能冷却结束的绝对时间（秒）*/
   cooldowns: Map<SkillId, number>;
   /** 公共冷却结束的绝对时间 */
@@ -173,6 +184,7 @@ export const createEntity = (
     armorId: cls.defaultArmorId,
     nextSwingAt: 0,
     swingRecoveryUntil: 0,
+    lastCombatAt: -Infinity,
     targets: {},
     flags: createStatusFlags(),
     cooldowns: new Map(),

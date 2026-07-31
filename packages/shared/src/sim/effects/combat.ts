@@ -126,6 +126,17 @@ export const dealDamage = (
     ctx.events.push({ t: 'shieldBroken', targetId: target.id, auraId: b.def.id });
   }
 
+  /**
+   * ★★ 战斗状态（脱战判定的唯一来源）。
+   *   规格书 9.x：潜行「脱战 4 秒后 1 秒进入」、猎豹形态「脱战可潜行」——
+   *   而在 M11 之前**没有任何地方记录它**，`ConditionDef.outOfCombat`
+   *   因此是一条永远判不出来的条件。
+   *   ★ **攻击者与被攻击者都进战斗** —— 只标记被打的人的话，
+   *     打完就潜行的偷袭会完全不受限制。
+   */
+  ctx.source.lastCombatAt = ctx.world.time;
+  target.lastCombatAt = ctx.world.time;
+
   const before = target.health;
   target.health = Math.max(0, target.health - remaining);
   const dealt = before - target.health;

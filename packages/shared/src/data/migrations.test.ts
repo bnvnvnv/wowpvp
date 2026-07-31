@@ -16,13 +16,18 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { deathknight, paladin } from './index.js';
+import { deathknight, druid, paladin, rogue } from './index.js';
 import { asTeamId, TEAM_BLUE, TEAM_RED, type EntityId } from '../types/ids.js';
 import { School } from '../types/enums.js';
 import { ccDurationTakenFor, neutralModifiers } from '../sim/modifiers.js';
 import { vec3 } from '../math/vec3.js';
 import { applyAura, createAuraStore, effectiveModifiersOf, type AuraStore } from '../sim/aura.js';
 import { createEntity, type CombatEntity } from '../sim/entity.js';
+import { validateCast } from '../sim/casting.js';
+import { CastFailure } from '../types/enums.js';
+import { createDrStore } from '../sim/dr.js';
+import { createProjectileStore } from '../sim/projectile.js';
+import { dealDamage } from '../sim/effects/index.js';
 import { addEntity, allocEntityId, createWorld, type World } from '../sim/world.js';
 import type { AuraDef, EffectDef, SkillDef } from './schema.js';
 
@@ -227,6 +232,71 @@ describe('★ 迁移完整性', () => {
           }
         };
         scan(skill.effects);
+      }
+    }
+    expect(leftovers).toEqual([]);
+  });
+});
+
+describe('★★ M11：脱战条件（原 rogue.requireOutOfCombat）', () => {
+  /**
+   * ★★ 这条 handler **从未注册** —— 潜行此前**没有任何脱战限制**，
+   *   团战中随时能起手，与 9.x「脱战 4 秒后才能起手」完全相反。
+   *   而 `SkillDef.requires` 在 M11 之前是**死 schema（零读取方）**，
+   *   所以迁移的前提是先让 `validateCast()` 真的读它。
+   */
+  it('★★ 刚受到伤害时潜行被拒绝，脱战满 4 秒后放行', () => {
+    const world = createWorld([]);
+    const rg = addEntity(world, createEntity(allocEntityId(world), rogue, TEAM_RED, vec3(0, 0, 0)));
+    for (const [r, max] of rg.maxResources) rg.resources.set(r, max);
+
+    const stealth = rogue.skills.find((s) => (s.id as string) === 'rogue.stealth')!;
+    expect(stealth.requires, '数据里没有 requires —— 迁移没做或被回退了').toBeDefined();
+
+    // 刚打过架
+    world.time = 10;
+    rg.lastCombatAt = 10;
+    expect(
+      validateCast({ world, caster: rg, skill: stealth, phase: 'start' }),
+      '战斗中竟然能进潜行',
+    ).toBe(CastFailure.InCombat);
+
+    // 脱战满 4 秒
+    world.time = 14.1;
+    expect(validateCast({ world, caster: rg, skill: stealth, phase: 'start' }))
+      .toBe(CastFailure.Ok);
+  });
+
+  /** ★ 受到伤害要**同时**给攻击者和被攻击者打上战斗标记 */
+  it('★★ 伤害同时把攻击者和被攻击者拖进战斗', () => {
+    const world = createWorld([]);
+    world.time = 5;
+    const a = addEntity(world, createEntity(allocEntityId(world), rogue, TEAM_RED, vec3(0, 0, 0)));
+    const b = addEntity(world, createEntity(allocEntityId(world), paladin, TEAM_BLUE, vec3(0, 0, 2)));
+    const store = createAuraStore();
+
+    dealDamage(
+      {
+        world, auras: store, dr: createDrStore(), projectiles: createProjectileStore(),
+        groundAreas: [], traps: [], source: a, skillId: 'x',
+        events: [] as never[], resolve: () => {},
+      } as never,
+      b, 50, School.Physical,
+    );
+
+    expect(b.lastCombatAt, '被打的人没进战斗').toBe(5);
+    // ★ 只标记被打的人的话，「打完就潜行」的偷袭完全不受限制
+    expect(a.lastCombatAt, '攻击者没进战斗 —— 打完就能立刻潜行').toBe(5);
+  });
+
+  it('★ 已迁移/已删除的 handler 不再出现在数据里', () => {
+    const gone = ['rogue.requireOutOfCombat', 'druid.prowl'];
+    const leftovers: string[] = [];
+    for (const cls of [rogue, druid]) {
+      for (const skill of cls.skills) {
+        for (const e of skill.effects) {
+          if (e.kind === 'custom' && gone.includes(e.handler)) leftovers.push(`${skill.id}: ${e.handler}`);
+        }
       }
     }
     expect(leftovers).toEqual([]);

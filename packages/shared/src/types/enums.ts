@@ -171,6 +171,8 @@ export const CastFailure = {
   /** 12.3 旗手限制 */
   CarryingFlag: 'carryingFlag',
   AlreadyCasting: 'alreadyCasting',
+  /** 7.6 / 9.x：要求脱离战斗（潜行、猎豹形态潜行）*/
+  InCombat: 'inCombat',
 } as const;
 export type CastFailure = (typeof CastFailure)[keyof typeof CastFailure];
 

@@ -333,21 +333,19 @@ const skills: SkillDef[] = [
         },
       },
       /**
-       * schema 的 enterStealth 是「立即潜行」，无法表达文档 9.8 的
-       * 「**脱战后才**可潜行」+ 12.3 的「携旗时不能潜行」这两条条件。
-       * 交给自定义处理器：它在猎豹形态存在期间监听脱战与持旗状态，
-       * 满足条件才授予潜行，持旗时直接拒绝（而不是先掉旗）。
+       * ★ M11：原本是一条 `custom`（`druid.prowl`），**从未注册**。
+       *
+       *   ⚠️ 但它**不能**像盗贼潜行那样迁到 `requires` —— 语义不同：
+       *      `requires` 是**施法瞬间**的门禁（「现在能不能变形」），
+       *      而 9.8 要的是「变形**期间**脱战即可潜行」的**持续**能力。
+       *      写成 `requires: [{outOfCombat}]` 会变成「战斗中不能变猎豹」，
+       *      那是另一条规则，而且是错的。
+       *
+       *   所以这里**只删掉那个从未生效的 custom**，把「脱战可潜行」
+       *   如实降级为**尚未实现**（已登记在 PROGRESS 技术债）——
+       *   保留一个假装在工作的 handler 比缺失更糟。
+       *   12.3「携旗不能潜行」那一半由 `forbiddenWhileCarryingFlag` 覆盖。
        */
-      {
-        kind: 'custom',
-        handler: 'druid.prowl',
-        params: {
-          requiresOutOfCombat: true,
-          /** 12.3：旗手不能潜行，携旗期间该能力直接不可用 */
-          forbiddenWhileCarryingFlag: true,
-          graceSeconds: 1,
-        },
-      },
     ],
     description: '变为猎豹形态：移动速度提高 15%，脱离战斗后可潜行。使用能量。携带旗帜时不能潜行。',
     vfx: 'druid_cat_form',

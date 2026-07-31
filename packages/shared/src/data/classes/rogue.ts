@@ -65,9 +65,15 @@ const skills: SkillDef[] = [
     forbiddenWhileCarryingFlag: true,
     counters:
       '必须脱离战斗 4 秒才能起手，进入还要 1 秒，团战中基本不可用；3 米内可能被敌人直接发现，猎人照明弹（revealsStealth 地面区域）会直接揭露整片区域；任何伤害或主动攻击都会解除；持旗时完全不可进入（12.3 / 验收 #40）；竞技场决胜阶段潜行受限，位置会被大致暴露（8.5）。',
+    /**
+     * ★ M11：原本是一条 `custom`（`rogue.requireOutOfCombat`）。
+     *   ⚠️ 而那个 handler **从来没有注册过** —— 潜行因此**没有任何脱战限制**，
+     *      团战中随时可以起手，与 9.x「脱战 4 秒后才能起手」完全相反。
+     *   `SkillDef.requires` 在 M11 之前也是死 schema（零读取方），
+     *   现在 `validateCast()` 真的读它了，所以这条能迁过来。
+     */
+    requires: [{ kind: 'outOfCombat', seconds: 4 }],
     effects: [
-      // schema 没有「要求脱离战斗 N 秒」这类前置条件字段，用注册的自定义处理器补
-      { kind: 'custom', handler: 'rogue.requireOutOfCombat', params: { seconds: 4 } },
       { kind: 'enterStealth' },
       { kind: 'applyAura', target: 'self', aura: stealthAura() },
     ],

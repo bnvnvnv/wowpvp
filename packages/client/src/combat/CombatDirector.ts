@@ -882,6 +882,7 @@ export const FAIL_TEXT: Record<CastFailure, string> = {
   invalidGroundPosition: '超出地图边界',
   classMismatch: '职业不匹配',
   carryingFlag: '持旗时禁用',
+  inCombat: '需要脱离战斗',
   alreadyCasting: '正在施法',
 };
 

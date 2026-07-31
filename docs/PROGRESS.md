@@ -784,15 +784,23 @@ M4 实现了效果系统但**没有做这次迁移** —— `custom` 处理器�
 | `applyMoveSpeedFloor` | 死亡骑士·死亡脚步 | → `AuraModifiers.moveSpeedFloor`（v1.1 已加） | 高 | ✅ M11 已迁 |
 | `paladin.judgementVulnerability` | 圣骑士·审判 | → `AuraDef.casterScoped`（v1.1 已加） | 高 | ✅ M11 已迁 |
 | `paladin.dropFlagOnTarget` | 圣骑士·保护祝福 | → `{ kind: 'dropFlag', target: 'target' }`（v1.1 已加） | 高 | ✅ M11 已迁 |
-| `rogue.requireOutOfCombat` | 盗贼·潜行 | ~~`requires: [{outOfCombat}]`~~ | 高 | ⛔ 阻塞，见下 |
+| `rogue.requireOutOfCombat` | 盗贼·潜行 | `requires: [{outOfCombat}]` | 高 | ✅ M11 已迁 |
 | `rogue.requireRecentParry` | 盗贼·反击刺 | ~~`requires: [{recentlyParried}]`~~ | 高 | ⛔ 阻塞，见下 |
 | `rogue.clearSlowAndRoot` | 盗贼·消失 | ~~`dispel types:[Movement]`~~ | 高 | ⛔ 方案有误，见下 |
-| `druid.prowl` | 德鲁伊·猎豹形态 | ~~`requires: [...]`~~ | 高 | ⛔ 语义不符，见下 |
+| `druid.prowl` | 德鲁伊·猎豹形态 | 不适用（语义不符）| 高 | ✅ 已删除，降级为未实现 |
 | `hunter.sustainAutoShot` | 猎人·自动射击 | 保留 —— 普攻循环本就属于 sim 层常驻状态，不是一次性效果 | 低 | 保留 |
 | `priest.leapOfFaithLandingGuard` | 牧师·信仰飞跃 | 保留 —— 落点合法性校验属于 sim 层，但可考虑抽成通用的 `landingGuard` | 中 | 保留 |
 | `druid.wild_charge` | 德鲁伊·野性冲锋 | 保留 —— 一个键按形态分三种位移，确实无法数据化 | 低 | 保留 |
 
-**当前：11 → 7 处。**
+**当前：11 → 5 处。**
+
+★ M11 第二批：`rogue.requireOutOfCombat` 迁到 `requires`（前提是先让
+`validateCast()` **真的读** `SkillDef.requires` —— 它此前是零读取方的死 schema，
+并新增 `CombatEntity.lastCombatAt` 作为脱战判定的唯一来源）。
+`druid.prowl` **直接删除**：它的语义是「变形**期间**脱战即可潜行」的持续能力，
+而 `requires` 是施法瞬间的门禁，迁过去会变成「战斗中不能变猎豹」——
+那是另一条规则，而且是错的。★ 保留一个假装在工作的 handler 比缺失更糟，
+所以如实降级为**尚未实现**。
 
 #### ⚠️ 上表原本过于乐观 —— M11 核查后的修正
 
@@ -816,8 +824,14 @@ M4 实现了效果系统但**没有做这次迁移** —— `custom` 处理器�
 - `druid.prowl` 语义不符：`requires` 是**施法时**的门禁，而 prowl 需要的是
   形态期间的**持续监视**（脱战即获得潜行）。
 
-**要真正降到 3 处以下，前置是三件引擎工作**：战斗状态追踪、`requires` 的读取、
-闪避/招架系统。它们各自都是独立的一步，不属于「纯迁移」。
+**三件前置里已完成两件**：
+· ✅ **战斗状态追踪** —— `CombatEntity.lastCombatAt`，由 `dealDamage()` 双向打标
+  （★ 攻击者也进战斗，否则「打完就潜行」的偷袭完全不受限制）
+· ✅ **`requires` 的读取** —— `validateCast()` 现在真的读它，死 schema 复活
+· ⛔ **闪避/招架系统** —— 仍未实现（`recentlyParried` 因此仍无数据源）。
+  ⚠️ 它有一个别的前置没解决：**闪避需要随机数，而 `packages/shared` 目前
+     零 `Math.random`**，整个 sim 的确定性（客户端预测、可复现配平、回放）
+     都建立在这一点上。要做就得引入**世界级种子 PRNG**，那是一次架构决定。
 
 ### 2. 数值是占位值，需要一轮专门配平
 
