@@ -173,6 +173,8 @@ export const CastFailure = {
   AlreadyCasting: 'alreadyCasting',
   /** 7.6 / 9.x：要求脱离战斗（潜行、猎豹形态潜行）*/
   InCombat: 'inCombat',
+  /** 9.x 反击刺：要求近期发生过招架 */
+  NoRecentParry: 'noRecentParry',
 } as const;
 export type CastFailure = (typeof CastFailure)[keyof typeof CastFailure];
 

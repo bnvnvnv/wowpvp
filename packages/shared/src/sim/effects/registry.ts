@@ -36,6 +36,11 @@ export type CombatEvent =
        * 与防御技能挡掉的量分开记 —— 否则圣盾术的功劳会记到板甲头上。
        */
       preventedByEquipment: number
+      /**
+       * 8.x：这一发被完全规避的方式。815 行要求命中反馈能区分
+       * 「伤害 / 治疗 / **格挡** / **闪避** / 免疫 / 驱散」。
+       */
+      avoided?: 'dodge' | 'parry' | 'block'
       /** 吸收该伤害的护盾分别来自谁。16.1 的「吸收」要记给下盾的人，不是被打的人 */
       absorbedBy?: readonly { sourceId: EntityId; amount: number }[] }
   | { t: 'heal'; sourceId: EntityId; targetId: EntityId; amount: number; overheal: number }

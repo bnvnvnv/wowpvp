@@ -28,6 +28,7 @@ import { ccDurationTakenFor, damageTakenFor, equipmentDamageTakenFor } from '../
 import { isBehind } from '../../math/geometry.js';
 import { applyInterrupt } from '../interrupt.js';
 import { registerEffect, type EffectContext } from './registry.js';
+import { nextRandom } from '../world.js';
 
 // ── 数值换算 ─────────────────────────────────────────────────────
 
@@ -104,6 +105,32 @@ export const dealDamage = (
   const attackerMods = effectiveModifiersOf(ctx.auras, ctx.source, ctx.world.time);
   const targetMods = effectiveModifiersOf(ctx.auras, target, ctx.world.time, ctx.source.id);
 
+  /**
+   * ★★ 8.x 闪避 / 招架 / 格挡（M11 实现）。
+   *
+   *   `AuraModifiers.dodgeFront` / `parry` / `block` 从 M0 就在 schema 里，
+   *   护甲与武器数据也在用它们（剑盾「正面格挡 20%」、匕首「招架 +15%」、
+   *   盗贼闪避「5 秒内正面闪避提高 50%」）—— 但 `combat.ts` 里
+   *   **从来没有任何闪避判定**，这三个字段一直是死数据。
+   *
+   * ★ 三条都只对**物理**生效。规格书 9.x 闪避那条原话：「法术不受影响」。
+   * ★ 闪避与格挡是**正面**的（`dodgeFront` 的字段名就写着），
+   *   背刺因此绕过它们 —— 这与 6.5 的背后攻击加成是同一条空间逻辑。
+   */
+  const avoided = rollAvoidance(ctx, target, school, targetMods);
+  if (avoided) {
+    ctx.events.push({
+      t: 'damage', sourceId: ctx.source.id, targetId: target.id,
+      amount: 0, school, absorbed: 0, overkill: 0, immune: false,
+      preventedByEquipment: 0, avoided,
+    });
+    // ★ 招架要记时刻 —— 9.x 反击刺「近期发生过招架」靠它（ConditionDef.recentlyParried）
+    if (avoided === 'parry') target.lastParryAt = ctx.world.time;
+    ctx.source.lastCombatAt = ctx.world.time;
+    target.lastCombatAt = ctx.world.time;
+    return 0;
+  }
+
   let amount = rawAmount * attackerMods.damageDealt * damageTakenFor(targetMods, school);
 
   // 背刺加成（6.5：攻击者位于目标背后约 120 度）
@@ -166,6 +193,40 @@ export const dealDamage = (
 };
 
 const drCategoryOfAura = (def: AuraDef): DrCategory | undefined => def.drCategory;
+
+/** 一次伤害被完全规避的方式。8.x / 815 行：命中反馈要能区分它们 */
+export type Avoidance = 'dodge' | 'parry' | 'block';
+
+/**
+ * 掷一次规避判定。命中则返回 undefined。
+ *
+ * ★ 判定顺序 闪避 → 招架 → 格挡 是**固定**的，不是偏好：
+ *   顺序决定了几率如何叠加（先掷的吃掉后面的空间），换顺序会改变实际数值。
+ *   固定下来才能配平。
+ *
+ * ⚠️ 用 `nextRandom(target)` 而不是 `Math.random()`：
+ *   随机流挂在**被攻击者**身上 —— 闪避/招架/格挡都是**他**的能力，
+ *   掷骰归他管。这样攻击方新增任何随机判定都不会扰动他的序列。
+ */
+const rollAvoidance = (
+  ctx: EffectContext,
+  target: CombatEntity,
+  school: School,
+  mods: { dodgeFront: number; parry: number; block: number },
+): Avoidance | undefined => {
+  // 9.x 闪避原话：「法术不受影响」。招架与格挡同理，都是物理动作
+  if (school !== School.Physical) return undefined;
+  // 无法行动时谈不上闪避/招架（7.3）
+  if (target.flags.stunned || target.flags.feared || !target.alive) return undefined;
+
+  // ★ 正面才闪避/格挡：背后攻击绕过它们（6.5 的空间逻辑）
+  const fromBehind = isBehind(ctx.source.position, target.position, target.yaw);
+
+  if (!fromBehind && mods.dodgeFront > 0 && nextRandom(target) < mods.dodgeFront) return 'dodge';
+  if (mods.parry > 0 && nextRandom(target) < mods.parry) return 'parry';
+  if (!fromBehind && mods.block > 0 && nextRandom(target) < mods.block) return 'block';
+  return undefined;
+};
 
 // ── 治疗 ─────────────────────────────────────────────────────────
 

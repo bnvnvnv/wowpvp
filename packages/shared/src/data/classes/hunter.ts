@@ -51,16 +51,22 @@ const skills: SkillDef[] = [
     requiresLos: true,
     counters:
       '没有可打断施法条，「脚踢」类专用打断无法取消已经完成的普通射击（7.6）；缴械、昏迷、死亡、无视线和超距可以阻止下一发释放；短弓可全速移动射击，长弓与重弩因攻击间隔更长、并带装填动作而更容易被走位打乱。',
+    /**
+     * ★ M11：原本这里有一条 `custom`（`hunter.sustainAutoShot`），注释写着
+     *   「schema 没有『持续开火开关』这一概念（射击是一个可开关的常驻状态，
+     *   而不是一次性效果）」。
+     *
+     *   那句话是对的 —— 但它描述的那个「常驻状态」**现在存在了**：
+     *   M11 实现了 7.6 普通攻击（`sim/autoAttack.ts` 的 `SwingStore`），
+     *   它就是「可开关的常驻状态」，按 `WeaponDef.swingInterval` 自动排下一发。
+     *   所以这条 custom 被系统取代，直接删除。
+     *
+     * ⚠️ 顺带一提，它和别的 custom 一样**从未注册过** —— 猎人的自动射击
+     *   在 M11 之前根本不会「继续排下一发」，按一次只响一发。
+     */
     effects: [
       // 每次射击计时到达时结算一次；weaponPercent 1 = 当前武器的 swingPercent
       { kind: 'damage', school: School.Physical, amount: { weaponPercent: 1 } },
-      // schema 没有「持续开火开关」这一概念（射击是一个可开关的常驻状态，
-      // 而不是一次性效果），用 custom 让 sim 在本发结算后继续排下一发
-      {
-        kind: 'custom',
-        handler: 'hunter.sustainAutoShot',
-        params: { repeat: true, usesWeaponInterval: true },
-      },
     ],
     description: '按武器攻击间隔自动射击当前目标。短弓可全速移动射击。',
     vfx: 'hunter_auto_shot',

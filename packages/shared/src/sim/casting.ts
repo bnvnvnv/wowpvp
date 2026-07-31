@@ -213,14 +213,17 @@ const checkCondition = (
         ? CastFailure.Ok : CastFailure.NotEnoughResource;
     case 'notCarryingFlag':
       return caster.flags.carryingFlag ? CastFailure.CarryingFlag : CastFailure.Ok;
+    case 'recentlyParried':
+      // 9.x 反击刺：近期发生过招架。★ 数据源是 M11 才有的 `lastParryAt`
+      return now - caster.lastParryAt <= cond.withinSeconds
+        ? CastFailure.Ok : CastFailure.NoRecentParry;
     case 'targetCasting':
       // ★ 仅提示用（7.2 规定打断落空也进冷却），所以这里**不拦**
       return CastFailure.Ok;
     default:
       /**
-       * `inForm` / `notInForm` / `recentlyParried` 目前在 sim 里**没有数据源**
-       * （形态状态与招架判定都还不存在）。放行而不是拦下 —— 见函数头。
-       * ⚠️ 已登记在 PROGRESS 技术债：它们各自需要一个独立特性。
+       * `inForm` / `notInForm` 目前在 sim 里**没有数据源**（形态状态还不存在）。
+       * 放行而不是拦下 —— 见函数头。⚠️ 已登记在 PROGRESS 技术债。
        */
       return CastFailure.Ok;
   }

@@ -785,14 +785,14 @@ M4 实现了效果系统但**没有做这次迁移** —— `custom` 处理器�
 | `paladin.judgementVulnerability` | 圣骑士·审判 | → `AuraDef.casterScoped`（v1.1 已加） | 高 | ✅ M11 已迁 |
 | `paladin.dropFlagOnTarget` | 圣骑士·保护祝福 | → `{ kind: 'dropFlag', target: 'target' }`（v1.1 已加） | 高 | ✅ M11 已迁 |
 | `rogue.requireOutOfCombat` | 盗贼·潜行 | `requires: [{outOfCombat}]` | 高 | ✅ M11 已迁 |
-| `rogue.requireRecentParry` | 盗贼·反击刺 | ~~`requires: [{recentlyParried}]`~~ | 高 | ⛔ 阻塞，见下 |
+| `rogue.requireRecentParry` | 盗贼·反击刺 | `requires: [{recentlyParried}]` | 高 | ✅ M11 已迁 |
 | `rogue.clearSlowAndRoot` | 盗贼·消失 | ~~`dispel types:[Movement]`~~ | 高 | ⛔ 方案有误，见下 |
 | `druid.prowl` | 德鲁伊·猎豹形态 | 不适用（语义不符）| 高 | ✅ 已删除，降级为未实现 |
-| `hunter.sustainAutoShot` | 猎人·自动射击 | 保留 —— 普攻循环本就属于 sim 层常驻状态，不是一次性效果 | 低 | 保留 |
+| `hunter.sustainAutoShot` | 猎人·自动射击 | **被 7.6 普攻系统取代** | 低 | ✅ 已删除 |
 | `priest.leapOfFaithLandingGuard` | 牧师·信仰飞跃 | 保留 —— 落点合法性校验属于 sim 层，但可考虑抽成通用的 `landingGuard` | 中 | 保留 |
 | `druid.wild_charge` | 德鲁伊·野性冲锋 | 保留 —— 一个键按形态分三种位移，确实无法数据化 | 低 | 保留 |
 
-**当前：11 → 5 处。**
+**当前：11 → 3 处。★ 路线图判据「custom 降到 3 处以下」达成。**
 
 ★ M11 第二批：`rogue.requireOutOfCombat` 迁到 `requires`（前提是先让
 `validateCast()` **真的读** `SkillDef.requires` —— 它此前是零读取方的死 schema，
@@ -828,10 +828,15 @@ M4 实现了效果系统但**没有做这次迁移** —— `custom` 处理器�
 · ✅ **战斗状态追踪** —— `CombatEntity.lastCombatAt`，由 `dealDamage()` 双向打标
   （★ 攻击者也进战斗，否则「打完就潜行」的偷袭完全不受限制）
 · ✅ **`requires` 的读取** —— `validateCast()` 现在真的读它，死 schema 复活
-· ⛔ **闪避/招架系统** —— 仍未实现（`recentlyParried` 因此仍无数据源）。
-  ⚠️ 它有一个别的前置没解决：**闪避需要随机数，而 `packages/shared` 目前
-     零 `Math.random`**，整个 sim 的确定性（客户端预测、可复现配平、回放）
-     都建立在这一点上。要做就得引入**世界级种子 PRNG**，那是一次架构决定。
+· ✅ **闪避/招架/格挡** —— `combat.ts` 的 `rollAvoidance()`，`lastParryAt`
+  为 `recentlyParried` 提供数据源。
+  ★★ **随机源做成「按实体分流的种子 PRNG」**，不是全局单流：
+     全局单流的问题不是空间（就一个 32 位整数），是**顺序耦合** ——
+     每次掷骰推进同一份共享状态，于是「谁先掷」决定所有后续结果。
+     后果很实际：加一处随机判定会改变整局走向；等价重构调换结算顺序
+     会让回放与配平复现全部失效。按实体分流后 A 的掷骰不影响 B，
+     代价是每实体多 4 字节（12v12 共 96 字节）。
+  ⚠️ `rng` **不进快照** —— 它是服务器内部状态，发出去等于让人预测下一次闪避。
 
 ### 2. 数值是占位值，需要一轮专门配平
 

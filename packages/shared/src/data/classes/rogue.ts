@@ -375,9 +375,17 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Energy, amount: 20 },
     counters:
       '仅匕首 + 格挡短刃方案可用；必须先成功招架一次才能按出来，对手改用法术输出就完全触发不了（招架只对正面物理生效）；缴械后禁用；该方案整体爆发降低 15%，反击刺补不回刺骨的伤害缺口。',
+    /**
+     * ★ M11：原本是一条 `custom`（`rogue.requireRecentParry`），**从未注册** ——
+     *   反击刺此前**没有任何招架前置**，随时能按，与 9.x「成功招架后可用」相反。
+     *
+     *   迁移的前提有两件，M11 都补齐了：
+     *     · `validateCast()` 真的读 `SkillDef.requires`（此前是零读取方的死 schema）
+     *     · **招架判定本身存在** —— 8.x 的闪避/招架/格挡此前从未实现，
+     *       `lastParryAt` 因此没有任何来源
+     */
+    requires: [{ kind: 'recentlyParried', withinSeconds: 5 }],
     effects: [
-      // schema 没有「近期发生过招架」这类触发条件字段，用注册的自定义处理器做前置校验
-      { kind: 'custom', handler: 'rogue.requireRecentParry', params: { windowSeconds: 5 } },
       { kind: 'damage', school: School.Physical, amount: { weaponPercent: 1.0 } },
       { kind: 'gainResource', resource: Resource.ComboPoints, amount: 1 },
     ],

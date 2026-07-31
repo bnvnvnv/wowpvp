@@ -140,6 +140,17 @@ export interface CombatEntity {
    * ★ `-Infinity` 表示「从未进入过战斗」，于是开局即视为脱战。
    */
   lastCombatAt: number;
+  /**
+   * 最近一次**招架**的时刻。9.x 反击刺「近期发生过招架」靠它
+   * （`ConditionDef.recentlyParried`）。★ `-Infinity` = 从未招架过。
+   */
+  lastParryAt: number;
+  /**
+   * 该实体自己的随机流状态（8.x 闪避/招架/格挡）。
+   * ★ 由 `deriveRngSeed(world.seed, id)` 派生 —— 见 `nextRandom()` 的注释：
+   *   按实体分流是为了「加一处随机不会扰动别的实体」。
+   */
+  rng: number;
 
   /** 技能冷却结束的绝对时间（秒）*/
   cooldowns: Map<SkillId, number>;
@@ -185,6 +196,8 @@ export const createEntity = (
     nextSwingAt: 0,
     swingRecoveryUntil: 0,
     lastCombatAt: -Infinity,
+    lastParryAt: -Infinity,
+    rng: 0,
     targets: {},
     flags: createStatusFlags(),
     cooldowns: new Map(),
