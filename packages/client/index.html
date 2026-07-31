@@ -5,15 +5,53 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>wowpvp — M1 移动物理与自由镜头试验场</title>
     <style>
+      /* ── M12 字体（assets/art/fonts，来源见 docs/09 §4）──────────
+         ★ 只声明拉丁与拉丁扩展子集：中文正文仍走系统字体。
+           Alegreya 没有中文字形，整段套上去会让每个汉字都走一次
+           fallback，反而比不换字体更慢。数字与标题受益最大，
+           而 HUD 里最需要「一眼读准」的恰恰是数字。
+         ★ font-display: swap —— 字体没到之前先用系统字体渲染，
+           不产生任何不可见文本期（15.2 的施法条读数不能有空窗）。 */
+      @font-face {
+        font-family: "Alegreya Sans";
+        src: url("/art/fonts/alegreya-sans-500-latin.woff2") format("woff2");
+        font-weight: 500; font-display: swap;
+        unicode-range: U+0000-00FF, U+2000-206F, U+2190-21BB, U+2600-26FF;
+      }
+      @font-face {
+        font-family: "Alegreya Sans";
+        src: url("/art/fonts/alegreya-sans-400-latin.woff2") format("woff2");
+        font-weight: 400; font-display: swap;
+        unicode-range: U+0000-00FF, U+2000-206F, U+2190-21BB, U+2600-26FF;
+      }
+      @font-face {
+        font-family: "Alegreya Sans";
+        src: url("/art/fonts/alegreya-sans-700-latin.woff2") format("woff2");
+        font-weight: 700; font-display: swap;
+        unicode-range: U+0000-00FF, U+2000-206F, U+2190-21BB, U+2600-26FF;
+      }
+      /* 标题用的衬线体，只给比分/奖励这类「牌面」文字 */
+      @font-face {
+        font-family: "Cinzel";
+        src: url("/art/fonts/cinzel-400-700-latin.woff2") format("woff2");
+        font-weight: 400 700; font-display: swap;
+        unicode-range: U+0000-00FF, U+2000-206F;
+      }
+
       :root { color-scheme: dark; }
       * { box-sizing: border-box; margin: 0; padding: 0; }
       html, body, #app { width: 100%; height: 100%; overflow: hidden; }
       body {
-        font: 13px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+        font: 13px/1.6 "Alegreya Sans", system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
         background: #14161c;
         color: #e6e8ee;
       }
-      #view { display: block; width: 100%; height: 100%; cursor: crosshair; }
+      /* M12 自定义光标。★ 保留 crosshair 作为兜底 —— 素材缺失时
+         光标不能变成默认箭头，那会让「现在能不能点」失去提示 */
+      #view { display: block; width: 100%; height: 100%;
+              cursor: url("/art/ui/cursors/hand-default.png") 4 2, crosshair; }
+      #view.cursor-attack { cursor: url("/art/ui/cursors/attack-sword.png") 4 2, crosshair; }
+      #view.cursor-friendly { cursor: url("/art/ui/cursors/friendly-shield.png") 4 2, pointer; }
 
       #hud { position: fixed; inset: 0; pointer-events: none; padding: 14px; }
       .panel {
@@ -112,6 +150,16 @@
       /* 15.2：可打断=正常边框；不可打断=盾牌标记；物理射击准备=独立颜色 */
       .bar.cast { margin-top: 6px; height: 20px; }
       .bar.cast i { background: color-mix(in srgb, var(--school) 55%, #1b1f28); }
+
+      /* ★★ M12：施法条的**连续**填充。
+         HUD 每 50ms 重建一次 innerHTML，而 `width: X%` 在重建时是跳变的 ——
+         20Hz 的台阶在 144Hz 屏上非常明显，而 7.5 的假读条博弈要玩家
+         盯着这根条判断「还剩多少能打断」。
+         做法：让 CSS 动画自己跑满全程，用**负的 animation-delay**
+         把它拨到当前进度。元素重建时动画从正确的位置继续，
+         中间那 50ms 由浏览器合成器补，与 JS 刷新率无关。 */
+      @keyframes cast-fill { from { width: 0%; } to { width: 100%; } }
+      .bar.cast i.anim { animation: cast-fill linear forwards; }
       .bar.cast.castable { border-color: var(--school); }
       .bar.cast.shielded { border-color: #8e96a8; border-style: dashed; }
       .bar.cast.shot { border-color: #d8b45c; box-shadow: inset 0 0 0 1px rgba(216,180,92,.35); }
@@ -139,10 +187,71 @@
       #skill-bar .sk-meta { font-size: 10px; color: #7d8698; }
       #skill-bar .sk-block { font-size: 10px; color: #e08a8a; margin-top: 2px; }
 
+      /* ── M12 技能栏打磨 ──────────────────────────────────────── */
+      #skill-bar .slot {
+        transition: transform .09s ease-out, box-shadow .12s ease-out, opacity .12s;
+      }
+      #skill-bar .slot.usable:hover { transform: translateY(-2px); }
+      /* 真实图标：圆角 + 内描边，让方图与程序化 SVG 的边框语言一致 */
+      #skill-bar .sk-img {
+        border-radius: 5px; object-fit: cover;
+        box-shadow: inset 0 0 0 1px rgba(0,0,0,.55), 0 1px 3px rgba(0,0,0,.5);
+      }
+      #skill-bar .slot.blocked .sk-img { filter: grayscale(.75) brightness(.65); }
+
+      /* ★ 冷却扫层：conic-gradient 顺时针扫过图标。
+         ⚠️ 它是**第二**通道 —— `.sk-block` 里的秒数读数仍然照常显示。
+         14.4 不允许把关键信息只留一个通道，而「还有多久能用」是
+         15.2 明确要求提示的内容之一。 */
+      #skill-bar .sk-head { position: relative; }
+      #skill-bar .sk-cd {
+        position: absolute; left: 0; top: 0; width: 26px; height: 26px;
+        border-radius: 5px; pointer-events: none;
+        background: conic-gradient(rgba(10,12,18,.78) var(--cd-deg), transparent 0);
+      }
+      /* 按下技能时的一次脉冲，让「按了」有即时回执（不等服务器） */
+      @keyframes sk-press { 0% { transform: scale(1); } 45% { transform: scale(.9); } 100% { transform: scale(1); } }
+      #skill-bar .slot.pressed .sk-head { animation: sk-press .17s ease-out; }
+
+      /* ── M12 浮动伤害数字（14.1 命中反馈 / 17.2 可关闭）────────
+         ★ 关闭由 `#combat-hud.no-damage-numbers` 的 display:none 兜底，
+           但 FloatingNumbers 关掉时压根不建 DOM —— 见该文件头部。 */
+      #floating-numbers { position: absolute; inset: 0; pointer-events: none; }
+      .damage-number {
+        position: absolute; left: 0; top: 0; white-space: nowrap;
+        font-weight: 700; font-size: 15px; letter-spacing: .3px;
+        text-shadow: 0 1px 3px #000, 0 0 8px rgba(0,0,0,.9);
+        will-change: transform, opacity;
+      }
+      .fn-damage { color: #ffd9c0; }
+      .fn-crit   { color: #ffb057; font-size: 21px; }
+      .fn-heal   { color: #86e5a2; }
+      .fn-absorb { color: #9fd2ff; }
+      /* 未命中/免疫是**文字**不是数字 —— 显示 0 会被读成「打中但减到 0」 */
+      .fn-miss   { color: #c2c8d6; font-size: 13px; font-weight: 600; }
+      .fn-immune { color: #ffe9a8; font-size: 13px; font-weight: 600; }
+
+      /* ── M12 受击屏幕闪烁（17.2 可独立关闭）────────────────────
+         ★ 只在**四周边缘**变红，中间保持全透明 —— 全屏泛红会盖住
+           14.4 点名不能隐藏的那些东西（控制状态、地面边界）。 */
+      #screen-flash {
+        position: absolute; inset: 0; pointer-events: none; opacity: 0;
+        transition: opacity .09s ease-out;
+        background: radial-gradient(ellipse at center,
+                    transparent 52%, rgba(190,30,30,.42) 100%);
+      }
+      #combat-hud.no-screen-flash #screen-flash { display: none; }
+
+      /* ★ M12：战斗日志此前是浅灰字直接压在深色背景上。引入 HDR 环境与
+         地面贴图后背景可能是**亮的**（白天的石板地），同一组颜色在那上面
+         几乎读不出来 —— 这是画面变亮带来的真实可读性回退，截图比对发现的。
+         做法是给文字加描边阴影而不是调亮颜色：颜色还要继续承担
+         ok/fail/interrupt 的语义区分（15.2），动了颜色就动了语义。 */
       #combat-log { position: absolute; left: 14px; bottom: 14px; width: 380px;
-                    font-size: 11px; font-variant-numeric: tabular-nums; }
-      .log { display: flex; gap: 6px; padding: 1px 0; color: #a8b0c2; }
-      .log span { color: #59617a; min-width: 34px; text-align: right; }
+                    font-size: 11px; font-variant-numeric: tabular-nums;
+                    text-shadow: 0 1px 2px #000, 0 0 6px rgba(0,0,0,.85); }
+      .log { display: flex; gap: 6px; padding: 1px 0; color: #c2c9d8; }
+      .log span { color: #808aa2; min-width: 34px; text-align: right; }
       .log.ok { color: #8fd0a0; }
       .log.fail { color: #e08a8a; }
       .log.interrupt { color: #e0c07e; }
@@ -182,8 +291,12 @@
       /* 15.1 右上：小地图 */
       #minimap { position: absolute; right: 14px; top: 14px; }
 
-      /* 15.4 模式专属 */
-      #mode-hud { position: absolute; left: 50%; transform: translateX(-50%); top: 110px;
+      /* 15.4 模式专属。
+         ★ top 从 110px 下移到 158px：目标框（15.2 要求它显示职业、生命、
+         资源、武器、控制状态、施法条）本身就有 ~130px 高，110px 会让
+         模式面板压住目标框的下半截 —— 截图比对里「单手剑 + 盾牌」那行
+         正好被盖掉，而那是 10.6 要求敌人可见的信息。 */
+      #mode-hud { position: absolute; left: 50%; transform: translateX(-50%); top: 158px;
                   min-width: 240px; text-align: center; background: rgba(20,23,30,.86);
                   border: 1px solid #2c313d; border-radius: 8px; padding: 6px 12px;
                   font-size: 12px; color: #b9c1d1; }

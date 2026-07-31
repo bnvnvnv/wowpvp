@@ -488,12 +488,15 @@ console.log('\n── 验收 #51 / #52：素材许可与公平性 ──');
   const license = fs.readFileSync('docs/09-asset-license.md', 'utf8');
   const fairness = fs.readFileSync('docs/12-fairness-review.md', 'utf8');
 
-  // #51：外部素材要么为零、要么逐条登记
-  const hasInventory = /##\s*7\./.test(license) && /外部素材清单/.test(license);
-  const declaresZero = /目前没有任何外部素材|零外部素材/.test(license);
-  check('#51', '★ 外部素材许可有明确记录（当前为「零外部素材」并写明重启条件）',
-    hasInventory && declaresZero,
-    `docs/09 含清单章节=${hasInventory}，声明零外部素材=${declaresZero}`);
+  // #51：GitHub 已分发媒体可拉/入库/发布（GH）；须有来源登记；无暴雪
+  const hasInventory = /##\s*7\./.test(license) && /#51/.test(license);
+  const allowsGithubFull = /可拉\s*\/\s*可入库\s*\/\s*可发布|入库.*发布|commit\/push/.test(license)
+    || (/GitHub/.test(license) && /发布包/.test(license) && /GH/.test(license));
+  const hasGhTier = /\*\*GH\*\*|档位.*GH|GH\s*—/.test(license) || /档位 \*\*GH\*\*/.test(license);
+  const bansBlizzard = /暴雪/.test(license);
+  check('#51', '★ 素材许可策略已落地（GitHub 媒体可入库/发布；有来源登记）',
+    hasInventory && allowsGithubFull && bansBlizzard,
+    `§7+#51=${hasInventory}，GH全流程=${allowsGithubFull}，GH档=${hasGhTier}，禁暴雪=${bansBlizzard}`);
 
   // #52：四项逐条对照
   const items = ['等级', '永久装备', '付费属性', '外观稀有度'];

@@ -22,7 +22,7 @@ pnpm-debug.log*
 .env.*
 !.env.example
 
-# 未登记许可证的素材暂存区（见 docs/09-asset-license.md）
+# 未登记 / 暂存素材区（见 docs/09-asset-license.md）
 assets/_incoming/
 
 # 验收脚本产出的截图
@@ -33,7 +33,8 @@ m4-*.png
 # 验收脚本生成的人工比对截图（每次跑都会重生成，不入库）
 scripts/_*.png
 m8-*.png
+m12-*.png
 
-# 素材：T1「仅个人开发期可用」档 —— 许可允许本地使用但**不允许再分发**
-# （docs/09-asset-license.md §0）。仓库有公开远端，push 即再分发，所以靠工具挡住。
+# T1 仅本地（非 GitHub 源且禁止再分发，如 Mixamo FBX）—— docs/09 §0.2
+# GitHub 已公开分发的美术/音频放 assets/art、assets/music，**可以入库**，不要放这里。
 assets/local/

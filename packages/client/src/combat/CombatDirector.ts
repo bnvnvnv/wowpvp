@@ -297,9 +297,10 @@ export class CombatDirector {
            *   完成了，压根不进 store（`casting.ts` 的 Instant 分支提前返回）。
            *   所以这里不必判「是不是瞬发」，瞬发技能天然没有「开始读条」这行。
            */
-          onStarted: (_c, st) => {
+          onStarted: (c, st) => {
             const skill = getSkill(st.skillId);
             if (!skill) return;
+            this.onCastActivity?.('started', c, skill);
             if (needsGroundPlacement(skill)) {
               this.push(`开始施放 ${skill.name}（落点已锁定）`, 'info');
             } else {
@@ -311,11 +312,14 @@ export class CombatDirector {
            * ★ 玩家自己的失败与别人的失败**读法不同**：前者是「我按下去没放出来」，
            *   要像 UI 提示；后者是战斗日志里的旁观记录。
            */
-          onFailed: (c, sk, reason) =>
-            c.id === this.player.id
+          onFailed: (c, sk, reason) => {
+            this.onCastActivity?.('failed', c, sk);
+            return c.id === this.player.id
               ? this.push(`${sk.name} 无法释放：${FAIL_TEXT[reason]}`, 'fail')
-              : this.push(`${c.name} 的 ${sk.name} 失败：${FAIL_TEXT[reason]}`, 'fail'),
+              : this.push(`${c.name} 的 ${sk.name} 失败：${FAIL_TEXT[reason]}`, 'fail');
+          },
           onInterrupted: (c, st, src, lock) => {
+            this.onCastActivity?.('interrupted', c, getSkill(st.skillId));
             const skillName = getSkill(st.skillId)?.name ?? st.skillId;
             const lockText = lock
               ? `，${SCHOOL_TEXT[lock.school]}学派锁定 ${(lock.until - this.world.time).toFixed(1)}s`
@@ -332,6 +336,7 @@ export class CombatDirector {
          * 不在这里重算 —— 重算会在效果结算之后少数几个已经倒下的人。
          */
         onCastResolved: (caster, skill, targets) => {
+          this.onCastActivity?.('resolved', caster, skill);
           if (needsGroundPlacement(skill)) {
             this.push(`${skill.name} 落地，范围内 ${targets.length} 个目标`, 'ok');
           } else if (usesNoTarget(skill)) {
@@ -340,8 +345,14 @@ export class CombatDirector {
             this.push(`${caster.name} 完成 ${skill.name} → ${targets[0]?.name ?? '?'}`, 'ok');
           }
         },
-        onEffects: (events) => { for (const ev of events) this.logEvent(ev); },
+        onEffects: (events) => {
+          for (const ev of events) {
+            this.logEvent(ev);
+            this.onCombatEvent?.(ev);
+          }
+        },
         onSwap: (ev) => {
+          this.onSwapResult?.(ev.result === 'completed');
           const who = getEntity(this.world, ev.entityId);
           if (ev.result === 'completed') this.push(`${who?.name ?? ''} 完成换装`, 'ok');
           else this.push(`${who?.name ?? ''} 换装中断：${ev.result}`, 'fail');
@@ -401,6 +412,22 @@ export class CombatDirector {
    * 单元测试全绿，是浏览器里带旗按了一次 8 键才发现的。
    */
   onBeforeSkillEffects?: (caster: CombatEntity, skill: SkillDef) => void;
+
+  // ── M12：表现层钩子（音效 / 浮动数字 / 受击闪光）────────────────
+  //
+  // ★ 三个都是**只读旁路**：不改任何战斗状态，不订阅也不影响任何规则。
+  //   与 onBeforeSkillEffects 不同 —— 那个承载验收 #40 的规则调用，这些只承载表现。
+
+  /** 每条战斗事件（伤害/治疗/光环/驱散/死亡/位移…）的旁路，与日志同源 */
+  onCombatEvent?: (ev: CombatEvent) => void;
+  /** 施法生命周期：开始读条 / 完成 / 被打断 / 失败 */
+  onCastActivity?: (
+    kind: 'started' | 'resolved' | 'interrupted' | 'failed',
+    caster: CombatEntity,
+    skill: SkillDef | undefined,
+  ) => void;
+  /** 换装结束（true=完成，false=中断）*/
+  onSwapResult?: (completed: boolean) => void;
 
   /**
    * 把一条战斗事件转成日志行。

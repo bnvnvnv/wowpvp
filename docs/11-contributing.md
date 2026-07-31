@@ -194,17 +194,26 @@ registerEffect('stealBuff', (ctx, effect, targets) => { … });
 
 ## 7. 素材（模型、贴图、音效、图标、字体）
 
-**先登记，后使用。** 顺序不能反。
+策略见 [09-asset-license.md](09-asset-license.md) §0.1 / §6。摘要：
 
-1. 在 [09-asset-license.md](09-asset-license.md) 里登记：名称、作者、来源、许可证、
-   署名要求、商业使用、修改和再分发条件
-2. 确认是 CC0 或明确允许本项目用途的许可证
-3. 才能把文件放进 `assets/`
+### 7.1 GitHub 公开仓（主路径：可拉 / 可入库 / 可发布）
 
-**绝对不能进仓库的**：
+1. 任意 **GitHub 公开仓库**中已分发的美术/音频 → 复制到 `assets/art/` 或 `assets/music/` 等
+2. 在 09 §4 **按包登记一行**（来源 URL + 档位 **GH**）
+3. **可以** `git add` / commit / push；可以进发布包
+
+### 7.2 非 GitHub 自由素材（T3）
+
+CC0 / OFL 等 → 登记 T3 → `assets/` → commit
+
+### 7.3 仅本地 T1（非 GitHub 且禁止再分发）
+
+Mixamo 等 → 只放 `assets/local/`（gitignore），**不要** git add
+
+**绝对不能进仓库 / 正式包的**：
 - 暴雪的角色模型、纹理、技能图标、地图文件、Logo、音频（规格书 18.3）
-- CraftPix 技能图标、参考项目的定制武器/商店图/成就图标/品牌标识（18.2）
-- 任何未登记或授权不清晰的素材（18.2 / 验收 #51）
+- 未登记来源的外部媒体
+- `assets/local/` 下的 T1 文件
 
 ---
 

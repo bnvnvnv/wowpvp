@@ -48,6 +48,8 @@ export const Action = {
   CycleUiScale: 'cycleUiScale',
   /** 11.4 观战：切换到下一个己方存活队友 */
   SpectateNext: 'spectateNext',
+  /** M12：静音总开关 */
+  ToggleMute: 'toggleMute',
 } as const;
 export type Action = (typeof Action)[keyof typeof Action];
 
@@ -82,6 +84,7 @@ export const DEFAULT_BINDINGS: Readonly<Record<Action, string>> = {
   [Action.CycleColorblind]: 'F3',
   [Action.CycleUiScale]: 'F4',
   [Action.SpectateNext]: 'KeyV',
+  [Action.ToggleMute]: 'KeyM',
 };
 
 /** 角色转向速度，弧度/秒。A/D 未按右键时用它转身 */

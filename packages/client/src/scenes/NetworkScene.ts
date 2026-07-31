@@ -23,6 +23,7 @@
 
 import * as THREE from 'three';
 import {
+  GEOMETRY,
   MAP_BY_ID,
   SIM,
   createMovementState,
@@ -37,17 +38,23 @@ import {
 import { CameraController } from '../camera/CameraController.js';
 import { AnimationController } from '../entity/AnimationController.js';
 import { CharacterView } from '../entity/CharacterView.js';
+import { ModelLibrary } from '../entity/ModelLibrary.js';
 import { Action, InputManager, type FrameInput } from '../input/InputManager.js';
 import { GameLoop } from '../render/GameLoop.js';
 import { MapRenderer } from '../render/MapRenderer.js';
 import { QualityController } from '../render/QualityController.js';
 import { QualityTier } from '../render/quality.js';
+import { Environment } from '../render/Environment.js';
 import { Connection } from '../net/Connection.js';
 import { Interpolator } from '../net/Interpolator.js';
 import { Predictor } from '../net/Predictor.js';
 import { pickTabTargetFromSnapshot } from '../net/snapshotTargeting.js';
 import { CombatHud } from '../hud/CombatHud.js';
 import { SnapshotCombatView } from '../net/SnapshotCombatView.js';
+import { audio } from '../audio/AudioManager.js';
+import { TargetRing } from '../vfx/TargetRing.js';
+import { paletteFor } from '../settings/accessibility.js';
+import { artEnabled } from '../settings/artMode.js';
 
 export interface NetworkSceneOptions {
   url: string;
@@ -82,6 +89,10 @@ export class NetworkScene {
   private readonly input: InputManager;
   private readonly loop: GameLoop;
   private readonly quality: QualityController;
+  /** M12：HDR 环境光与天空 */
+  private readonly env: Environment;
+  /** M12：是否加载外部美术素材（`?art=off` 关闭）。见 settings/artMode.ts */
+  private readonly art = artEnabled();
   private readonly conn: Connection;
   /** ★ 与试验场**同一个** HUD 类，喂的是快照视图而不是 CombatDirector */
   private readonly hud: CombatHud;
@@ -96,6 +107,8 @@ export class NetworkScene {
 
   private readonly selfView = new CharacterView();
   private readonly selfAnim = new AnimationController();
+  /** M12：当前目标的脚下指示环 */
+  private readonly targetRing = new TargetRing();
   /** 远端角色的可视化与动作状态机，按实体 id */
   private readonly views = new Map<number, CharacterView>();
   private readonly anims = new Map<number, AnimationController>();
@@ -124,12 +137,25 @@ export class NetworkScene {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // M12：HDR 环境是线性高动态的，不做色调映射会大面积过曝。
+    // ★ 与素材同开同关，理由同试验场
+    if (this.art) {
+      this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      this.renderer.toneMappingExposure = 1.0;
+    }
     this.quality = new QualityController(this.renderer, QualityTier.High);
+    // M12：模型库（素材缺失或 ?art=off 时保留程序化胶囊体）
+    if (this.art) ModelLibrary.init(this.renderer);
+    this.selfView.setClass(opts.classId);
 
     this.scene.background = new THREE.Color(0x232a35);
     this.scene.fog = new THREE.Fog(0x232a35, 90, 160);
     this.scene.add(this.selfView.group);
+    this.scene.add(this.targetRing.group);
     this.addLights();
+    // M12：环境光与天空。★ 纯加法，见 Environment.ts 文件头
+    this.env = new Environment(this.renderer, this.scene);
+    if (this.art) this.env.apply(this.quality.current, { preset: 'day' });
 
     this.cam = new CameraController(canvas.clientWidth / canvas.clientHeight);
     this.input = new InputManager(canvas);
@@ -163,6 +189,7 @@ export class NetworkScene {
   }
 
   start(): void {
+    audio.install();
     this.conn.connect();
     this.loop.start();
   }
@@ -172,6 +199,7 @@ export class NetworkScene {
     this.conn.close();
     this.input.dispose();
     window.removeEventListener('resize', this.onResize);
+    this.env.dispose();
     this.renderer.dispose();
   }
 
@@ -257,17 +285,53 @@ export class NetworkScene {
         break;
 
       // 战斗事件 → 战斗日志。★ 与试验场同一套文案由 HUD 渲染
-      case 'Damage':
+      //
+      // ★ M12 音效在这里接**协议消息**，而不是 CombatEvent —— 联网客户端
+      //   没有本地 sim，它知道的只有服务器发来的这几条。信息比试验场少
+      //   （例如没有 avoided/immune 的区分），所以声音也如实地少一层，
+      //   ⚠️ 不编一个「大概是格挡」的音效：那会让玩家按不存在的反馈做判断
+      case 'Damage': {
+        if (msg.immune) audio.play('buff_apply', { ...this.audioDistance(msg.targetId), rate: 0.8 });
+        else audio.playImpact(msg.school, this.audioDistance(msg.targetId));
+        if (msg.targetId === this.selfId) {
+          audio.playVariant('hurt', { volume: 0.85 });
+          if (msg.amount > 0) this.hud.flashScreen();
+        }
+        const at = this.headOf(msg.targetId);
+        if (at) {
+          if (msg.immune) this.hud.floaters.push('免疫', 'immune', at);
+          else if (msg.amount > 0) this.hud.floaters.push(String(msg.amount), 'damage', at);
+          else if (msg.absorbed > 0) this.hud.floaters.push(`吸收 ${msg.absorbed}`, 'absorb', at);
+        }
         this.view.push(`${this.nameOf(msg.sourceId)} → ${this.nameOf(msg.targetId)} ${msg.amount} 点伤害`, 'ok');
         break;
-      case 'Heal':
+      }
+      case 'Heal': {
+        audio.play('heal_impact', this.audioDistance(msg.targetId));
+        const at = this.headOf(msg.targetId);
+        if (at && msg.amount > 0) this.hud.floaters.push(`+${msg.amount}`, 'heal', at);
         this.view.push(`${this.nameOf(msg.sourceId)} 治疗 ${this.nameOf(msg.targetId)} ${msg.amount} 点`, 'ok');
         break;
+      }
       case 'Death':
+        audio.playVariant('death', this.audioDistance(msg.entityId));
         this.view.push(`${this.nameOf(msg.entityId)} 被击杀`, 'interrupt');
         break;
       case 'CastFailed':
+        audio.play('ui_error', { group: 'ui', volume: 0.5 });
         this.view.push(`施法失败：${msg.reason}`, 'fail');
+        break;
+      case 'CastStarted':
+        audio.playCast(msg.school, { ...this.audioDistance(msg.casterId), volume: 0.7 });
+        break;
+      case 'CastInterrupted':
+        audio.play('ui_error', {
+          group: 'ui',
+          volume: msg.casterId === this.selfId ? 0.9 : 0.5,
+        });
+        break;
+      case 'AuraApplied':
+        audio.play('buff_apply', { ...this.audioDistance(msg.targetId), volume: 0.5 });
         break;
 
       default:
@@ -282,8 +346,9 @@ export class NetworkScene {
     const map = MAP_BY_ID.get(mapId);
     if (!map) { console.error(`地图不存在：${mapId}`); return; }
     this.map = map;
-    this.mapRenderer = new MapRenderer(map);
+    this.mapRenderer = new MapRenderer(map, this.art);
     this.scene.add(this.mapRenderer.group);
+    if (this.art) void this.mapRenderer.applyGroundTexture('stone');
   }
 
   // ── 每帧 ──────────────────────────────────────────────────────
@@ -302,9 +367,14 @@ export class NetworkScene {
     this.characterYaw += yawDelta;
     if (input.cameraReset) this.cam.resetBehind(this.characterYaw);
     if (input.pressed.has(Action.CycleQuality)) {
-      this.quality.cycle();
+      const tier = this.quality.cycle();
       this.quality.applyToLight(this.sun);
+      if (this.art) this.env.apply(tier);
     }
+    if (input.pressed.has(Action.ToggleMute)) {
+      console.info(`[音频] ${audio.toggleMute() ? '已静音' : '已取消静音'}`);
+    }
+    if (this.started) audio.playMusic('combat_1');
     // 5.3：Tab 正序、Shift+Tab 反序
     if (input.pressed.has(Action.TargetNext)) this.tabTarget(false);
     if (input.pressed.has(Action.TargetPrev)) this.tabTarget(true);
@@ -321,6 +391,35 @@ export class NetworkScene {
   private nameOf(id: EntityId | undefined): string {
     if (id === undefined) return '某个看不见的敌人';
     return this.lastEntities.find((e) => e.id === id)?.name ?? '?';
+  }
+
+  /**
+   * M12：事件发生地到自己的距离，供音效衰减。
+   * ★ 实体不在快照里（潜行、超出视野）就不给 distance —— 不是「给个大数字」，
+   *   那会把「看不见的人」的动静按远处播出去，等于泄露了他的存在（验收 #5）。
+   */
+  /**
+   * 实体头顶的世界坐标，供浮动数字。
+   * ★ 与 `audioDistance` 同理：不在快照里就返回 undefined —— 不给
+   *   看不见的人飘数字，那等于泄露他的位置（验收 #5）。
+   */
+  private headOf(id: EntityId): { x: number; y: number; z: number } | undefined {
+    if (id === this.selfId && this.predictor) {
+      const p = this.predictor.position;
+      return { x: p.x, y: p.y + GEOMETRY.HITBOX_HEIGHT * 0.9, z: p.z };
+    }
+    const e = this.lastEntities.find((x) => x.id === id);
+    if (!e) return undefined;
+    return { x: e.position.x, y: e.position.y + GEOMETRY.HITBOX_HEIGHT * 0.9, z: e.position.z };
+  }
+
+  private audioDistance(id: EntityId | undefined): { distance?: number } {
+    if (id === undefined) return {};
+    if (id === this.selfId) return { distance: 0 };
+    const at = this.lastEntities.find((e) => e.id === id)?.position;
+    const me = this.predictor?.position;
+    if (!at || !me) return {};
+    return { distance: Math.hypot(at.x - me.x, at.z - me.z) };
   }
 
   private tabTarget(reverse: boolean): void {
@@ -366,10 +465,11 @@ export class NetworkScene {
 
     this.drawSelf(dt);
     this.drawRemotes(dt);
+    this.updateTargetRing();
 
     this.renderer.render(this.scene, this.cam.camera);
     // ★ 与试验场同一个调用 —— 只是喂的 CombatView 实现不同
-    this.hud.update(this.view, this.cam.camera, this.canvas);
+    this.hud.update(this.view, this.cam.camera, this.canvas, dt);
   }
 
   private drawSelf(dt: number): void {
@@ -394,6 +494,14 @@ export class NetworkScene {
 
     this.selfView.setTransform(pos, this.characterYaw);
     this.selfView.setAnimState(this.selfAnim.state);
+    // M12：动画节奏、施法姿态、手上武器、模型动画推进
+    this.selfView.setLocomotionTimeScale(this.selfAnim.timeScale);
+    this.selfView.setCasting(this.view.playerCast !== undefined);
+    const meSnap = this.lastEntities.find((e) => e.id === this.selfId);
+    if (meSnap) {
+      this.syncWeapon(meSnap.id as number, this.selfView, meSnap.equipment.currentWeaponId as string | undefined);
+    }
+    this.selfView.update(dt);
 
     this.cam.update(
       dt,
@@ -414,7 +522,7 @@ export class NetworkScene {
 
       let view = this.views.get(id);
       if (!view) {
-        view = new CharacterView();
+        view = new CharacterView(e.snapshot.classId as string);
         this.views.set(id, view);
         this.scene.add(view.group);
         this.anims.set(id, new AnimationController());
@@ -444,16 +552,53 @@ export class NetworkScene {
 
       view.setTransform(e.position, e.yaw);
       view.setAnimState(anim.state);
+      view.setLocomotionTimeScale(anim.timeScale);
+      this.syncWeapon(id, view, e.snapshot.equipment.currentWeaponId as string | undefined);
+      view.update(dt);
     }
 
     // 离开视野的（潜行、死亡移除、断线淘汰）→ 收掉
     for (const [id, view] of this.views) {
       if (seen.has(id)) continue;
+      view.dispose(); // 取消在途的模型/武器异步挂载
       this.scene.remove(view.group);
       this.views.delete(id);
       this.anims.delete(id);
       this.lastRemotePos.delete(id);
+      this.shownWeapons.delete(id);
     }
+  }
+
+  /**
+   * M12：当前目标的脚下指示环（5.2）。
+   * ★ 用**插值后**的位置而不是快照原始位置 —— 否则环会以 20Hz 跳，
+   *   而角色是平滑的，看上去像环没跟上人。
+   */
+  private updateTargetRing(): void {
+    const id = this.currentTargetId;
+    if (id === undefined) {
+      this.targetRing.update(undefined, 'hostile', this.serverTime, '#fff');
+      return;
+    }
+    const snap = this.lastEntities.find((e) => e.id === id);
+    const rendered = this.views.get(id as number)?.group.position;
+    const at = rendered ?? snap?.position;
+    const p = paletteFor(this.hud.accessibility.colorblind);
+    const friendly = snap !== undefined && snap.team === this.selfTeam;
+    this.targetRing.update(
+      at,
+      friendly ? 'friendly' : 'hostile',
+      this.serverTime,
+      friendly ? p.friendly : p.hostile,
+    );
+  }
+
+  /** M12：武器变化才触发挂载（setWeapon 是异步的，不能每帧调） */
+  private readonly shownWeapons = new Map<number, string | undefined>();
+  private syncWeapon(id: number, view: CharacterView, weaponId: string | undefined): void {
+    if (this.shownWeapons.get(id) === weaponId) return;
+    this.shownWeapons.set(id, weaponId);
+    view.setWeapon(weaponId);
   }
 
   // ── 杂项 ──────────────────────────────────────────────────────

@@ -8,7 +8,14 @@
  */
 
 import { GEOMETRY, MOVE, RANGE } from '@wowpvp/shared';
+import { probeIconAssets } from './hud/skillIcon.js';
+import { artEnabled } from './settings/artMode.js';
 import { TestbedScene, type DebugInfo } from './scenes/TestbedScene.js';
+
+// M12：探测素材目录是否可用。不 await —— 场景启动不等它，
+// 探测成功后下一次 HUD 重建（≤50ms）自然切到真实图标。
+// `?art=off` 时连探测都不发，整个 HUD 走程序化 SVG（见 settings/artMode.ts）
+if (artEnabled()) void probeIconAssets();
 
 const RAD = 180 / Math.PI;
 
@@ -30,6 +37,8 @@ app.innerHTML = `
         <tr><td><kbd>右键拖</kbd></td><td>镜头与朝向联动</td></tr>
         <tr><td><kbd>Home</kbd></td><td>镜头复位到背后</td></tr>
         <tr><td><kbd>F1</kbd></td><td>显示碰撞体与判定标记</td></tr>
+        <tr><td><kbd>F2</kbd></td><td>画质档位<span class="hint">高 → 中 → 低</span></td></tr>
+        <tr><td><kbd>M</kbd></td><td>静音开关<span class="hint">M12 音效</span></td></tr>
       </table>
       <h3>战斗（M2）</h3>
       <table>
@@ -132,5 +141,8 @@ if (room !== null) {
   net.start();
 } else {
   const scene = new TestbedScene(canvas, paintStats);
+  // ★ 暴露给验收脚本读场景状态（M12 的美术自检、M9 的观战与可访问性）。
+  //   与联网场景的 `__net` 是同一个用途
+  (globalThis as Record<string, unknown>).__scene = scene;
   scene.start();
 }

@@ -14,7 +14,19 @@
 
 import { chromium } from 'playwright';
 
-const URL = process.env.VERIFY_URL ?? 'http://localhost:5173/';
+/**
+ * ★ M12：默认带 `?art=off`。
+ *
+ *   这一支验的是**规则有没有被接线**（移动、镜头、目标、打断…），
+ *   没有一条与美术有关。而美术层在 `--use-gl=swiftshader` 软件渲染下
+ *   把帧率从 27 压到 4 —— 那会让本脚本因为**跑不动**而超时，
+ *   得到一个与代码正确性无关的红灯。
+ *
+ *   `?art=off` 让画面精确回到 M11 的全程序化表现（见
+ *   `client/src/settings/artMode.ts`），于是这里的结论可以与
+ *   M0–M11 的历史结果直接对比。**美术层本身由 `verify:m12` 负责。**
+ */
+const URL = process.env.VERIFY_URL ?? 'http://localhost:5173/?art=off';
 const results = [];
 
 const check = (id, name, pass, detail) => {
@@ -288,8 +300,21 @@ console.log('\n── 规格书 13.5 / 验收 #45：跳跃不增速、无二段�
   const base = await read();
   await hold('Space');
   let peak = base.y;
-  for (let i = 0; i < 22; i++) {
-    await page.waitForTimeout(35);
+  /**
+   * ⚠️ 采样窗口必须覆盖**整条抛物线**（上升 ~0.49s + 下落 ~0.49s），
+   *   而不只是理论顶点附近。
+   *
+   *   原本是 22 × 35ms = 770ms，勉强够到顶点；而 `#stats` 面板只有
+   *   **10Hz** 重绘（main.ts 的 paintStats 节流到 100ms），
+   *   所以这 22 次采样实际只读到 ~8 个不同的值 —— 顶点落在两次重绘
+   *   之间时就整个被跳过，读数偏低到 0.85 阈值以下。
+   *
+   *   ★ 这是**观测走样**，不是物理回归：跳跃物理在 `shared/sim/movement.ts`，
+   *     由 40 条单元测试守着，且本脚本从未改动过它。
+   *     M12 调整帧率后这条偶发性变红，才暴露出这个一直存在的脆弱采样。
+   */
+  for (let i = 0; i < 42; i++) {
+    await page.waitForTimeout(30);
     peak = Math.max(peak, (await read()).y);
   }
   check(

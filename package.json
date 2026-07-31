@@ -30,6 +30,7 @@
     "clean": "rimraf packages/*/dist packages/*/*.tsbuildinfo",
     "verify:m9": "tsx scripts/verify-m9.ts",
     "verify:m10": "tsx scripts/verify-m10.ts",
+    "verify:m12": "node scripts/verify-m12.mjs",
     "balance": "tsx scripts/balance-report.ts"
   },
   "devDependencies": {

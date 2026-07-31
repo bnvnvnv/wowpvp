@@ -28,12 +28,13 @@ import {
 } from '@wowpvp/shared';
 import { FAIL_TEXT, SCHOOL_TEXT } from '../combat/CombatDirector.js';
 import type { CombatView, HudSkillSlot, HudUnit } from './CombatView.js';
-import { skillIconSvg } from './skillIcon.js';
+import { skillIconHtml } from './skillIcon.js';
 import { CONTROL_VISUALS, type ControlKind } from '../vfx/status.js';
 import { Minimap } from './Minimap.js';
 import { ModeHud } from './ModeHud.js';
 import { PartyFrame, type PartyMemberView } from './PartyFrame.js';
 import { LoadoutPanel } from './LoadoutPanel.js';
+import { FloatingNumbers } from './FloatingNumbers.js';
 import {
   DEFAULT_ACCESSIBILITY,
   clampUiScale,
@@ -56,6 +57,9 @@ export const SCHOOL_COLOR: Record<School, string> = {
 
 /** HUD 完整重建的间隔。20Hz 与服务器 tick 同频，视觉上察觉不到 */
 const HUD_UPDATE_INTERVAL_MS = 50;
+
+/** 受击闪烁的持续时间，秒 */
+const FLASH_DURATION = 0.26;
 
 export class CombatHud {
   private readonly root: HTMLElement;
@@ -80,11 +84,17 @@ export class CombatHud {
   readonly minimap: Minimap;
   readonly modeHud: ModeHud;
   readonly loadout: LoadoutPanel;
+  /** M12：浮动伤害/治疗数字（14.1）*/
+  readonly floaters!: FloatingNumbers;
+  private readonly screenFlash!: HTMLElement;
+  /** 受击闪烁的剩余秒数 */
+  private flashLeft = 0;
 
   constructor(container: HTMLElement) {
     this.root = document.createElement('div');
     this.root.id = 'combat-hud';
     this.root.innerHTML = `
+      <div id="screen-flash"></div>
       <div id="nameplates"></div>
       <div id="target-frame" class="unit-frame"></div>
       <div id="focus-frame" class="unit-frame"></div>
@@ -96,6 +106,10 @@ export class CombatHud {
     container.appendChild(this.root);
 
     this.nameplateLayer = this.root.querySelector('#nameplates')!;
+    this.screenFlash = this.root.querySelector('#screen-flash')!;
+    // M12：浮动数字挂在 HUD 根下 —— 于是它自动继承 17.2 的界面缩放
+    // 与 `.no-damage-numbers` 开关，不需要在两处各写一遍
+    this.floaters = new FloatingNumbers(this.root);
     this.applyAccessibility(this.access);
     this.targetFrame = this.root.querySelector('#target-frame')!;
     this.focusFrame = this.root.querySelector('#focus-frame')!;
@@ -124,6 +138,8 @@ export class CombatHud {
    */
   applyAccessibility(s: AccessibilitySettings): void {
     this.access = s;
+    // M12：关掉伤害数字时连 DOM 都不建（见 FloatingNumbers 文件头）
+    this.floaters.setEnabled(s.damageNumbers);
     const p = paletteFor(s.colorblind);
     const style = this.root.style;
 
@@ -143,6 +159,33 @@ export class CombatHud {
   /** 当前设置。供设置面板与验收脚本读取 */
   get accessibility(): AccessibilitySettings {
     return this.access;
+  }
+
+  /**
+   * M12：技能被按下时的一次脉冲。
+   *
+   * ★ **本地即时播放，不等任何确认** —— 联网下服务器要 100ms 才回执，
+   *   而「按了有没有反应」必须在按下的那一帧回答。这只是输入回执，
+   *   技能到底放没放出来仍由施法条与日志（15.2）负责。
+   */
+  pulseSlot(index: number): void {
+    const el = this.skillBar.children[index] as HTMLElement | undefined;
+    if (!el) return;
+    el.classList.remove('pressed');
+    void el.offsetWidth; // 强制重排，让同一格连按两次也能重放动画
+    el.classList.add('pressed');
+  }
+
+  /**
+   * 14.1：自己受击时屏幕边缘一闪。
+   *
+   * ★ 17.2 的 `screenFlash` 开关这里**不判断** —— CSS 的
+   *   `.no-screen-flash #screen-flash { display: none }` 已经关死了。
+   *   在两处都判会出现「改了一处忘了另一处」，而 17.2 要的是
+   *   四项各自独立、可靠地生效。
+   */
+  flashScreen(): void {
+    this.flashLeft = FLASH_DURATION;
   }
 
   /**
@@ -213,10 +256,18 @@ export class CombatHud {
    * 每帧做一次会让浏览器反复解析 HTML —— 实测把帧率从 25 拖到 12。
    * 姓名板的**位置**仍然每帧更新（不重建 DOM），否则会跟不上镜头。
    */
-  update(dir: CombatView, camera: THREE.Camera, canvas: HTMLCanvasElement): void {
+  update(dir: CombatView, camera: THREE.Camera, canvas: HTMLCanvasElement, dt = 0): void {
     const now = performance.now();
     const full = now - this.lastFullUpdate >= HUD_UPDATE_INTERVAL_MS;
     if (full) this.lastFullUpdate = now;
+
+    // ★ M12：浮动数字与屏幕闪烁**每帧**推进，不受 20Hz 节流影响 ——
+    //   它们是 14.1 的命中反馈，节流会让数字一跳一跳地往上蹦
+    this.floaters.update(dt, camera, canvas);
+    if (this.flashLeft > 0) {
+      this.flashLeft = Math.max(0, this.flashLeft - dt);
+      this.screenFlash.style.opacity = String((this.flashLeft / FLASH_DURATION) * 0.9);
+    }
 
     // 姓名板位置每帧跟随镜头，内容按节流刷新
     this.renderNameplates(dir, camera, canvas, full);
@@ -288,15 +339,23 @@ export class CombatHud {
       ?? { name: String(cast.skillId), school: cast.school };
     const total = Math.max(0.01, cast.endsAt - cast.startedAt);
     const remaining = Math.max(0, cast.endsAt - dir.now);
-    const pct = Math.min(100, ((total - remaining) / total) * 100);
+    const elapsed = total - remaining;
+    const pct = Math.min(100, (elapsed / total) * 100);
 
     const isPhysicalShot = cast.kind === CastKind.AimedShot;
     const cls = isPhysicalShot ? 'shot' : cast.interruptible ? 'castable' : 'shielded';
     const color = SCHOOL_COLOR[cast.school] ?? '#cccccc';
 
+    /**
+     * ★★ 用**负 delay** 把 CSS 动画拨到当前进度（详见 index.html 的注释）。
+     *   `width` 仍然写着 —— 动画没生效时（reduce-motion、旧浏览器）
+     *   它就是回落值，进度信息不会消失。
+     */
+    const anim = `animation-duration:${total.toFixed(2)}s;animation-delay:-${elapsed.toFixed(2)}s`;
+
     return `
       <div class="bar cast ${cls}" style="--school:${color}">
-        <i style="width:${pct}%"></i>
+        <i class="anim" style="width:${pct}%;${anim}"></i>
         <span>
           ${cast.interruptible ? '' : '<b class="shield" title="不可打断">🛡</b>'}
           ${esc(skill.name)}
@@ -333,10 +392,20 @@ export class CombatHud {
               ? ''
               : FAIL_TEXT[s.blocker];
         const color = SCHOOL_COLOR[s.skill.school] ?? '#ccc';
+        /**
+         * M12 冷却扫层。★ 它是**第二**通道 —— 下面 `.sk-block` 里的
+         *   秒数读数照常渲染。15.2 要求技能图标明确提示不可用原因，
+         *   一个扇形不能替代「还有 3.2 秒」这句话。
+         */
+        const cdTotal = s.skill.cooldown > 0 ? s.skill.cooldown : 0;
+        const sweep =
+          s.cooldownRemaining > 0 && cdTotal > 0
+            ? `<div class="sk-cd" style="--cd-deg:${((s.cooldownRemaining / cdTotal) * 360).toFixed(1)}deg"></div>`
+            : '';
         return `
           <div class="slot ${usable ? 'usable' : 'blocked'}" style="--school:${color}">
             <kbd>${i + 1}</kbd>
-            <div class="sk-head">${skillIconSvg(s.skill, 26)}<div class="sk-name">${esc(s.skill.name)}</div></div>
+            <div class="sk-head">${skillIconHtml(s.skill, 26)}${sweep}<div class="sk-name">${esc(s.skill.name)}</div></div>
             <div class="sk-meta">
               ${s.skill.cast.kind === CastKind.Instant ? '瞬发' : `${s.skill.cast.time}s`}
               · ${s.skill.range.max === 0 ? '自身' : `${s.skill.range.max}m`}

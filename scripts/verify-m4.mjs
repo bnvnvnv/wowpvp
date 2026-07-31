@@ -11,7 +11,19 @@
 
 import { chromium } from 'playwright';
 
-const URL = process.env.VERIFY_URL ?? 'http://localhost:5173/';
+/**
+ * ★ M12：默认带 `?art=off`。
+ *
+ *   这一支验的是**规则有没有被接线**（移动、镜头、目标、打断…），
+ *   没有一条与美术有关。而美术层在 `--use-gl=swiftshader` 软件渲染下
+ *   把帧率从 27 压到 4 —— 那会让本脚本因为**跑不动**而超时，
+ *   得到一个与代码正确性无关的红灯。
+ *
+ *   `?art=off` 让画面精确回到 M11 的全程序化表现（见
+ *   `client/src/settings/artMode.ts`），于是这里的结论可以与
+ *   M0–M11 的历史结果直接对比。**美术层本身由 `verify:m12` 负责。**
+ */
+const URL = process.env.VERIFY_URL ?? 'http://localhost:5173/?art=off';
 const results = [];
 const check = (id, name, pass, detail) => {
   results.push({ id, pass });

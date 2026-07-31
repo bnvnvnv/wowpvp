@@ -29,6 +29,7 @@
 
 import { CastKind, getClass, type SkillDef } from '@wowpvp/shared';
 import { cssColor, visualOf } from '../vfx/schools.js';
+import { skillIconUrl } from './skillIconMap.js';
 
 /** 图标的语义分类 —— 决定主形状。★ 顺序即优先级：一个技能可能既伤害又控制 */
 const CORE_KINDS = [
@@ -228,4 +229,48 @@ export const skillIconSvg = (skill: SkillDef, size = 28): string => {
   ${dots}
   <text x="26" y="30" font-size="9" fill="${s.secondary}" opacity=".9">${s.glyph}</text>
 </svg>`;
+};
+
+// ── M12：真实图标（素材缺失时整体回落程序化 SVG）──────────────────
+
+/**
+ * 素材可用性开关。
+ *
+ * ★ **一次探测，而不是每个 <img> 各自 onerror** —— HUD 每 50ms 重建一次
+ *   innerHTML，逐 img 兜底意味着素材缺失时每秒发几十个注定 404 的请求。
+ *   这里在启动时 HEAD 一张已知图标：成功则全体启用，失败则全体回落。
+ *
+ * ★ 默认 **false**（先画程序化 SVG）：宁可素材晚 ~100ms 淡入，
+ *   也不要在无素材环境里闪一排裂图 —— M1–M10 验收不依赖素材，这条路径必须稳。
+ */
+let remoteIconsAvailable = false;
+
+export const probeIconAssets = async (): Promise<boolean> => {
+  try {
+    const probe = skillIconUrl('mage.frostbolt');
+    if (!probe) return false;
+    const res = await fetch(probe, { method: 'HEAD' });
+    remoteIconsAvailable = res.ok;
+  } catch {
+    remoteIconsAvailable = false;
+  }
+  return remoteIconsAvailable;
+};
+
+/** 测试与验收脚本用：强制指定图标来源 */
+export const setRemoteIconsAvailable = (v: boolean): void => {
+  remoteIconsAvailable = v;
+};
+
+/**
+ * 技能图标 HTML：有素材用真实图标，否则用程序化 SVG。
+ *
+ * ★ 两条路径都带 `sk-icon` class —— 验收脚本与 CSS 不感知图标来源。
+ * ★ img 不配 onerror：映射表由 `skillIconMap.test.ts` 对着磁盘文件校验，
+ *   运行时 404 只剩「整个素材目录不存在」一种情况，已由上面的探测兜住。
+ */
+export const skillIconHtml = (skill: SkillDef, size = 28): string => {
+  const url = remoteIconsAvailable ? skillIconUrl(skill.id as string) : undefined;
+  if (!url) return skillIconSvg(skill, size);
+  return `<img class="sk-icon sk-img" src="${url}" width="${size}" height="${size}" alt="" draggable="false" loading="lazy"/>`;
 };
