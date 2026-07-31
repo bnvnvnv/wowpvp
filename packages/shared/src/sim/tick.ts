@@ -63,6 +63,7 @@ import {
   stepMovement, type MovementInput, type MovementState,
 } from './movement.js';
 import { pruneInvalidTargets } from './targeting.js';
+import { tickSwings, type SwingResult, type SwingStore } from './autoAttack.js';
 import { tickProjectiles, type ProjectileStore } from './projectile.js';
 import {
   ingestCombatEvents, ingestFlagEvents, ingestPickupEvents, ingestSwapEvents,
@@ -100,6 +101,12 @@ export interface TickDeps {
   projectiles: ProjectileStore;
   casting: CastingStore;
 
+  /**
+   * 普通攻击的挥击计时（7.6）。
+   * ★ **没有条目的实体不自动攻击** —— 与 `movement` 同一个设计，
+   *   试验场因此不受影响（M1–M9 的 141 项验收跑在那里）。
+   */
+  swings?: SwingStore;
   loadouts: LoadoutStore;
   swaps: SwapStore;
   pickups: PickupStore;
@@ -195,6 +202,8 @@ export interface TickEventSinks {
   onDeathSettled?: (ev: DeathSettlement) => void;
   /** 一个消耗品被使用（10.1）。客户端据此播表现，服务器据此广播 */
   onConsumable?: (entityId: EntityId, def: ConsumableDef) => void;
+  /** 一次普通攻击（7.6）。落空的也会来，`miss` 说明原因 */
+  onSwing?: (sw: SwingResult) => void;
 }
 
 export interface TickResult {
@@ -205,6 +214,8 @@ export interface TickResult {
   flags: FlagEvent[];
   respawns: RespawnEvent[];
   deaths: DeathSettlement[];
+  /** 本 tick 的普通攻击（7.6）。落空的也在，miss 字段说明原因 */
+  swings: SwingResult[];
   /** 本 tick 被使用的消耗品（10.1）*/
   consumables: { entityId: EntityId; consumableId: ConsumableId }[];
 }
@@ -229,6 +240,7 @@ export const tickWorld = (
 ): TickResult => {
   const result: TickResult = {
     events: [], swaps: [], pickups: [], flags: [], respawns: [], deaths: [], consumables: [],
+    swings: [],
   };
   const obstacles = deps.obstacles ?? deps.world.obstacles;
 
@@ -360,6 +372,25 @@ export const tickWorld = (
   // ── 6. groundAreas ──────────────────────────────────────────
   for (const g of tickGround(deps.world, deps.ground)) {
     resolve(g.sourceId, g.skillId, g.effects, g.targets.map((t) => t.id));
+  }
+
+  // ── 6b. 普通攻击（7.6）────────────────────────────────────
+  /**
+   * ★ 排在效果结算这一组的**最后**、`deriveStatusFlags` 之前：
+   *   它要读的是本 tick 已经生效的控制（缴械/昏迷挡普攻，8.1），
+   *   而那些标志是上一 tick 末尾派生的 —— 与 casting 读 flags 同一时序。
+   */
+  if (deps.swings) {
+    for (const sw of tickSwings(
+      { world: deps.world, auras: deps.auras, swings: deps.swings },
+      deps.world.time,
+    )) {
+      result.swings.push(sw);
+      if (sw.effects && sw.targetId !== undefined) {
+        resolve(sw.attackerId, 'autoAttack', sw.effects, [sw.targetId]);
+      }
+      sinks.onSwing?.(sw);
+    }
   }
 
   // ── 7. deriveStatusFlags ────────────────────────────────────

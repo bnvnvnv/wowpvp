@@ -28,7 +28,7 @@ import {
   addEntity, allocEntityId, createArena, createArsenalStore, createAuraStore,
   createCastingStore, createDrStore, createEntity, createGroundStore, createLoadout,
   createLoadoutStore, createMovementState, createProjectileStore, createPickupStore,
-  createSwapStore, createWorld, distance2D, dirToYaw, getSkill, sub, tickWorld,
+  createSwapStore, createSwingStore, beginSwing, createWorld, distance2D, dirToYaw, getSkill, sub, tickWorld,
   validateCast, vec3, ArenaPreset,
   type CastIntent, type ClassDef, type CombatEntity, type EntityId,
   type MovementState, type SkillDef, type TickDeps, type World,
@@ -99,6 +99,7 @@ const duel = (clsA: ClassDef, clsB: ClassDef, rng: () => number): DuelResult => 
 
   const a = spawn(clsA, TEAM_RED, 0);
   const b = spawn(clsB, TEAM_BLUE, -START_DISTANCE);
+  a.targets.hard = b.id; b.targets.hard = a.id;
 
   const damage = { a: 0, b: 0 };
   const healing = { a: 0, b: 0 };
@@ -124,12 +125,14 @@ const duel = (clsA: ClassDef, clsB: ClassDef, rng: () => number): DuelResult => 
   const pickups = createPickupStore();
   const arsenal = createArsenalStore(ArenaPreset.Classic);
   const arena = createArena({ mode: GameMode.Arena3v3, roundsToWin: 1 });
+  // ★ M11 实现了 7.6 普通攻击 —— 登记两边，否则战士仍然没有怒气来源
+  const swings = createSwingStore();
 
   const deps = (
     inputs: Map<EntityId, { forward: number; strafe: number; jump: boolean; yaw: number }>,
     castRequests: Map<EntityId, CastIntent>,
   ): TickDeps => ({
-    world, auras, dr, ground, projectiles, casting, loadouts,
+    world, auras, dr, ground, projectiles, casting, loadouts, swings,
     swaps, pickups, arsenal,
     movement, inputs, castRequests, getSkill,
     arena,
@@ -192,6 +195,9 @@ const duel = (clsA: ClassDef, clsB: ClassDef, rng: () => number): DuelResult => 
       if (r.cast) { requests.set(self.id, r.cast); casts[sideOf(self.id)]++; }
     }
 
+    // 4.x：右键目标即开始普通攻击。★ beginSwing 幂等，不会刷新节奏
+    beginSwing(swings, a.id, world.time, 2);
+    beginSwing(swings, b.id, world.time, 2);
     const result = tickWorld(deps(inputs, requests), SIM.TICK_DT);
     for (const ev of result.events) {
       if (ev.t === 'damage') damage[sideOf(ev.sourceId)] += ev.amount;

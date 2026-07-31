@@ -429,7 +429,7 @@ describe('事件回调', () => {
   it('TickResult 汇总了各类事件', () => {
     const r = tickWorld(deps(), DT);
     expect(Object.keys(r).sort()).toEqual(
-      ['consumables', 'deaths', 'events', 'flags', 'pickups', 'respawns', 'swaps'],
+      ['consumables', 'deaths', 'events', 'flags', 'pickups', 'respawns', 'swaps', 'swings'],
     );
   });
 });
