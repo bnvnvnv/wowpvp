@@ -26,7 +26,7 @@ const CLASS_ID = asClassId('paladin');
 const skills: SkillDef[] = [
   {
     id: asSkillId('paladin.crusader_strike'),
-    name: '十字军打击',
+    name: '圣印打击',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -49,7 +49,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('paladin.judgement'),
-    name: '审判',
+    name: '裁决',
     classId: CLASS_ID,
     // 6.6 锁定投射物：释放瞬间确认命中资格，飞行只是表现，目标之后移动不会自然落空
     targeting: Targeting.Direct,
@@ -69,7 +69,7 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'paladin.judgement',
-          name: '审判',
+          name: '裁决',
           kind: 'debuff',
           duration: 4,
           dispelType: DispelType.Magic,
@@ -92,7 +92,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('paladin.holy_light'),
-    name: '圣光术',
+    name: '圣愈术',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -112,7 +112,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('paladin.word_of_glory'),
-    name: '荣耀圣令',
+    name: '荣光敕令',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -132,7 +132,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('paladin.hammer_of_justice'),
-    name: '制裁之锤',
+    name: '裁决之锤',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -151,7 +151,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('paladin.rebuke'),
-    name: '责难',
+    name: '斥令',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -172,7 +172,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('paladin.blessing_of_freedom'),
-    name: '自由祝福',
+    name: '自由庇佑',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -194,7 +194,7 @@ const skills: SkillDef[] = [
         target: 'target',
         aura: {
           id: 'paladin.blessing_of_freedom',
-          name: '自由祝福',
+          name: '自由庇佑',
           kind: 'buff',
           duration: 3,
           dispelType: DispelType.Magic,
@@ -209,7 +209,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('paladin.blessing_of_protection'),
-    name: '保护祝福',
+    name: '守护庇佑',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -231,7 +231,7 @@ const skills: SkillDef[] = [
         target: 'target',
         aura: {
           id: 'paladin.blessing_of_protection',
-          name: '保护祝福',
+          name: '守护庇佑',
           kind: 'buff',
           duration: 4,
           dispelType: DispelType.Magic,
@@ -257,7 +257,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('paladin.divine_shield'),
-    name: '圣盾术',
+    name: '神圣壁障',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -277,7 +277,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'paladin.divine_shield',
-          name: '圣盾术',
+          name: '神圣壁障',
           kind: 'buff',
           duration: 4,
           // 可被「群体驱散」摘掉（dispel.canRemoveImmunity），因此不是 None
@@ -295,7 +295,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('paladin.avenging_wrath'),
-    name: '复仇之怒',
+    name: '义愤',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -313,7 +313,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'paladin.avenging_wrath',
-          name: '复仇之怒',
+          name: '义愤',
           kind: 'buff',
           duration: 10,
           dispelType: DispelType.Magic,
@@ -329,7 +329,7 @@ const skills: SkillDef[] = [
   // 武器方案授予的技能
   {
     id: asSkillId('paladin.shield_of_the_righteous'),
-    name: '正义盾击',
+    name: '义盾撞',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,

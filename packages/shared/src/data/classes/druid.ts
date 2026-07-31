@@ -39,7 +39,7 @@ const FORM_AURA_DURATION = 3600;
 const skills: SkillDef[] = [
   {
     id: asSkillId('druid.moonfire'),
-    name: '月火术',
+    name: '月辉灼击',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -116,7 +116,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.rejuvenation'),
-    name: '回春术',
+    name: '回春',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -134,7 +134,7 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'druid.rejuvenation',
-          name: '回春术',
+          name: '回春',
           kind: 'buff',
           duration: 6,
           dispelType: DispelType.Magic,
@@ -152,7 +152,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.entangling_roots'),
-    name: '纠缠根须',
+    name: '缠根',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -174,7 +174,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.cyclone'),
-    name: '旋风',
+    name: '气旋囚笼',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -192,7 +192,7 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'druid.cyclone',
-          name: '旋风',
+          name: '气旋囚笼',
           kind: 'debuff',
           duration: 2.5,
           dispelType: DispelType.Magic,
@@ -210,7 +210,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.skull_bash'),
-    name: '迎头痛击',
+    name: '撞击',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -233,7 +233,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.barkskin'),
-    name: '树皮术',
+    name: '硬化树皮',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -252,7 +252,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'druid.barkskin',
-          name: '树皮术',
+          name: '硬化树皮',
           kind: 'buff',
           duration: 4,
           dispelType: DispelType.Magic,
@@ -267,7 +267,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.bear_form'),
-    name: '熊形态',
+    name: '巨熊形态',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -287,7 +287,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'druid.bear_form',
-          name: '熊形态',
+          name: '巨熊形态',
           kind: 'buff',
           duration: FORM_AURA_DURATION,
           dispelType: DispelType.None,
@@ -303,7 +303,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.cat_form'),
-    name: '猎豹形态',
+    name: '迅猫形态',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -322,7 +322,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'druid.cat_form',
-          name: '猎豹形态',
+          name: '迅猫形态',
           kind: 'buff',
           duration: FORM_AURA_DURATION,
           dispelType: DispelType.None,
@@ -352,7 +352,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.wild_charge'),
-    name: '野性冲锋',
+    name: '野性突进',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     // 形态决定目标阵营：熊/猎豹指向敌人，人形指向友方
@@ -391,7 +391,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.stampeding_roar'),
-    name: '群奔咆哮',
+    name: '疾奔怒吼',
     classId: CLASS_ID,
     targeting: Targeting.SelfCenter,
     targetFilter: TargetFilter.Ally,

@@ -36,7 +36,7 @@ const RUNEBLADE_REACH = 3.3;
 const skills: SkillDef[] = [
   {
     id: asSkillId('deathknight.obliterate'),
-    name: '湮灭',
+    name: '碎骨斩',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -62,7 +62,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('deathknight.death_strike'),
-    name: '死亡打击',
+    name: '汲血斩',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -95,7 +95,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('deathknight.death_grip'),
-    name: '死亡之握',
+    name: '缚魂拽',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -117,7 +117,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('deathknight.chains_of_ice'),
-    name: '冰霜锁链',
+    name: '寒缚链',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -137,7 +137,7 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'deathknight.chains_of_ice',
-          name: '冰霜锁链',
+          name: '寒缚链',
           kind: 'debuff',
           duration: 4,
           dispelType: DispelType.Movement,
@@ -164,7 +164,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('deathknight.strangulate'),
-    name: '窒息',
+    name: '扼喉',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -183,7 +183,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('deathknight.mind_freeze'),
-    name: '心灵冰冻',
+    name: '冻念',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -203,7 +203,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('deathknight.anti_magic_shell'),
-    name: '反魔法护罩',
+    name: '抗咒护罩',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -221,7 +221,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'deathknight.anti_magic_shell',
-          name: '反魔法护罩',
+          name: '抗咒护罩',
           kind: 'buff',
           duration: 4,
           dispelType: DispelType.None,
@@ -247,7 +247,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('deathknight.deaths_advance'),
-    name: '死亡脚步',
+    name: '疾行步',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -265,7 +265,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'deathknight.deaths_advance',
-          name: '死亡脚步',
+          name: '疾行步',
           kind: 'buff',
           duration: 6,
           dispelType: DispelType.None,

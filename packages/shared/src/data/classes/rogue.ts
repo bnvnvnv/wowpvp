@@ -33,7 +33,7 @@ const REACH_KICK = 3;
  */
 const stealthAura = (): AuraDef => ({
   id: 'rogue.stealth',
-  name: '潜行',
+  name: '隐匿',
   kind: 'buff',
   duration: 600,
   dispelType: DispelType.None,
@@ -50,7 +50,7 @@ const stealthAura = (): AuraDef => ({
 const skills: SkillDef[] = [
   {
     id: asSkillId('rogue.stealth'),
-    name: '潜行',
+    name: '隐匿',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -82,7 +82,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('rogue.backstab'),
-    name: '背刺',
+    name: '背袭',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -106,7 +106,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('rogue.eviscerate'),
-    name: '刺骨',
+    name: '剜刺',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -134,7 +134,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('rogue.kidney_shot'),
-    name: '肾击',
+    name: '昏击',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -165,7 +165,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('rogue.shadowstep'),
-    name: '暗影步',
+    name: '影袭步',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -186,7 +186,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('rogue.kick'),
-    name: '脚踢',
+    name: '断招踢',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -274,7 +274,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('rogue.evasion'),
-    name: '闪避',
+    name: '疾闪',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -292,7 +292,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'rogue.evasion',
-          name: '闪避',
+          name: '疾闪',
           kind: 'buff',
           duration: 5,
           dispelType: DispelType.None,
@@ -308,7 +308,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('rogue.vanish'),
-    name: '消失',
+    name: '遁形',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -335,7 +335,7 @@ const skills: SkillDef[] = [
   // 武器方案授予的技能
   {
     id: asSkillId('rogue.blade_flurry'),
-    name: '剑刃连击',
+    name: '双刃乱舞',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -360,7 +360,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('rogue.riposte'),
-    name: '反击刺',
+    name: '反刺',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,

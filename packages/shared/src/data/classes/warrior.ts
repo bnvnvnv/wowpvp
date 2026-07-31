@@ -26,7 +26,7 @@ const CLASS_ID = asClassId('warrior');
 const skills: SkillDef[] = [
   {
     id: asSkillId('warrior.charge'),
-    name: '冲锋',
+    name: '突进',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -48,7 +48,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('warrior.mortal_strike'),
-    name: '致死打击',
+    name: '重创斩',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -83,7 +83,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('warrior.hamstring'),
-    name: '断筋',
+    name: '断腿斩',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -102,7 +102,7 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'warrior.hamstring',
-          name: '断筋',
+          name: '断腿斩',
           kind: 'debuff',
           duration: 6,
           dispelType: DispelType.Movement,
@@ -117,7 +117,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('warrior.storm_bolt'),
-    name: '风暴之锤',
+    name: '掷锤',
     classId: CLASS_ID,
     // 6.6 锁定投射物：释放瞬间确认命中资格，飞行只是表现，目标之后移动不会自然落空
     targeting: Targeting.Direct,
@@ -140,7 +140,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('warrior.pummel'),
-    name: '拳击',
+    name: '猛击',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -160,7 +160,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('warrior.intervene'),
-    name: '援护',
+    name: '挡援',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -181,7 +181,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('warrior.defensive_stance'),
-    name: '防御姿态',
+    name: '防御架势',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -198,7 +198,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'warrior.defensive_stance',
-          name: '防御姿态',
+          name: '防御架势',
           kind: 'buff',
           duration: 5,
           dispelType: DispelType.None,
@@ -212,7 +212,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('warrior.bladestorm'),
-    name: '剑刃风暴',
+    name: '旋刃斩',
     classId: CLASS_ID,
     targeting: Targeting.SelfCenter,
     targetFilter: TargetFilter.Enemy,
@@ -238,7 +238,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'warrior.bladestorm',
-          name: '剑刃风暴',
+          name: '旋刃斩',
           kind: 'buff',
           duration: 4,
           dispelType: DispelType.None,
@@ -258,7 +258,7 @@ const skills: SkillDef[] = [
   // 武器方案授予的技能
   {
     id: asSkillId('warrior.shield_slam'),
-    name: '盾击',
+    name: '盾撞',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -277,7 +277,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('warrior.cleave'),
-    name: '劈砍',
+    name: '横扫斩',
     classId: CLASS_ID,
     targeting: Targeting.Cone,
     targetFilter: TargetFilter.Enemy,

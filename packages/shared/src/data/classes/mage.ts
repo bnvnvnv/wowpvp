@@ -29,7 +29,7 @@ const CLASS_ID = asClassId('mage');
 const skills: SkillDef[] = [
   {
     id: asSkillId('mage.frostbolt'),
-    name: '寒冰箭',
+    name: '霜矢',
     classId: CLASS_ID,
     // 6.6 锁定投射物：释放瞬间确认命中资格，飞行只是表现
     targeting: Targeting.Direct,
@@ -51,7 +51,7 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'mage.frostbolt.chill',
-          name: '寒冰箭',
+          name: '霜矢',
           kind: 'debuff',
           duration: 3,
           dispelType: DispelType.Magic,
@@ -67,7 +67,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('mage.fire_blast'),
-    name: '火焰冲击',
+    name: '烈焰爆',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -88,7 +88,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('mage.polymorph'),
-    name: '变形术',
+    name: '化形术',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -112,7 +112,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('mage.frost_nova'),
-    name: '冰霜新星',
+    name: '霜爆新星',
     classId: CLASS_ID,
     // 5.4 自身中心技能：不需要选择目标；6.4 不会穿过封闭墙体
     targeting: Targeting.SelfCenter,
@@ -133,7 +133,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('mage.blink'),
-    name: '闪现术',
+    name: '瞬闪',
     classId: CLASS_ID,
     // 5.4 方向类技能：沿角色面向释放，不依赖硬目标
     targeting: Targeting.Line,
@@ -153,7 +153,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('mage.counterspell'),
-    name: '法术反制',
+    name: '断法',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -177,7 +177,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('mage.ice_barrier'),
-    name: '寒冰护盾',
+    name: '霜甲护盾',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -196,7 +196,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'mage.ice_barrier',
-          name: '寒冰护盾',
+          name: '霜甲护盾',
           kind: 'buff',
           duration: 8,
           // 9.6 未标注该护盾可被驱散，按不可驱散处理，避免凭空给对手一个解法
@@ -212,7 +212,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('mage.ice_block'),
-    name: '寒冰屏障',
+    name: '冰封庇护',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -232,7 +232,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'mage.ice_block',
-          name: '寒冰屏障',
+          name: '冰封庇护',
           kind: 'buff',
           duration: 4,
           // 10.x 群体驱散可解除的完全免疫
@@ -250,7 +250,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('mage.blizzard'),
-    name: '暴风雪',
+    name: '冰霜风暴',
     classId: CLASS_ID,
     // 5.4 地面目标技能：鼠标放置圆形指示器；6.4 指示器不能穿过封闭墙体放置
     targeting: Targeting.Ground,
@@ -286,7 +286,7 @@ const skills: SkillDef[] = [
             kind: 'applyAura',
             aura: {
               id: 'mage.blizzard.chill',
-              name: '暴风雪',
+              name: '冰霜风暴',
               kind: 'debuff',
               // 每跳刷新，离开区域后 1 秒内自然消失
               duration: 1,
@@ -305,7 +305,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('mage.meteor'),
-    name: '陨石',
+    name: '陨星',
     classId: CLASS_ID,
     targeting: Targeting.Ground,
     targetFilter: TargetFilter.Enemy,

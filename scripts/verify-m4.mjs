@@ -53,19 +53,19 @@ const waitSlotUsable = async (i, timeout = 25000) => {
 /**
  * ⚠️ 试验场里的战士假人会打断玩家的读条（这是它的职责，7.5 的博弈靠它成立）。
  * 验证读条技能时必须先走远，否则测的是「被打断」而不是「效果结算」。
- * 战士假人在 z ≈ 12，拳击距离 3 米 —— 但它是**站桩**的，走开就够了。
- * 这里改用「等它的拳击进冷却」更稳：只要上一次打断发生过，接下来 15 秒是安全窗口。
+ * 战士假人在 z ≈ 12，猛击距离 3 米 —— 但它是**站桩**的，走开就够了。
+ * 这里改用「等它的猛击进冷却」更稳：只要上一次打断发生过，接下来 15 秒是安全窗口。
  */
 const waitPummelOnCooldown = async () => {
-  // 主动送一次读条把拳击骗掉，之后 15 秒内可以安心读条
+  // 主动送一次读条把猛击骗掉，之后 15 秒内可以安心读条
   await page.keyboard.press('Digit1');
   await page.waitForTimeout(1600);
   const lines = await logLines();
-  return lines.some((l) => l.includes('拳击'));
+  return lines.some((l) => l.includes('猛击'));
 };
 
 /**
- * 退到战士假人的拳击范围（3 米）之外。
+ * 退到战士假人的猛击范围（3 米）之外。
  * 战士就站在出生点正前方 —— 那是为了 M2 演示假读条博弈而刻意放的，
  * 但验证控制递减需要连续读条不被打断，所以先退开。
  */
@@ -82,7 +82,7 @@ await page.waitForTimeout(400);
 console.log('\n── 效果系统接线：技能真的造成伤害 ──');
 {
   const before = await targetHealth();
-  await page.keyboard.press('Digit2'); // 火焰冲击，瞬发
+  await page.keyboard.press('Digit2'); // 烈焰爆，瞬发
   await page.waitForTimeout(700);
   const after = await targetHealth();
   const lines = await logLines();
@@ -99,7 +99,7 @@ console.log('\n── 规格书 8.2 / 验收 #23：控制递减 ──');
   const durations = [];
   const immuneSeen = [];
   for (let i = 0; i < 4; i++) {
-    const ok = await waitSlotUsable(3); // 变形术
+    const ok = await waitSlotUsable(3); // 化形术
     if (!ok) break;
     await page.keyboard.press('Digit4');
     await page.waitForTimeout(2200); // 读条 1.5s + 结算
@@ -111,7 +111,7 @@ console.log('\n── 规格书 8.2 / 验收 #23：控制递减 ──');
     await page.waitForTimeout(1500);
   }
 
-  // 只检查**递减前缀**：变形术 15 秒冷却 ≈ 15 秒递减窗口，
+  // 只检查**递减前缀**：化形术 15 秒冷却 ≈ 15 秒递减窗口，
   // 连放三四次之后窗口自然过期、时长回到满值 —— 那是正确行为，不是失败。
   // 这条测试要验的是「窗口内确实按 100%→50%→25% 递减」。
   const prefix = [];
@@ -136,7 +136,7 @@ console.log('\n── 规格书 8.2 / 验收 #23：控制递减 ──');
 console.log('\n── 规格书 8.4 / 验收 #23：完全免疫 ──');
 {
   await page.waitForTimeout(1000);
-  const ok = await waitSlotUsable(7); // 寒冰屏障
+  const ok = await waitSlotUsable(7); // 冰封庇护
   await page.keyboard.press('Digit8');
   await page.waitForTimeout(800);
   const lines = await logLines();
@@ -147,18 +147,18 @@ console.log('\n── 规格书 8.4 / 验收 #23：完全免疫 ──');
 
 console.log('\n── 规格书 14.3：地面区域与延迟落点 ──');
 {
-  await page.waitForTimeout(5000); // 等寒冰屏障结束
+  await page.waitForTimeout(5000); // 等冰封庇护结束
   await page.mouse.move(700, 340);
   await page.waitForTimeout(200);
-  const ok = await waitSlotUsable(6); // 陨石
+  const ok = await waitSlotUsable(6); // 陨星
   await page.keyboard.press('Digit7');
   await page.waitForTimeout(300);
   await page.mouse.click(700, 340);
   await page.waitForTimeout(4000); // 读条 1s + 延迟 1.5s + 余量
 
   const lines = await logLines();
-  const landed = lines.find((l) => l.includes('陨石 落地'));
-  check('14.3', '延迟落点在延迟结束后结算（陨石）',
+  const landed = lines.find((l) => l.includes('陨星 落地'));
+  check('14.3', '延迟落点在延迟结束后结算（陨星）',
     ok && !!landed,
     landed ?? `最近日志：${lines.slice(0, 2).join(' / ')}`);
 }

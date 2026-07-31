@@ -30,7 +30,7 @@ const CLASS_ID = asClassId('priest');
 const skills: SkillDef[] = [
   {
     id: asSkillId('priest.smite'),
-    name: '惩击',
+    name: '圣光击',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -51,7 +51,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('priest.flash_heal'),
-    name: '快速治疗',
+    name: '迅愈术',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -72,7 +72,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('priest.renew'),
-    name: '恢复',
+    name: '续愈',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -91,7 +91,7 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'priest.renew',
-          name: '恢复',
+          name: '续愈',
           kind: 'buff',
           duration: 6,
           dispelType: DispelType.Magic,
@@ -110,7 +110,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('priest.power_word_shield'),
-    name: '真言术：盾',
+    name: '护心屏障',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -129,7 +129,7 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'priest.power_word_shield',
-          name: '真言术：盾',
+          name: '护心屏障',
           kind: 'buff',
           duration: 6,
           dispelType: DispelType.Magic,
@@ -146,7 +146,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('priest.dispel_magic'),
-    name: '驱散魔法',
+    name: '净化术',
     classId: CLASS_ID,
     // 9.7：一个技能两种用法 —— 友方去负面、敌方偷增益，所以 targetFilter 是 Any。
     // 下面写了两条 dispel 效果（from: 'ally' / from: 'enemy'），
@@ -174,7 +174,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('priest.psychic_scream'),
-    name: '心灵尖啸',
+    name: '惊惧尖啸',
     classId: CLASS_ID,
     targeting: Targeting.SelfCenter,
     targetFilter: TargetFilter.Enemy,
@@ -221,7 +221,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('priest.leap_of_faith'),
-    name: '信仰飞跃',
+    name: '牵引之手',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -251,7 +251,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('priest.pain_suppression'),
-    name: '痛苦压制',
+    name: '镇痛庇佑',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -270,7 +270,7 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'priest.pain_suppression',
-          name: '痛苦压制',
+          name: '镇痛庇佑',
           kind: 'buff',
           duration: 5,
           dispelType: DispelType.Magic,
@@ -286,7 +286,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('priest.mass_dispel'),
-    name: '群体驱散',
+    name: '群体净化',
     classId: CLASS_ID,
     targeting: Targeting.Ground,
     targetFilter: TargetFilter.Enemy,
@@ -319,7 +319,7 @@ const skills: SkillDef[] = [
   // 武器方案授予的技能
   {
     id: asSkillId('priest.mind_spike'),
-    name: '进攻型精神冲击',
+    name: '精神穿刺',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,

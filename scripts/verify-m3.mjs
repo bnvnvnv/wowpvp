@@ -43,16 +43,16 @@ console.log('\n── 规格书 5.4 / 验收 #7：六类瞄准可区分 ──')
 {
   const slots = await slotTexts();
   check('#7a', '技能栏同时提供直接目标、自身中心、地面、自身四类瞄准',
-    slots.length === 8 && slots.some((s) => s.includes('寒冰箭'))
-      && slots.some((s) => s.includes('冰霜新星')) && slots.some((s) => s.includes('暴风雪'))
-      && slots.some((s) => s.includes('变形术')) && slots.some((s) => s.includes('寒冰屏障')),
+    slots.length === 8 && slots.some((s) => s.includes('霜矢'))
+      && slots.some((s) => s.includes('霜爆新星')) && slots.some((s) => s.includes('冰霜风暴'))
+      && slots.some((s) => s.includes('化形术')) && slots.some((s) => s.includes('冰封庇护')),
     slots.map((s) => s.split(' ')[1]).join(' / '));
 
-  // 槽位：1寒冰箭 2火焰冲击 3法术反制 4变形术 5冰霜新星 6暴风雪 7陨石 8寒冰屏障
+  // 槽位：1霜矢 2烈焰爆 3断法 4化形术 5霜爆新星 6冰霜风暴 7陨星 8冰封庇护
   check('#7b', '★ 不需要目标的技能不再误报「需要目标」（5.6）',
     !slots[4].includes('需要目标') && !slots[5].includes('需要目标')
       && !slots[6].includes('需要目标') && !slots[7].includes('需要目标'),
-    `冰霜新星「${slots[4]}」 暴风雪「${slots[5]}」`);
+    `霜爆新星「${slots[4]}」 冰霜风暴「${slots[5]}」`);
 }
 
 console.log('\n── 规格书 5.5 / 验收 #8：地面指示器与落点合法性 ──');
@@ -60,7 +60,7 @@ console.log('\n── 规格书 5.5 / 验收 #8：地面指示器与落点合法
   // 试验场中央高墙在 z ≈ -15，玩家出生在 z = 26 —— 视线穿不过去
   await page.mouse.move(700, 320);
   await page.waitForTimeout(200);
-  await page.keyboard.press('Digit6'); // 暴风雪，进入预览
+  await page.keyboard.press('Digit6'); // 冰霜风暴，进入预览
   await page.waitForTimeout(400);
 
   const aiming = await page.evaluate(() => {
@@ -69,7 +69,7 @@ console.log('\n── 规格书 5.5 / 验收 #8：地面指示器与落点合法
   });
   const beforeConfirm = await newestLog();
   check('#8a', '按下地面技能进入预览而非立刻释放（5.5）',
-    aiming && !beforeConfirm.includes('开始施放 暴风雪'),
+    aiming && !beforeConfirm.includes('开始施放 冰霜风暴'),
     `最新日志：${beforeConfirm}`);
 
   // 左键确认
@@ -77,21 +77,21 @@ console.log('\n── 规格书 5.5 / 验收 #8：地面指示器与落点合法
   await page.waitForTimeout(500);
   const afterConfirm = await logLines();
   check('#8b', '左键确认后释放，落点被锁定',
-    afterConfirm.some((l) => l.includes('开始施放 暴风雪')),
-    afterConfirm.find((l) => l.includes('暴风雪')) ?? '(未找到)');
+    afterConfirm.some((l) => l.includes('开始施放 冰霜风暴')),
+    afterConfirm.find((l) => l.includes('冰霜风暴')) ?? '(未找到)');
 }
 
 console.log('\n── 规格书 5.5：右键 / Esc 取消瞄准 ──');
 {
   await page.waitForTimeout(1500);
-  await page.keyboard.press('Digit7'); // 陨石，进入预览
+  await page.keyboard.press('Digit7'); // 陨星，进入预览
   await page.waitForTimeout(300);
   const before = await logLines();
   await page.keyboard.press('Escape');
   await page.waitForTimeout(400);
   const after = await logLines();
   check('5.5a', 'Esc 取消瞄准，不释放技能',
-    after.length === before.length || !after[0].includes('开始施放 陨石'),
+    after.length === before.length || !after[0].includes('开始施放 陨星'),
     `取消后最新日志：${after[0] ?? '(空)'}`);
 
   await page.keyboard.press('Digit7');
@@ -100,7 +100,7 @@ console.log('\n── 规格书 5.5：右键 / Esc 取消瞄准 ──');
   await page.waitForTimeout(400);
   const afterRight = await newestLog();
   check('5.5b', '右键取消瞄准',
-    !afterRight.includes('开始施放 陨石'),
+    !afterRight.includes('开始施放 陨星'),
     `取消后最新日志：${afterRight}`);
 }
 
@@ -121,7 +121,7 @@ console.log('\n── 规格书 6.4 / 验收 #8：非法落点不能确认 ─�
   await page.waitForTimeout(600);
   const posText = await page.$eval('#stats', (e) => e.innerText.match(/位置\n([^\n]+)/)?.[1] ?? '');
 
-  await page.keyboard.press('Digit6'); // 暴风雪进入预览
+  await page.keyboard.press('Digit6'); // 冰霜风暴进入预览
   await page.waitForTimeout(400);
 
   // 扫过一串屏幕高度，找出「合法」和「非法」两种提示各出现过没有
@@ -151,7 +151,7 @@ console.log('\n── 规格书 6.4 / 验收 #8：非法落点不能确认 ─�
     await page.waitForTimeout(500);
     const lines = await logLines();
     const blocked = lines.find((l) => l.includes('落点非法'));
-    const wronglyReleased = lines.slice(0, lines.length - before).some((l) => l.includes('开始施放 暴风雪'));
+    const wronglyReleased = lines.slice(0, lines.length - before).some((l) => l.includes('开始施放 冰霜风暴'));
     check('#8d', '★ 非法落点按左键确认不了，且给出具体原因（5.5）',
       !!blocked && !wronglyReleased,
       blocked ?? '(未出现「落点非法」日志)');

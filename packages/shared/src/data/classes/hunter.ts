@@ -95,7 +95,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('hunter.arcane_shot'),
-    name: '奥术射击',
+    name: '秘法箭',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -116,7 +116,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('hunter.concussive_shot'),
-    name: '震荡射击',
+    name: '震慑箭',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -136,7 +136,7 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'hunter.concussive_shot',
-          name: '震荡射击',
+          name: '震慑箭',
           kind: 'debuff',
           duration: 5,
           dispelType: DispelType.Movement,
@@ -152,7 +152,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('hunter.freezing_trap'),
-    name: '冰冻陷阱',
+    name: '寒霜陷阱',
     classId: CLASS_ID,
     targeting: Targeting.Ground,
     targetFilter: TargetFilter.Enemy,
@@ -214,7 +214,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('hunter.disengage'),
-    name: '逃脱',
+    name: '后撤跃',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -232,7 +232,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('hunter.counter_shot'),
-    name: '反制射击',
+    name: '断法箭',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -253,7 +253,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('hunter.exhilaration'),
-    name: '振奋',
+    name: '振作',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -271,7 +271,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('hunter.aspect_of_the_turtle'),
-    name: '灵龟守护',
+    name: '龟甲护体',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -289,7 +289,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'hunter.aspect_of_the_turtle',
-          name: '灵龟守护',
+          name: '龟甲护体',
           kind: 'buff',
           duration: 4,
           dispelType: DispelType.None,
