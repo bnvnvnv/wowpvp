@@ -342,6 +342,106 @@
       .lp-compare { margin-top: 6px; border-top: 1px solid #2c313d; padding-top: 5px; }
       .lp-compare-label { font-size: 9px; color: #6f7a90; }
       .lp-diff { font-size: 10px; color: #c9d1e0; }
+
+      /* ── M13 大厅（docs/14 §M13）──────────────────────────────────
+         与 HUD 同一套技术栈：纯 DOM、同一色板、同一个 --ui-scale 缩放
+         （由 LobbyShell 从 accessibility 读出写在 #lobby 上）。
+         ★ #lobby 自身 pointer-events:none —— 对局期间它只剩隐藏页面和
+           toast，不能挡住 3D 画布的鼠标；可见的页面各自恢复 auto。   */
+      #lobby { position: fixed; inset: 0; z-index: 30; pointer-events: none;
+               --ui-scale: 1; font-size: 14px; color: #cfd6e4; }
+      #lobby > * { zoom: var(--ui-scale); }
+      .lb-page { display: none; }
+      .lb-page.active { display: flex; align-items: center; justify-content: center;
+                        position: absolute; inset: 0; pointer-events: auto;
+                        background: radial-gradient(1200px 700px at 50% 30%, #232a3a 0%, #14171f 70%); }
+      .lb-panel { background: rgba(20,23,30,.92); border: 1px solid #2c313d;
+                  border-radius: 12px; padding: 22px 26px; box-shadow: 0 12px 40px rgba(0,0,0,.45); }
+      .lb-title { width: 380px; text-align: center; }
+      .lb-title h1 { font-family: Cinzel, serif; letter-spacing: 6px; margin: 4px 0 2px;
+                     color: #e8d9a0; font-size: 34px; }
+      .lb-sub { color: #8d97ab; font-size: 12px; margin: 0 0 18px; }
+      .lb-title label { display: block; text-align: left; font-size: 12px; color: #8d97ab; margin-bottom: 12px; }
+      .lb-title input, .lb-join input, .lb-share input {
+        width: 100%; box-sizing: border-box; margin-top: 4px; padding: 8px 10px;
+        background: #171b24; border: 1px solid #333a48; border-radius: 6px;
+        color: #e6ebf4; font-size: 14px; outline: none; }
+      .lb-title input:focus, .lb-join input:focus { border-color: #4a6f8f; }
+      .lb-row { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+      .lb-join { display: flex; gap: 8px; }
+      .lb-join input { margin-top: 0; text-transform: uppercase; letter-spacing: 2px; }
+      #lobby hr { border: none; border-top: 1px solid #2c313d; margin: 16px 0 10px; }
+      .lb-fine { font-size: 11px; color: #7d8698; }
+      .lb-btn { pointer-events: auto; cursor: pointer;
+                border: 1px solid #3a4252; background: #222836; color: #dfe6f2;
+                border-radius: 7px; padding: 9px 16px; font-size: 14px; width: 100%; }
+      .lb-btn:hover { background: #2a3245; border-color: #4a6f8f; }
+      .lb-btn:disabled { opacity: .45; cursor: not-allowed; }
+      .lb-btn.lb-primary { background: #2c4a6e; border-color: #4a6f8f; font-weight: 700; }
+      .lb-btn.lb-primary:hover { background: #35597f; }
+      .lb-btn.lb-armed { background: #274a33; border-color: #30a46c; }
+      .lb-btn.lb-ghost { background: transparent; }
+      .lb-btn.lb-small { width: auto; padding: 5px 12px; font-size: 12px; white-space: nowrap; }
+      .lb-btn.lb-red { border-color: #7a3a41; } .lb-btn.lb-red:hover { background: #4a262b; }
+      .lb-btn.lb-blue { border-color: #3a4f7a; } .lb-btn.lb-blue:hover { background: #26314a; }
+
+      /* 房间页 */
+      .lb-room { width: 620px; }
+      .lb-room-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+      .lb-code { font-family: Cinzel, serif; font-size: 30px; letter-spacing: 6px; color: #e8d9a0; }
+      .lb-share { flex: 1; display: flex; gap: 6px; align-items: center; max-width: 330px; }
+      .lb-share input { font-size: 11px; color: #8d97ab; }
+      .lb-roster { display: flex; gap: 10px; margin: 12px 0 4px; }
+      .lb-col { flex: 1; border: 1px solid #2c313d; border-radius: 8px; padding: 8px 10px; min-height: 108px; }
+      .lb-col h3 { margin: 0 0 6px; font-size: 13px; color: #b9c1d1; }
+      .lb-col h3 i { color: #6f7a90; font-style: normal; font-weight: 400; }
+      .lb-col-red { border-color: #52333a; } .lb-col-red h3 { color: #e08a8a; }
+      .lb-col-blue { border-color: #33405f; } .lb-col-blue h3 { color: #8fb7ff; }
+      .lb-col ul { list-style: none; margin: 0; padding: 0; }
+      .lb-col li { display: flex; gap: 6px; align-items: baseline; padding: 3px 0; font-size: 13px; }
+      .lb-col li span { color: #8d97ab; font-size: 11px; }
+      .lb-col li i { color: #6fd0ff; font-style: normal; font-size: 11px; }
+      .lb-col li em { margin-left: auto; font-style: normal; font-size: 11px; color: #5d6577; }
+      .lb-col li em.lb-ok { color: #30a46c; }
+      .lb-col li.lb-off { opacity: .5; }
+      .lb-col li.lb-empty { color: #5d6577; font-size: 12px; }
+      .lb-hints { margin: 4px 0; min-height: 16px; }
+      .lb-hint { display: inline-block; font-size: 11px; color: #d8c07e; margin-right: 10px; }
+      .lb-room-actions { border-top: 1px solid #2c313d; margin-top: 8px; padding-top: 4px; }
+
+      /* 选职业页 */
+      .lb-class { width: 900px; max-width: 96vw; }
+      .lb-class-head { display: flex; justify-content: space-between; align-items: center; }
+      .lb-class-head h2 { margin: 0; font-size: 18px; color: #e8d9a0; }
+      .lb-class-body { display: flex; gap: 14px; margin-top: 12px; }
+      .lb-cards { flex: 1; display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+      .lb-card { text-align: left; background: #1a1f2a; border: 1px solid #2c313d; border-radius: 9px;
+                 padding: 10px 12px; cursor: pointer; display: flex; flex-direction: column; gap: 4px;
+                 color: #cfd6e4; }
+      .lb-card:hover { border-color: #4a6f8f; background: #202737; }
+      .lb-card.selected { border-color: #d0a85a; box-shadow: 0 0 0 1px #d0a85a inset; }
+      .lb-card-head b { font-size: 15px; color: #e6ebf4; }
+      .lb-card-role { font-size: 11px; color: #6fd0ff; }
+      .lb-card-skills { display: flex; gap: 3px; flex-wrap: wrap; margin: 3px 0; }
+      .lb-card-skills .sk-icon { border-radius: 4px; }
+      .lb-card-line { font-size: 11px; color: #9ad48f; }
+      .lb-card-line.lb-weak { color: #d8a07e; }
+      .lb-preview { width: 300px; border: 1px solid #2c313d; border-radius: 9px;
+                    display: flex; flex-direction: column; align-items: center; justify-content: center;
+                    background: #12151d; padding: 8px; }
+      .lb-preview canvas { width: 280px; height: 340px; }
+
+      /* 结算横幅（浮在战场上）与 toast */
+      .lb-end { position: absolute; inset: 0; display: flex; align-items: center;
+                justify-content: center; pointer-events: auto; background: rgba(10,12,17,.55); }
+      /* ⚠️ display:flex 的优先级高于 UA 的 [hidden]{display:none} ——
+         不补这条的话横幅**从一开始就悬在标题页上拦截所有点击**（首跑验收抓到的）*/
+      .lb-end[hidden] { display: none; }
+      .lb-end-panel { text-align: center; min-width: 300px; }
+      .lb-end-panel h2 { font-family: Cinzel, serif; color: #e8d9a0; letter-spacing: 2px; }
+      #lb-toast { position: absolute; top: 24px; left: 50%; transform: translateX(-50%);
+                  background: rgba(20,23,30,.95); border: 1px solid #4a6f8f; border-radius: 8px;
+                  padding: 9px 18px; font-size: 13px; pointer-events: none; z-index: 40; }
     </style>
   </head>
   <body>

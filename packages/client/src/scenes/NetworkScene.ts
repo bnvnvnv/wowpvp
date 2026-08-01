@@ -26,6 +26,7 @@ import {
   GEOMETRY,
   MAP_BY_ID,
   SIM,
+  TEAM_RED,
   Targeting,
   createMovementState,
   getSkill,
@@ -55,7 +56,7 @@ import { MapRenderer } from '../render/MapRenderer.js';
 import { QualityController } from '../render/QualityController.js';
 import { QualityTier } from '../render/quality.js';
 import { Environment } from '../render/Environment.js';
-import { Connection } from '../net/Connection.js';
+import { Connection, type NetLink } from '../net/Connection.js';
 import { Interpolator } from '../net/Interpolator.js';
 import { Predictor } from '../net/Predictor.js';
 import { pickTabTargetFromSnapshot } from '../net/snapshotTargeting.js';
@@ -93,6 +94,14 @@ export interface NetworkSceneOptions {
   name: string;
   team: 'red' | 'blue';
   classId: string;
+  /**
+   * M13：大厅注入的既有连接（`lobby/LobbyShell`）。给了它就意味着：
+   *   · 场景**不**自建 Connection、不 connect、不 close —— 连接生命周期归大厅
+   *   · 不自动 joinRoom —— 房间流程（建房/选边/选职业/准备）大厅已经走完
+   *   · 服务器消息由大厅路由进来（`deliver()`），场景只消费战斗阶段那部分
+   * 不给则是 `?net=` 老路：自建连接 + 四连发进房，行为与 M10 起完全一致。
+   */
+  link?: NetLink;
 }
 
 /** 供验收脚本读取的联网状态 */
@@ -113,6 +122,11 @@ export interface NetStatus {
   lastCorrection: number;
   /** 14.2 特效自检（`?art=off` 时 undefined）*/
   vfx: SpellVfxStatus | undefined;
+  /**
+   * 最近的存活敌人的水平距离，米；看不见任何敌人时 undefined。
+   * M13：verify:m13 靠它判断「走到射程内了没」—— 只读快照里本来就有的数据
+   */
+  nearestEnemy: number | undefined;
 }
 
 export class NetworkScene {
@@ -126,7 +140,10 @@ export class NetworkScene {
   private readonly env: Environment;
   /** M12：是否加载外部美术素材（`?art=off` 关闭）。见 settings/artMode.ts */
   private readonly art = artEnabled();
-  private readonly conn: Connection;
+  /** 收发用的连接（自建或大厅注入的，见 NetworkSceneOptions.link）*/
+  private readonly conn: NetLink;
+  /** 只有自建连接才由场景负责 connect/close；注入的归大厅管 */
+  private readonly ownConn: Connection | undefined;
   /** ★ 与试验场**同一个** HUD 类，喂的是快照视图而不是 CombatDirector */
   private readonly hud: CombatHud;
   private readonly view = new SnapshotCombatView();
@@ -254,11 +271,19 @@ export class NetworkScene {
       this.conn.send({ t: 'SetTarget', slot: 'hard', entityId: id });
     };
 
-    this.conn = new Connection(opts.url, {
-      onMessage: (m) => this.onMessage(m),
-      onOpen: (resumed) => { if (!resumed) this.joinRoom(); },
-      onClose: () => { /* Connection 自己退避重连 */ },
-    });
+    if (opts.link) {
+      // M13 大厅流程：借用大厅的连接，消息经 deliver() 进来
+      this.conn = opts.link;
+      this.ownConn = undefined;
+    } else {
+      const own = new Connection(opts.url, {
+        onMessage: (m) => this.onMessage(m),
+        onOpen: (resumed) => { if (!resumed) this.joinRoom(); },
+        onClose: () => { /* Connection 自己退避重连 */ },
+      });
+      this.conn = own;
+      this.ownConn = own;
+    }
 
     /**
      * ★ 固定步长默认就是 `SIM.TICK_DT` —— 也就是**指令帧**。
@@ -280,7 +305,7 @@ export class NetworkScene {
 
   start(): void {
     audio.install();
-    this.conn.connect();
+    this.ownConn?.connect();
     this.loop.start();
   }
 
@@ -299,7 +324,7 @@ export class NetworkScene {
 
   dispose(): void {
     this.loop.stop();
-    this.conn.close();
+    this.ownConn?.close();
     this.input.dispose();
     window.removeEventListener('resize', this.onResize);
     this.canvas.removeEventListener('mousemove', this.onCanvasMouseMove);
@@ -335,7 +360,29 @@ export class NetworkScene {
       position: { ...p },
       lastCorrection: this.lastCorrection,
       vfx: this.spellVfx?.status(),
+      nearestEnemy: this.nearestEnemyDistance(),
     };
+  }
+
+  /** 最近存活敌人的水平距离。只读快照数据 —— 看不见的人本来就不在快照里 */
+  private nearestEnemyDistance(): number | undefined {
+    if (!this.predictor || this.selfTeam === null) return undefined;
+    const me = this.predictor.position;
+    let best: number | undefined;
+    for (const e of this.lastEntities) {
+      if (e.id === this.selfId || e.team === this.selfTeam || !e.alive) continue;
+      const d = Math.hypot(e.position.x - me.x, e.position.z - me.z);
+      if (best === undefined || d < best) best = d;
+    }
+    return best;
+  }
+
+  /**
+   * M13：大厅路由过来的服务器消息入口（只在注入 link 的场景上使用）。
+   * 与自建连接的 onMessage 是同一个消费函数 —— 两条流程不允许有两套解读。
+   */
+  deliver(msg: ServerMessage): void {
+    this.onMessage(msg);
   }
 
   // ── 协议 ──────────────────────────────────────────────────────
@@ -520,6 +567,23 @@ export class NetworkScene {
           );
         }
         break;
+
+      case 'MatchEnd': {
+        /**
+         * M13：对局结束就停手 —— 服务器紧接着会把 session 放回 Room 阶段，
+         * 再发 Input/CastRequest 只会换来一串「当前阶段不接受」的拒绝刷屏
+         * （此前这条消息落在 default，客户端每 50ms 发一条 Input 被拒一条）。
+         * 画面何时切走由上层决定：大厅流程回房间页，`?net=` 老路停在结算日志。
+         */
+        this.started = false;
+        this.view.push(
+          msg.winner === 'draw'
+            ? '对局结束：平局'
+            : `对局结束：${msg.winner === TEAM_RED ? '红方' : '蓝方'}获胜`,
+          'interrupt',
+        );
+        break;
+      }
 
       default:
         // 其余消息（战斗事件、房间状态）要等 HUD 共用之后才有消费者。

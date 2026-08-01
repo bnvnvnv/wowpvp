@@ -20,7 +20,13 @@ if (artEnabled()) void probeIconAssets();
 const RAD = 180 / Math.PI;
 
 const app = document.getElementById('app')!;
-app.innerHTML = `
+
+/**
+ * 试验场 / `?net=` 老路共用的页面骨架。
+ * ★ M13：大厅分支**不**装配它 —— 大厅是纯 DOM 页面，对局画布由
+ *   `LobbyShell` 每场对局单独创建（见该文件头）。
+ */
+const SCENE_DOM = `
   <canvas id="view"></canvas>
 
   <div id="hud">
@@ -79,17 +85,16 @@ app.innerHTML = `
   </div>
 `;
 
-const canvas = document.getElementById('view') as HTMLCanvasElement;
-const stats = document.getElementById('stats')!;
-
 const STATE_LABEL: Record<string, string> = {
   idle: '待机', walk: '行走', run: '奔跑', backward: '后退',
   strafeLeft: '左侧移', strafeRight: '右侧移', jump: '跳跃',
   fall: '下落', land: '落地', stunned: '昏迷', death: '死亡',
 };
 
-let lastPaint = 0;
-const paintStats = (d: DebugInfo): void => {
+/** 试验场左上角的调试面板（M1 起）。装配进 `stats` 元素，只在试验场分支使用 */
+const makePaintStats = (stats: HTMLElement): ((d: DebugInfo) => void) => {
+  let lastPaint = 0;
+  return (d: DebugInfo): void => {
   // HUD 每 100ms 刷一次就够，别让 DOM 更新拖累帧率
   const now = performance.now();
   if (now - lastPaint < 100) return;
@@ -115,22 +120,28 @@ const paintStats = (d: DebugInfo): void => {
     <div class="row"><span>可跨越高度</span><b>${GEOMETRY.STEP_HEIGHT} m</b></div>
     <div class="row"><span>最大选中距离</span><b>${RANGE.MAX_SELECT} m</b></div>
   `;
+  };
 };
 
 /**
- * ★ 两个场景并存（docs/13 判断二）。`?net=<房间名>` 进联网场景，
- *   不带参数进试验场 —— 试验场是 M1–M9 共 141 项验收的载体，**默认路径不能变**。
+ * ★ 三条入口并存。`?net=<房间名>` 进联网场景（M10 老路，全部 verify 脚本
+ *   靠它，**原样保留**）；`?lobby` 进大厅（M13，纯 UI 的建房/加房流程，
+ *   `?lobby=<码>` 深链预填房间码）；不带参数进试验场 ——
+ *   试验场是 M1–M9 共 141 项验收的载体，**默认路径不能变**（docs/14 §M13 红线）。
  *
  *   其余参数：`server`（默认 ws://<当前主机>:8080）、`team`、`class`、`name`。
- *   例：`?net=r1&team=blue&class=warrior`
+ *   例：`?net=r1&team=blue&class=warrior`、`?lobby=K7XQ`
+ *   `net=` 与 `lobby` 同时出现时 net= 优先 —— 老路的优先级不因新入口而变。
  */
 const params = new URLSearchParams(location.search);
 const room = params.get('net');
+const serverUrl = params.get('server') ?? `ws://${location.hostname}:8080`;
 
 if (room !== null) {
+  const canvas = mountSceneDom();
   const { NetworkScene } = await import('./scenes/NetworkScene.js');
   const net = new NetworkScene(canvas, {
-    url: params.get('server') ?? `ws://${location.hostname}:8080`,
+    url: serverUrl,
     roomId: room || 'r1',
     name: params.get('name') ?? '玩家',
     team: (params.get('team') === 'blue' ? 'blue' : 'red'),
@@ -139,10 +150,29 @@ if (room !== null) {
   // ★ 暴露给验收脚本读联网状态。与试验场的 onDebug 是同一个用途
   (globalThis as Record<string, unknown>).__net = net;
   net.start();
+} else if (params.has('lobby')) {
+  const { LobbyShell } = await import('./lobby/LobbyShell.js');
+  const shell = new LobbyShell(app, {
+    serverUrl,
+    joinCode: params.get('lobby') || undefined,
+    // 分享链接只在 URL **显式**给过 server 时才带它 —— 默认地址是
+    // 「当前主机:8080」，对拿到链接的另一台机器未必成立
+    explicitServer: params.get('server') ?? undefined,
+  });
+  // ★ 暴露给 verify:m13 读大厅状态。与 `__scene` / `__net` 同一个用途
+  (globalThis as Record<string, unknown>).__lobby = shell;
+  shell.mount();
 } else {
-  const scene = new TestbedScene(canvas, paintStats);
+  const canvas = mountSceneDom();
+  const scene = new TestbedScene(canvas, makePaintStats(document.getElementById('stats')!));
   // ★ 暴露给验收脚本读场景状态（M12 的美术自检、M9 的观战与可访问性）。
   //   与联网场景的 `__net` 是同一个用途
   (globalThis as Record<string, unknown>).__scene = scene;
   scene.start();
+}
+
+/** 装配场景骨架并返回画布（试验场与 `?net=` 老路共用）*/
+function mountSceneDom(): HTMLCanvasElement {
+  app.innerHTML = SCENE_DOM;
+  return document.getElementById('view') as HTMLCanvasElement;
 }

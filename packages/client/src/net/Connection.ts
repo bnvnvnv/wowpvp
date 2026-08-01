@@ -29,6 +29,19 @@ export interface ConnectionHandlers {
   onDecodeError?: (raw: string) => void;
 }
 
+/**
+ * M13：`NetworkScene` 需要的连接能力**子集**。
+ *
+ * 大厅流程里连接归 `LobbyShell` 所有（房间阶段与战斗阶段共用一条 ws），
+ * 场景只借用它收发 —— 这个窄接口就是「借用」的边界：场景拿不到
+ * `connect()` / `close()`，也就不可能替大厅决定连接的生死。
+ * `Connection` 结构上自然满足它。
+ */
+export interface NetLink {
+  send(msg: ClientMessage): void;
+  readonly connected: boolean;
+}
+
 export class Connection {
   private socket?: WebSocket;
   private retries = 0;
@@ -95,6 +108,16 @@ export class Connection {
   send(msg: ClientMessage): void {
     if (!this.connected) return; // ★ 断线期间静默丢弃：服务器那边角色照样在被打（11.5）
     this.socket!.send(encodeClientMessage(msg));
+  }
+
+  /**
+   * M13：作废重连令牌。一局结束回到房间页后由大厅调用 ——
+   * 那一局已经不存在，令牌指向的实体也没了；留着的话，房间页里一次
+   * 普通的网络闪断会让 onopen 先发 `Reconnect(旧令牌)`，被服务器
+   * 「令牌无效」拒绝一次之后大厅才能重新 JoinRoom，白绕一圈。
+   */
+  clearToken(): void {
+    this.token = undefined;
   }
 
   /** 主动关闭：不再重连 */
