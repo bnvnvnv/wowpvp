@@ -253,6 +253,7 @@ export const tickWorld = (
     effects: Parameters<typeof resolveEffects>[1],
     targetIds: readonly EntityId[],
     groundPoint?: Vec3,
+    opts?: { periodic?: boolean },
   ): void => {
     const source = getEntity(deps.world, sourceId);
     if (!source) return;
@@ -267,6 +268,7 @@ export const tickWorld = (
         castingStore: deps.casting,
         source, skillId,
         ...(groundPoint ? { groundPoint } : {}),
+        ...(opts?.periodic ? { periodic: true } : {}),
       },
       effects, targets,
     );
@@ -355,8 +357,9 @@ export const tickWorld = (
   tickCasting(deps.world, deps.casting, { getSkill: deps.getSkill, events: castEvents });
 
   // ── 4. auras ────────────────────────────────────────────────
+  // ★ periodic：DoT/HoT 的周期跳不暴击（见 combat.ts rollCrit 的注释）
   for (const t of tickAuras(deps.auras, deps.world.time).ticks) {
-    resolve(t.sourceId, t.aura.def.id, t.effects, [t.targetId]);
+    resolve(t.sourceId, t.aura.def.id, t.effects, [t.targetId], undefined, { periodic: true });
   }
 
   // ── 5. projectiles ──────────────────────────────────────────
@@ -370,8 +373,9 @@ export const tickWorld = (
   }
 
   // ── 6. groundAreas ──────────────────────────────────────────
+  // ★ periodic：站在区域里的逐 tick 结算同样不暴击
   for (const g of tickGround(deps.world, deps.ground)) {
-    resolve(g.sourceId, g.skillId, g.effects, g.targets.map((t) => t.id));
+    resolve(g.sourceId, g.skillId, g.effects, g.targets.map((t) => t.id), undefined, { periodic: true });
   }
 
   // ── 6b. 普通攻击（7.6）────────────────────────────────────

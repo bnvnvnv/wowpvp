@@ -408,12 +408,16 @@ export class MatchLoop {
         out.push({
           t: 'Damage', sourceId: ev.sourceId, targetId: ev.targetId,
           amount: ev.amount, school: ev.school, absorbed: ev.absorbed, immune: ev.immune,
+          overkill: ev.overkill,
+          // crit 条件展开：普通命中不付这个字段的带宽（与事件层同一约定）
+          ...(ev.crit ? { crit: true } : {}),
         });
         break;
       case 'heal':
         out.push({
           t: 'Heal', sourceId: ev.sourceId, targetId: ev.targetId,
           amount: ev.amount, overheal: ev.overheal,
+          ...(ev.crit ? { crit: true } : {}),
         });
         break;
       case 'auraApplied':

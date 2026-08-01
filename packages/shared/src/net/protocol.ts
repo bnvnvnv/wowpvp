@@ -131,6 +131,12 @@ export const ALL_CLIENT_MESSAGE_KINDS: readonly ClientMessageKind[] = [
  * 为什么用**字段名黑名单**而不是靠 review：结果字段是会「顺手加」的 ——
  * 「客户端已经算过一遍了，把结果带上来能省一次服务器计算」这个念头很自然，
  * 而它就是作弊入口。黑名单让这个念头在 CI 里撞墙。
+ *
+ * ⚠️ **`'crit'` 留在这张表里是有意的。** 服务器现在会**下发** crit
+ *   （见下面 Damage/Heal 消息），但客户端永远不许**上报**它。
+ *   这张表管的是**客户端**消息 —— `protocol.test.ts` 的扫描窗口是
+ *   `InputMessage` → `ClientMessageKind`，服务器段落根本不在窗口里，
+ *   加服务器字段不会误伤，删这一行才会出事。
  */
 export const FORBIDDEN_CLIENT_FIELDS: readonly string[] = [
   'damage', 'amount', 'health', 'maxHealth', 'kills', 'deaths', 'hit', 'crit',
@@ -206,9 +212,19 @@ export type ServerMessage =
    *   （违反验收 #5，而且 verify:m10 第 1 条验的是「不出现在传输字节里」）。
    */
   | { t: 'Damage'; sourceId?: EntityId; targetId: EntityId; amount: number; school: School
-      absorbed: number; immune: boolean }
+      absorbed: number; immune: boolean
+      /**
+       * 超出目标剩余生命的部分。>0 即表示**这一发就是致命一击** ——
+       * 表现层据此把击杀反馈挂在伤害那一帧，而不是等下一条 Death 消息。
+       * ★ 不泄露任何东西：紧随其后必然有一条公开的 Death。
+       */
+      overkill: number
+      /** 暴击（已知偏差 #7）。★ 服务器→客户端方向，见 FORBIDDEN_CLIENT_FIELDS 注释 */
+      crit?: boolean }
   /** `sourceId` 可空，理由同 Damage */
-  | { t: 'Heal'; sourceId?: EntityId; targetId: EntityId; amount: number; overheal: number }
+  | { t: 'Heal'; sourceId?: EntityId; targetId: EntityId; amount: number; overheal: number
+      /** 治疗暴击，语义同 Damage.crit */
+      crit?: boolean }
   | { t: 'AuraApplied'; targetId: EntityId; auraId: string; duration: number; stacks: number }
   | { t: 'AuraRemoved'; targetId: EntityId; auraId: string
       reason: 'expired' | 'dispelled' | 'broken' | 'cancelled' | 'shieldBroken' }

@@ -27,7 +27,7 @@ import {
 
 export * from './registry.js';
 export {
-  dealDamage, dealHeal, applyControl, magnitudeOf, useTrinket,
+  dealDamage, dealHeal, applyControl, magnitudeOf, useTrinket, rollCrit,
   setDampening, getDampening, type DampeningState,
 } from './combat.js';
 
@@ -45,6 +45,8 @@ export interface ResolveOptions {
   groundPoint?: Vec3;
   /** 打断效果需要。不传则打断效果静默跳过 */
   castingStore?: CastingStore;
+  /** 周期跳结算（DoT/HoT/地面 tick）。见 EffectContext.periodic */
+  periodic?: boolean;
 }
 
 /**
@@ -71,6 +73,7 @@ export const resolveEffects = (
     source: opts.source,
     groundPoint: opts.groundPoint,
     skillId: opts.skillId,
+    periodic: opts.periodic,
     events,
     resolve: (sub, subTargets) => {
       for (const e of sub) dispatchEffect(ctx, e, subTargets);

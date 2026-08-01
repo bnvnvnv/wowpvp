@@ -42,8 +42,16 @@ export type CombatEvent =
        */
       avoided?: 'dodge' | 'parry' | 'block'
       /** 吸收该伤害的护盾分别来自谁。16.1 的「吸收」要记给下盾的人，不是被打的人 */
-      absorbedBy?: readonly { sourceId: EntityId; amount: number }[] }
-  | { t: 'heal'; sourceId: EntityId; targetId: EntityId; amount: number; overheal: number }
+      absorbedBy?: readonly { sourceId: EntityId; amount: number }[]
+      /**
+       * 这一发是不是暴击。★ 只在 true 时才带这个字段 ——
+       * 事件对象会被 JSON 序列化广播，恒带一个 false 是白付带宽。
+       * 规格书没有暴击机制，见 docs/10 已知偏差 #7。
+       */
+      crit?: boolean }
+  | { t: 'heal'; sourceId: EntityId; targetId: EntityId; amount: number; overheal: number
+      /** 治疗暴击。语义同 damage.crit：只在 true 时携带 */
+      crit?: boolean }
   | { t: 'auraApplied'; sourceId: EntityId; targetId: EntityId; auraId: string; duration: number
       /** 8.2 递减系数，0.5 表示这次只有一半时长。HUD 要显示（15.2）*/
       drFactor?: number
@@ -90,6 +98,13 @@ export interface EffectContext {
   groundPoint?: Vec3;
   /** 触发这次结算的技能 id，用于日志与统计 */
   skillId: string;
+  /**
+   * 这次结算是不是**周期跳**（DoT / HoT / 地面区域 tick）。
+   * ★ 只有暴击在读它。放在 ctx 而不是 EffectDef 上，是因为同一个
+   *   `{kind:'damage'}` 既会被技能直接结算、也会被光环周期结算 ——
+   *   区别在**谁调的**，不在效果本身。
+   */
+  periodic?: boolean;
   /** 本次结算产生的事件，处理器往里 push */
   events: CombatEvent[];
   /**

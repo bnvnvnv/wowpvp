@@ -105,6 +105,28 @@ describe('★★ docs/08 §2：客户端永远不发送「结果」', () => {
     expect(found, `客户端消息里出现了结果字段：${found.join(', ')}`).toEqual([]);
   });
 
+  /**
+   * ★★ 上面那条测试的**窗口边界**自检：服务器消息段确实不在扫描范围里。
+   *
+   *   偏差 #7 之后服务器会下发 `crit` —— 如果窗口失手把服务器段扫进来，
+   *   上面那条会因为服务器的 `crit?: boolean` 变红，第一反应多半是
+   *   「把 crit 从黑名单删掉」—— 那恰好打开了客户端上报暴击的口子。
+   *   这里把窗口钉死，让那个错误修法先撞上这条。
+   */
+  it('★★ 扫描窗口只覆盖客户端段（服务器的 Damage/Snapshot 不在窗口里）', () => {
+    const src = readFileSync(new URL('./protocol.ts', import.meta.url), 'utf8');
+    const clientSection = src.slice(
+      src.indexOf('export interface InputMessage'),
+      src.indexOf('export type ClientMessageKind'),
+    );
+    expect(clientSection).not.toContain("t: 'Damage'");
+    expect(clientSection).not.toContain("t: 'Snapshot'");
+  });
+
+  it("★ 'crit' 仍在客户端字段黑名单里（服务器下发它不等于客户端可以上报它）", () => {
+    expect(FORBIDDEN_CLIENT_FIELDS).toContain('crit');
+  });
+
   /** ★ InputMessage 只有意图（轴向 + 朝向 + 跳跃），没有位置 —— 位置由服务器算 */
   it('★ 移动输入里没有位置字段（位置是服务器算的，不是客户端报的）', () => {
     const r = parse({ ...validInput, position: { x: 999, y: 0, z: 999 } });

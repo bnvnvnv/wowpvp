@@ -29,6 +29,7 @@ import { isBehind } from '../../math/geometry.js';
 import { applyInterrupt } from '../interrupt.js';
 import { registerEffect, type EffectContext } from './registry.js';
 import { nextRandom } from '../world.js';
+import { CRIT } from '../../constants/combat.js';
 
 // ── 数值换算 ─────────────────────────────────────────────────────
 
@@ -69,6 +70,13 @@ export interface DamageOptions {
   bypassImmunity?: boolean;
   /** 背后攻击加成 */
   behindBonus?: number;
+  /**
+   * 这一发能不能暴击。默认能。
+   * false 的两处：周期跳（DoT / 地面 tick，由 ctx.periodic 推出）
+   * 与 8.5 竞技场压迫伤害 —— 压迫伤害是**赛制机制**不是攻击，
+   * 让它暴击等于让赛制随机。
+   */
+  canCrit?: boolean;
 }
 
 /**
@@ -131,7 +139,20 @@ export const dealDamage = (
     return 0;
   }
 
-  let amount = rawAmount * attackerMods.damageDealt * damageTakenFor(targetMods, school);
+  /**
+   * ★ 暴击掷骰的位置是刻意的（docs/03「暴击」小节的结算顺序）：
+   *   在规避**之后** —— 被闪掉的一发不掷骰（不消耗攻击者的随机数）；
+   *   在吸收**之前** —— 护盾要按暴击后的量消耗，否则「暴击被小盾
+   *   完全吃掉」会读成没暴击；
+   *   在 `Math.round` **之前** —— 先乘后取整，避免二次舍入。
+   */
+  const crit = (opts.canCrit ?? true) && rollCrit(ctx.source);
+
+  let amount =
+    rawAmount *
+    (crit ? CRIT.DAMAGE_MULTIPLIER : 1) *
+    attackerMods.damageDealt *
+    damageTakenFor(targetMods, school);
 
   // 背刺加成（6.5：攻击者位于目标背后约 120 度）
   if (opts.behindBonus && isBehind(ctx.source.position, target.position, target.yaw)) {
@@ -174,6 +195,7 @@ export const dealDamage = (
     amount: dealt, school, absorbed, overkill, immune: false,
     preventedByEquipment,
     ...(byShieldSource.length > 0 ? { absorbedBy: byShieldSource } : {}),
+    ...(crit ? { crit: true } : {}),
   });
 
   // 8.2：受到一定伤害可提前解除恐惧/变形/定身
@@ -228,22 +250,51 @@ const rollAvoidance = (
   return undefined;
 };
 
+/**
+ * 掷一次暴击（docs/10 已知偏差 #7 —— 规格书没有这条机制）。
+ *
+ * ⚠️ 用 `nextRandom(attacker)` —— 与闪避正好相反：
+ *   闪避是**被攻击者**的能力，暴击是**攻击者**的能力，各掷各的流。
+ *   这样两边新增随机判定都不会互相扰动，回放与 balance-report 才可复现。
+ *
+ * ★ **只在这一发确实要落到数字上时才掷**：免疫和被规避的那一发
+ *   **不消耗**攻击者的随机数。否则「对面开了圣盾术」会改变我后续
+ *   全部暴击的序列，同一份录像换个防御技能就重放不出来了。
+ *
+ * ★ 周期跳（DoT/HoT/地面 tick）不暴击：
+ *   一个 12 秒 DoT 要掷 6 次骰子，方差会被周期数摊平成噪音 ——
+ *   玩家既读不到「这一跳暴了」的瞬间，配平还要为它建模。
+ *   暴击的全部价值在「一击的重量」，只给一击式的结算。
+ */
+export const rollCrit = (
+  attacker: { rng: number },
+  chance: number = CRIT.BASE_CHANCE,
+): boolean => chance > 0 && nextRandom(attacker) < chance;
+
 // ── 治疗 ─────────────────────────────────────────────────────────
 
 export const dealHeal = (
   ctx: EffectContext,
   target: CombatEntity,
   rawAmount: number,
+  opts: { canCrit?: boolean } = {},
 ): number => {
   if (!target.alive || rawAmount <= 0) return 0;
 
   const casterMods = effectiveModifiersOf(ctx.auras, ctx.source, ctx.world.time);
   const targetMods = effectiveModifiersOf(ctx.auras, target, ctx.world.time);
 
+  // 暴击乘在 dampening 之前：暴击是施法者的能力，抑制是赛制的削减
+  //（顺序不影响数值，但语义要清楚）。HoT 周期跳不暴击，同 rollCrit 注释。
+  const crit = (opts.canCrit ?? true) && rollCrit(ctx.source);
+
   // 8.5：治疗受竞技场战斗抑制影响
   const amount = Math.max(
     0,
-    Math.round(rawAmount * casterMods.healingDone * targetMods.healingTaken * (1 - dampening.amount)),
+    Math.round(
+      rawAmount * (crit ? CRIT.HEAL_MULTIPLIER : 1) *
+        casterMods.healingDone * targetMods.healingTaken * (1 - dampening.amount),
+    ),
   );
 
   const before = target.health;
@@ -253,6 +304,7 @@ export const dealHeal = (
   ctx.events.push({
     t: 'heal', sourceId: ctx.source.id, targetId: target.id,
     amount: healed, overheal: amount - healed,
+    ...(crit ? { crit: true } : {}),
   });
   return healed;
 };
@@ -352,17 +404,18 @@ export const applyControl = (
 registerEffect('damage', (ctx, e, targets) => {
   const raw = magnitudeOf(e.amount, ctx.source);
   for (const t of targets) {
-    dealDamage(ctx, t, raw, e.school, { behindBonus: e.behindBonus });
+    // 周期跳（ctx.periodic 由 tick.ts 的光环/地面 tick 标记）不暴击
+    dealDamage(ctx, t, raw, e.school, { behindBonus: e.behindBonus, canCrit: !ctx.periodic });
   }
 });
 
 registerEffect('heal', (ctx, e, targets) => {
   const raw = magnitudeOf(e.amount, ctx.source);
-  for (const t of targets) dealHeal(ctx, t, raw);
+  for (const t of targets) dealHeal(ctx, t, raw, { canCrit: !ctx.periodic });
 });
 
 registerEffect('healPercentMaxHealth', (ctx, e, targets) => {
-  for (const t of targets) dealHeal(ctx, t, t.maxHealth * e.percent);
+  for (const t of targets) dealHeal(ctx, t, t.maxHealth * e.percent, { canCrit: !ctx.periodic });
 });
 
 registerEffect('healFromRecentDamage', (ctx, e, targets) => {
@@ -371,7 +424,7 @@ registerEffect('healFromRecentDamage', (ctx, e, targets) => {
     // 上限由技能定义保证（死亡打击「治疗有上限」）
     const cap = t.maxHealth * e.maxPercentOfMaxHealth;
     const recent = Math.min(cap, (t.maxHealth - t.health) * e.percentOfDamageTaken);
-    dealHeal(ctx, t, Math.min(cap, recent));
+    dealHeal(ctx, t, Math.min(cap, recent), { canCrit: !ctx.periodic });
   }
 });
 
