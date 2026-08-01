@@ -49,6 +49,7 @@ import { AnimationController } from '../entity/AnimationController.js';
 import { CharacterView } from '../entity/CharacterView.js';
 import { ModelLibrary } from '../entity/ModelLibrary.js';
 import { Action, InputManager, type FrameInput } from '../input/InputManager.js';
+import { DecorRenderer } from '../render/DecorRenderer.js';
 import { GameLoop } from '../render/GameLoop.js';
 import { MapRenderer } from '../render/MapRenderer.js';
 import { QualityController } from '../render/QualityController.js';
@@ -475,8 +476,17 @@ export class NetworkScene {
     this.map = map;
     this.mapRenderer = new MapRenderer(map, this.art);
     this.scene.add(this.mapRenderer.group);
-    if (this.art) void this.mapRenderer.applyGroundTexture('stone');
+    if (this.art) {
+      void this.mapRenderer.applyGroundTexture('stone');
+      // 地图装饰摆设（纯表现，sim 不读 —— 见 DecorRenderer 文件头）
+      if (map.decor) {
+        this.decorRenderer = new DecorRenderer(map.decor);
+        this.decorRenderer.applyQuality(this.quality.current);
+        this.scene.add(this.decorRenderer.group);
+      }
+    }
   }
+  private decorRenderer: DecorRenderer | undefined;
 
   // ── 每帧 ──────────────────────────────────────────────────────
 
@@ -497,6 +507,7 @@ export class NetworkScene {
       const tier = this.quality.cycle();
       this.quality.applyToLight(this.sun);
       if (this.art) this.env.apply(tier);
+      this.decorRenderer?.applyQuality(tier);
     }
     if (input.pressed.has(Action.ToggleMute)) {
       console.info(`[音频] ${audio.toggleMute() ? '已静音' : '已取消静音'}`);

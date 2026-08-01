@@ -227,6 +227,13 @@ const { page, errors } = await open(BASE);
     st?.vfx
       ? `贴图 ${st.vfx.texturesLoaded}/${st.vfx.texturesTotal} 解码，覆盖 ${st.vfx.attributesCovered} 属性`
       : '读不到 __scene.artStatus.vfx');
+
+  // 地图装饰摆设（MapDef.decor）真的摆上了 —— 不是登记了数据没人画（附录A#7）
+  check('#15a', '★ 地图装饰摆设已加载（sim 不读它，docs/06 §8.2 红线不变）',
+    (st?.decor?.placed ?? 0) > 0 && st?.decor?.loaded === st?.decor?.placed && st?.decor?.visible === true,
+    st?.decor
+      ? `登记 ${st.decor.placed} 件，加载 ${st.decor.loaded} 件，当前可见=${st.decor.visible}`
+      : '读不到 __scene.artStatus.decor');
 }
 
 // ═══ §4 验收 #48 重验：最低画质仍不隐藏关键信息 ═══════════════
@@ -242,6 +249,11 @@ console.log('\n── §4 验收 #48 重验：最低画质下关键信息仍在�
   check('#48a', '最低画质确实卸掉了「非关键光照」（14.4 允许减少的）',
     low?.quality === 'low' && low.envLoaded === false,
     `档位=${low?.quality}，环境贴图已卸载=${low?.envLoaded === false}`);
+
+  // 装饰摆设按「环境叶片」档被裁掉（14.4 允许减少的另一项）
+  check('#15b', '最低画质下装饰摆设整组隐藏（14.4「环境叶片」档）',
+    low?.decor?.visible === false,
+    `低画质下装饰可见=${low?.decor?.visible}（应为 false）`);
 
   /**
    * ★★ 14.4 第二条是否定式的：「**不能隐藏**角色、目标、旗手、

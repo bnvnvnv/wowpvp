@@ -30,6 +30,7 @@ import { ModelLibrary } from '../entity/ModelLibrary.js';
 import { CombatHud } from '../hud/CombatHud.js';
 import { FAIL_TEXT } from '../combat/CombatDirector.js';
 import { Action, InputManager, type FrameInput } from '../input/InputManager.js';
+import { DecorRenderer } from '../render/DecorRenderer.js';
 import { GameLoop } from '../render/GameLoop.js';
 import { MapRenderer } from '../render/MapRenderer.js';
 import { AimingController, type AimInput } from '../targeting/AimingController.js';
@@ -100,6 +101,8 @@ export class TestbedScene {
   private readonly quality: QualityController;
   /** M12：HDR 环境光与天空。★ 纯加法，见 Environment.ts 文件头 */
   private readonly env: Environment;
+  /** M12：地图装饰摆设（`?art=off` 或数据缺失时为 undefined）*/
+  private decorRenderer: DecorRenderer | undefined;
   /** M12：是否加载外部美术素材（`?art=off` 关闭）。见 settings/artMode.ts */
   private readonly art = artEnabled();
   /** M9 / 17.2：可访问性设置。从 localStorage 恢复，切换后立即持久化 */
@@ -168,6 +171,12 @@ export class TestbedScene {
     if (this.art) {
       this.env.apply(this.quality.current, { preset: 'day' });
       void this.mapRenderer.applyGroundTexture('stone');
+      // 地图装饰摆设（纯表现，sim 不读 —— 见 DecorRenderer 文件头）
+      if (testbed.decor) {
+        this.decorRenderer = new DecorRenderer(testbed.decor);
+        this.decorRenderer.applyQuality(this.quality.current);
+        this.scene.add(this.decorRenderer.group);
+      }
     }
     this.scene.add(this.view.group);
     this.addGrid();
@@ -300,6 +309,8 @@ export class TestbedScene {
     charactersTotal: number;
     /** 14.2 八属性特效自检：贴图加载数、覆盖属性数、当前活跃粒子/飞行体 */
     vfx: import('../vfx/SpellVfx.js').SpellVfxStatus | undefined;
+    /** 地图装饰摆设自检：登记数/加载数/当前可见性 */
+    decor: import('../render/DecorRenderer.js').DecorStatus | undefined;
   } {
     const views = [this.view, ...this.dummyViews.values()];
     const withModel = views.filter((v) => v.hasModel);
@@ -313,6 +324,7 @@ export class TestbedScene {
       charactersWithModel: withModel.length,
       charactersTotal: views.length,
       vfx: this.spellVfx?.status(),
+      decor: this.decorRenderer?.status(),
     };
   }
 
@@ -690,6 +702,8 @@ export class TestbedScene {
       // M12：低画质卸掉 IBL 与天空（14.4「可以减少非关键光照」）。
       // ★ 基础三盏灯不受影响 —— 关键元素在最低画质下仍然清楚可见（#48）
       if (this.art) this.env.apply(tier);
+      // 装饰摆设按「环境叶片」档裁剪（14.4）
+      this.decorRenderer?.applyQuality(tier);
       // ★ 注意这里**没有**任何「低画质就隐藏 X」的分支 ——
       //   关键元素的可见性根本不经过画质档位，见 render/quality.ts
       console.info(`[画质] ${tier}`);

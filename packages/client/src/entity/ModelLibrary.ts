@@ -175,6 +175,25 @@ export class ModelLibrary {
     return g;
   }
 
+  /**
+   * 场景装饰模型（`assets/art/models/<relPath>.glb`，MapDecorDef 用）。
+   * ★ **不做归一化** —— 静态道具没有蒙皮，包围盒是诚实的，authored 尺度
+   *   即真实尺度（与 creatureFor 的教训相反：那边是蒙皮模型才量不准）。
+   * 失败返回 null，调用方少摆一件就是了。
+   */
+  async sceneModel(relPath: string): Promise<THREE.Group | null> {
+    const tpl = await this.template(`/art/models/${relPath}.glb`);
+    if (!tpl) return null;
+    const g = tpl.gltf.scene.clone(true);
+    g.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) {
+        (o as THREE.Mesh).castShadow = true;
+        (o as THREE.Mesh).receiveShadow = true;
+      }
+    });
+    return g;
+  }
+
   /** 武器挂载模型；无映射或加载失败返回空对象（不挂就是了，不报错） */
   async weaponFor(weaponId: string): Promise<{ right?: THREE.Group; left?: THREE.Group }> {
     const att = WEAPON_MODEL[weaponId];
