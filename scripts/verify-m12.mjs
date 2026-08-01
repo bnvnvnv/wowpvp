@@ -98,7 +98,9 @@ console.log('\n── §1 素材许可与登记（附录A#5 / 验收 #51）─�
 }
 
 // ═══ §2 技能图标映射（15.2 / 17.2）════════════════════════════
-console.log('\n── §2 技能图标：91 个技能全覆盖，无断链 ──');
+// ★ 90：M14 删掉了猎人「自动射击」按钮技能（91 → 90，机制归 7.6 挥击系统，
+//   见 PROGRESS M14 章节结构性 bug #1）—— 本期望值当时漏改，M15 回归补上
+console.log('\n── §2 技能图标：90 个技能全覆盖，无断链 ──');
 {
   const mapSrc = readFileSync(join(REPO, 'packages/client/src/hud/skillIconMap.ts'), 'utf8');
   const pairs = [...mapSrc.matchAll(/'([a-z]+\.[a-z_0-9]+)':\s*'([^']+)'/g)];
@@ -106,8 +108,8 @@ console.log('\n── §2 技能图标：91 个技能全覆盖，无断链 ─�
     ([, , file]) => !existsSync(join(ASSETS, 'art/ui/skills', `${file}.webp`)),
   );
   check('#12a', '★ 映射表里每个技能的图标文件都存在（无断链）',
-    pairs.length === 91 && broken.length === 0,
-    `映射 ${pairs.length} 条（应为 91），断链 ${broken.length} 条` +
+    pairs.length === 90 && broken.length === 0,
+    `映射 ${pairs.length} 条（应为 90），断链 ${broken.length} 条` +
       (broken.length ? `：${broken.slice(0, 3).map((b) => b[1]).join(', ')}` : ''));
 }
 

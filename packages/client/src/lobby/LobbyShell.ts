@@ -176,6 +176,9 @@ export class LobbyShell {
           </div>
           <hr/>
           <div class="lb-row">
+            <button class="lb-btn" data-action="tutorial">新手教学（推荐先玩）</button>
+          </div>
+          <div class="lb-row">
             <button class="lb-btn lb-ghost" data-action="practice">试验场（单机练习）</button>
           </div>
           <p class="lb-fine">对局需要另一位玩家：创建房间后把房间码或链接发给朋友。</p>
@@ -362,6 +365,10 @@ export class LobbyShell {
          * 两条路径的启动代码因此零交集。
          */
         location.href = location.pathname;
+        break;
+      case 'tutorial':
+        // M15：同一个试验场，多一个 tutorial=on —— 教学是试验场上的旁听层
+        location.href = `${location.pathname}?tutorial=on`;
         break;
       case 'team':
         this.conn.send({ t: 'SelectTeam', team: (btn?.dataset['team'] ?? 'spectator') as 'red' | 'blue' | 'spectator' });

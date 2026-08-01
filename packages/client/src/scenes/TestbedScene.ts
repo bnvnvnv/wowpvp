@@ -25,6 +25,8 @@ import {
 
 import { CameraController } from '../camera/CameraController.js';
 import { CombatDirector } from '../combat/CombatDirector.js';
+import { TutorialDirector } from '../tutorial/TutorialDirector.js';
+import { TutorialHud } from '../tutorial/TutorialHud.js';
 import { AnimationController } from '../entity/AnimationController.js';
 import { CharacterView } from '../entity/CharacterView.js';
 import { ModelLibrary } from '../entity/ModelLibrary.js';
@@ -140,6 +142,8 @@ export class TestbedScene {
 
   private move: MovementState;
   private characterYaw = TESTBED_SPAWN.yaw;
+  /** M15：新手教学（`?tutorial=on` 才有）。public —— verify:m15 经 `__scene.tutorial` 读状态 */
+  readonly tutorial?: TutorialDirector;
   /** 上一帧与本帧的模拟位置，用于渲染插值 */
   private prevPosition = { ...TESTBED_SPAWN.position };
   private pendingInput: FrameInput | null = null;
@@ -329,6 +333,18 @@ export class TestbedScene {
       this.addStatusMarkers(e.id as number, v);
     }
     canvas.addEventListener('mousedown', this.onCanvasMouseDown);
+
+    /**
+     * M15：新手教学（docs/14 §M15）。`?tutorial=on` 显式进入 ——
+     * **不默认弹出**：155 项验收跑在无参与 `?art=off` 路径上，教学面板
+     * 不该出现在它们的画面里；对玩家的入口在大厅标题页（「新手教学」按钮）。
+     * ★ attach() 必须在上面全部旁路钩子接完之后 —— 它是包在最外层的旁听者。
+     */
+    if (new URLSearchParams(location.search).get('tutorial') === 'on') {
+      this.tutorial = new TutorialDirector(this.combat);
+      this.tutorial.attach();
+      new TutorialHud(canvas.parentElement ?? document.body, this.tutorial);
+    }
 
     this.loop = new GameLoop(
       (dt) => this.simulate(dt),
@@ -879,6 +895,14 @@ export class TestbedScene {
     // ★ 战斗在移动之后推进 —— 7.3「主动移动停止原地施放的读条」
     //   只有先算完移动才知道这一 tick 有没有位移（docs/02 §3 的 tick 顺序）
     this.combat.update(dt, this.move.position, this.characterYaw);
+
+    // M15：教学每帧采样（战斗推进之后 —— 学派锁/地面区域都是本 tick 的新值）
+    this.tutorial?.frame({
+      cameraYaw: this.cam.yaw,
+      playerYaw: this.characterYaw,
+      cameraDistance: this.cam.distance,
+      grounded: this.move.grounded,
+    });
   }
 
   /**

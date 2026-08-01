@@ -172,6 +172,14 @@ export class CombatDirector {
   /** 假人下一次开始施法的时间 */
   private dummyNextCast = new Map<number, number>();
   /**
+   * M15：按职业暂停假人的自驱脚本（含战士的打断反应）。
+   * ★ 只有新手教学在用 —— 各环有各自的舞台布置：基础环静音法师炮台
+   *   （M14 之后它一发 200+，新手边学走路边被轰死不是教学）、走位环三个
+   *   全停、由 TutorialDirector 亲自驱动陨石（走 requestCast 同一入口）。
+   *   默认空集，试验场的 141 项验收行为不变。
+   */
+  readonly pausedDummyClasses = new Set<string>();
+  /**
    * 战士假人已经「决定」打断、将在这个时刻按下拳击。
    *
    * ★ 这个延迟不是拟真装饰，是让 7.5 的假读条博弈**能够存在**的前提。
@@ -491,6 +499,8 @@ export class CombatDirector {
   private updateDummies(): void {
     for (const e of listEntities(this.world)) {
       if (e.id === this.player.id || !e.alive) continue;
+      // M15：教学按环静音部分假人（见 pausedDummyClasses 注释）
+      if (this.pausedDummyClasses.has(e.classId as string)) continue;
 
       // ★ 假人始终面向玩家。
       //   6.5 规定近战技能要求目标位于前方 180°，拳击也不例外 ——
@@ -718,8 +728,12 @@ export class CombatDirector {
    *
    * ★ 一个实体一 tick 只有一个请求（Map 覆盖），这与服务器的语义一致 ——
    *   同一 tick 内连按两个技能，后一个覆盖前一个，而不是两个都放出去。
+   *
+   * ★ M15 起为 public：新手教学的 TutorialDirector 是第三个合法调用方
+   *   （它要在走位环替假人·法师往玩家脚下丢陨石）—— 教学驱动假人
+   *   与假人自驱动走**同一个入口**，不另开后门。
    */
-  private requestCast(
+  requestCast(
     caster: CombatEntity,
     skill: SkillDef,
     opts: { targetId?: EntityId; groundPoint?: Vec3 } = {},
