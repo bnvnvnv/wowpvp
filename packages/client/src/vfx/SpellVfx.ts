@@ -38,10 +38,7 @@ import {
   Targeting,
   asSkillId,
   getSkill,
-  type CombatEvent,
   type EntityId,
-  type GroundStore,
-  type ProjectileStore,
   type SkillDef,
 } from '@wowpvp/shared';
 
@@ -119,6 +116,45 @@ export interface SpellVfxStatus {
   activeFlashes: number;
 }
 
+/**
+ * 投射物的**表现视图** —— 只含画一发飞行体所需的字段。
+ *
+ * ★★ 为什么不直接收 sim 的 `ProjectileStore`：联网场景没有 sim，
+ *   它拿到的是快照里的 `ProjectileSnapshot`。两边都收窄到这个视图，
+ *   本类就同时服务试验场（本地存储适配）与联网场景（快照适配），
+ *   而且**读不到** onHit/sourceId 这些它本不该关心的字段。
+ */
+export interface ProjectileView {
+  id: number;
+  kind: 'homing' | 'colliding' | 'delayedImpact';
+  skillId: string;
+  /** homing/colliding 是当前位置；delayedImpact 是落点圆心 */
+  position: Vec3Like;
+  /** 仅 delayedImpact：落点半径 */
+  radius?: number;
+}
+
+/** 地面区域的表现视图（14.3 边界 + 内部装饰粒子所需的最小字段）*/
+export interface GroundAreaView {
+  id: number;
+  skillId: string;
+  center: Vec3Like;
+  radius: number;
+}
+
+/**
+ * 表现层消费的战斗事件 —— `CombatEvent` 的子集，字段收窄到真的会读的。
+ * ★ 联网场景没有本地 sim：它拿到的是协议消息，凑不出完整的 `CombatEvent`
+ *   （redact 之后连 sourceId 都没有）。收窄之后本地事件与网络消息都能喂。
+ */
+export type SpellVfxEvent =
+  | { t: 'damage'; targetId: EntityId; amount: number; school: School; immune: boolean
+      avoided?: 'dodge' | 'parry' | 'block' }
+  | { t: 'heal'; targetId: EntityId; amount: number }
+  | { t: 'auraApplied'; targetId: EntityId; auraId: string }
+  | { t: 'shieldBroken'; targetId: EntityId }
+  | { t: 'death'; targetId: EntityId };
+
 /** 每帧驱动所需的全部外部状态。一次传齐，见 `frame()` */
 export interface SpellVfxFrame {
   quality: QualityTier;
@@ -128,8 +164,8 @@ export interface SpellVfxFrame {
    * 由场景算好传进来 —— 本类不该知道 canvas 或相机参数。
    */
   pointScale: number;
-  projectiles: ProjectileStore;
-  ground: GroundStore;
+  projectiles: readonly ProjectileView[];
+  grounds: readonly GroundAreaView[];
 }
 
 interface ProjBody {
@@ -137,6 +173,8 @@ interface ProjBody {
   visual: AttributeVisual;
   /** ★ 复用同一个对象，不每帧新建（12v12 下这是每秒上千次分配）*/
   lastPos: { x: number; y: number; z: number };
+  /** 刚创建、还没有位置：第一帧直接落位，不做平滑 */
+  fresh: boolean;
 }
 
 /** 表现用弹体：从施法者飞向命中点，抵达即爆。零规则影响 */
@@ -299,7 +337,7 @@ export class SpellVfx {
    * 战斗事件 → 命中反馈。
    * ★ 伤害按**学派**取属性（事件不带 skillId，取舍说明见 `visualForSchool`）。
    */
-  onCombatEvent(ev: CombatEvent, posOf: (id: EntityId) => Vec3Like | undefined): void {
+  onCombatEvent(ev: SpellVfxEvent, posOf: (id: EntityId) => Vec3Like | undefined): void {
     switch (ev.t) {
       case 'damage': {
         const at = posOf(ev.targetId);
@@ -394,7 +432,7 @@ export class SpellVfx {
     this.cameraDistance = ctx.cameraDistance;
     this.pool.setScale(ctx.pointScale);
     this.syncProjectiles(ctx.projectiles, ctx.quality, dt);
-    this.syncGround(ctx.ground, ctx.quality, dt);
+    this.syncGround(ctx.grounds, ctx.quality, dt);
     this.updateBolts(dt, ctx.quality);
     this.pool.update(dt);
     this.flashes.update(dt);
@@ -446,15 +484,15 @@ export class SpellVfx {
     });
   }
 
-  // ── 每帧：sim 的真实投射物 ─────────────────────────────────────
+  // ── 每帧：真实投射物（本地 sim 或服务器快照，都收 ProjectileView）──
 
   /**
-   * 把 sim 的投射物存储画成看得见的飞行体。
+   * 把投射物视图画成看得见的飞行体。
    *   homing / colliding → 属性色球（essential）+ 拖尾（decorative）
    *   delayedImpact      → 持续落点边界环（essential，14.3 要求全程可见）
    * 消失的投射物在末位置补一发命中爆发。
    */
-  private syncProjectiles(store: ProjectileStore, quality: QualityTier, dt: number): void {
+  private syncProjectiles(items: readonly ProjectileView[], quality: QualityTier, dt: number): void {
     this.trailTimer += dt;
     const trailDue = this.trailTimer >= 0.05;
     if (trailDue) this.trailTimer = 0;
@@ -463,12 +501,15 @@ export class SpellVfx {
     const present = new Set<number>();
     const delayedPresent = new Set<string>();
 
-    for (const p of store.items) {
+    for (const p of items) {
       if (p.kind === 'delayedImpact') {
         const key = `p${p.id}`;
         delayedPresent.add(key);
-        const skill = getSkill(asSkillId(String(p.skillId)));
-        this.ensureRing(key, p.center, p.radius, (skill ? visualOf(skill) : ATTRIBUTE_VISUALS.fire).primary);
+        const skill = getSkill(asSkillId(p.skillId));
+        this.ensureRing(
+          key, p.position, p.radius ?? 1,
+          (skill ? visualOf(skill) : ATTRIBUTE_VISUALS.fire).primary,
+        );
         continue;
       }
       // homing | colliding
@@ -476,14 +517,30 @@ export class SpellVfx {
       // ★ 属性只在**创建时**解析一次并存进 ProjBody —— 之前是每帧
       //   `getSkill()` 一次，纯属白做（一发弹体的技能不会中途改变）
       const body = this.ensureProjBody(p.id, p.skillId);
-      body.group.position.set(p.position.x, p.position.y, p.position.z);
-      body.lastPos.x = p.position.x;
-      body.lastPos.y = p.position.y;
-      body.lastPos.z = p.position.z;
+      /**
+       * ★ 位置做指数平滑：联网时快照 20Hz 一跳，直接 set 会让弹体
+       *   以台阶前进。平滑系数取 ~22/s（半衰期 ~30ms），本地 60Hz 驱动时
+       *   误差不足一帧、肉眼不可辨，所以两边共用同一条路径。
+       *   跳变超过 4 米按瞬移处理（新一发复用了旧 id 之类的情况）。
+       */
+      const g = body.group.position;
+      const jump = Math.hypot(p.position.x - g.x, p.position.y - g.y, p.position.z - g.z);
+      if (body.fresh || jump > 4) {
+        g.set(p.position.x, p.position.y, p.position.z);
+        body.fresh = false;
+      } else {
+        const k = 1 - Math.exp(-22 * dt);
+        g.x += (p.position.x - g.x) * k;
+        g.y += (p.position.y - g.y) * k;
+        g.z += (p.position.z - g.z) * k;
+      }
+      body.lastPos.x = g.x;
+      body.lastPos.y = g.y;
+      body.lastPos.z = g.z;
 
       if (trailDue && showTrail) {
         // 真投射物（弩箭）的拖尾用轨迹条贴图 trace_05，与法术弹体的属性粒子区分
-        this.emitBurst(p.position, body.visual, {
+        this.emitBurst(body.lastPos, body.visual, {
           count: 3, speed: 0.5, size: 0.45, life: 0.32, drag: 4, opacity: 0.9,
           texture: this.accentTex.get('trail') ?? this.texFor(body.visual.particle),
         });
@@ -518,7 +575,7 @@ export class SpellVfx {
    * 地面持续区域（暴风雪、毒云…）：
    *   持续边界环（essential，14.3「边界全程可见」）+ 内部上升装饰粒子（decorative，可淡出）。
    */
-  private syncGround(store: GroundStore, quality: QualityTier, dt: number): void {
+  private syncGround(areas: readonly GroundAreaView[], quality: QualityTier, dt: number): void {
     this.fillTimer += dt;
     const fillDue = this.fillTimer >= 0.12;
     if (fillDue) this.fillTimer = 0;
@@ -526,7 +583,7 @@ export class SpellVfx {
     const density = decorativeDensity(quality);
 
     const present = new Set<string>();
-    for (const a of store.areas) {
+    for (const a of areas) {
       const key = `g${a.id}`;
       present.add(key);
       const skill = getSkill(asSkillId(a.skillId));
@@ -635,14 +692,14 @@ export class SpellVfx {
     return g;
   }
 
-  private ensureProjBody(id: number, skillId: unknown): ProjBody {
+  private ensureProjBody(id: number, skillId: string): ProjBody {
     let body = this.projBodies.get(id);
     if (body) return body;
-    const skill = getSkill(asSkillId(String(skillId)));
+    const skill = getSkill(asSkillId(skillId));
     const av = skill ? visualOf(skill) : ATTRIBUTE_VISUALS.arcane;
     const group = this.makeBoltNode(av);
     this.group.add(group);
-    body = { group, visual: av, lastPos: { x: 0, y: 0, z: 0 } };
+    body = { group, visual: av, lastPos: { x: 0, y: 0, z: 0 }, fresh: true };
     this.projBodies.set(id, body);
     return body;
   }

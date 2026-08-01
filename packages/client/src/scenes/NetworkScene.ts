@@ -26,12 +26,21 @@ import {
   GEOMETRY,
   MAP_BY_ID,
   SIM,
+  Targeting,
   createMovementState,
+  getSkill,
+  needsGroundPlacement,
+  resolveGroundPlacement,
+  usesNoTarget,
+  type CombatEntity,
   type EntityId,
+  type GroundAreaSnapshot,
   type MapDef,
   type EntitySnapshot,
   type MovementInput,
+  type ProjectileSnapshot,
   type ServerMessage,
+  type SkillDef,
   type TeamId,
 } from '@wowpvp/shared';
 
@@ -52,9 +61,22 @@ import { pickTabTargetFromSnapshot } from '../net/snapshotTargeting.js';
 import { CombatHud } from '../hud/CombatHud.js';
 import { SnapshotCombatView } from '../net/SnapshotCombatView.js';
 import { audio } from '../audio/AudioManager.js';
+import { FAIL_TEXT } from '../combat/CombatDirector.js';
+import { AimingController, type AimInput } from '../targeting/AimingController.js';
+import { DirectionIndicator } from '../targeting/DirectionIndicator.js';
+import { GroundIndicator, screenToGround } from '../targeting/GroundIndicator.js';
+import { SpellVfx, type SpellVfxStatus } from '../vfx/SpellVfx.js';
+import { StatusMarkers } from '../vfx/StatusMarkers.js';
 import { TargetRing } from '../vfx/TargetRing.js';
+import type { ControlKind } from '../vfx/status.js';
 import { paletteFor } from '../settings/accessibility.js';
 import { artEnabled } from '../settings/artMode.js';
+
+/** 技能栏槽位数。快捷键只有 1–8，职业技能多于 8 个时其余仅在 HUD 里可见 */
+const SKILL_SLOT_COUNT = 8;
+
+/** 8.2「迷惑」链的光环 id（`control.${kind}`，见 shared/sim/effects/combat.ts）*/
+const MORPH_AURA_ID = 'control.incapacitate';
 
 export interface NetworkSceneOptions {
   url: string;
@@ -80,6 +102,8 @@ export interface NetStatus {
   position: { x: number; y: number; z: number };
   /** 最近一次纠正的幅度，米 */
   lastCorrection: number;
+  /** 14.2 特效自检（`?art=off` 时 undefined）*/
+  vfx: SpellVfxStatus | undefined;
 }
 
 export class NetworkScene {
@@ -114,6 +138,23 @@ export class NetworkScene {
   private readonly anims = new Map<number, AnimationController>();
   /** 上一帧远端角色的位置，用来算位移喂给动作状态机 */
   private readonly lastRemotePos = new Map<number, { x: number; y: number; z: number }>();
+
+  /** 14.2：八属性技能特效。★ 只在 `?art=on` 时构造，与试验场同一门禁 */
+  private readonly spellVfx: SpellVfx | undefined;
+  /** 14.3：控制状态标记，按实体 id（含自己）。数据来自快照的 DisplayFlags */
+  private readonly statusMarkers = new Map<number, StatusMarkers>();
+  /** 最近一份快照里的投射物与地面区域（14.4/14.3 关键元素）*/
+  private lastProjectiles: readonly ProjectileSnapshot[] = [];
+  private lastGrounds: readonly GroundAreaSnapshot[] = [];
+  /** 场景经过的总时间，驱动标记动画 */
+  private elapsed = 0;
+
+  /** M3 瞄准流程（5.4 / 5.5），与试验场同一套控件 */
+  private readonly aim = new AimingController();
+  private readonly groundIndicator = new GroundIndicator();
+  private readonly directionIndicator = new DirectionIndicator();
+  private readonly ndc = new THREE.Vector2();
+  private clickFlags = { left: false, right: false };
 
   private selfId: EntityId | null = null;
   /** 自己的队伍与当前硬目标 —— Tab 循环要用 */
@@ -152,6 +193,15 @@ export class NetworkScene {
     this.scene.fog = new THREE.Fog(0x232a35, 90, 160);
     this.scene.add(this.selfView.group);
     this.scene.add(this.targetRing.group);
+    // 5.5 瞄准指示器（关键 UI，不受 art 门禁）
+    this.scene.add(this.groundIndicator.group, this.directionIndicator.group);
+    // 14.2 特效层：与试验场同一门禁、同一实现
+    if (this.art) {
+      this.spellVfx = new SpellVfx();
+      this.scene.add(this.spellVfx.group);
+    }
+    canvas.addEventListener('mousemove', this.onCanvasMouseMove);
+    canvas.addEventListener('mousedown', this.onCanvasMouseDown);
     this.addLights();
     // M12：环境光与天空。★ 纯加法，见 Environment.ts 文件头
     this.env = new Environment(this.renderer, this.scene);
@@ -199,9 +249,26 @@ export class NetworkScene {
     this.conn.close();
     this.input.dispose();
     window.removeEventListener('resize', this.onResize);
+    this.canvas.removeEventListener('mousemove', this.onCanvasMouseMove);
+    this.canvas.removeEventListener('mousedown', this.onCanvasMouseDown);
     this.env.dispose();
+    this.spellVfx?.dispose();
     this.renderer.dispose();
   }
+
+  private onCanvasMouseMove = (ev: MouseEvent): void => {
+    const rect = this.canvas.getBoundingClientRect();
+    this.ndc.set(
+      ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+      -((ev.clientY - rect.top) / rect.height) * 2 + 1,
+    );
+  };
+
+  private onCanvasMouseDown = (ev: MouseEvent): void => {
+    // 5.5：左键确认落点、右键取消 —— 只喂给瞄准状态机
+    if (ev.button === 0) this.clickFlags.left = true;
+    if (ev.button === 2) this.clickFlags.right = true;
+  };
 
   get status(): NetStatus {
     const p = this.predictor?.position ?? { x: 0, y: 0, z: 0 };
@@ -214,6 +281,7 @@ export class NetworkScene {
       entities: this.views.size + (this.predictor ? 1 : 0),
       position: { ...p },
       lastCorrection: this.lastCorrection,
+      vfx: this.spellVfx?.status(),
     };
   }
 
@@ -255,9 +323,15 @@ export class NetworkScene {
         this.serverTime = msg.time;
         this.interp.push(msg.time, msg.entities);
         this.lastEntities = msg.entities;
+        // 14.4 投射物 / 14.3 地面区域：留给 draw 里的 spellVfx.frame 消费
+        this.lastProjectiles = msg.projectiles;
+        this.lastGrounds = msg.grounds;
         this.selfTeam = msg.entities.find((e) => e.id === msg.you)?.team ?? this.selfTeam;
         this.view.ingest(
-          { tick: msg.tick, you: msg.you, entities: msg.entities, match: msg.match },
+          {
+            tick: msg.tick, you: msg.you, entities: msg.entities,
+            projectiles: msg.projectiles, grounds: msg.grounds, match: msg.match,
+          },
           msg.time,
         );
 
@@ -303,6 +377,12 @@ export class NetworkScene {
           else if (msg.amount > 0) this.hud.floaters.push(String(msg.amount), 'damage', at);
           else if (msg.absorbed > 0) this.hud.floaters.push(`吸收 ${msg.absorbed}`, 'absorb', at);
         }
+        // 14.2 命中爆发（按学派配色）。posOf 用**渲染中**的位置，与角色平滑一致
+        this.spellVfx?.onCombatEvent(
+          { t: 'damage', targetId: msg.targetId, amount: msg.amount, school: msg.school, immune: msg.immune },
+          (id) => this.bodyOf(id),
+        );
+        if (msg.targetId === this.selfId && msg.amount > 0) this.viewOfEntity(msg.targetId)?.flashHit();
         this.view.push(`${this.nameOf(msg.sourceId)} → ${this.nameOf(msg.targetId)} ${msg.amount} 点伤害`, 'ok');
         break;
       }
@@ -310,20 +390,54 @@ export class NetworkScene {
         audio.play('heal_impact', this.audioDistance(msg.targetId));
         const at = this.headOf(msg.targetId);
         if (at && msg.amount > 0) this.hud.floaters.push(`+${msg.amount}`, 'heal', at);
+        this.spellVfx?.onCombatEvent(
+          { t: 'heal', targetId: msg.targetId, amount: msg.amount },
+          (id) => this.bodyOf(id),
+        );
         this.view.push(`${this.nameOf(msg.sourceId)} 治疗 ${this.nameOf(msg.targetId)} ${msg.amount} 点`, 'ok');
         break;
       }
       case 'Death':
         audio.playVariant('death', this.audioDistance(msg.entityId));
+        this.spellVfx?.onCombatEvent(
+          { t: 'death', targetId: msg.entityId },
+          (id) => this.bodyOf(id),
+        );
         this.view.push(`${this.nameOf(msg.entityId)} 被击杀`, 'interrupt');
         break;
       case 'CastFailed':
         audio.play('ui_error', { group: 'ui', volume: 0.5 });
-        this.view.push(`施法失败：${msg.reason}`, 'fail');
+        this.view.push(`施法失败：${FAIL_TEXT[msg.reason] ?? msg.reason}`, 'fail');
         break;
-      case 'CastStarted':
+      case 'CastStarted': {
         audio.playCast(msg.school, { ...this.audioDistance(msg.casterId), volume: 0.7 });
+        // 14.1 预备：读条蓄力微光
+        const caster = this.casterLike(msg.casterId);
+        if (caster) this.spellVfx?.onCast('started', caster, getSkill(msg.skillId));
         break;
+      }
+      /**
+       * 14.1「释放」/ 14.2 弹体 / 13.3 挥砍 —— 与试验场的 onCastActivity('resolved')
+       * 完全同一套消费逻辑，只是数据来自协议消息。
+       * ★ `casterId` 可能被服务器抹掉（施法者对我不可见）：没有起点就没有
+       *   释放 pop 和弹体，目标身上的到位表现仍由 Damage/AuraApplied 驱动。
+       */
+      case 'CastResolved': {
+        const skill = getSkill(msg.skillId);
+        if (!skill) break;
+        const caster = this.casterLike(msg.casterId);
+        if (caster) {
+          const targets = msg.targetIds
+            .map((id) => this.bodyBaseOf(id))
+            .filter((t): t is { position: { x: number; y: number; z: number }; height: number } => t !== undefined);
+          this.spellVfx?.onCast('resolved', caster, skill, targets);
+          // 近战挥砍（与试验场同一判据：直接目标 + 6.1 近战档射程）
+          if (skill.targeting === Targeting.Direct && skill.range.max < 8 && msg.casterId !== undefined) {
+            this.viewOfEntity(msg.casterId)?.playMeleeSwing();
+          }
+        }
+        break;
+      }
       case 'CastInterrupted':
         audio.play('ui_error', {
           group: 'ui',
@@ -332,6 +446,19 @@ export class NetworkScene {
         break;
       case 'AuraApplied':
         audio.play('buff_apply', { ...this.audioDistance(msg.targetId), volume: 0.5 });
+        // 纯光环技能的到位反馈（化形术等）。control.* 在 SpellVfx 内部安静跳过
+        this.spellVfx?.onCombatEvent(
+          { t: 'auraApplied', targetId: msg.targetId, auraId: msg.auraId },
+          (id) => this.bodyOf(id),
+        );
+        break;
+      case 'AuraRemoved':
+        if (msg.reason === 'shieldBroken') {
+          this.spellVfx?.onCombatEvent(
+            { t: 'shieldBroken', targetId: msg.targetId },
+            (id) => this.bodyOf(id),
+          );
+        }
         break;
 
       default:
@@ -378,6 +505,73 @@ export class NetworkScene {
     // 5.3：Tab 正序、Shift+Tab 反序
     if (input.pressed.has(Action.TargetNext)) this.tabTarget(false);
     if (input.pressed.has(Action.TargetPrev)) this.tabTarget(true);
+
+    // ── 施法（1–8 键 + 5.5 瞄准流程）。★ 只发**意图**，结算全在服务器 ──
+    let pressedSlot: number | null = null;
+    for (let i = 0; i < SKILL_SLOT_COUNT; i++) {
+      if (input.pressed.has(`skill${i + 1}` as Action)) pressedSlot = i;
+    }
+    if (pressedSlot !== null) {
+      this.hud.pulseSlot(pressedSlot);
+      audio.play('ui_click', { group: 'ui', volume: 0.35 });
+    }
+    const aimInput: AimInput = {
+      pressedSlot,
+      releasedSlot: null,
+      leftClick: this.clickFlags.left,
+      rightClick: this.clickFlags.right,
+      escape: input.pressed.has(Action.CancelCast),
+    };
+    this.clickFlags.left = false;
+    this.clickFlags.right = false;
+
+    const ev = this.aim.update(aimInput, (slot) => this.view.skills[slot]);
+    if (ev.type === 'confirm') this.sendCast(ev.skill);
+
+    // 7.5 假读条：Esc 在没有瞄准时用于取消读条（服务器结算取消）
+    if (input.pressed.has(Action.CancelCast) && ev.type !== 'cancel') {
+      this.conn.send({ t: 'CancelCast' });
+    }
+  }
+
+  /**
+   * 把一次确认的施法意图发给服务器。
+   * ★ 与试验场 `castSlot` 同构：地面技能带落点（先做与指示器同源的合法性
+   *   预检，5.5 / 验收 #8），方向技能带 facing，其余带当前目标。
+   *   服务器仍会用同一个 `validateCast` 再验一遍 —— 这里的预检只是 UI 判据。
+   */
+  private sendCast(skill: SkillDef): void {
+    if (needsGroundPlacement(skill)) {
+      const ground = screenToGround(this.cam.camera, this.ndc, this.predictor?.position ?? { x: 0, y: 0, z: 0 });
+      if (!ground) return;
+      const placement = this.resolveGround(skill, { x: ground.x, y: 0, z: ground.z });
+      if (!placement.legal) {
+        this.view.push(`${skill.name} 落点非法：${FAIL_TEXT[placement.reason]}`, 'fail');
+        return;
+      }
+      this.conn.send({ t: 'CastRequest', skillId: skill.id, groundPoint: placement.center });
+      return;
+    }
+    if (usesNoTarget(skill)) {
+      // 方向技能沿**角色**朝向（6.5），协议里就是为它留的 facing 字段
+      this.conn.send({ t: 'CastRequest', skillId: skill.id, facing: this.characterYaw });
+      return;
+    }
+    this.conn.send({
+      t: 'CastRequest',
+      skillId: skill.id,
+      ...(this.currentTargetId !== undefined ? { targetId: this.currentTargetId } : {}),
+    });
+  }
+
+  /**
+   * 5.5 落点解算 —— 与指示器同一个函数（shared 的 `resolveGroundPlacement`），
+   * 「指示器显示合法 → 按下去却失败」因此不可能发生（验收 #8）。
+   * ★ 传给它的 caster 只读 `position`，用预测位置拼一个最小形状即可。
+   */
+  private resolveGround(skill: SkillDef, requested: { x: number; y: number; z: number }) {
+    const caster = { position: this.predictor?.position ?? { x: 0, y: 0, z: 0 } } as CombatEntity;
+    return resolveGroundPlacement(caster, requested, skill, this.map?.geometry ?? [], this.map?.bounds);
   }
 
   /**
@@ -422,6 +616,49 @@ export class NetworkScene {
     return { distance: Math.hypot(at.x - me.x, at.z - me.z) };
   }
 
+  /** 某实体的 3D 视图（自己或远端）*/
+  private viewOfEntity(id: EntityId): CharacterView | undefined {
+    return id === this.selfId ? this.selfView : this.views.get(id as number);
+  }
+
+  /**
+   * 某实体**渲染中**的脚底位置（自己=预测位置，远端=插值后的视图位置）。
+   * ★ 用渲染位置而不是快照原始位置 —— 快照 20Hz 一跳，角色是平滑的，
+   *   爆发落在快照坐标会看起来「炸偏了半步」。不在场（不可见）返回 undefined。
+   */
+  private baseOf(id: EntityId): { x: number; y: number; z: number } | undefined {
+    if (id === this.selfId && this.predictor) return { ...this.predictor.position };
+    const v = this.views.get(id as number);
+    if (v) return { x: v.group.position.x, y: v.group.position.y, z: v.group.position.z };
+    const e = this.lastEntities.find((x) => x.id === id);
+    return e ? { ...e.position } : undefined;
+  }
+
+  /** 躯干中部：命中粒子爆发的锚点（14.2）*/
+  private bodyOf(id: EntityId): { x: number; y: number; z: number } | undefined {
+    const p = this.baseOf(id);
+    return p ? { x: p.x, y: p.y + GEOMETRY.HITBOX_HEIGHT * 0.5, z: p.z } : undefined;
+  }
+
+  /** 弹体目标视图：位置 + 身高（SpellVfx.onCast 的 targets 形状）*/
+  private bodyBaseOf(id: EntityId): { position: { x: number; y: number; z: number }; height: number } | undefined {
+    const p = this.baseOf(id);
+    return p ? { position: p, height: GEOMETRY.HITBOX_HEIGHT } : undefined;
+  }
+
+  /** 施法者视图：位置 + 身高 + 朝向（释放点要沿朝向前移，见 SpellVfx.onCast）*/
+  private casterLike(
+    id: EntityId | undefined,
+  ): { position: { x: number; y: number; z: number }; height: number; yaw: number } | undefined {
+    if (id === undefined) return undefined;
+    const p = this.baseOf(id);
+    if (!p) return undefined;
+    const yaw = id === this.selfId
+      ? this.characterYaw
+      : this.lastEntities.find((e) => e.id === id)?.yaw ?? 0;
+    return { position: p, height: GEOMETRY.HITBOX_HEIGHT, yaw };
+  }
+
   private tabTarget(reverse: boolean): void {
     if (this.selfId === null || this.selfTeam === null || !this.predictor) return;
     const picked = pickTabTargetFromSnapshot({
@@ -462,14 +699,65 @@ export class NetworkScene {
   private draw(_alpha: number, dt: number): void {
     // 服务器时间自己走，收到快照时校准 —— 插值要按它取样
     this.serverTime += dt;
+    this.elapsed += dt;
 
     this.drawSelf(dt);
     this.drawRemotes(dt);
     this.updateTargetRing();
+    this.updateIndicators();
+
+    // 14.2/14.3/14.4：投射物主体、地面边界、粒子池 —— 数据来自最近的快照。
+    // ★ 快照类型与 SpellVfx 的表现视图字段兼容，直接喂，不做拷贝
+    this.spellVfx?.frame(dt, {
+      quality: this.quality.current,
+      cameraDistance: this.cam.distance,
+      pointScale:
+        this.canvas.clientHeight /
+        (2 * Math.tan((this.cam.camera.fov * Math.PI) / 360)),
+      projectiles: this.lastProjectiles,
+      grounds: this.lastGrounds,
+    });
 
     this.renderer.render(this.scene, this.cam.camera);
     // ★ 与试验场同一个调用 —— 只是喂的 CombatView 实现不同
     this.hud.update(this.view, this.cam.camera, this.canvas, dt);
+  }
+
+  /**
+   * 5.5 瞄准指示器 —— 与试验场同一套控件与文案。
+   * 边界与合法性来自 shared 的 `resolveGroundPlacement`（验收 #8 的同源保证）。
+   */
+  private updateIndicators(): void {
+    const skill = this.aim.pendingSkill;
+    if (!skill) {
+      this.groundIndicator.hide();
+      this.directionIndicator.hide();
+      this.hud.setAimHint(null, false);
+      return;
+    }
+    const selfPos = this.predictor?.position ?? { x: 0, y: 0, z: 0 };
+    if (skill.targeting === 'ground') {
+      const ground = screenToGround(this.cam.camera, this.ndc, selfPos);
+      if (!ground) {
+        this.groundIndicator.hide();
+        this.hud.setAimHint(`${skill.name}：把鼠标移到地面上选择落点`, true);
+        return;
+      }
+      const placement = this.resolveGround(skill, { x: ground.x, y: 0, z: ground.z });
+      this.groundIndicator.show(placement, selfPos);
+      this.directionIndicator.hide();
+      this.hud.setAimHint(
+        placement.legal
+          ? `${skill.name}：左键确认${placement.clamped ? `（已钳制到 ${placement.maxRange} 米边缘）` : ''}`
+          : `${skill.name}：${FAIL_TEXT[placement.reason]}`,
+        !placement.legal,
+      );
+    } else {
+      this.groundIndicator.hide();
+      // ★ 角色 yaw，不是镜头 yaw（5.4）
+      this.directionIndicator.show(skill.shape, selfPos, this.characterYaw);
+      this.hud.setAimHint(`${skill.name}：沿角色面向释放`, false);
+    }
   }
 
   private drawSelf(dt: number): void {
@@ -500,6 +788,9 @@ export class NetworkScene {
     const meSnap = this.lastEntities.find((e) => e.id === this.selfId);
     if (meSnap) {
       this.syncWeapon(meSnap.id as number, this.selfView, meSnap.equipment.currentWeaponId as string | undefined);
+      // 8.2「迷惑」= 被变形（快照 auras 是权威，重连也不丢）
+      this.selfView.setMorphed(meSnap.auras.some((a) => a.auraId === MORPH_AURA_ID));
+      this.updateMarkersFor(meSnap, this.selfView);
     }
     this.selfView.update(dt);
 
@@ -554,6 +845,9 @@ export class NetworkScene {
       view.setAnimState(anim.state);
       view.setLocomotionTimeScale(anim.timeScale);
       this.syncWeapon(id, view, e.snapshot.equipment.currentWeaponId as string | undefined);
+      // 8.2「迷惑」= 被变形；14.3 控制标记 —— 都从快照读，与试验场同一套表现
+      view.setMorphed(e.snapshot.auras.some((a) => a.auraId === MORPH_AURA_ID));
+      this.updateMarkersFor(e.snapshot, view);
       view.update(dt);
     }
 
@@ -566,7 +860,30 @@ export class NetworkScene {
       this.anims.delete(id);
       this.lastRemotePos.delete(id);
       this.shownWeapons.delete(id);
+      this.statusMarkers.delete(id); // 标记挂在 view.group 里，随组一起移除
     }
+  }
+
+  /**
+   * 14.3：控制状态标记（定身/昏迷/沉默/恐惧/缴械），数据来自快照的 DisplayFlags。
+   * ★ 与试验场同一个 StatusMarkers 类、同一套「恐惧优先于昏迷」的区分逻辑。
+   * ⚠️ 护盾四态（setShield）联网侧**还没有数据** —— 快照的 AuraSnapshot 不带
+   *   吸收量。这里如实不画，不编一个「大概还有盾」的表现；补数据属于协议扩展。
+   */
+  private updateMarkersFor(snap: EntitySnapshot, view: CharacterView): void {
+    let m = this.statusMarkers.get(snap.id as number);
+    if (!m) {
+      m = new StatusMarkers();
+      view.group.add(m.group);
+      this.statusMarkers.set(snap.id as number, m);
+    }
+    const active = new Set<ControlKind>();
+    if (snap.flags.feared) active.add('feared');
+    else if (snap.flags.stunned) active.add('stunned');
+    if (snap.flags.rooted) active.add('rooted');
+    if (snap.flags.silenced) active.add('silenced');
+    if (snap.flags.disarmed) active.add('disarmed');
+    m.update(active, this.quality.current, this.cam.distance, SIM.TICK_DT, this.elapsed);
   }
 
   /**

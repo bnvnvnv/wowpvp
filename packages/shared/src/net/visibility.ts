@@ -25,6 +25,8 @@ import { aurasOf, type AuraStore } from '../sim/aura.js';
 import { enemyLoadoutView, type Loadout, type SwapStore } from '../sim/loadout.js';
 import type { CtfState } from '../sim/match/flag.js';
 import type { MovementState } from '../sim/movement.js';
+import type { GroundStore } from '../sim/groundArea.js';
+import type { ProjectileStore } from '../sim/projectile.js';
 import { listEntities, type World } from '../sim/world.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -229,6 +231,46 @@ export interface SuddenDeathBlip {
 /** 决胜阶段粗略位置的量化网格，米。取 6.1 的短距离档的一半 */
 export const SUDDEN_DEATH_BLIP_GRID = RANGE.SHORT / 2;
 
+/**
+ * 投射物快照。14.4：「不能隐藏……投射物主体」—— 在此之前投射物只存在于
+ * 服务器的 `ProjectileStore` 里，联网客户端**什么都看不见**，这直接违反 14.4。
+ *
+ * ★★ **刻意没有 `sourceId` / `targetId`。**
+ *   画一发飞行体只需要位置与技能（取属性色），带实体引用则是白送泄露面：
+ *   `verify:m10` 第 1 条验的是「隐形实体的 id 不出现在**传输字节**里」，
+ *   不带就天然不可能泄露 —— 与 `SuddenDeathBlip` 没有 id 是同一个手法。
+ */
+export interface ProjectileSnapshot {
+  id: number;
+  kind: 'homing' | 'colliding' | 'delayedImpact';
+  skillId: string;
+  /** homing/colliding 是当前位置；delayedImpact 是落点圆心 */
+  position: Vec3;
+  /** 仅 delayedImpact：落点半径 */
+  radius?: number;
+  /** 仅 delayedImpact：落地时刻（14.3 倒计时要用，服务器时间）*/
+  impactAt?: number;
+  /** 仅 delayedImpact：创建时刻 */
+  createdAt?: number;
+}
+
+/**
+ * 地面区域快照。14.3：「真实边界在整个有效期内持续显示」——
+ * 同样在此之前联网客户端看不到任何地面区域。
+ *
+ * ★★ **只发 `areas`，永远不发 `traps`。**
+ *   陷阱（9.5）的玩法就是「看不见，踩上才触发」—— 把它放进快照等于
+ *   把猎人的核心机制标在敌人地图上。构建函数根本不读 `store.traps`。
+ */
+export interface GroundAreaSnapshot {
+  id: number;
+  skillId: string;
+  center: Vec3;
+  radius: number;
+  /** 过期时刻（服务器时间），客户端可显示剩余 */
+  expiresAt: number;
+}
+
 export interface MatchSnapshot {
   /** 8.5 战斗抑制当前值 */
   dampening: number;
@@ -251,6 +293,10 @@ export interface Snapshot {
   /** 接收者自己的实体 id，客户端用它区分「我」和别人 */
   you: EntityId;
   entities: readonly EntitySnapshot[];
+  /** 14.4 投射物主体。对所有接收者相同（不带实体引用，见类型注释）*/
+  projectiles: readonly ProjectileSnapshot[];
+  /** 14.3 地面区域边界。只含 areas，永不含 traps（见类型注释）*/
+  grounds: readonly GroundAreaSnapshot[];
   match: MatchSnapshot;
 }
 
@@ -274,6 +320,10 @@ export interface SnapshotDeps {
    *   没传就一律 `teleported: false` —— 那对「位置由别处驱动」的实体是对的。
    */
   movement?: ReadonlyMap<EntityId, MovementState>;
+  /** 投射物（14.4 主体可见）。可选：老调用方与纯规则测试不传就是空数组 */
+  projectiles?: ProjectileStore;
+  /** 地面区域（14.3 边界可见）。★ 只会读 `areas`，`traps` 结构上不进快照 */
+  ground?: GroundStore;
 }
 
 /**
@@ -293,6 +343,23 @@ export const buildSnapshot = (deps: SnapshotDeps, viewer: CombatEntity): Snapsho
     entities.push(snapshotEntity(e, viewer, deps));
   }
 
+  // 14.4 投射物主体 + 14.3 地面边界。不带实体引用，所以不经过可见性裁剪 ——
+  // 没有可泄露的字段（见 ProjectileSnapshot / GroundAreaSnapshot 的类型注释）
+  const projectiles: ProjectileSnapshot[] = (deps.projectiles?.items ?? []).map((p) =>
+    p.kind === 'delayedImpact'
+      ? {
+          id: p.id, kind: p.kind, skillId: String(p.skillId),
+          position: { ...p.center }, radius: p.radius,
+          impactAt: p.impactAt, createdAt: p.createdAt,
+        }
+      : { id: p.id, kind: p.kind, skillId: String(p.skillId), position: { ...p.position } },
+  );
+  // ★ 只读 areas。traps 连变量都不取 —— 「不小心也发了陷阱」在这里写不出来
+  const grounds: GroundAreaSnapshot[] = (deps.ground?.areas ?? []).map((a) => ({
+    id: a.id, skillId: a.skillId, center: { ...a.center },
+    radius: a.radius, expiresAt: a.expiresAt,
+  }));
+
   const match: MatchSnapshot = {
     dampening: deps.dampening,
     suddenDeath: deps.suddenDeath,
@@ -310,7 +377,7 @@ export const buildSnapshot = (deps: SnapshotDeps, viewer: CombatEntity): Snapsho
     match.score = { ...deps.ctf.score };
   }
 
-  return { tick: deps.tick, you: viewer.id, entities, match };
+  return { tick: deps.tick, you: viewer.id, entities, projectiles, grounds, match };
 };
 
 const snapshotEntity = (

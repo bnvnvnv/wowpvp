@@ -207,7 +207,13 @@ export class TestbedScene {
     this.combat.onCombatEvent = (ev) => {
       playCombatEvent(audio, audioDeps, ev);
       this.showCombatFeedback(ev);
-      this.spellVfx?.onCombatEvent(ev, (id) => this.bodyPosOf(id));
+      // ★ SpellVfx 只吃它声明的那几类（SpellVfxEvent）—— 收窄后网络场景也能喂同一个类
+      if (
+        ev.t === 'damage' || ev.t === 'heal' || ev.t === 'auraApplied' ||
+        ev.t === 'shieldBroken' || ev.t === 'death'
+      ) {
+        this.spellVfx?.onCombatEvent(ev, (id) => this.bodyPosOf(id));
+      }
     };
     this.combat.onCastActivity = (kind, caster, skill, targets) => {
       playCastActivity(audio, audioDeps, kind, caster.id, skill);
@@ -865,6 +871,7 @@ export class TestbedScene {
 
     // M12 / 14.2：弹体、地面区域、粒子池一次推进（顺序封在 SpellVfx.frame 里）。
     // ★ 弹体主体/地面边界走 essential，任何画质都画；拖尾/内部粒子按画质裁。
+    // ★ 适配成表现视图 —— SpellVfx 同时服务本地 sim（这里）与网络快照（NetworkScene）
     this.spellVfx?.frame(dt, {
       quality: this.quality.current,
       cameraDistance: this.cam.distance,
@@ -872,8 +879,14 @@ export class TestbedScene {
       pointScale:
         this.canvas.clientHeight /
         (2 * Math.tan((this.cam.camera.fov * Math.PI) / 360)),
-      projectiles: this.combat.projectiles,
-      ground: this.combat.ground,
+      projectiles: this.combat.projectiles.items.map((p) =>
+        p.kind === 'delayedImpact'
+          ? { id: p.id, kind: p.kind, skillId: String(p.skillId), position: p.center, radius: p.radius }
+          : { id: p.id, kind: p.kind, skillId: String(p.skillId), position: p.position },
+      ),
+      grounds: this.combat.ground.areas.map((a) => ({
+        id: a.id, skillId: a.skillId, center: a.center, radius: a.radius,
+      })),
     });
 
     this.updateIndicators();

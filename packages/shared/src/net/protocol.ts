@@ -22,7 +22,9 @@ import type {
 } from '../types/enums.js';
 import type { ClassId, EntityId, MapId, SkillId, TeamId } from '../types/ids.js';
 import type { Vec3 } from '../math/vec3.js';
-import type { EntitySnapshot, MatchSnapshot } from './visibility.js';
+import type {
+  EntitySnapshot, GroundAreaSnapshot, MatchSnapshot, ProjectileSnapshot,
+} from './visibility.js';
 
 // ════════════════════════════════════════════════════════════════
 //  输入范围约束
@@ -164,6 +166,10 @@ export interface SnapshotMessage {
   ackSeq: number;
   you: EntityId;
   entities: readonly EntitySnapshot[];
+  /** 14.4 投射物主体（不带实体引用，见 visibility.ts 的类型注释）*/
+  projectiles: readonly ProjectileSnapshot[];
+  /** 14.3 地面区域边界（只含 areas，永不含 traps）*/
+  grounds: readonly GroundAreaSnapshot[];
   match: MatchSnapshot;
 }
 
@@ -180,6 +186,14 @@ export type ServerMessage =
   // ── 事件流：驱动表现与统计，**不参与状态重建**（docs/08 §3.3）──
   | { t: 'CastStarted'; casterId: EntityId; skillId: SkillId; duration: number
       interruptible: boolean; school: School; castKind: CastKind }
+  /**
+   * 施法完成（14.1「释放」+ 14.2 弹体的驱动信号）。
+   * ★ `casterId` 可空、`targetIds` 按接收者裁剪 —— 与 `Damage.sourceId` 同理：
+   *   看不见施法者就没有释放 pop 和弹体起点（不泄露位置），
+   *   但**可见目标**身上的到位表现照常（14.1）。
+   */
+  | { t: 'CastResolved'; casterId?: EntityId; skillId: SkillId
+      targetIds: readonly EntityId[] }
   | { t: 'CastInterrupted'; casterId: EntityId; source: InterruptSource
       schoolLock?: { school: School; until: number } }
   | { t: 'CastFailed'; skillId: SkillId; reason: CastFailure }
@@ -221,7 +235,7 @@ export type ServerMessageKind = ServerMessage['t'];
 
 export const ALL_SERVER_MESSAGE_KINDS: readonly ServerMessageKind[] = [
   'Welcome', 'RoomState', 'MatchStart', 'Snapshot',
-  'CastStarted', 'CastInterrupted', 'CastFailed', 'Damage', 'Heal',
+  'CastStarted', 'CastResolved', 'CastInterrupted', 'CastFailed', 'Damage', 'Heal',
   'AuraApplied', 'AuraRemoved', 'Death', 'FlagEvent', 'RoundEnd', 'MatchEnd',
   'Rejected', 'PeerDisconnected', 'PeerReconnected', 'PeerEliminated',
 ];

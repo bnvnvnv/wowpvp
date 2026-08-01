@@ -69,8 +69,15 @@ const SWING_CLIPS = [
   'Unarmed_Melee_Attack_Punch_A',
 ];
 
-/** 化形术的小动物。青蛙：够无害，也够 Q（13.6 德鲁伊形态另有专门一节，这里只管化形）*/
-const MORPH_CREATURE = 'frog';
+/**
+ * 化形术的小动物。选 chicken_cow 不是审美偏好，是**测量诚实度**：
+ * creatures 包里多数模型（frog/fox/alpaca…）是 meshopt 量化 + 蒙皮骨骼缩放，
+ * `Box3.setFromObject` 对 SkinnedMesh 不算骨骼变换，量出的包围盒比渲染实高
+ * 大好几倍 —— 归一化后青蛙只有 ~0.15 米，场上就是一粒橘色像素（实测）。
+ * chicken_cow 是包里唯一几何高（0.85）与渲染高一致的：量多少渲染多少。
+ * 变成小鸡也正好是「无害生物」的经典读法。
+ */
+const MORPH_CREATURE = 'chicken_cow';
 
 export class CharacterView {
   readonly group = new THREE.Group();

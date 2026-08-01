@@ -191,6 +191,17 @@ export class MatchLoop {
             this.sessionOfEntity(c.id)?.send({ t: 'CastFailed', skillId: skill.id, reason });
           },
         },
+        /**
+         * 14.1「释放」/ 14.2 弹体的驱动信号。★ `targets` 是结算前的目标集合
+         * （与试验场 CombatDirector 的同名钩子一字不差的语义）——
+         * 客户端的表现用弹体要知道「这一发飞向谁」。裁剪在 `redactFor()`。
+         */
+        onCastResolved: (caster, skill, targets) => outbound.push({
+          t: 'CastResolved',
+          casterId: caster.id,
+          skillId: skill.id,
+          targetIds: targets.map((t) => t.id),
+        }),
         onEffects: (events) => { for (const ev of events) this.pushEvent(outbound, ev); },
       },
     );
@@ -495,6 +506,22 @@ export class MatchLoop {
         }
         return msg;
       }
+      /**
+       * 与 Damage 同一套「抹而不丢」：施法者不可见就去掉 casterId（没有弹体起点），
+       * 目标列表按可见性过滤（不可见目标不该在他屏幕上炸开一朵花）。
+       * 两者都空 → 这条对他没有任何可画的内容，整条不发。
+       */
+      case 'CastResolved': {
+        const targetIds = msg.targetIds.filter((id) => visible(id));
+        const casterVisible = visible(msg.casterId);
+        if (!casterVisible && targetIds.length === 0) return undefined;
+        return {
+          t: 'CastResolved',
+          ...(casterVisible && msg.casterId !== undefined ? { casterId: msg.casterId } : {}),
+          skillId: msg.skillId,
+          targetIds,
+        };
+      }
       default: {
         for (const id of referencedEntities(msg)) {
           if (!visible(id)) return undefined;
@@ -522,6 +549,9 @@ export class MatchLoop {
       suddenDeath: m.arena?.dampening.suddenDeath ?? false,
       // 13.4：把「这一 tick 是瞬移过来的」带进快照，插值器据此瞬移而非滑行
       movement: m.movement,
+      // 14.4 投射物主体 + 14.3 地面边界（traps 结构上不进快照，见 visibility.ts）
+      projectiles: m.projectiles,
+      ground: m.ground,
       ...(m.ctf ? { ctf: m.ctf.state } : {}),
     };
 
@@ -552,6 +582,8 @@ export class MatchLoop {
         ackSeq: s.ackSeq,
         you: snapshot.you,
         entities: snapshot.entities,
+        projectiles: snapshot.projectiles,
+        grounds: snapshot.grounds,
         match: snapshot.match,
       });
     }

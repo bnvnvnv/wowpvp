@@ -363,6 +363,81 @@ describe('发送前自检', () => {
   });
 });
 
+describe('14.3 / 14.4 投射物与地面区域进快照', () => {
+  it('不传存储时是空数组（老调用方与纯规则测试不受影响）', () => {
+    const snap = buildSnapshot(deps(), me);
+    expect(snap.projectiles).toEqual([]);
+    expect(snap.grounds).toEqual([]);
+  });
+
+  it('homing/colliding 带当前位置；delayedImpact 带落点/半径/倒计时时刻（14.3）', () => {
+    const snap = buildSnapshot(deps({
+      projectiles: {
+        nextId: 3,
+        items: [
+          {
+            kind: 'homing', id: 1, skillId: asSkillId('mage.frostbolt'),
+            sourceId: me.id, targetId: foe.id,
+            position: vec3(1, 1.2, 2), speed: 30, impactAt: 5, onHit: [],
+          },
+          {
+            kind: 'delayedImpact', id: 2, skillId: asSkillId('mage.meteor'),
+            sourceId: me.id, center: vec3(3, 0, 4), radius: 5,
+            createdAt: 1, impactAt: 3, onImpact: [],
+          },
+        ],
+      },
+    }), me);
+
+    expect(snap.projectiles).toHaveLength(2);
+    const [bolt, meteor] = snap.projectiles;
+    expect(bolt).toMatchObject({ kind: 'homing', position: { x: 1, y: 1.2, z: 2 } });
+    expect(meteor).toMatchObject({
+      kind: 'delayedImpact', position: { x: 3, y: 0, z: 4 }, radius: 5, impactAt: 3, createdAt: 1,
+    });
+  });
+
+  it('★★ 投射物快照不带任何实体引用（sourceId/targetId 结构性缺席）', () => {
+    const snap = buildSnapshot(deps({
+      projectiles: {
+        nextId: 2,
+        items: [{
+          kind: 'homing', id: 1, skillId: asSkillId('mage.frostbolt'),
+          sourceId: sneak.id, targetId: me.id, // 来源甚至是个潜行者
+          position: vec3(0, 1, 0), speed: 30, impactAt: 5, onHit: [],
+        }],
+      },
+    }), me);
+    // 潜行者的 id 不出现在序列化字节里 —— verify:m10 第 1 条的同一标准
+    const bytes = JSON.stringify(snap.projectiles);
+    expect(bytes.includes('sourceId')).toBe(false);
+    expect(bytes.includes('targetId')).toBe(false);
+  });
+
+  it('★★ 地面区域只发 areas，陷阱（9.5）永不进快照', () => {
+    const snap = buildSnapshot(deps({
+      ground: {
+        areas: [{
+          id: 1, areaId: 'blizzard', skillId: 'mage.blizzard', sourceId: me.id,
+          center: vec3(5, 0, 5), radius: 6, createdAt: 0, expiresAt: 8,
+          tickInterval: 1, nextTickAt: 1, onTick: [],
+          blocksTargetingFromOutside: false, revealsStealth: false,
+        }],
+        traps: [{
+          id: 9, skillId: 'hunter.frost_trap', sourceId: foe.id,
+          center: vec3(7, 0, 7), triggerRadius: 2, armedAt: 1, expiresAt: 30,
+          onTrigger: [], singleTrigger: true,
+        }],
+      },
+    }), me);
+
+    expect(snap.grounds).toHaveLength(1);
+    expect(snap.grounds[0]).toMatchObject({ skillId: 'mage.blizzard', radius: 6, expiresAt: 8 });
+    // 陷阱的任何痕迹都不在快照字节里 —— 「看不见、踩上才触发」是它的玩法本体
+    expect(JSON.stringify(snap)).not.toContain('frost_trap');
+  });
+});
+
 describe('裁剪规则清单', () => {
   it('六条按接收者裁剪的规则都有登记（供文档与 review 对照）', () => {
     expect(CULLING_RULES.map((r) => r.id)).toEqual([
