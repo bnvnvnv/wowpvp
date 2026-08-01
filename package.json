@@ -31,6 +31,7 @@
     "verify:m9": "tsx scripts/verify-m9.ts",
     "verify:m10": "tsx scripts/verify-m10.ts",
     "verify:m12": "node scripts/verify-m12.mjs",
+    "verify:m13": "tsx scripts/verify-m13.ts",
     "balance": "tsx scripts/balance-report.ts"
   },
   "devDependencies": {
