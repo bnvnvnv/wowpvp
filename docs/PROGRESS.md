@@ -1125,8 +1125,9 @@ advantage 文案改回「法术伤害与魔法控制时长降低」。
 ## 环境备注
 
 - 本项目在中国大陆网络环境下开发，**git 推送需要走本地代理**。
-  仓库的 `.git/config` 里已配置 `http.proxy = http://127.0.0.1:6789`。
-  ⚠️ 这是**本机的**端口，不是通用值 —— 换台机器多半要改（Clash 默认是 7890）。
+  仓库的 `.git/config` 里已配置 `http.proxy = http://127.0.0.1:7890`（Clash 默认端口）。
+  ⚠️ 这是**本机的**端口，不是通用值，而且**同一台机器也变过**
+  （2026-08-01 从 6789 变成 7890）—— 推送失败先 curl 探一圈常见端口。
   不需要代理时用
   `git config --unset http.proxy && git config --unset https.proxy` 移除。
 - Node ≥ 20，pnpm 10.x。
