@@ -30,7 +30,7 @@ const CLASS_ID = asClassId('priest');
 const skills: SkillDef[] = [
   {
     id: asSkillId('priest.smite'),
-    name: '惩击',
+    name: '圣光击',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -45,13 +45,14 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 30 },
     counters:
       '读条可被专用打断并锁神圣学派 3 秒，也可被移动、控制、强制位移和失去视线终止（7.1 / 7.3）；学派锁定期间快速治疗和群体驱散会一起被封，是牧师最大的软肋。',
-    effects: [{ kind: 'damage', school: School.Holy, amount: { flat: 140 } }],
+    // M14：140→155 —— 惩击是牧师唯一不锁武器方案的主动输出
+    effects: [{ kind: 'damage', school: School.Holy, amount: { flat: 155 } }],
     description: '造成基础神圣伤害。1.2 秒读条，原地施放。',
     vfx: 'priest_smite',
   },
   {
     id: asSkillId('priest.flash_heal'),
-    name: '快速治疗',
+    name: '迅愈术',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -72,7 +73,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('priest.renew'),
-    name: '恢复',
+    name: '续愈',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -91,7 +92,7 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'priest.renew',
-          name: '恢复',
+          name: '续愈',
           kind: 'buff',
           duration: 6,
           dispelType: DispelType.Magic,
@@ -110,7 +111,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('priest.power_word_shield'),
-    name: '真言术：盾',
+    name: '护心屏障',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -129,13 +130,14 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'priest.power_word_shield',
-          name: '真言术：盾',
+          name: '护心屏障',
           kind: 'buff',
           duration: 6,
           dispelType: DispelType.Magic,
           clearableByTrinket: false,
           // 归零时触发 14.3 的「破裂」表现
-          absorb: 260,
+          // M14：260→330 —— 盾在近战贴脸时机上价值最高；与法师冰盾同一轮定值
+          absorb: 330,
           description: '吸收一定伤害，持续 6 秒。',
           vfx: 'priest_power_word_shield',
         },
@@ -146,7 +148,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('priest.dispel_magic'),
-    name: '驱散魔法',
+    name: '净化术',
     classId: CLASS_ID,
     // 9.7：一个技能两种用法 —— 友方去负面、敌方偷增益，所以 targetFilter 是 Any。
     // 下面写了两条 dispel 效果（from: 'ally' / from: 'enemy'），
@@ -174,7 +176,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('priest.psychic_scream'),
-    name: '心灵尖啸',
+    name: '惊惧尖啸',
     classId: CLASS_ID,
     targeting: Targeting.SelfCenter,
     targetFilter: TargetFilter.Enemy,
@@ -221,7 +223,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('priest.leap_of_faith'),
-    name: '信仰飞跃',
+    name: '牵引之手',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -251,7 +253,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('priest.pain_suppression'),
-    name: '痛苦压制',
+    name: '镇痛庇佑',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -270,7 +272,7 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'priest.pain_suppression',
-          name: '痛苦压制',
+          name: '镇痛庇佑',
           kind: 'buff',
           duration: 5,
           dispelType: DispelType.Magic,
@@ -286,7 +288,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('priest.mass_dispel'),
-    name: '群体驱散',
+    name: '群体净化',
     classId: CLASS_ID,
     targeting: Targeting.Ground,
     targetFilter: TargetFilter.Enemy,
@@ -319,7 +321,7 @@ const skills: SkillDef[] = [
   // 武器方案授予的技能
   {
     id: asSkillId('priest.mind_spike'),
-    name: '进攻型精神冲击',
+    name: '精神穿刺',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -394,13 +396,19 @@ const weapons: WeaponDef[] = [
     isDefault: false,
     handedness: 'ranged',
     swingInterval: 1.2,
-    swingPercent: 0.6,
+    // M14：0.6→0.45 —— 魔杖档与权杖档拉平（法杖 0.5 为上限，白字只是补刀）
+    swingPercent: 0.45,
     reach: 28,
     isRanged: true,
-    // 「攻击和控制 +12%」：攻击用 damageDealt；控制时长加成没有对应字段
-    //（AuraModifiers 只有承受方向的 ccDurationTaken），暂时只体现在 advantage 文案。
-    // 「治疗与护盾 -10%」：治疗用 healingDone；吸收量没有对应的 absorb 修正字段（schema 缺口）。
-    modifiers: { damageDealt: 1.12, healingDone: 0.9 },
+    /**
+     * 「攻击和控制 +12%」。
+     * ★ M11：控制那一半原注释说「没有对应字段，暂时只体现在 advantage 文案」——
+     *   而**施加方向**的 `ccDurationDealt` 早已进 schema 且 `combat.ts` 的
+     *   `applyControl()` 已经在读它。原注释只看了承受方向的 `ccDurationTaken`。
+     *   现在补上，advantage 文案终于名副其实。
+     * ⚠️ 「护盾 -10%」仍然缺字段：`AuraModifiers` 没有吸收量修正 —— 这一条**保留**为已知缺口。
+     */
+    modifiers: { damageDealt: 1.12, ccDurationDealt: 1.12, healingDone: 0.9 },
     advantage: '攻击和控制 +12%',
     cost: '治疗与护盾 -10%',
     grantsSkills: [asSkillId('priest.mind_spike')],

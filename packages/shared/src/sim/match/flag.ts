@@ -70,7 +70,12 @@ export interface CtfState {
 export const createCtf = (
   redBase: Vec3,
   blueBase: Vec3,
-  scoreToWin = CTF.DEFAULT_SCORE_TO_WIN,
+  // ★ 必须显式写 `: number`。`CTF` 是 `as const`，所以 `CTF.DEFAULT_SCORE_TO_WIN`
+  //   的类型是**字面量 3** —— 只写默认值会让 TS 把整个参数推断成 `3`，
+  //   于是 `createCtf(a, b, 5)` 是类型错误，12.1 的「房主可调 1~5」根本传不进来，
+  //   下面那行 clamp 在有类型的调用方看来是不可达代码。
+  //   （这个 bug 一直没被发现，是因为 shared 的测试文件当时不在类型检查范围内。）
+  scoreToWin: number = CTF.DEFAULT_SCORE_TO_WIN,
 ): CtfState => ({
   flags: {
     [TEAM_RED as number]: makeFlag(TEAM_RED, redBase),

@@ -26,7 +26,7 @@ const CLASS_ID = asClassId('warrior');
 const skills: SkillDef[] = [
   {
     id: asSkillId('warrior.charge'),
-    name: '冲锋',
+    name: '突进',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -48,7 +48,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('warrior.mortal_strike'),
-    name: '致死打击',
+    name: '重创斩',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -83,7 +83,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('warrior.hamstring'),
-    name: '断筋',
+    name: '断腿斩',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -102,7 +102,7 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'warrior.hamstring',
-          name: '断筋',
+          name: '断腿斩',
           kind: 'debuff',
           duration: 6,
           dispelType: DispelType.Movement,
@@ -117,7 +117,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('warrior.storm_bolt'),
-    name: '风暴之锤',
+    name: '掷锤',
     classId: CLASS_ID,
     // 6.6 锁定投射物：释放瞬间确认命中资格，飞行只是表现，目标之后移动不会自然落空
     targeting: Targeting.Direct,
@@ -140,7 +140,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('warrior.pummel'),
-    name: '拳击',
+    name: '猛击',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -160,7 +160,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('warrior.intervene'),
-    name: '援护',
+    name: '挡援',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -181,7 +181,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('warrior.defensive_stance'),
-    name: '防御姿态',
+    name: '防御架势',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -198,7 +198,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'warrior.defensive_stance',
-          name: '防御姿态',
+          name: '防御架势',
           kind: 'buff',
           duration: 5,
           dispelType: DispelType.None,
@@ -212,53 +212,65 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('warrior.bladestorm'),
-    name: '剑刃风暴',
+    name: '旋刃斩',
     classId: CLASS_ID,
     targeting: Targeting.SelfCenter,
     targetFilter: TargetFilter.Enemy,
     range: { min: 0, max: 5 },
     shape: { kind: 'circle', radius: 5 },
-    // 7.1 引导：0.4 秒准备 + 4 秒持续，不能被普通打断
-    cast: {
-      kind: CastKind.Channel,
-      time: 0.4,
-      channelDuration: 4,
-      ticks: 8,
-      movable: true,
-      interruptible: false,
-    },
+    /**
+     * M14：由引导改为**瞬发落区**（凛冬领域同款）。此前是 Channel，
+     * 而引导在本实现里只在**结束时**结算一次 —— 4.4 秒后才开始转的
+     * 旋风；改瞬发后起手即生效，反制方式照实改写在 counters 里。
+     */
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
     school: School.Physical,
     cooldown: 60,
     triggersGcd: true,
     cost: { resource: Resource.Rage, amount: 30 },
-    counters: '不能被专用打断，但昏迷、缴械或死亡会立即终止（7.1）；免疫减速定身不代表免疫控制。',
+    counters: '区域固定在起手位置，走出 5 米即可完全躲开（6.4）；战士自身的免疫减速定身不代表免疫控制，昏迷他并不能收掉已经转起来的区域。',
+    /**
+     * ★★ M14 重构：伤害从**自体光环的 periodic** 挪进 **spawnGroundArea**
+     *   （凛冬领域同款）。光环周期效果的结算目标是**光环持有者** ——
+     *   那是 DoT（月火挂在敌人身上）的正确语义，但旋刃的光环挂在自己
+     *   身上，于是 8 跳 × 45 点全打在战士自己头上：**这是个自残键**，
+     *   写下以来没有任何测试或验收调用过它（「规则写了没人调」第 N 次）。
+     *   配平 bot 学会把 DoT 当输出的那一轮把它按在了牌面上：战士胜率
+     *   应声掉到 4.8%、场均反而变快 —— 快在自杀。
+     * ⚠️ 代价（登记 docs/10 偏差 #10）：区域固定在起手位置，不随移动 ——
+     *   schema 尚无「跟随实体的区域」，凛冬领域同此限制。
+     */
     effects: [
+      {
+        kind: 'spawnGroundArea',
+        areaId: 'warrior.bladestorm',
+        radius: 5,
+        duration: 4,
+        tickInterval: 0.5,
+        onTick: [{ kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.45 } }],
+      },
       {
         kind: 'applyAura',
         target: 'self',
         aura: {
           id: 'warrior.bladestorm',
-          name: '剑刃风暴',
+          name: '旋刃斩',
           kind: 'buff',
           duration: 4,
           dispelType: DispelType.None,
           flags: { immuneSlowAndRoot: true },
-          periodic: {
-            interval: 0.5,
-            effects: [{ kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.45 } }],
-          },
           description: '持续旋转攻击周围敌人，免疫减速和定身。',
           vfx: 'warrior_bladestorm',
         },
       },
     ],
-    description: '持续旋转攻击 4 秒，免疫减速和定身，可被昏迷、缴械或死亡终止。',
+    description: '在原地掀起持续 4 秒的旋刃风暴，期间免疫减速和定身。区域不随移动。',
     vfx: 'warrior_bladestorm',
   },
   // 武器方案授予的技能
   {
     id: asSkillId('warrior.shield_slam'),
-    name: '盾击',
+    name: '盾撞',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -277,7 +289,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('warrior.cleave'),
-    name: '劈砍',
+    name: '横扫斩',
     classId: CLASS_ID,
     targeting: Targeting.Cone,
     targetFilter: TargetFilter.Enemy,
@@ -324,7 +336,8 @@ const weapons: WeaponDef[] = [
     isDefault: true,
     handedness: 'oneHand',
     swingInterval: 1.7,
-    swingPercent: 0.85,
+    // M14：0.85→0.9 —— 怒气经济修复（gainResource 归施法者）后战士以白字养技能，盾剑档白字 53/s
+    swingPercent: 0.9,
     reach: RANGE.MELEE,
     modifiers: { block: 0.2, damageTaken: 0.87 },
     advantage: '正面格挡 20%，防御 +15%',
@@ -356,7 +369,8 @@ const weapons: WeaponDef[] = [
     isDefault: false,
     handedness: 'dualWield',
     swingInterval: 0.75,
-    swingPercent: 0.58,
+    // M14：0.58→0.42 —— 平方 bug 修复曾让双持白字膨胀到 77/s，压回「白字最高（56/s）但防御-8%」的取舍位
+    swingPercent: 0.42,
     reach: RANGE.MELEE,
     modifiers: { damageTaken: 1.08, resourceGain: 1.2 },
     advantage: '攻速快，怒气获取 +20%',

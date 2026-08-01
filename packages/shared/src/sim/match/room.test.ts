@@ -20,6 +20,7 @@ import {
   markDisconnected,
   markReconnected,
   playersOn,
+  resetForRematch,
   selectClass,
   selectSlot,
   setReady,
@@ -237,6 +238,56 @@ describe('11.5 断线与退出', () => {
     joinRoom(room, 'a', 'A');
     leaveMatch(room, 'a');
     expect(room.players.find((p) => p.id === 'a')).toBeUndefined();
+  });
+});
+
+describe('M13 赛后复位（docs/14 §M13：MatchEnd 后回房间可再开一局）', () => {
+  /** 打完一局的房间：a/b 各一方，已开局 */
+  const playedOut = () => {
+    addReady('a', Slot.Red, 'mage');
+    addReady('b', Slot.Blue, 'warrior');
+    expect(startMatch(room).ok).toBe(true);
+  };
+
+  it('★ 复位解锁 started —— 选阵营/选职业重新可用（3.1 的锁只锁比赛期间）', () => {
+    playedOut();
+    expect(selectClass(room, 'a', asClassId('priest')).ok).toBe(false); // 锁着
+    resetForRematch(room);
+    expect(room.started).toBe(false);
+    expect(selectClass(room, 'a', asClassId('priest')).ok).toBe(true);
+    expect(selectSlot(room, 'a', Slot.Blue).ok).toBe(true);
+  });
+
+  it('★ 全员取消准备 —— 再开一局必须全体重新同意', () => {
+    playedOut();
+    resetForRematch(room);
+    expect(room.players.every((p) => !p.ready)).toBe(true);
+    expect(canStart(room).ok).toBe(false); // 没人准备，自然开不了
+  });
+
+  it('阵营与职业保留 —— 「再来一局」默认原班人马原阵容', () => {
+    playedOut();
+    resetForRematch(room);
+    const a = room.players.find((p) => p.id === 'a')!;
+    expect(a.slot).toBe(Slot.Red);
+    expect(a.classId).toBe(asClassId('mage'));
+  });
+
+  it('★ 剔除已断线者 —— 留着会永远堵住 canStart（一个永不准备的名额）', () => {
+    playedOut();
+    leaveMatch(room, 'b'); // 比赛中退出 → 标记断线但留在名单（11.5）
+    resetForRematch(room);
+    expect(room.players.find((p) => p.id === 'b')).toBeUndefined();
+    expect(room.players.find((p) => p.id === 'a')).toBeDefined();
+  });
+
+  it('复位后重新全员准备可以再次开始', () => {
+    playedOut();
+    resetForRematch(room);
+    setReady(room, 'a', true);
+    setReady(room, 'b', true);
+    expect(canStart(room).ok).toBe(true);
+    expect(startMatch(room).ok).toBe(true); // 第二局
   });
 });
 

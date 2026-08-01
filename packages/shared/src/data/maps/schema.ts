@@ -136,6 +136,29 @@ export interface FairnessAudit {
   tolerance: number;
 }
 
+/**
+ * 纯装饰摆设（M12 表现层）。
+ *
+ * ★★ **sim 从不读这个数组** —— 碰撞与视线的唯一真相仍是 `geometry`
+ *   （docs/06 §8.2「所见即所中」）。所以这里只允许放**明显不挡路的小件**：
+ *   灌木、提灯、木箱、半埋的雕像头……体量大到「看起来能挡住人」的东西
+ *   必须同时登记一条 `MapVolume`，让碰撞跟着视觉长，否则玩家会试图
+ *   躲在一棵穿模的树后面。
+ *
+ * ★ 客户端在 `?art=off` 时完全不加载它 —— M1–M10 的验收路径照旧是纯几何。
+ * ★ `yaw`/`scale` 必须是**确定性**的字面量（不能 Math.random）：
+ *   装饰是数据，同一张图在每个客户端上必须长得一样。
+ */
+export interface MapDecorDef {
+  /** 相对 `assets/art/models/` 的路径（不含 .glb），如 'foliage/bush' */
+  model: string;
+  position: Vec3;
+  /** 朝向（弧度），默认 0 */
+  yaw?: number;
+  /** 整体缩放，默认 1 */
+  scale?: number;
+}
+
 export interface MapDef {
   id: MapId;
   name: string;
@@ -147,6 +170,8 @@ export interface MapDef {
   /** ★ 碰撞与视线的唯一真相 */
   geometry: readonly MapVolume[];
   forbidden: readonly ForbiddenVolume[];
+  /** 纯装饰摆设（可选，表现层专用，见 MapDecorDef）*/
+  decor?: readonly MapDecorDef[];
 
   prepRooms?: readonly PrepRoom[];
   gates: readonly Gate[];

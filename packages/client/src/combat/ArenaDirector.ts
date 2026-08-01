@@ -179,7 +179,8 @@ export class ArenaDirector {
     };
     for (const e of listEntities(this.world)) {
       if (!e.alive || e.isPet) continue;
-      dealDamage(ctx, e, amount, School.Physical, { bypassImmunity: true });
+      // canCrit:false —— 压迫伤害是赛制机制不是攻击，让它暴击等于让赛制随机
+      dealDamage(ctx, e, amount, School.Physical, { bypassImmunity: true, canCrit: false });
     }
     for (const ev of events) {
       if (ev.t === 'death') {

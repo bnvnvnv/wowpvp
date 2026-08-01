@@ -41,10 +41,18 @@ export class QualityController {
     return QUALITY_SETTINGS[this.tier];
   }
 
-  /** F2 循环：high → medium → low → high */
+  /**
+   * F2 循环：high → medium → low → high（**逐档下降**）。
+   *
+   * ★ 注意方向。`QUALITY_ORDER` 是 [low, medium, high]（由低到高，
+   * 因为 `hiddenAtQuality()` 要用它比档位高低），照着它 +1 会得到
+   * high → low → medium → high —— 按一下就从最高跳到最低，
+   * 而且再按一下反而变好，玩家完全摸不着规律。这里显式反向遍历。
+   */
   cycle(): QualityTier {
     const i = QUALITY_ORDER.indexOf(this.tier);
-    this.tier = QUALITY_ORDER[(i + 1) % QUALITY_ORDER.length]!;
+    const n = QUALITY_ORDER.length;
+    this.tier = QUALITY_ORDER[(i - 1 + n) % n]!;
     this.apply();
     return this.tier;
   }

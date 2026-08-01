@@ -14,7 +14,11 @@ import type { AuraDef, AuraModifiers, EffectDef } from '../data/schema.js';
 import { DispelType, School } from '../types/enums.js';
 import type { EntityId } from '../types/ids.js';
 import { createStatusFlags, type CombatEntity, type StatusFlags } from './entity.js';
-import { aggregateModifiers, type EffectiveModifiers } from './modifiers.js';
+import {
+  aggregateModifiers,
+  equipmentModifiersOf,
+  type EffectiveModifiers,
+} from './modifiers.js';
 
 export interface AuraInstance {
   def: AuraDef;
@@ -242,6 +246,11 @@ export interface AbsorbResult {
   remaining: number;
   /** 本次承伤中破裂的护盾（14.3 的第四种反馈）*/
   broken: AuraInstance[];
+  /**
+   * 各护盾**施加者**分别吃掉了多少。16.1 的「吸收」是治疗者的贡献项，
+   * 要记给下盾的人；只有总量的话没法归属。同一个人的多个护盾已合并。
+   */
+  byShieldSource: { sourceId: EntityId; amount: number }[];
 }
 
 /**
@@ -257,11 +266,14 @@ export const consumeAbsorb = (
   school: School,
 ): AbsorbResult => {
   const list = store.get(id);
-  if (!list || damage <= 0) return { absorbed: 0, remaining: damage, broken: [] };
+  if (!list || damage <= 0) {
+    return { absorbed: 0, remaining: damage, broken: [], byShieldSource: [] };
+  }
 
   let remaining = damage;
   let absorbed = 0;
   const broken: AuraInstance[] = [];
+  const perSource = new Map<EntityId, number>();
 
   for (const a of list) {
     if (remaining <= 0) break;
@@ -273,6 +285,7 @@ export const consumeAbsorb = (
     a.absorbRemaining -= eaten;
     remaining -= eaten;
     absorbed += eaten;
+    perSource.set(a.sourceId, (perSource.get(a.sourceId) ?? 0) + eaten);
     if (a.absorbRemaining <= 0) broken.push(a);
   }
 
@@ -280,7 +293,12 @@ export const consumeAbsorb = (
     const brokenSet = new Set(broken);
     store.set(id, list.filter((a) => !brokenSet.has(a)));
   }
-  return { absorbed, remaining, broken };
+  return {
+    absorbed,
+    remaining,
+    broken,
+    byShieldSource: [...perSource].map(([sourceId, amount]) => ({ sourceId, amount })),
+  };
 };
 
 /**
@@ -317,18 +335,30 @@ export const applyDamageToBreakables = (
 // ── 聚合 ─────────────────────────────────────────────────────────
 
 /**
- * 把一个实体身上所有光环的修正聚合成最终值。
+ * 把一个实体的**光环 + 当前装备**聚合成最终修正值。
  *
  * `attackerId` 用于 `casterScoped`：审判的易伤只对**该圣骑士**生效，
  * 计算别人的伤害时必须忽略它。不传则跳过所有 casterScoped 光环。
+ *
+ * ★ 第二个参数是**实体**而不是 `EntityId`，这是有意的。
+ *
+ *   M6 落地装备栏时，`WeaponDef.modifiers` / `ArmorDef.modifiers` 是死数据 ——
+ *   本函数当时只聚合光环，而它是战斗数学取修正的唯一入口，于是 10.8 承诺的
+ *   五种护甲原型在对局里完全等价，`LoadoutPanel` 却照旧把「受到伤害 −8%」
+ *   当作换装的优势显示给玩家看。八个里程碑全绿都没抓到，因为 M6 的测试
+ *   断言的是装备栏账目和验收 #34 那五条「换装不做什么」，没有一条问过
+ *   「换上防御护甲后同一发伤害是不是真的更低」。
+ *
+ *   改成收实体之后，**拿不到实体就算不出修正** —— 想再造出一份漏掉装备的
+ *   修正，必须显式绕开这个函数去调 `aggregateModifiers`，那是一次显眼的改动。
  */
 export const effectiveModifiersOf = (
   store: AuraStore,
-  id: EntityId,
+  entity: CombatEntity,
   now: number,
   attackerId?: EntityId,
 ): EffectiveModifiers => {
-  const list = aurasOf(store, id);
+  const list = aurasOf(store, entity.id);
   const mods: (AuraModifiers | undefined)[] = [];
 
   for (const a of list) {
@@ -337,7 +367,7 @@ export const effectiveModifiersOf = (
     // 叠层：第 2 层起再叠加一份修正
     for (let i = 1; i < a.stacks; i++) mods.push(withDecay(a, now));
   }
-  return aggregateModifiers(mods);
+  return aggregateModifiers(mods, equipmentModifiersOf(entity.weaponId, entity.armorId));
 };
 
 /**

@@ -9,7 +9,13 @@
 import { SIM } from '@wowpvp/shared';
 
 export type SimStep = (dt: number) => void;
-export type RenderFrame = (alpha: number, dt: number) => void;
+/**
+ * `dt` 是**渲染时钟**（可能被顿帧缩放），`realDt` 是真实时钟。
+ * 第三参强制每个消费者显式选择自己在哪个时钟上 —— 见场景 draw 里的分配表：
+ * 打击表现（粒子/mixer/浮字/镜头）用 dt，状态机与网络时钟
+ * （AnimationController/serverTime/倒计时）用 realDt。
+ */
+export type RenderFrame = (alpha: number, dt: number, realDt: number) => void;
 /**
  * 每个 rAF 帧调用一次，在所有固定步之前。
  * 输入采样必须放在这里 —— 一帧内可能跑 0 到 5 个模拟步，
@@ -37,6 +43,11 @@ export class GameLoop {
     private readonly beforeFrame?: BeforeFrame,
     /** 模拟步长。默认与服务器 tick 对齐 */
     private readonly fixedDt: number = SIM.TICK_DT,
+    /**
+     * 渲染时间缩放钩子（顿帧）。每帧收真实 dt，返回本帧的缩放系数。
+     * ★★ 它只影响传给 `render` 的第二参 —— 见下面 render 调用处的注释。
+     */
+    private readonly timeScale?: (realDt: number) => number,
   ) {}
 
   start(): void {
@@ -68,7 +79,15 @@ export class GameLoop {
         this.fpsTimer = 0;
       }
 
-      this.render(this.accumulator / this.fixedDt, frameDt);
+      /**
+       * ★★ **只有渲染 dt 被顿帧缩放。**
+       *   累加器、固定步 `step()`、输入采样 `beforeFrame()` 一律用真实 dt：
+       *     · 缩放模拟步 → 客户端预测回放不再确定（docs/08 §5），作弊级 bug
+       *     · 缩放输入采样 → 顿帧期间「按了没反应」
+       *   `frameDt` 同时作为第三参传给 render，让消费者显式选时钟。
+       */
+      const renderDt = frameDt * (this.timeScale?.(frameDt) ?? 1);
+      this.render(this.accumulator / this.fixedDt, renderDt, frameDt);
       this.rafId = requestAnimationFrame(tick);
     };
     this.rafId = requestAnimationFrame(tick);

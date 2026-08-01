@@ -1,0 +1,21 @@
+{
+  // 主 tsconfig 把 **/*.test.ts 排除在外（否则测试会被编进 dist 并生成 .d.ts）。
+  //
+  // ★ 但「不编译」不等于「不检查」。测试文件不过类型检查会产生一类很危险的失败：
+  //   从一个模块 import 它并不导出的符号时，vitest 转译后拿到的是 `undefined`
+  //   而不是报错 —— 于是测试可能**因为错误的原因通过**。
+  //   （实测：把 TEAM_RED 写成从 types/enums.js 导入，两队 team 都成了 undefined，
+  //     「敌方」判定全部失效，而其中几条断言照样是绿的。）
+  //
+  // 所以单独开一个 noEmit 的项目专门检查它们，并挂进 `pnpm typecheck`。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "incremental": false
+  },
+  "include": ["src/**/*"],
+  "exclude": []
+}

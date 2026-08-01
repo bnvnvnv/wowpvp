@@ -14,13 +14,14 @@
  */
 
 import { EQUIP, RANGE } from '../constants/combat.js';
+import { CONSUMABLES } from '../data/consumables.js';
 import { distance2D, type Vec3 } from '../math/vec3.js';
 import { ALL_CLASSES, getArmor, getClass, getWeapon } from '../data/index.js';
 import { ArenaPreset, ArsenalChoice, GameMode } from '../types/enums.js';
-import type { ArmorId, ClassId, EntityId, WeaponId } from '../types/ids.js';
+import type { ArmorId, ClassId, ConsumableId, EntityId, WeaponId } from '../types/ids.js';
 import type { CombatEntity } from './entity.js';
 import {
-  addArmor, addWeapon, canPickupArmor, canPickupWeapon,
+  addArmor, addConsumable, addWeapon, canPickupArmor, canPickupWeapon,
   type Loadout, type PickupCheck,
 } from './loadout.js';
 
@@ -33,8 +34,17 @@ export interface GroundDrop {
   kind: DropKind;
   weaponId?: WeaponId;
   armorId?: ArmorId;
+  /** 10.1 临时增益道具。★ 与武器/护甲不同，它不属于任何职业池 */
+  consumableId?: ConsumableId;
   /** 10.2：物品的职业归属。不匹配的玩家看得到但拿不走 */
-  classId: ClassId;
+  /**
+   * 10.2：物品的职业归属。不匹配的玩家看得到但拿不走。
+   *
+   * ★ **消耗品没有归属**（10.1 的临时增益人人可用），所以是可选的 ——
+   *   给它借一个职业 id 会让它在 `dropViewFor()` 里显示成某个职业的东西，
+   *   也会让「按 classId 找我的那件」误命中。
+   */
+  classId?: ClassId;
   position: Vec3;
   spawnedAt: number;
 }
@@ -220,6 +230,29 @@ export const spawnDropsFromRoster = (
     store.drops.push(drop);
     spawned.push(drop);
   }
+
+  /**
+   * 10.1：临时增益道具**不属于任何职业池**，所以在按职业生成之外单独刷一件。
+   *
+   * ★ 10.4 那条「只从当前房间实际存在的职业池生成」是为了「避免刷出无人可用
+   *   的装备」—— 消耗品人人可用，所以它不受那条约束，也**不该**被写进职业循环里。
+   *
+   * ⚠️ 在此之前 `DropKind` 里的 `'consumable'` 是个**从没被产生过**的枚举值：
+   *    使用路径通了，场上却捡不到任何消耗品。
+   */
+  const consumable = CONSUMABLES[store.nextId % CONSUMABLES.length];
+  if (consumable) {
+    const drop: GroundDrop = {
+      id: store.nextId++,
+      kind: 'consumable',
+      consumableId: consumable.id,
+      position: { ...position },
+      spawnedAt: now,
+    };
+    store.drops.push(drop);
+    spawned.push(drop);
+  }
+
   return spawned;
 };
 
@@ -288,6 +321,15 @@ const checkPickup = (
   }
   if (drop.kind === 'armor' && drop.armorId) {
     return canPickupArmor(entity, loadout, drop.armorId);
+  }
+  /**
+   * 10.1 / 10.6：消耗品**人人可用**，只受携带上限限制。
+   * ★ 刻意不做职业匹配 —— 10.2 的职业归属规则是给武器/护甲的。
+   */
+  if (drop.kind === 'consumable') {
+    return loadout.consumables.length >= EQUIP.MAX_CONSUMABLES
+      ? { ok: false, reason: 'slotsFull' as const, hint: '增益道具已满（最多 2 个）' }
+      : { ok: true };
   }
   return { ok: true };
 };
@@ -364,6 +406,9 @@ export const tickPickups = (
     store.drops.splice(dropIndex, 1);
     if (drop.kind === 'weapon' && drop.weaponId) addWeapon(loadout, drop.weaponId);
     if (drop.kind === 'armor' && drop.armorId) addArmor(loadout, drop.armorId);
+    if (drop.kind === 'consumable' && drop.consumableId) {
+      addConsumable(loadout, drop.consumableId);
+    }
 
     pickups.delete(id);
     events.push({ entityId: id, dropId: drop.id, result: 'completed' });
@@ -395,12 +440,13 @@ export const dropViewFor = (
   viewer: CombatEntity,
   viewerLoadout: Loadout,
 ): DropView => {
-  const cls = getClass(drop.classId);
+  const cls = drop.classId === undefined ? undefined : getClass(drop.classId);
   const item = drop.weaponId ? getWeapon(drop.weaponId) : drop.armorId ? getArmor(drop.armorId) : undefined;
   return {
     id: drop.id,
     kind: drop.kind,
-    ownerClassName: cls?.name ?? String(drop.classId),
+    // ★ 无归属（消耗品）时显示「通用」，而不是把 undefined 打出去
+    ownerClassName: cls?.name ?? (drop.classId === undefined ? '通用' : String(drop.classId)),
     itemName: item?.name ?? '未知物品',
     position: drop.position,
     pickableByViewer: checkPickup(viewer, viewerLoadout, drop).ok,

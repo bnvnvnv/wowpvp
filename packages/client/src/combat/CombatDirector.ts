@@ -32,11 +32,9 @@ import {
   isSelectableBy,
   mage,
   priest,
-  pruneInvalidTargets,
   resolveSkillTarget,
   setHardTarget,
   tabTarget,
-  tickCasting,
   toggleFocus,
   warrior,
   type Aabb,
@@ -56,17 +54,28 @@ import {
   sub,
   aurasOf,
   createAuraStore,
+  createLoadout,
+  createLoadoutStore,
+  createSwapStore,
+  ownLoadoutView,
+  createPickupStore,
+  createArsenalStore,
+  ArenaPreset,
+  tickWorld,
+  type CastIntent,
+  type MovementInput,
+  type MovementState,
+  addWeapon,
+  availableWeapons,
+  beginSwap,
+  SwapKind,
+  type LoadoutView,
   createDrStore,
   createGroundStore,
   createProjectileStore,
   clearAuras,
   deriveStatusFlags,
-  resolveEffects,
-  tickAuras,
-  tickGround,
-  tickProjectiles,
   type CombatEvent,
-  type EffectDef,
   type EntityId,
 } from '@wowpvp/shared';
 
@@ -120,6 +129,40 @@ export class CombatDirector {
   readonly skills: SkillDef[];
   readonly log: CombatLogEntry[] = [];
 
+  /** M6/M8：战场装备栏（15.3）*/
+  readonly loadouts = createLoadoutStore();
+  readonly swaps = createSwapStore();
+  /**
+   * 拾取进度。试验场还没接军械箱，所以它始终是空的 ——
+   * 但 M9 的死亡结算需要它（17.3：拾取进度不能跨越死亡活下来），
+   * 而且军械箱接客户端时这里就是它的落点。
+   */
+  readonly pickups = createPickupStore();
+  /**
+   * 军械箱。试验场没有接它（M6 的军械箱只被 verify:m6 直接驱动 sim 验过），
+   * 所以这里是个空的容器 —— 但 `tickWorld` 需要它，而军械箱接客户端时
+   * 这里就是它的落点。用 Classic 预设：10.1 / 验收 #28 规定经典竞技场
+   * 不生成任何临时武装，正好对应「试验场里没有军械箱」这个事实。
+   */
+  readonly arsenal = createArsenalStore(ArenaPreset.Classic);
+
+  /**
+   * 交给 `tickWorld` 的移动状态与输入。
+   *
+   * ★ 试验场里**刻意为空**：玩家的移动由 `TestbedScene` 驱动（它要同时算镜头
+   *   与渲染插值），假人不动。`tickWorld` 只推进有条目的实体，所以留空即跳过。
+   *   服务器那边这两个 Map 会是满的 —— 同一个函数，不同的调用方。
+   */
+  private readonly movementStates = new Map<EntityId, MovementState>();
+  private readonly frameInputs = new Map<EntityId, MovementInput>();
+  /**
+   * 本 tick 待处理的技能请求。
+   * ★ 由 `tickWorld` 消费而不是这里直接调 `beginCast()` ——
+   *   施法有**两个**完成出口（瞬发在 beginCast 内、读条在 tickCasting 里），
+   *   只接一个是 M4 踩过的坑。交给 tick 之后这个坑在结构上不存在。
+   */
+  private readonly pendingCasts = new Map<EntityId, CastIntent>();
+
   /** M4：效果系统的状态容器 */
   readonly auras = createAuraStore();
   readonly dr = createDrStore();
@@ -128,6 +171,14 @@ export class CombatDirector {
 
   /** 假人下一次开始施法的时间 */
   private dummyNextCast = new Map<number, number>();
+  /**
+   * M15：按职业暂停假人的自驱脚本（含战士的打断反应）。
+   * ★ 只有新手教学在用 —— 各环有各自的舞台布置：基础环静音法师炮台
+   *   （M14 之后它一发 200+，新手边学走路边被轰死不是教学）、走位环三个
+   *   全停、由 TutorialDirector 亲自驱动陨石（走 requestCast 同一入口）。
+   *   默认空集，试验场的 141 项验收行为不变。
+   */
+  readonly pausedDummyClasses = new Set<string>();
   /**
    * 战士假人已经「决定」打断、将在这个时刻按下拳击。
    *
@@ -170,7 +221,26 @@ export class CombatDirector {
       return s;
     });
 
+    this.grantDemoLoadout();
+
     this.info('试验场：Tab 选目标，1–8 释放技能。地面技能会先进入落点预览，左键确认。');
+    this.info('M8：F2 切画质，G 与旗帜交互，B 切换备用武器。');
+  }
+
+  /**
+   * M8：给玩家一份真实的装备栏（15.3）。默认武器 + 一把本职业备用武器，
+   * 这样换装进度条与「新旧对比」在试验场里有东西可看。
+   *
+   * ★ 抽成方法是因为它有**两个**调用点：开局一次，试验场假复活后一次
+   *   （10.10 会在死亡时正确地清掉临时装备，见 `reviveInTestbed()`）。
+   */
+  private grantDemoLoadout(): void {
+    const loadout = createLoadout(this.player.classId);
+    const spare = mage.weapons.find((w) => !w.isDefault);
+    if (spare) addWeapon(loadout, spare.id);
+    this.player.weaponId = loadout.defaultWeaponId;
+    this.player.armorId = loadout.defaultArmorId;
+    this.loadouts.set(this.player.id, loadout);
   }
 
   private spawnDummy(cls: typeof mage, pos: Vec3, name: string): CombatEntity {
@@ -199,50 +269,114 @@ export class CombatDirector {
     this.player.position = { ...playerPosition };
     this.player.yaw = playerYaw;
 
-    this.world.time += dt;
-
-    // ★ casting 必须在 movement 之后 —— 7.3「主动移动停止原地施放的读条」，
-    //   先算完移动才知道这一 tick 有没有位移（docs/02 §3 的 tick 顺序）
-    tickCasting(this.world, this.store, {
-      getSkill,
-      events: {
-        // ★ 统一的完成入口。读条/引导技能只会走到这里，
-        //   传给 beginCast 的回调对它们**不生效**（见 casting.ts 的 CastEvents 注释）
-        onCompleted: (c, s, st) => this.onCastCompleted(c, s, st),
-        onFailed: (c, s, reason) => this.push(`${c.name} 的 ${s.name} 失败：${FAIL_TEXT[reason]}`, 'fail'),
-        onInterrupted: (c, st, src, lock) => {
-          const skillName = getSkill(st.skillId)?.name ?? st.skillId;
-          const lockText = lock
-            ? `，${SCHOOL_TEXT[lock.school]}学派锁定 ${(lock.until - this.world.time).toFixed(1)}s`
-            : '';
-          this.push(`${c.name} 的 ${skillName} 被${INTERRUPT_TEXT[src] ?? src}中断${lockText}`, 'interrupt');
+    /**
+     * ★★ M10：整个 tick 走 shared 的 `tickWorld()`。
+     *
+     *   在此之前，docs/02 §3 的九步顺序**只隐式存在于这个方法的书写次序里**。
+     *   服务器要跑同一套规则，如果在那边再写一遍就有了两个实现 ——
+     *   而两份顺序漂移的后果是最难查的一种：两边都能跑，但结算次序差一步，
+     *   于是同一发技能在客户端预测里命中、在服务器判定里落空。
+     *
+     *   现在顺序只有一处定义（`shared/src/sim/tick.ts` 的文件头列了全部
+     *   11 条约束及其出处），这个方法退化成「装配依赖 + 接事件转日志」。
+     *
+     * ★ `movement` / `inputs` 刻意留空：试验场里玩家的移动由 `TestbedScene`
+     *   驱动（它要同时算镜头与渲染插值），假人不动。`tickWorld` 只推进
+     *   `movement` 里有条目的实体，所以这里天然跳过 —— 不需要额外开关。
+     */
+    // ★ 返回值这里用不上：试验场要的每一件事都由下面的 sink 即时转成日志。
+    //   服务器那边会**用**它 —— 快照广播与统计折叠都消费 `TickResult`。
+    tickWorld(
+      {
+        world: this.world, auras: this.auras, dr: this.dr,
+        ground: this.ground, projectiles: this.projectiles, casting: this.store,
+        loadouts: this.loadouts, swaps: this.swaps, pickups: this.pickups,
+        arsenal: this.arsenal,
+        movement: this.movementStates,
+        inputs: this.frameInputs,
+        castRequests: this.pendingCasts,
+        getSkill,
+      },
+      dt,
+      {
+        cast: {
+          /**
+           * ★ 只有**读条/引导**会走到这里 —— 瞬发技能在 `beginCast` 内部就
+           *   完成了，压根不进 store（`casting.ts` 的 Instant 分支提前返回）。
+           *   所以这里不必判「是不是瞬发」，瞬发技能天然没有「开始读条」这行。
+           */
+          onStarted: (c, st) => {
+            const skill = getSkill(st.skillId);
+            if (!skill) return;
+            this.onCastActivity?.('started', c, skill);
+            if (needsGroundPlacement(skill)) {
+              this.push(`开始施放 ${skill.name}（落点已锁定）`, 'info');
+            } else {
+              const kindText = st.kind === CastKind.Channel ? '引导' : '读条';
+              this.push(`开始${kindText} ${skill.name}（${skill.cast.time.toFixed(1)}s）`, 'info');
+            }
+          },
+          /**
+           * ★ 玩家自己的失败与别人的失败**读法不同**：前者是「我按下去没放出来」，
+           *   要像 UI 提示；后者是战斗日志里的旁观记录。
+           */
+          onFailed: (c, sk, reason) => {
+            this.onCastActivity?.('failed', c, sk);
+            return c.id === this.player.id
+              ? this.push(`${sk.name} 无法释放：${FAIL_TEXT[reason]}`, 'fail')
+              : this.push(`${c.name} 的 ${sk.name} 失败：${FAIL_TEXT[reason]}`, 'fail');
+          },
+          onInterrupted: (c, st, src, lock) => {
+            this.onCastActivity?.('interrupted', c, getSkill(st.skillId));
+            const skillName = getSkill(st.skillId)?.name ?? st.skillId;
+            const lockText = lock
+              ? `，${SCHOOL_TEXT[lock.school]}学派锁定 ${(lock.until - this.world.time).toFixed(1)}s`
+              : '';
+            this.push(`${c.name} 的 ${skillName} 被${INTERRUPT_TEXT[src] ?? src}中断${lockText}`, 'interrupt');
+          },
+        },
+        // ★ 12.3 / 验收 #40：带旗使用无敌/潜行技能时**先掉旗**，再播技能表现
+        onBeforeSkillEffects: (caster, skill) => this.onBeforeSkillEffects?.(caster, skill),
+        /**
+         * 施法完成的日志。三种瞄准类别读法不同（5.4）：
+         * 地面技能报「落地 + 范围内几个」，自身中心报「命中几个」，
+         * 直接目标报「→ 谁」。★ `targets` 是 tick 传进来的**结算前**的目标集合，
+         * 不在这里重算 —— 重算会在效果结算之后少数几个已经倒下的人。
+         */
+        onCastResolved: (caster, skill, targets) => {
+          this.onCastActivity?.('resolved', caster, skill, targets);
+          if (needsGroundPlacement(skill)) {
+            this.push(`${skill.name} 落地，范围内 ${targets.length} 个目标`, 'ok');
+          } else if (usesNoTarget(skill)) {
+            this.push(`${skill.name} 命中 ${targets.length} 个目标`, 'ok');
+          } else {
+            this.push(`${caster.name} 完成 ${skill.name} → ${targets[0]?.name ?? '?'}`, 'ok');
+          }
+        },
+        onEffects: (events) => {
+          for (const ev of events) {
+            this.logEvent(ev);
+            this.onCombatEvent?.(ev);
+          }
+        },
+        onSwap: (ev) => {
+          this.onSwapResult?.(ev.result === 'completed');
+          const who = getEntity(this.world, ev.entityId);
+          if (ev.result === 'completed') this.push(`${who?.name ?? ''} 完成换装`, 'ok');
+          else this.push(`${who?.name ?? ''} 换装中断：${ev.result}`, 'fail');
+        },
+        onDeathSettled: (settled) => {
+          const who = getEntity(this.world, settled.entityId);
+          this.push(`${who?.name ?? ''} 的临时装备已失效（10.10）`, 'info');
         },
       },
-    });
-
-    // ── M4：效果系统的每 tick 推进 ──────────────────────────
-    // 顺序有讲究（docs/02 §3）：光环跳 → 投射物 → 地面区域 → 派生状态标志。
-    // 状态标志必须**最后**派生，否则本 tick 新加的控制要等下一 tick 才生效。
-    for (const t of tickAuras(this.auras, this.world.time).ticks) {
-      const src = getEntity(this.world, t.sourceId);
-      const tgt = getEntity(this.world, t.targetId);
-      if (src && tgt) this.resolve(src, t.aura.def.id, t.effects, [tgt]);
-    }
-    for (const hit of tickProjectiles(this.world, this.projectiles, dt)) {
-      const src = getEntity(this.world, hit.projectile.sourceId);
-      if (src) this.resolve(src, String(hit.projectile.skillId), hit.effects, hit.targets);
-    }
-    for (const g of tickGround(this.world, this.ground)) {
-      const src = getEntity(this.world, g.sourceId);
-      if (src) this.resolve(src, g.skillId, g.effects, g.targets);
-    }
-    for (const e of listEntities(this.world)) {
-      e.flags = deriveStatusFlags(this.auras, e);
-    }
+    );
+    // ★ 请求已被 tick 消费，清空。没被消费的（例如实体已死）也一并丢弃 ——
+    //   一个 tick 之前的施法意图不该在下一个 tick 复活
+    this.pendingCasts.clear();
 
     this.updateDummies();
     this.reviveInTestbed();
-    pruneInvalidTargets(this.world, this.player);
   }
 
   /**
@@ -262,68 +396,60 @@ export class CombatDirector {
       e.health = e.maxHealth;
       clearAuras(this.auras, e.id);
       e.flags = deriveStatusFlags(this.auras, e);
+      /**
+       * ★ 连带补上演示装备。
+       *
+       *   M9 接上 10.10 之后，死亡会正确地清掉临时装备 —— 而这个假复活
+       *   是**试验场规则**（见本方法头部）。真实对局里死了就是死了，
+       *   装备该没就没；但试验场既然凭空把人救活，就得把它的演示素材
+       *   一起恢复，否则被假人打死一次之后 15.3 的装备栏就再也没东西可看，
+       *   而那是 M8 验收 #35 正在验的对象。
+       */
+      if (e.id === this.player.id) this.grantDemoLoadout();
       this.push(`${e.name} 已复活（试验场不结算死亡，见 11.4）`, 'info');
     }
   }
 
   /**
-   * ★ 技能完成的**唯一**入口。7.4 步骤 5「成功释放才消耗资源、结算效果」。
+   * ★ 12.3 / 验收 #40：技能效果结算**之前**的钩子。
    *
-   * 无论瞬发还是读条，最终都汇到这里 —— 之前只接了 beginCast 的回调，
-   * 结果所有读条技能都「完成」了却不产生任何效果，日志上还看不出异常。
+   * 规格书说「使用完全无敌、消失或潜行时**先掉旗，再播放对应技能表现**」——
+   * 顺序写反会出现一帧「旗帜跟着隐形角色消失」。
+   * `flag.ts` 的 `dropFlagBeforeSkill()` 实现了这条规则，但客户端得**真的调它**：
+   * M8 接线时就漏了这一步，结果带旗开寒冰屏障旗帜还在手上 ——
+   * 单元测试全绿，是浏览器里带旗按了一次 8 键才发现的。
    */
-  private onCastCompleted(caster: CombatEntity, skill: SkillDef, state: CastState): void {
-    const groundPoint = state.groundPoint;
-    let targets: CombatEntity[];
+  onBeforeSkillEffects?: (caster: CombatEntity, skill: SkillDef) => void;
 
-    if (needsGroundPlacement(skill)) {
-      targets = groundPoint
-        ? collectShapeTargets(this.world, caster, {
-            origin: groundPoint, yaw: caster.yaw, shape: skill.shape, filter: skill.targetFilter,
-          })
-        : [];
-      this.push(`${skill.name} 落地，范围内 ${targets.length} 个目标`, 'ok');
-    } else if (usesNoTarget(skill)) {
-      targets = collectShapeTargets(this.world, caster, {
-        origin: shapeOrigin(caster, skill), yaw: caster.yaw,
-        shape: skill.shape, filter: skill.targetFilter,
-      });
-      this.push(`${skill.name} 命中 ${targets.length} 个目标`, 'ok');
-    } else {
-      // ★ 必须用 **CastState 里记下的目标**，不能回头去读 targets.hard。
-      //   施法开始时锁定的是谁，完成时就结算给谁 —— 这也符合 7.4 的语义。
-      //   之前从 targets.hard 重新取，导致没有硬目标的假人把技能打到了自己身上。
-      const locked = getEntity(this.world, state.targetId);
-      targets = locked ? [locked] : [];
-      if (targets.length === 0) return; // 目标已离场，7.4 步骤 6：不产生效果
-      this.push(`${caster.name} 完成 ${skill.name} → ${targets[0]!.name}`, 'ok');
-    }
-    this.resolve(caster, skill.id, skill.effects, targets, groundPoint);
-  }
+  // ── M12：表现层钩子（音效 / 浮动数字 / 受击闪光）────────────────
+  //
+  // ★ 三个都是**只读旁路**：不改任何战斗状态，不订阅也不影响任何规则。
+  //   与 onBeforeSkillEffects 不同 —— 那个承载验收 #40 的规则调用，这些只承载表现。
+
+  /** 每条战斗事件（伤害/治疗/光环/驱散/死亡/位移…）的旁路，与日志同源 */
+  onCombatEvent?: (ev: CombatEvent) => void;
+  /**
+   * 施法生命周期：开始读条 / 完成 / 被打断 / 失败。
+   *
+   * ★ `targets` 只在 `resolved` 时给出，是 tick 传来的**结算前**目标集合 ——
+   *   表现层（14.2 的表现用弹体）要知道「这一发飞向谁」。刻意不在这里重算：
+   *   重算会漏掉几个已经在本次结算中倒下的人，弹体就会少飞几发。
+   */
+  onCastActivity?: (
+    kind: 'started' | 'resolved' | 'interrupted' | 'failed',
+    caster: CombatEntity,
+    skill: SkillDef | undefined,
+    targets?: readonly CombatEntity[],
+  ) => void;
+  /** 换装结束（true=完成，false=中断）*/
+  onSwapResult?: (completed: boolean) => void;
 
   /**
-   * 结算一组效果并把事件转成战斗日志。
-   * 所有效果结算的唯一入口 —— 日志格式因此只有一处需要维护。
+   * 把一条战斗事件转成日志行。
+   *
+   * ★ 事件由 `tickWorld` 的 `onEffects` 送进来 —— 客户端**不再自己结算效果**，
+   *   所以这里是纯粹的「事件 → 文案」，日志格式只有一处需要维护。
    */
-  private resolve(
-    source: CombatEntity,
-    skillId: string,
-    effects: readonly EffectDef[],
-    targets: readonly CombatEntity[],
-    groundPoint?: Vec3,
-  ): void {
-    const events = resolveEffects(
-      {
-        world: this.world, auras: this.auras, dr: this.dr,
-        projectiles: this.projectiles, ground: this.ground,
-        castingStore: this.store,
-        source, skillId, groundPoint,
-      },
-      effects, targets,
-    );
-    for (const ev of events) this.logEvent(ev);
-  }
-
   private logEvent(ev: CombatEvent): void {
     const name = (id: number | undefined) =>
       id === undefined ? '?' : (getEntity(this.world, id as never)?.name ?? '?');
@@ -373,6 +499,8 @@ export class CombatDirector {
   private updateDummies(): void {
     for (const e of listEntities(this.world)) {
       if (e.id === this.player.id || !e.alive) continue;
+      // M15：教学按环静音部分假人（见 pausedDummyClasses 注释）
+      if (this.pausedDummyClasses.has(e.classId as string)) continue;
 
       // ★ 假人始终面向玩家。
       //   6.5 规定近战技能要求目标位于前方 180°，拳击也不例外 ——
@@ -396,8 +524,13 @@ export class CombatDirector {
       for (const [r, max] of e.maxResources) e.resources.set(r, max);
       e.cooldowns.clear();
       e.gcdUntil = 0;
-      beginCast(this.world, this.store, e, s, {
-        target: (e.classId as string) === 'priest' ? e : this.player,
+      // ★ 和玩家走**同一个**入口（见 requestCast 的注释）。
+      //   这里曾经直接调 `beginCast()` 且不传 events —— 之所以没出事，
+      //   只是因为这两个假人技能碰巧都是读条技能，完成时走的是
+      //   `tickCasting` 而不是 `beginCast` 内部那条路。换成瞬发技能就会
+      //   静默地不产生任何效果。不留这种「靠数据碰巧成立」的正确性。
+      this.requestCast(e, s, {
+        targetId: (e.classId as string) === 'priest' ? e.id : this.player.id,
       });
       this.dummyNextCast.set(e.id as number, this.world.time + s.cast.time + 2.5);
     }
@@ -445,13 +578,21 @@ export class CombatDirector {
 
     // 执行阶段：按下去了就按下去了，此刻你还在不在读条决定命中与否
     this.warriorPummelAt = null;
+    /**
+     * ★ 表现通知：拳击**真的挥出去了**（无论命中与否）。
+     *   专用打断不走 requestCast/tickWorld，所以 `onCastResolved` 不会替它发 ——
+     *   没有这一句，战士出拳时身体纹丝不动、无声无光（用户实测反馈）。
+     *   走 onCastActivity 而不是新钩子：它就是一次技能释放，
+     *   音效/粒子/挥砍动画都该与玩家路径同源。
+     */
+    this.onCastActivity?.('resolved', warriorDummy, pummel, [this.player]);
     const out = applyInterrupt(this.world, this.store, this.player, interruptLockSeconds(pummel) ?? 3, {
       onInterrupted: (_c, st, _src, lock) => {
         const n = getSkill(st.skillId)?.name ?? st.skillId;
         const lockText = lock
           ? `，${SCHOOL_TEXT[lock.school]}学派锁定 ${(lock.until - this.world.time).toFixed(1)}s`
           : '';
-        this.push(`${warriorDummy.name} 用拳击打断了你的 ${n}${lockText}`, 'interrupt');
+        this.push(`${warriorDummy.name} 用${pummel.name}打断了你的 ${n}${lockText}`, 'interrupt');
       },
     });
 
@@ -459,7 +600,7 @@ export class CombatDirector {
     warriorDummy.cooldowns.set(pummel.id, this.world.time + pummel.cooldown);
     if (!out.interrupted) {
       this.push(
-        `${warriorDummy.name} 的拳击落空（你骗到了！），仍进入 ${pummel.cooldown}s 冷却`,
+        `${warriorDummy.name} 的${pummel.name}落空（你骗到了！），仍进入 ${pummel.cooldown}s 冷却`,
         'ok',
       );
     }
@@ -513,6 +654,26 @@ export class CombatDirector {
     });
   }
 
+  /**
+   * 按下一个技能键。
+   *
+   * ★★ **这里只产生「意图」，不结算任何东西。**
+   *
+   *   在 M10 之前这个方法直接调 `beginCast()`，于是施法有了**两个**完成出口：
+   *   瞬发技能在 `beginCast` 内部就完成并回调到客户端自己的结算，
+   *   读条技能则由 `tickWorld` 里的 `tickCasting` 完成并走 sim 的结算。
+   *   两条路径各有一套日志与效果结算，而只有后者是服务器将来要跑的那条 ——
+   *   M4 的「陨石落地」日志就是这么掉的：它只写在客户端那条路径上。
+   *   更隐蔽的是瞬发技能击杀不进 `settleDeaths`，10.10 静默失效。
+   *
+   *   现在只剩一条路径：意图进队列，`tickWorld` 第 1 步统一 `beginCast()`。
+   *   ★ 代价是施法延后一帧（~16ms）—— 而这正是服务器的语义
+   *   （意图 → 下一 tick 结算），A5 的客户端预测要复现的也是它。
+   *
+   * ★ 下面的**落点合法性预检留在客户端**：它必须和落点指示器用同一个函数，
+   *   否则会出现「指示器显示合法 → 按下去却失败」（5.5 / 验收 #8）。
+   *   它是 UI 判据，不是 sim 规则 —— sim 那边 `validateCast` 会再验一次。
+   */
   castSlot(index: number, groundPoint?: Vec3): void {
     const skill = this.skills[index];
     if (!skill) return;
@@ -528,29 +689,13 @@ export class CombatDirector {
         this.push(`${skill.name} 落点非法：${FAIL_TEXT[placement.reason]}`, 'fail');
         return;
       }
-      const affected = this.previewShapeTargets(skill, placement.center);
-      const r = beginCast(this.world, this.store, this.player, skill, {
-        groundPoint: placement.center,
-        events: {
-          onStarted: () => this.push(`开始施放 ${skill.name}（落点已锁定）`, 'info'),
-          onCompleted: (c, s, st) => this.onCastCompleted(c, s, st),
-          // 注意：不在 onFailed 里记日志。beginCast 失败时会**同时**触发回调并返回
-          // !ok，两处都记会让玩家看到重复的红字。统一在返回值处记录。
-        },
-      });
-      if (!r.ok) this.push(`${skill.name} 无法释放：${FAIL_TEXT[r.reason]}`, 'fail');
+      this.requestCast(this.player, skill, { groundPoint: placement.center });
       return;
     }
 
     // 5.6：自身、自身中心、方向技能都不需要选择目标，按角色位置/面向结算
     if (usesNoTarget(skill)) {
-      const affected = this.previewShapeTargets(skill);
-      const r = beginCast(this.world, this.store, this.player, skill, {
-        events: {
-          onCompleted: (c, s, st) => this.onCastCompleted(c, s, st),
-        },
-      });
-      if (!r.ok) this.push(`${skill.name} 无法释放：${FAIL_TEXT[r.reason]}`, 'fail');
+      this.requestCast(this.player, skill);
       return;
     }
 
@@ -569,17 +714,35 @@ export class CombatDirector {
       return;
     }
 
-    const r = beginCast(this.world, this.store, this.player, skill, {
-      target,
-      events: {
-        onStarted: (_c, st) => {
-          const kindText = st.kind === CastKind.Channel ? '引导' : '读条';
-          this.push(`开始${kindText} ${skill.name}（${skill.cast.time.toFixed(1)}s）`, 'info');
-        },
-        onCompleted: (c, s, st) => this.onCastCompleted(c, s, st),
-      },
+    this.requestCast(this.player, skill, { targetId: target?.id });
+  }
+
+  /**
+   * 把一次施法意图排进本 tick 的请求队列，由 `tickWorld` 消费。
+   *
+   * ★★ **这是本文件里唯一允许发起施法的地方。**
+   *   玩家和假人都走它 —— 假人不是「简化路径」，它受同一套校验、
+   *   同一个完成出口。绕过去直接调 `beginCast()` 而不传 `events`，
+   *   瞬发技能会**静默地不产生任何效果**（资源照扣、冷却照进），
+   *   而那正是 M4 踩过的坑的镜像。
+   *
+   * ★ 一个实体一 tick 只有一个请求（Map 覆盖），这与服务器的语义一致 ——
+   *   同一 tick 内连按两个技能，后一个覆盖前一个，而不是两个都放出去。
+   *
+   * ★ M15 起为 public：新手教学的 TutorialDirector 是第三个合法调用方
+   *   （它要在走位环替假人·法师往玩家脚下丢陨石）—— 教学驱动假人
+   *   与假人自驱动走**同一个入口**，不另开后门。
+   */
+  requestCast(
+    caster: CombatEntity,
+    skill: SkillDef,
+    opts: { targetId?: EntityId; groundPoint?: Vec3 } = {},
+  ): void {
+    this.pendingCasts.set(caster.id, {
+      skillId: skill.id,
+      ...(opts.targetId !== undefined ? { targetId: opts.targetId } : {}),
+      ...(opts.groundPoint ? { groundPoint: opts.groundPoint } : {}),
     });
-    if (!r.ok) this.push(`${skill.name} 无法释放：${FAIL_TEXT[r.reason]}`, 'fail');
   }
 
   /**
@@ -589,12 +752,23 @@ export class CombatDirector {
   private castInterruptSkill(skill: SkillDef): void {
     const target = getEntity(this.world, this.player.targets.hard);
 
-    // 先走一遍常规校验（距离、视线、学派锁定、沉默…）
+    /**
+     * 先走一遍常规校验（距离、视线、学派锁定、沉默…）。
+     *
+     * ★ 这是本文件里**唯一**豁免「施法必须走 requestCast」的地方，理由是
+     *   它根本不施法：`effects: []` 让这次调用退化成一次纯校验探针，
+     *   打断的实际结算由下面的 `applyInterrupt` 负责（打断不是「对目标施法」，
+     *   而是「结算一次打断」）。空效果表意味着它没有效果可漏结算。
+     */
     const pre = beginCast(this.world, this.store, this.player, { ...skill, effects: [] }, { target });
     if (!pre.ok) {
       this.push(`${skill.name} 无法释放：${FAIL_TEXT[pre.reason]}`, 'fail');
       return;
     }
+
+    // ★ 表现通知：断法确实放出去了（哪怕落空）。与战士拳击同理 ——
+    //   这条路径不经过 tickWorld，此前它是全 91 技能里唯一零表现的（用户实测反馈）
+    this.onCastActivity?.('resolved', this.player, skill, target ? [target] : []);
 
     const out = applyInterrupt(
       this.world,
@@ -665,6 +839,14 @@ export class CombatDirector {
     });
   }
 
+  /**
+   * ★ 实现 `CombatView`（HUD 的窄接口）所需的两个成员。
+   *   `CombatEntity` 结构上已经满足 `HudUnit`，所以不需要任何适配层 ——
+   *   这正是那个接口按「HUD 真的读什么」来定义、而不是照抄 CombatEntity 的收益。
+   */
+  get now(): number { return this.world.time; }
+  visibleUnits(): CombatEntity[] { return this.visibleEntities(); }
+
   /** 场上所有可见实体，供姓名板绘制 */
   visibleEntities(): CombatEntity[] {
     return listEntities(this.world).filter(
@@ -692,6 +874,30 @@ export class CombatDirector {
       }
     }
     return best;
+  }
+
+  /** 15.3：玩家自己的装备栏视图 */
+  playerLoadoutView(): LoadoutView {
+    const l = this.loadouts.get(this.player.id);
+    if (!l) throw new Error('玩家没有装备栏');
+    return ownLoadoutView(this.player, l, this.swaps, this.world.time);
+  }
+
+  /**
+   * 15.3：切换到下一件备用武器。
+   *
+   * ★ 走的是 shared 的 `beginSwap()` —— 换装的时间、中断窗口和
+   *   10.7 的五项禁止利用全在那边保证（验收 #34）。这里只挑目标物品。
+   */
+  cyclePlayerWeapon(): string | null {
+    const l = this.loadouts.get(this.player.id);
+    if (!l) return null;
+    const all = availableWeapons(l);
+    if (all.length < 2) return '没有备用武器';
+    const i = all.indexOf(this.player.weaponId);
+    const next = all[(i + 1) % all.length]!;
+    const r = beginSwap(this.player, l, this.swaps, SwapKind.Weapon, next, this.world.time);
+    return r.ok ? null : r.reason;
   }
 
   distanceTo(e: CombatEntity): number {
@@ -735,7 +941,10 @@ export const FAIL_TEXT: Record<CastFailure, string> = {
   dead: '已死亡',
   invalidGroundPosition: '超出地图边界',
   classMismatch: '职业不匹配',
+  weaponMismatch: '当前武器方案不提供该技能',
   carryingFlag: '持旗时禁用',
+  inCombat: '需要脱离战斗',
+  noRecentParry: '需要近期招架过',
   alreadyCasting: '正在施法',
 };
 

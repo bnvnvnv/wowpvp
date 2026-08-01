@@ -234,9 +234,14 @@ console.log('\n── 规格书 8.5 / 验收 #27：完全免疫挡不住压迫�
   dealDamage(ctx, mage, 200, School.Physical, { bypassImmunity: true }); // 压迫伤害
   const afterPressure = mage.health;
 
+  // 目标是法师，双手法杖的代价是 damageTaken 1.08 → 200 × 1.08 = 216。
+  // ★ bypassImmunity 绕开的是**免疫**，不是全部承伤修正 ——
+  //   8.5 只要求压迫伤害「不可完全免疫」，没说它无视装备。
+  const expectedPressure = Math.round(200 * 1.08);
   check('#27c', '★ 普通伤害被完全免疫挡下，压迫伤害穿透（8.5）',
-    afterNormal === h0 && afterPressure === h0 - 200,
-    `${h0} →（普通伤害）${afterNormal} →（压迫伤害）${afterPressure}`);
+    afterNormal === h0 && afterPressure === h0 - expectedPressure,
+    `${h0} →（普通伤害）${afterNormal} →（压迫伤害）${afterPressure}`
+    + `，压迫伤害期望 ${expectedPressure}（200 × 法杖 1.08）`);
 }
 
 console.log('\n── 规格书 2.1 / 验收 #37：回合重置 ──');

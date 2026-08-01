@@ -17,12 +17,16 @@ import {
   School,
   TargetFilter,
   Targeting,
+  isMagicSchool,
 } from '../../types/enums.js';
 import { asArmorId, asClassId, asSkillId, asWeaponId } from '../../types/ids.js';
 import { makeArmorSet } from '../armors.js';
 import type { ClassDef, SkillDef, WeaponDef } from '../schema.js';
 
 const CLASS_ID = asClassId('deathknight');
+
+/** 反魔法护罩「只吸收魔法伤害」的学派集合。★ 从 School 派生，加新学派不会漏 */
+const MAGIC_SCHOOLS_DK: School[] = Object.values(School).filter(isMagicSchool);
 
 /** 9.3 默认武器「双手符文剑」的触及距离，文档写 3.3 米，介于标准近战与延伸近战之间 */
 const RUNEBLADE_REACH = 3.3;
@@ -32,7 +36,7 @@ const RUNEBLADE_REACH = 3.3;
 const skills: SkillDef[] = [
   {
     id: asSkillId('deathknight.obliterate'),
-    name: '湮灭',
+    name: '碎骨斩',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -49,16 +53,17 @@ const skills: SkillDef[] = [
     counters:
       '要求贴身并面向目标（6.5）；缴械后无法使用（7.3）；纯物理伤害会被减伤、护盾和物理免疫吃掉；一次吃掉 2 枚符文，符文回复约 3 秒一枚，被风筝时很难续上。',
     effects: [
-      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 1.5 } },
+      // M14：1.5→1.35 —— 死骑基线 66-74% 偏高，主要输出件回调一档
+      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 1.35 } },
       // 文档未给出符文能量产出，按 9.3「符文 + 符文能量」的资源循环补：重击产能，冰霜技能耗能
       { kind: 'gainResource', resource: Resource.RunicPower, amount: 15 },
     ],
-    description: '造成 150% 武器伤害，消耗 2 枚符文并获得 15 点符文能量。',
+    description: '造成 135% 武器伤害，消耗 2 枚符文并获得 15 点符文能量。',
     vfx: 'deathknight_obliterate',
   },
   {
     id: asSkillId('deathknight.death_strike'),
-    name: '死亡打击',
+    name: '汲血斩',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -91,7 +96,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('deathknight.death_grip'),
-    name: '死亡之握',
+    name: '缚魂拽',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -113,7 +118,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('deathknight.chains_of_ice'),
-    name: '冰霜锁链',
+    name: '寒缚链',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -133,28 +138,25 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'deathknight.chains_of_ice',
-          name: '冰霜锁链',
+          name: '寒缚链',
           kind: 'debuff',
           duration: 4,
           dispelType: DispelType.Movement,
           clearableByTrinket: false,
-          // 这里填的是**初始**值（减速 60% → moveSpeed 0.4），衰减交给下面的 custom handler
+          // 初始值（减速 60% → moveSpeed 0.4）。衰减由下面的 decay 表达
           modifiers: { moveSpeed: 0.4 },
+          /**
+           * M11：原本是一条 `custom` handler（`decayAuraModifier`）。
+           * ★ 但那个 handler **从来没有被注册过** —— 它落在 `displacement.ts`
+           *   的 custom 兜底分支里，只发一条事件、不产生任何效果。
+           *   也就是说「减速逐渐恢复」这条规则写在数据里、写在描述里，
+           *   但**四个阶段以来一次都没有生效过**：减速全程是恒定的 60%。
+           *   schema v1.1 的 `AuraDef.decay` 已经能表达它，sim 也实现了
+           *   （`aura.ts` 的 `withDecay()`），所以这里改成纯数据。
+           */
+          decay: { field: 'moveSpeed', from: 0.4, to: 1.0, duration: 4 },
           description: '移动速度降低 60%，并在 4 秒内逐渐恢复。',
           vfx: 'deathknight_chains_of_ice',
-        },
-      },
-      // schema 缺口：AuraModifiers 只能表达恒定系数，没有「随时间线性衰减」的写法。
-      // 由已注册的 handler 在光环存续期间把 moveSpeed 从 0.4 线性拉回 1.0。
-      {
-        kind: 'custom',
-        handler: 'decayAuraModifier',
-        params: {
-          auraId: 'deathknight.chains_of_ice',
-          modifier: 'moveSpeed',
-          from: 0.4,
-          to: 1.0,
-          duration: 4,
         },
       },
     ],
@@ -163,7 +165,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('deathknight.strangulate'),
-    name: '窒息',
+    name: '扼喉',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -182,7 +184,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('deathknight.mind_freeze'),
-    name: '心灵冰冻',
+    name: '冻念',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -202,7 +204,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('deathknight.anti_magic_shell'),
-    name: '反魔法护罩',
+    name: '抗咒护罩',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -220,17 +222,22 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'deathknight.anti_magic_shell',
-          name: '反魔法护罩',
+          name: '抗咒护罩',
           kind: 'buff',
           duration: 4,
           dispelType: DispelType.None,
           flags: { immuneMagicControl: true },
-          // 文档要求「吸收相当于 25% 最大生命的魔法伤害」= 1200 × 0.25 = 300。
-          // schema 缺口一：AuraDef.absorb 只支持固定值，没有 absorbPercentMaxHealth，
-          //   最大生命被熊形态之类的 maxHealth 系数改变时这里不会跟着变。
-          // schema 缺口二：absorb 没有学派过滤字段，「只吸收魔法伤害」需要 sim 层特判。
-          // 两者都应通过扩展 schema 或注册 custom handler 解决，暂用固定值占位。
-          absorb: 300,
+          /**
+           * 文档要求「吸收相当于 25% 最大生命的**魔法**伤害」。
+           *
+           * ★ M11：这里原本写死 `absorb: 300`（按 1200 基础生命算），并注明
+           *   两个 schema 缺口。**两个缺口早已被 v1.1 填上且 sim 已实现**
+           *   （`aura.ts` 换算 absorbPercentMaxHealth、按 absorbSchools 过滤），
+           *   只是数据一直没跟上 —— 于是护罩既不随最大生命变化，
+           *   也会**照单全收物理伤害**，而技能描述写的是「魔法伤害」。
+           */
+          absorbPercentMaxHealth: 0.25,
+          absorbSchools: MAGIC_SCHOOLS_DK,
           description: '吸收 300 点（25% 最大生命）魔法伤害，并免疫新的魔法控制。',
           vfx: 'deathknight_anti_magic_shell',
         },
@@ -241,7 +248,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('deathknight.deaths_advance'),
-    name: '死亡脚步',
+    name: '疾行步',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -259,22 +266,20 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'deathknight.deaths_advance',
-          name: '死亡脚步',
+          name: '疾行步',
           kind: 'buff',
           duration: 6,
           dispelType: DispelType.None,
-          modifiers: { knockbackTaken: 0.5 },
+          /**
+           * M11：`moveSpeedFloor` 原本是一条 `custom`（`applyMoveSpeedFloor`）——
+           * 同样从未注册，于是「速度不低于基础的 80%」一直没生效：
+           * 死亡脚步期间照样能被减速到全局下限 20%。
+           * schema v1.1 的 `moveSpeedFloor` 已实现（`modifiers.ts` 按 Math.max 聚合）。
+           */
+          modifiers: { knockbackTaken: 0.5, moveSpeedFloor: 0.8 },
           description: '移动速度不低于基础速度的 80%，受到的击退距离降低 50%。',
           vfx: 'deathknight_deaths_advance',
         },
-      },
-      // schema 缺口：AuraModifiers 只有乘算的 moveSpeed，没有「减速下限」这种保底语义
-      //（MOVE.MIN_SPEED_FACTOR 是全局下限 0.2，不是按光环生效的个人下限）。
-      // 由 handler 在光环存续期间把本单位的移动速度下限抬到基础速度的 80%。
-      {
-        kind: 'custom',
-        handler: 'applyMoveSpeedFloor',
-        params: { auraId: 'deathknight.deaths_advance', minFactor: 0.8, duration: 6 },
       },
     ],
     description: '6 秒内移动速度不低于基础速度的 80%，受到的击退距离降低 50%。',
@@ -349,8 +354,9 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.RunicPower, amount: 20 },
     counters:
       '仅双持符文刃方案可用；要求贴身并面向目标；虽是武器技能但结算冰霜魔法伤害，会被反魔法护罩、法术免疫和吸收吃掉，同时缴械和冰霜学派锁定都能封住它（7.3）。',
-    effects: [{ kind: 'damage', school: School.Frost, amount: { weaponPercent: 0.9 } }],
-    description: '一次迅捷的符文刃斩击，造成 90% 武器伤害的冰霜伤害。仅双持符文刃方案可用。',
+    // M14：0.9→0.8 —— 同轮回调（符文能量出口）
+    effects: [{ kind: 'damage', school: School.Frost, amount: { weaponPercent: 0.8 } }],
+    description: '一次迅捷的符文刃斩击，造成 80% 武器伤害的冰霜伤害。仅双持符文刃方案可用。',
     vfx: 'deathknight_frost_strike',
   },
   {
@@ -416,7 +422,8 @@ const weapons: WeaponDef[] = [
     isDefault: false,
     handedness: 'dualWield',
     swingInterval: 0.8,
-    swingPercent: 0.55,
+    // M14：0.55→0.48 —— 与双手档协调（白字 60/s ≈ 双手 61/s，优势让给「获得快速冰霜打击」）
+    swingPercent: 0.48,
     reach: RANGE.MELEE,
     modifiers: { resourceGain: 1.2, damageTaken: 1.05 },
     advantage: '符文能量获取 +20%，持续压制',
@@ -434,10 +441,18 @@ const weapons: WeaponDef[] = [
     swingInterval: 1.8,
     swingPercent: 0.85,
     reach: RANGE.MELEE,
-    // schema 缺口：AuraModifiers 的 damageTaken 不分学派，文档的「法术抗性提高」
-    // 无法在 WeaponDef 上单独表达（对比 armors.ts 里另开常量的 SPELLWARD_MAGIC_DAMAGE_TAKEN），
-    // 这里先并入统一减伤，等 schema 增加按学派拆分的 damageTaken 后再拆开。
-    modifiers: { damageTaken: 0.85, block: 0.15, moveSpeed: 0.95, damageDealt: 0.9 },
+    /**
+     * ★ M11：原注释说「等 schema 增加按学派拆分的 damageTaken 后再拆开」——
+     *   `damageTakenBySchool` 早已进 v1.1 且 `modifiers.ts` 已实现，数据没跟上。
+     *   现在把「法术抗性提高」真的拆出来：物理减伤 0.9，魔法额外再减到 0.85。
+     */
+    modifiers: {
+      damageTaken: 0.9,
+      damageTakenBySchool: MAGIC_SCHOOLS_DK.reduce<Partial<Record<School, number>>>(
+        (acc, s) => ((acc[s] = 0.85), acc), {},
+      ),
+      block: 0.15, moveSpeed: 0.95, damageDealt: 0.9,
+    },
     advantage: '防御 +15%，法术抗性提高',
     cost: '移动 -5%，输出低',
     grantsSkills: [asSkillId('deathknight.rune_ward')],

@@ -18,6 +18,22 @@
 *.woff2 binary
 *.docx binary
 
+# ★ M12 引入的素材格式。**漏一个就是静默损坏。**
+#
+#   `.hdr`（Radiance RGBE）是「文本头 + 二进制像素」的混合格式，
+#   git 的文本嗅探只看前 8000 字节里有没有 NUL —— 大多数 HDR 恰好有，
+#   于是被正确判成二进制；而 `evergarden_day_*.hdr` 那段像素里**没有**，
+#   被判成文本，`core.autocrlf=true` 下 CRLF→LF 会直接改写像素数据。
+#   实测 16 个 HDR 里正好中了 2 个：这类 bug 不会报错，
+#   只会让某一张环境贴图在某台机器上解码失败。
+*.hdr binary
+*.exr binary
+*.ktx2 binary
+*.basis binary
+*.wasm binary
+*.bin binary
+*.tga binary
+
 # 自动生成的文档在 diff 中折叠显示，避免淹没真实改动
 docs/04-class-skill-matrix.md linguist-generated=true
 docs/05-equipment-system.md linguist-generated=true

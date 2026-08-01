@@ -130,6 +130,43 @@ export interface CombatEntity {
   targets: TargetSlots;
   flags: StatusFlags;
 
+  /**
+   * 最近一次「参与战斗」的时刻（造成或受到伤害）。用于判定脱战。
+   *
+   * ★★ 规格书多处依赖「脱战」：潜行「**脱战 4 秒后** 1 秒进入」（9.x 盗贼表）、
+   *   猎豹形态「**脱战可潜行**」。而在 M11 之前**没有任何地方记录战斗状态** ——
+   *   `ConditionDef` 里的 `outOfCombat` 因此是一条永远判不出来的条件。
+   *
+   * ★ `-Infinity` 表示「从未进入过战斗」，于是开局即视为脱战。
+   */
+  lastCombatAt: number;
+  /**
+   * 最近一次**招架**的时刻。9.x 反击刺「近期发生过招架」靠它
+   * （`ConditionDef.recentlyParried`）。★ `-Infinity` = 从未招架过。
+   */
+  lastParryAt: number;
+  /**
+   * 该实体自己的随机流状态（8.x 闪避/招架/格挡）。
+   * ★ 由 `deriveRngSeed(world.seed, id)` 派生 —— 见 `nextRandom()` 的注释：
+   *   按实体分流是为了「加一处随机不会扰动别的实体」。
+   */
+  rng: number;
+
+  /**
+   * 当前武器方案下可用的技能集合（附录A#4：grants = 新增、removes = 禁用）。
+   * ★ 由**装备路径**维护（createEntity / 换装完成 / 死亡与回合复位），
+   *   `validateCast` 只读它 —— casting.ts 因此不必 import 数据注册表。
+   * ⚠️ M14 之前这两个字段是死数据：removes/grants 只有客户端装备面板在
+   *   **显示**，sim 从不执行 —— 短弓猎人照放重弩专属的穿透弩箭。
+   */
+  availableSkills: ReadonlySet<SkillId>;
+  /**
+   * 9.x 资源表的每秒回复率，`tickWorld` 第 6c 步消费。
+   * ⚠️ M14 之前 `regenPerSecond` 同样是死数据（全 sim 零读取方）——
+   *   所有职业实际在用「开局资源池 + 白字」打完整场。
+   */
+  resourceRegen: ReadonlyMap<Resource, number>;
+
   /** 技能冷却结束的绝对时间（秒）*/
   cooldowns: Map<SkillId, number>;
   /** 公共冷却结束的绝对时间 */
@@ -141,6 +178,26 @@ export interface CombatEntity {
   isPet: boolean;
 }
 
+/**
+ * 附录A#4：某武器方案下该职业可用的技能。
+ *
+ * 规则两条：当前武器 `removesSkills` 里的**禁用**；被任何武器 `grantsSkills`
+ * 声明过的技能是「方案专属」，只有声明它的方案才**新增**它，其余方案没有。
+ * ★ 纯函数（只吃 ClassDef），createEntity 与 loadout 的换装/复位路径共用 ——
+ *   两处各写一遍的话，迟早一处漏改。
+ */
+export const skillsAvailableWith = (cls: ClassDef, weaponId: WeaponId): ReadonlySet<SkillId> => {
+  const current = cls.weapons.find((w) => w.id === weaponId);
+  const out = new Set<SkillId>();
+  for (const s of cls.skills) {
+    if (current?.removesSkills?.includes(s.id)) continue;
+    const granters = cls.weapons.filter((w) => w.grantsSkills?.includes(s.id));
+    if (granters.length > 0 && !granters.some((w) => w.id === weaponId)) continue;
+    out.add(s.id);
+  }
+  return out;
+};
+
 export const createEntity = (
   id: EntityId,
   cls: ClassDef,
@@ -150,9 +207,11 @@ export const createEntity = (
 ): CombatEntity => {
   const resources = new Map<Resource, number>();
   const maxResources = new Map<Resource, number>();
+  const resourceRegen = new Map<Resource, number>();
   for (const r of cls.resources) {
     resources.set(r.resource, r.start);
     maxResources.set(r.resource, r.max);
+    if (r.regenPerSecond > 0) resourceRegen.set(r.resource, r.regenPerSecond);
   }
   return {
     id,
@@ -171,8 +230,13 @@ export const createEntity = (
     maxResources,
     weaponId: cls.defaultWeaponId,
     armorId: cls.defaultArmorId,
+    availableSkills: skillsAvailableWith(cls, cls.defaultWeaponId),
+    resourceRegen,
     nextSwingAt: 0,
     swingRecoveryUntil: 0,
+    lastCombatAt: -Infinity,
+    lastParryAt: -Infinity,
+    rng: 0,
     targets: {},
     flags: createStatusFlags(),
     cooldowns: new Map(),
@@ -188,18 +252,31 @@ export const isHostile = (a: CombatEntity, b: CombatEntity): boolean => a.team !
 export const isFriendly = (a: CombatEntity, b: CombatEntity): boolean => a.team === b.team;
 
 /**
+ * 5.3 / 验收 #5：`target` 是否因**潜行未被发现**而对 `viewer` 隐形。
+ *
+ * ★ 单列成一个谓词，是为了让「能否选中」（本文件的 `isSelectableBy`）与
+ *   「能否进快照」（`net/visibility.ts`）**共用同一条判据**。
+ *   两处各写一遍迟早会漂移，而漂移的方向一定是快照比选中更宽松 ——
+ *   那正好就是验收 #5 要防的透视。
+ *
+ * 注：`stealthRevealed` 是一个全局标志而不是「按队伍分别记录」。
+ * 本作固定两队（TEAM_RED / TEAM_BLUE），己方永远看得见自己人潜行，
+ * 所以「被发现」等价于「被敌方那一队发现」，一个布尔值就够。
+ */
+export const isHiddenFromViewer = (target: CombatEntity, viewer: CombatEntity): boolean =>
+  target.flags.stealthed && !target.flags.stealthRevealed && isHostile(viewer, target);
+
+/**
  * 5.3 / 验收 #5：能否被 `viewer` 选中。
  *
  * ⚠️ 服务器还必须在快照层把不可见的潜行者**整个裁掉**
- * （docs/08 §4.1）—— 只在这里过滤是不够的，改客户端就能绕过。
- * 这个函数负责的是「同一份可见集合内的合法性」。
+ * （docs/08 §4.1，见 `net/visibility.ts`）—— 只在这里过滤是不够的，
+ * 改客户端就能绕过。这个函数负责的是「同一份可见集合内的合法性」。
  */
 export const isSelectableBy = (target: CombatEntity, viewer: CombatEntity): boolean => {
   if (!target.alive) return false;
   if (target.flags.untargetable) return false;
-  if (target.flags.stealthed && !target.flags.stealthRevealed && isHostile(viewer, target)) {
-    return false;
-  }
+  if (isHiddenFromViewer(target, viewer)) return false;
   return true;
 };
 

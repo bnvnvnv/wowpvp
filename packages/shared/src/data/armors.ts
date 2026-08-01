@@ -6,9 +6,28 @@
  * 用工厂生成而不是手写 8×6 个对象，可以保证没有任何一件是全面上位（验收 #32）。
  */
 
-import { ArmorArchetype } from '../types/enums.js';
+import { ArmorArchetype, School, isMagicSchool } from '../types/enums.js';
 import { asArmorId, type ArmorId, type ClassId } from '../types/ids.js';
 import type { AuraModifiers, ArmorDef } from './schema.js';
+
+/** 抗法型的减伤只对法术生效，按 school 区分，不能写成全局 damageTaken */
+export const SPELLWARD_MAGIC_DAMAGE_TAKEN = 0.82;
+/**
+ * 抗法型对**魔法控制**时长的削减。
+ *
+ * ★ M11 已接入。此前它是个**只定义、无人引用**的常量：schema 当时只有全局的
+ *   `ccDurationTaken`，写成全局 0.8 会让抗法护甲顺带削减物理控制 ——
+ *   那是抗控型（Tenacity）的身份，两件护甲会互相踩线，而 10.9 / 验收 #32
+ *   要求「没有任何一件是全面上位」。当时的选择是**宁可少表达一半优势，
+ *   也不要表达错**，于是 advantage 文案收窄成只提伤害。
+ *
+ *   现在 `ccDurationTakenBySchool` 进了 schema（判据：「按学派区分」这个
+ *   需求出现了第二次），`applyControl()` 也能从 `SkillDef.school` 拿到学派，
+ *   所以这一半优势可以正确表达了。
+ */
+export const SPELLWARD_MAGIC_CC_DURATION = 0.8;
+
+const MAGIC_SCHOOLS: readonly School[] = Object.values(School).filter(isMagicSchool);
 
 interface ArchetypeTemplate {
   suffix: string;
@@ -48,8 +67,29 @@ const TEMPLATES: readonly ArchetypeTemplate[] = [
     suffix: 'spellward',
     name: '抗法型护甲',
     archetype: ArmorArchetype.SpellWard,
-    modifiers: { damageTaken: 1.12 },
-    advantage: '法术伤害与魔法控制承受降低',
+    /**
+     * ★ 全局 `damageTaken: 1.12` 是**代价**（物理防御降低），
+     *   优势由 `damageTakenBySchool` 逐个魔法学派给出。
+     *
+     *   顺序很重要：`damageTakenFor()` 让单列的学派**覆盖**全局值，
+     *   所以魔法伤害吃 0.82、物理伤害吃 1.12，正是 10.8 要的横向取舍。
+     *   写成单一的全局 damageTaken 会让抗法护甲连物理伤害一起减
+     *   （schema v1.1 加 damageTakenBySchool 的原话就是这个理由）。
+     */
+    modifiers: {
+      damageTaken: 1.12,
+      damageTakenBySchool: MAGIC_SCHOOLS.reduce<Partial<Record<School, number>>>(
+        (acc, s) => ((acc[s] = SPELLWARD_MAGIC_DAMAGE_TAKEN), acc),
+        {},
+      ),
+      // ★ 只削减**魔法**控制。物理控制（拳击、冲锋昏迷…）不受影响 ——
+      //   那是抗控型护甲的领域，两者不能互相取代（10.9 / 验收 #32）
+      ccDurationTakenBySchool: MAGIC_SCHOOLS.reduce<Partial<Record<School, number>>>(
+        (acc, s) => ((acc[s] = SPELLWARD_MAGIC_CC_DURATION), acc),
+        {},
+      ),
+    },
+    advantage: '法术伤害与魔法控制时长降低',
     cost: '物理防御明显降低',
   },
   {
@@ -61,10 +101,6 @@ const TEMPLATES: readonly ArchetypeTemplate[] = [
     cost: '输出、治疗与资源效率降低',
   },
 ];
-
-/** 抗法型的减伤只对法术生效，sim 层按 school 区分；这里单列出来避免误用为全局减伤 */
-export const SPELLWARD_MAGIC_DAMAGE_TAKEN = 0.82;
-export const SPELLWARD_MAGIC_CC_DURATION = 0.8;
 
 export interface ArmorSetOptions {
   /** 职业默认护甲的名字，例如「板甲」「皮甲」 */
@@ -84,7 +120,7 @@ export const makeArmorSet = (classId: ClassId, opts: ArmorSetOptions): ArmorDef[
     name: opts.defaultName,
     classId,
     isDefault: true,
-    archetype: ArmorArchetype.Guardian,
+    archetype: ArmorArchetype.Baseline,
     modifiers: opts.defaultModifiers ?? {},
     advantage: '标准化基线，无任何倾向',
     cost: '没有专精优势',

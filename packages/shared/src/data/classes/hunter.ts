@@ -32,39 +32,19 @@ const CROSSBOW_RANGE = 32;
 
 // ── 技能 ─────────────────────────────────────────────────────────
 
+/**
+ * ★★ M14：「自动射击」**不再是一个按钮技能**。
+ *
+ *   规格书 9.5 那一行写的是「移动中自动进行｜武器间隔」—— 它是 7.6 普通
+ *   攻击在猎人身上的样子，由 `sim/autoAttack.ts` 的挥击系统承载（远程武器
+ *   走射击规则），与其他七个职业的普攻同一条路径、同一个节奏来源。
+ *
+ *   在 M14 之前它被实现成一个**可施放的技能**：0 冷却、0 消耗、不触发
+ *   公共冷却、每按一次结算 100% 武器伤害 —— 也就是一个 20 次/秒的连点宏
+ *   能打出 1500 DPS 的按钮（配平基线抓到：猎人 95.2% 胜率、场均 2.7 秒，
+ *   全部来自 bot 每 tick 按一次这个键）。按钮删除，机制归挥击系统。
+ */
 const skills: SkillDef[] = [
-  {
-    id: asSkillId('hunter.auto_shot'),
-    name: '自动射击',
-    classId: CLASS_ID,
-    // 7.6 普通射击：这里把它显式定义成一个技能，方便 HUD 展示与反制说明，
-    // 但它没有施法条，节奏完全由武器 swingInterval 决定
-    targeting: Targeting.Direct,
-    targetFilter: TargetFilter.Enemy,
-    range: { min: 0, max: SHORT_BOW_RANGE },
-    shape: { kind: 'single' },
-    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
-    school: School.Physical,
-    cooldown: 0,
-    triggersGcd: false,
-    requiresFacing: true,
-    requiresLos: true,
-    counters:
-      '没有可打断施法条，「脚踢」类专用打断无法取消已经完成的普通射击（7.6）；缴械、昏迷、死亡、无视线和超距可以阻止下一发释放；短弓可全速移动射击，长弓与重弩因攻击间隔更长、并带装填动作而更容易被走位打乱。',
-    effects: [
-      // 每次射击计时到达时结算一次；weaponPercent 1 = 当前武器的 swingPercent
-      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 1 } },
-      // schema 没有「持续开火开关」这一概念（射击是一个可开关的常驻状态，
-      // 而不是一次性效果），用 custom 让 sim 在本发结算后继续排下一发
-      {
-        kind: 'custom',
-        handler: 'hunter.sustainAutoShot',
-        params: { repeat: true, usesWeaponInterval: true },
-      },
-    ],
-    description: '按武器攻击间隔自动射击当前目标。短弓可全速移动射击。',
-    vfx: 'hunter_auto_shot',
-  },
   {
     id: asSkillId('hunter.aimed_shot'),
     name: '瞄准射击',
@@ -83,13 +63,14 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Focus, amount: 35 },
     counters:
       '1.6 秒物理准备条全程可见：可被专用打断、缴械、硬控制、移动和强制位移终止（7.1 / 7.3）；**沉默无效**，沉默只禁止魔法技能（7.3 / 验收 #17）；被打断只取消本次射击，不产生魔法学派锁定，猎人可以立刻改用其他技能（7.2 / 验收 #16）；完成瞬间会重新检查距离与视线，拉开 35 米或断视线即失败。',
-    effects: [{ kind: 'damage', school: School.Physical, amount: { weaponPercent: 2.6 } }],
-    description: '经过 1.6 秒瞄准后射出一发重箭，造成 260% 武器伤害。准备期间不能移动。',
+    // M14：2.6→3.0 —— 1.6s 站桩准备 + 可被打断的风险溢价
+    effects: [{ kind: 'damage', school: School.Physical, amount: { weaponPercent: 3 } }],
+    description: '经过 1.6 秒瞄准后射出一发重箭，造成 300% 武器伤害。准备期间不能移动。',
     vfx: 'hunter_aimed_shot',
   },
   {
     id: asSkillId('hunter.arcane_shot'),
-    name: '奥术射击',
+    name: '秘法箭',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -104,13 +85,14 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Focus, amount: 25 },
     counters:
       '瞬发，不能被专用打断；但属于奥术学派，沉默、奥术学派锁定和法术免疫都能挡住（7.3 / 8.2）；仍受视线、距离和公共冷却限制。',
-    effects: [{ kind: 'damage', school: School.Arcane, amount: { weaponPercent: 1.1 } }],
-    description: '射出一发附魔箭，造成 110% 武器伤害的奥术伤害。可移动使用。',
+    // M14：1.1→1.3 —— 焦点主要出口，机动填充
+    effects: [{ kind: 'damage', school: School.Arcane, amount: { weaponPercent: 1.3 } }],
+    description: '射出一发附魔箭，造成 130% 武器伤害的奥术伤害。可移动使用。',
     vfx: 'hunter_arcane_shot',
   },
   {
     id: asSkillId('hunter.concussive_shot'),
-    name: '震荡射击',
+    name: '震慑箭',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -130,7 +112,7 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'hunter.concussive_shot',
-          name: '震荡射击',
+          name: '震慑箭',
           kind: 'debuff',
           duration: 5,
           dispelType: DispelType.Movement,
@@ -146,7 +128,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('hunter.freezing_trap'),
-    name: '冰冻陷阱',
+    name: '寒霜陷阱',
     classId: CLASS_ID,
     targeting: Targeting.Ground,
     targetFilter: TargetFilter.Enemy,
@@ -208,7 +190,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('hunter.disengage'),
-    name: '逃脱',
+    name: '后撤跃',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -226,7 +208,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('hunter.counter_shot'),
-    name: '反制射击',
+    name: '断法箭',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -247,7 +229,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('hunter.exhilaration'),
-    name: '振奋',
+    name: '振作',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -265,7 +247,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('hunter.aspect_of_the_turtle'),
-    name: '灵龟守护',
+    name: '龟甲护体',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -283,7 +265,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'hunter.aspect_of_the_turtle',
-          name: '灵龟守护',
+          name: '龟甲护体',
           kind: 'buff',
           duration: 4,
           dispelType: DispelType.None,
@@ -341,7 +323,8 @@ const weapons: WeaponDef[] = [
     isDefault: true,
     handedness: 'ranged',
     swingInterval: 1.35,
-    swingPercent: 0.75,
+    // M14：0.75→0.95 —— 删掉可连点的「自动射击」按钮后，弓白字承担远程持续压力（70/s）
+    swingPercent: 0.95,
     reach: SHORT_BOW_RANGE,
     isRanged: true,
     advantage: '射速快，可全速移动射击',
@@ -358,7 +341,8 @@ const weapons: WeaponDef[] = [
     isDefault: false,
     handedness: 'ranged',
     swingInterval: 2.2,
-    swingPercent: 1.4,
+    // M14：1.4→1.6 —— 优势写着「单发最高」，白字却低于短弓；抬到 73/s 兑现文案
+    swingPercent: 1.6,
     reach: RANGE.LONG,
     isRanged: true,
     advantage: '射程和单发最高',
@@ -392,7 +376,8 @@ export const hunter: ClassDef = {
   name: '猎人',
   role: '远程输出、陷阱、反潜行与风筝',
   baseHealth: 1000,
-  resources: [{ resource: Resource.Focus, max: 100, start: 100, regenPerSecond: 8 }],
+  // M14：8→12 —— 回复兑现后按秘法箭 25 耗 3s 冷却（短弓）+ 瞄准 35 耗 8s 冷却的组合定值
+  resources: [{ resource: Resource.Focus, max: 100, start: 100, regenPerSecond: 12 }],
   strengths: '远程持续压力、侦察、减速、地面陷阱',
   weaknesses: '被近战贴身、重型射击需要准备、宠物可被牵制',
   defaultWeaponId: asWeaponId('hunter.short_bow'),

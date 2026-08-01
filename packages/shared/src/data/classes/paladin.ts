@@ -26,7 +26,7 @@ const CLASS_ID = asClassId('paladin');
 const skills: SkillDef[] = [
   {
     id: asSkillId('paladin.crusader_strike'),
-    name: '十字军打击',
+    name: '圣印打击',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -41,15 +41,16 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 25 },
     counters: '纯武器技能：缴械后完全禁用（7.3），但沉默和神圣学派锁定拦不住它；要求贴身 3 米并把目标保持在前方 180 度（6.5），被风筝或被定身拉开就断了圣能来源，荣耀圣令随之哑火。',
     effects: [
-      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 1.1 } },
+      // M14：1.1→0.8 —— 圣能修复（此前长在敌人身上，荣耀圣言从未施放过）后主动治疗增多，输出侧回调
+      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.8 } },
       { kind: 'gainResource', resource: Resource.HolyPower, amount: 1 },
     ],
-    description: '造成 110% 武器伤害并获得 1 点圣能。',
+    description: '造成 80% 武器伤害并获得 1 点圣能。',
     vfx: 'paladin_crusader_strike',
   },
   {
     id: asSkillId('paladin.judgement'),
-    name: '审判',
+    name: '裁决',
     classId: CLASS_ID,
     // 6.6 锁定投射物：释放瞬间确认命中资格，飞行只是表现，目标之后移动不会自然落空
     targeting: Targeting.Direct,
@@ -64,27 +65,28 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 40 },
     counters: '神圣学派：被责难以外的专用打断锁住神圣学派、或自己处于沉默期间都用不出来（7.2 / 7.3）；易伤是魔法减益，敌方驱散一次就抹掉 4 秒增伤窗口（8.4）；释放瞬间失去视线或超出 25 米直接失败（7.4），柱子绕视野是最省事的应对。',
     effects: [
-      { kind: 'damage', school: School.Holy, amount: { flat: 110 } },
+      // M14：110→70 —— 审判附带 +10% 易伤（casterScoped），本体压低
+      { kind: 'damage', school: School.Holy, amount: { flat: 70 } },
       {
         kind: 'applyAura',
         aura: {
           id: 'paladin.judgement',
-          name: '审判',
+          name: '裁决',
           kind: 'debuff',
           duration: 4,
           dispelType: DispelType.Magic,
           clearableByTrinket: false,
+          /**
+           * M11：原本是一条 `custom`（`paladin.judgementVulnerability`），
+           * 而这个光环当时**连 modifiers 都没有** —— 易伤完全没有生效过。
+           * schema v1.1 的 `casterScoped` 已实现（`aura.ts` 在结算时比对伤害来源），
+           * 所以「只对该圣骑士生效的 +10% 承伤」现在是纯数据。
+           */
+          modifiers: { damageTaken: 1.1 },
+          casterScoped: true,
           description: '受到该圣骑士造成的伤害提高 10%。',
           vfx: 'paladin_judgement',
         },
-      },
-      // AuraModifiers.damageTaken 是「对所有伤害来源」的全局乘算，无法表达
-      // 「只对施加者生效」。需要新增按施法者作用域的修正（如 damageTakenFromCaster）
-      // 或一个 applyAura 的 casterScoped 标记后，这条 custom 才能删掉。
-      {
-        kind: 'custom',
-        handler: 'paladin.judgementVulnerability',
-        params: { auraId: 'paladin.judgement', damageTakenFromCaster: 1.1 },
       },
     ],
     description: '投出神圣审判造成伤害，并使目标 4 秒内额外承受 10% 来自你的伤害。',
@@ -92,7 +94,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('paladin.holy_light'),
-    name: '圣光术',
+    name: '圣愈术',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -106,13 +108,14 @@ const skills: SkillDef[] = [
     requiresLos: true,
     cost: { resource: Resource.Mana, amount: 220 },
     counters: '1.5 秒读条是圣骑士最大的破绽：专用打断命中会锁神圣学派 3 秒（7.2），沉默、昏迷、恐惧、击退拉拽以及自己主动移动都会直接中止（7.3）；完成瞬间目标死亡、超出 30 米或失去视线同样失败（7.4）；治疗量还会被致死创伤类降治疗减益和竞技场战斗抑制（8.5）压低。',
-    effects: [{ kind: 'heal', amount: { flat: 340 } }],
+    // M14：340→200 —— 1.5s 读条大治疗：占位值下圣骑不可击杀，六轮迭代逐步压到位
+    effects: [{ kind: 'heal', amount: { flat: 200 } }],
     description: '为友方恢复大量生命。1.5 秒读条，必须原地，可被打断。',
     vfx: 'paladin_holy_light',
   },
   {
     id: asSkillId('paladin.word_of_glory'),
-    name: '荣耀圣令',
+    name: '荣光敕令',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -126,13 +129,14 @@ const skills: SkillDef[] = [
     // 消耗 3 点圣能。圣能只能靠十字军打击（或权杖方案的圣光弹）积攒
     cost: { resource: Resource.HolyPower, amount: 3 },
     counters: '瞬发不可打断，但受制于资源链：必须先贴身打出 3 次十字军打击，把圣骑士风筝开、缴械或控在近战距离外就等于封了这个技能；治疗量同样吃降低治疗减益与战斗抑制（8.5）；沉默期间作为魔法技能不可使用（7.3）。',
-    effects: [{ kind: 'heal', amount: { flat: 260 } }],
+    // M14：260→155 —— 圣能修复后荣耀圣言真的会被施放了，数值按「瞬发不可打断」折价
+    effects: [{ kind: 'heal', amount: { flat: 155 } }],
     description: '消耗 3 点圣能，立刻为友方恢复中等生命。',
     vfx: 'paladin_word_of_glory',
   },
   {
     id: asSkillId('paladin.hammer_of_justice'),
-    name: '制裁之锤',
+    name: '裁决之锤',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -151,7 +155,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('paladin.rebuke'),
-    name: '责难',
+    name: '斥令',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -172,7 +176,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('paladin.blessing_of_freedom'),
-    name: '自由祝福',
+    name: '自由庇佑',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -194,7 +198,7 @@ const skills: SkillDef[] = [
         target: 'target',
         aura: {
           id: 'paladin.blessing_of_freedom',
-          name: '自由祝福',
+          name: '自由庇佑',
           kind: 'buff',
           duration: 3,
           dispelType: DispelType.Magic,
@@ -209,7 +213,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('paladin.blessing_of_protection'),
-    name: '保护祝福',
+    name: '守护庇佑',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -231,7 +235,7 @@ const skills: SkillDef[] = [
         target: 'target',
         aura: {
           id: 'paladin.blessing_of_protection',
-          name: '保护祝福',
+          name: '守护庇佑',
           kind: 'buff',
           duration: 4,
           dispelType: DispelType.Magic,
@@ -241,16 +245,23 @@ const skills: SkillDef[] = [
           vfx: 'paladin_blessing_of_protection',
         },
       },
-      // 需要一个作用于「效果目标」的掉旗 EffectDef kind（例如 { kind: 'dropFlag'; target }）；
-      // 目前 schema 只有 SkillDef.dropsFlagOnUse 这个作用于施法者的布尔标记。
-      { kind: 'custom', handler: 'paladin.dropFlagOnTarget', params: { reason: 'immunePhysical' } },
+      /**
+       * M11：原本是 `custom`（`paladin.dropFlagOnTarget`）。schema v1.1 的
+       * `{ kind: 'dropFlag'; target }` 已经存在且 handler 已注册
+       * （`effects/displacement.ts`），所以这里是直接替换。
+       *
+       * ★ 与 `SkillDef.dropsFlagOnUse` 的分工：那个作用于**施法者**，
+       *   这个作用于**受益者** —— 保护祝福是给别人加免疫，掉旗的是那个别人。
+       *   12.3 要求「获得完全免疫时掉旗」，两边都要覆盖才完整。
+       */
+      { kind: 'dropFlag', target: 'target' },
     ],
     description: '使友方 4 秒内免疫物理伤害，期间无法进行物理攻击。旗手获得时立即掉旗。',
     vfx: 'paladin_blessing_of_protection',
   },
   {
     id: asSkillId('paladin.divine_shield'),
-    name: '圣盾术',
+    name: '神圣壁障',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -270,7 +281,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'paladin.divine_shield',
-          name: '圣盾术',
+          name: '神圣壁障',
           kind: 'buff',
           duration: 4,
           // 可被「群体驱散」摘掉（dispel.canRemoveImmunity），因此不是 None
@@ -288,7 +299,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('paladin.avenging_wrath'),
-    name: '复仇之怒',
+    name: '义愤',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -306,7 +317,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'paladin.avenging_wrath',
-          name: '复仇之怒',
+          name: '义愤',
           kind: 'buff',
           duration: 10,
           dispelType: DispelType.Magic,
@@ -322,7 +333,7 @@ const skills: SkillDef[] = [
   // 武器方案授予的技能
   {
     id: asSkillId('paladin.shield_of_the_righteous'),
-    name: '正义盾击',
+    name: '义盾撞',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -413,7 +424,8 @@ const weapons: WeaponDef[] = [
     isDefault: true,
     handedness: 'oneHand',
     swingInterval: 1.8,
-    swingPercent: 0.9,
+    // M14：0.9→0.72 —— 圣骑曾以 85.7% 胜率霸榜；治疗+圣盾的生存性由白字侧买单
+    swingPercent: 0.72,
     reach: RANGE.MELEE,
     modifiers: { block: 0.15, damageTaken: 0.88 },
     advantage: '防御 +12%，可格挡',
@@ -445,14 +457,24 @@ const weapons: WeaponDef[] = [
     isDefault: false,
     handedness: 'ranged',
     swingInterval: 1.6,
-    swingPercent: 0.65,
+    // M14：0.65→0.5 —— 权杖档随剑盾档同比例回调
+    swingPercent: 0.5,
     reach: RANGE.MEDIUM,
     // 7.6：普通攻击走远程圣光弹规则
     isRanged: true,
-    // 文档的「物理防御 -12%」只针对物理，AuraModifiers.damageTaken 是全学派乘算，
-    // 这里按全局近似；要精确表达需要按 school 拆分的承伤修正（参考 armors.ts 的
-    // SPELLWARD_MAGIC_DAMAGE_TAKEN 也是用常量绕开的同一个缺口）。
-    modifiers: { damageTaken: 1.12, healingDone: 1.1, castSpeed: 0.85 },
+    /**
+     * 文档写的是「**物理**防御 -12%」。
+     * ★ M11：原注释说「按全局近似，要精确表达需要按 school 拆分的承伤修正」——
+     *   `damageTakenBySchool` 早已进 v1.1 并实现，数据没跟上。现在精确表达：
+     *   只有物理承伤 +12%，魔法承伤不变。近似写法此前让这把武器**连魔法也多挨 12%**，
+     *   比文档描述的更弱。
+     */
+    modifiers: {
+      damageTaken: 1,
+      damageTakenBySchool: { [School.Physical]: 1.12 },
+      healingDone: 1.1,
+      castSpeed: 0.85,
+    },
     advantage: '治疗 +10%，读条时间 -15%',
     cost: '物理防御 -12%，近战输出低',
     grantsSkills: [asSkillId('paladin.holy_bolt')],
@@ -471,7 +493,8 @@ export const paladin: ClassDef = {
   role: '近战支援、治疗、祝福与保护',
   baseHealth: 1100,
   resources: [
-    { resource: Resource.Mana, max: 1000, start: 1000, regenPerSecond: 12 },
+    // M14：12→8 —— 法力回复兑现后圣骑马拉松续航过强，压回复而不是继续压单次治疗量
+    { resource: Resource.Mana, max: 1000, start: 1000, regenPerSecond: 8 },
     // 圣能只能靠十字军打击 / 圣光弹积攒，不自然回复
     { resource: Resource.HolyPower, max: 5, start: 0, regenPerSecond: 0 },
   ],

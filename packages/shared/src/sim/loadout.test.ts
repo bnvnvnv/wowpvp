@@ -429,10 +429,22 @@ describe('10.4 刷新与争夺', () => {
   it('★ 实体掉落只从房间实际存在的职业池生成', () => {
     const store = createArsenalStore(ArenaPreset.Armed);
     const drops = spawnDropsFromRoster(store, [warrior.id, mage.id], vec3(0, 0, 0), 0);
-    const classes = new Set(drops.map((d) => d.classId as string));
+    /**
+     * ★ 10.4 那条规则是「**不要刷出无人可用的装备**」，判据是「有归属的掉落
+     *   必须属于在场职业」。消耗品**没有归属**（10.1 人人可用），所以它不在
+     *   这条规则的射程里 —— 把它算进来会让规则读成「地上只能有职业装备」，
+     *   那不是 10.4 说的意思。
+     */
+    const owned = drops.filter((d) => d.classId !== undefined);
+    const classes = new Set(owned.map((d) => d.classId as string));
     expect(classes).toEqual(new Set(['warrior', 'mage']));
     // 没有第三个职业的东西
-    expect(drops.every((d) => ['warrior', 'mage'].includes(d.classId as string))).toBe(true);
+    expect(owned.every((d) => ['warrior', 'mage'].includes(d.classId as string))).toBe(true);
+    // ★ 而消耗品确实刷出来了 —— 否则上面的 filter 会让这条测试平凡通过
+    expect(
+      drops.some((d) => d.kind === 'consumable'),
+      '军械箱没有刷出消耗品 —— 使用路径通了但场上捡不到',
+    ).toBe(true);
   });
 });
 
@@ -526,7 +538,16 @@ describe('10.5 拾取', () => {
     expect(completed).toHaveLength(1);
     expect(completed[0]!.entityId).toBe(w.id); // 先起手的先完成
     expect(taken).toHaveLength(1);             // 另一个收到明确失败反馈
-    expect(store.drops).toHaveLength(0);
+    /**
+     * ★ 断言的是「**这一件**被拿走了」，不是「地上空了」。
+     *   ⚠️ 原本写的是 `toHaveLength(0)` —— M11 给军械箱加了消耗品掉落之后
+     *      这条红了，而红得对：地上本来就还会有别的东西。
+     *      按意图收紧，而不是把数字从 0 改成 1（那样下次再加一种掉落又会红）。
+     */
+    expect(
+      store.drops.some((d) => d.id === dropId),
+      '被拾取的那件物品还留在地上',
+    ).toBe(false);
   });
 
   it('★ 10.2：不匹配的玩家仍然看得到掉落物和它的所属职业', () => {

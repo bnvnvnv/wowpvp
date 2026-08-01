@@ -16,7 +16,7 @@ import { EQUIP } from '../constants/combat.js';
 import { getArmor, getClass, getWeapon } from '../data/index.js';
 import type { ArmorDef, WeaponDef } from '../data/schema.js';
 import type { ArmorId, ClassId, ConsumableId, EntityId, WeaponId } from '../types/ids.js';
-import type { CombatEntity } from './entity.js';
+import { skillsAvailableWith, type CombatEntity } from './entity.js';
 
 // ── 装备栏 ───────────────────────────────────────────────────────
 
@@ -129,6 +129,41 @@ export const addWeapon = (loadout: Loadout, weaponId: WeaponId): void => {
 };
 export const addArmor = (loadout: Loadout, armorId: ArmorId): void => {
   loadout.spareArmors.push(armorId);
+};
+
+/**
+ * 10.1 / 10.6：拾起一个消耗品。上限 `EQUIP.MAX_CONSUMABLES`（2 个）。
+ *
+ * ★ 满了就**拿不走**，而不是顶掉旧的 —— 与武器/护甲满槽时「弹出对比让玩家选」
+ *   是同一个立场：不替玩家做丢弃决定。消耗品没有对比界面，所以直接拒绝。
+ */
+export const addConsumable = (loadout: Loadout, id: ConsumableId): boolean => {
+  if (loadout.consumables.length >= EQUIP.MAX_CONSUMABLES) return false;
+  loadout.consumables.push(id);
+  return true;
+};
+
+/**
+ * 取出一个待使用的消耗品（按槽位）。**只负责取出，不结算效果。**
+ *
+ * ★★ 效果结算必须走 `tickWorld` 那**唯一的出口**（A2 的教训）——
+ *   所以这里只把 id 弹出来交给调用方，由 tick 在自己的结算步里处理。
+ *   在这里直接 `resolveEffects()` 会开出第二个结算入口。
+ *
+ * @returns 弹出的消耗品 id；槽位为空或角色无法行动时返回 undefined
+ */
+export const takeConsumable = (
+  entity: CombatEntity,
+  loadout: Loadout,
+  slot: number,
+): ConsumableId | undefined => {
+  if (!entity.alive) return undefined;
+  // 7.3 硬控制禁止一切主动动作 —— 与换装同一条规则
+  if (entity.flags.stunned) return undefined;
+  const id = loadout.consumables[slot];
+  if (id === undefined) return undefined;
+  loadout.consumables.splice(slot, 1);
+  return id;
 };
 
 /**
@@ -246,9 +281,21 @@ export const cancelSwap = (swaps: SwapStore, id: EntityId): boolean => swaps.del
 export const completeSwap = (entity: CombatEntity, state: SwapState): void => {
   if (state.kind === SwapKind.Weapon && state.weaponId) {
     entity.weaponId = state.weaponId;
+    refreshAvailableSkills(entity);
   } else if (state.kind === SwapKind.Armor && state.armorId) {
     entity.armorId = state.armorId;
   }
+};
+
+/**
+ * M14：换装/复位后重算武器方案的技能集合（附录A#4，规则在
+ * `skillsAvailableWith`）。武器写点一共三处 —— 换装完成、死亡收缴、
+ * 回合复位 —— 都必须跟着调这里，漏一处的表现是「换回默认武器后
+ * 方案专属技能还亮着」。
+ */
+const refreshAvailableSkills = (entity: CombatEntity): void => {
+  const cls = getClass(entity.classId);
+  if (cls) entity.availableSkills = skillsAvailableWith(cls, entity.weaponId);
 };
 
 export interface SwapTickEvent {
@@ -328,6 +375,18 @@ export interface LoadoutView {
   currentArmor: ArmorDef | undefined;
   spareWeapons: (WeaponDef | undefined)[];
   spareArmors: (ArmorDef | undefined)[];
+  /**
+   * ★ **可切换的全部**装备（默认 + 备用），供 15.3 的装备栏列表使用。
+   *
+   * 为什么不能让 UI 自己拼 `[currentWeapon, ...spareWeapons]`：
+   * 换到备用武器之后，`spareWeapons` 里**仍然**含着那件武器
+   * （`availableWeapons()` 的语义是"手上加包里"，不随装备变化增删），
+   * 于是列表会把当前武器显示两遍，同时默认武器凭空消失 ——
+   * 而 10.6 明确要求默认装备永远在列表里。
+   * 这个字段直接来自 `availableWeapons()`，两个问题一起消失。
+   */
+  allWeapons: (WeaponDef | undefined)[];
+  allArmors: (ArmorDef | undefined)[];
   swapProgress: { kind: SwapKind; remaining: number } | null;
 }
 
@@ -344,6 +403,8 @@ export const ownLoadoutView = (
     currentArmor: getArmor(entity.armorId),
     spareWeapons: loadout.spareWeapons.map(getWeapon),
     spareArmors: loadout.spareArmors.map(getArmor),
+    allWeapons: availableWeapons(loadout).map(getWeapon),
+    allArmors: availableArmors(loadout).map(getArmor),
     swapProgress: s ? { kind: s.kind, remaining: Math.max(0, s.endsAt - now) } : null,
   };
 };
@@ -382,6 +443,7 @@ export const onDeath = (entity: CombatEntity, loadout: Loadout, swaps: SwapStore
   loadout.consumables = [];
   entity.weaponId = loadout.defaultWeaponId;
   entity.armorId = loadout.defaultArmorId;
+  refreshAvailableSkills(entity);
   swaps.delete(entity.id);
 };
 
@@ -402,6 +464,7 @@ export const resetLoadouts = (
     l.consumables = [];
     e.weaponId = l.defaultWeaponId;
     e.armorId = l.defaultArmorId;
+    refreshAvailableSkills(e);
   }
   swaps.clear();
 };

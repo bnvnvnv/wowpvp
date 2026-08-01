@@ -14,7 +14,19 @@
 
 import { chromium } from 'playwright';
 
-const URL = process.env.VERIFY_URL ?? 'http://localhost:5173/';
+/**
+ * ★ M12：默认带 `?art=off`。
+ *
+ *   这一支验的是**规则有没有被接线**（移动、镜头、目标、打断…），
+ *   没有一条与美术有关。而美术层在 `--use-gl=swiftshader` 软件渲染下
+ *   把帧率从 27 压到 4 —— 那会让本脚本因为**跑不动**而超时，
+ *   得到一个与代码正确性无关的红灯。
+ *
+ *   `?art=off` 让画面精确回到 M11 的全程序化表现（见
+ *   `client/src/settings/artMode.ts`），于是这里的结论可以与
+ *   M0–M11 的历史结果直接对比。**美术层本身由 `verify:m12` 负责。**
+ */
+const URL = process.env.VERIFY_URL ?? 'http://localhost:5173/?art=off';
 const results = [];
 
 const check = (id, name, pass, detail) => {
@@ -22,9 +34,23 @@ const check = (id, name, pass, detail) => {
   console.log(`  ${pass ? '✓' : '✗'} ${id} ${name}\n      ${detail}`);
 };
 
-const browser = await chromium.launch({
-  args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'],
-});
+/**
+ * 捆绑 chromium 优先；装不上时退回系统 Edge / Chrome（与 verify-m12 同一回落）。
+ * ★ 回落只换浏览器载体，断言原样不动 —— 本机网络拉不动 Playwright CDN 时，
+ *   「跑不起来的验收」等于没有验收。
+ */
+const browser = await (async () => {
+  try {
+    return await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
+  } catch {
+    for (const channel of ['msedge', 'chrome']) {
+      try {
+        return await chromium.launch({ channel });
+      } catch { /* 试下一个 */ }
+    }
+    throw new Error('没有可用浏览器：捆绑 chromium 未安装，msedge/chrome 也不可用');
+  }
+})();
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const runtimeErrors = [];
 page.on('pageerror', (e) => runtimeErrors.push(e.message));
@@ -235,7 +261,16 @@ console.log('\n── 规格书 13.5 / 验收 #44：楼梯贴地、低障碍跨�
   let stairSamples = 0;
   let maxY = atBottom.y;
   await page.keyboard.down('KeyW');
-  for (let i = 0; i < 26; i++) {
+  /**
+   * ★ 按**进度**停，不按固定迭代数。此前是 `for (26 次 × 60ms)` ——
+   *   它在 swiftshader 下能走到顶，纯粹因为慢渲染把每次 `read()` 的往返
+   *   拖长了几百毫秒，白送了几秒步行时间。换到带真 GPU 的浏览器
+   *   （chromium 装不上时的 msedge 回落）后同一个循环只给 ~1.7 秒，
+   *   角色刚上三级楼梯就被收了键 —— 那是测量环境的伪影，不是物理的问题。
+   *   截止时间给足 8 秒：慢环境照常通过，快环境不再误报。
+   */
+  const stairDeadline = Date.now() + 8000;
+  while (Date.now() < stairDeadline) {
     await page.waitForTimeout(60);
     const r = await read();
     maxY = Math.max(maxY, r.y);
@@ -288,8 +323,21 @@ console.log('\n── 规格书 13.5 / 验收 #45：跳跃不增速、无二段�
   const base = await read();
   await hold('Space');
   let peak = base.y;
-  for (let i = 0; i < 22; i++) {
-    await page.waitForTimeout(35);
+  /**
+   * ⚠️ 采样窗口必须覆盖**整条抛物线**（上升 ~0.49s + 下落 ~0.49s），
+   *   而不只是理论顶点附近。
+   *
+   *   原本是 22 × 35ms = 770ms，勉强够到顶点；而 `#stats` 面板只有
+   *   **10Hz** 重绘（main.ts 的 paintStats 节流到 100ms），
+   *   所以这 22 次采样实际只读到 ~8 个不同的值 —— 顶点落在两次重绘
+   *   之间时就整个被跳过，读数偏低到 0.85 阈值以下。
+   *
+   *   ★ 这是**观测走样**，不是物理回归：跳跃物理在 `shared/sim/movement.ts`，
+   *     由 40 条单元测试守着，且本脚本从未改动过它。
+   *     M12 调整帧率后这条偶发性变红，才暴露出这个一直存在的脆弱采样。
+   */
+  for (let i = 0; i < 42; i++) {
+    await page.waitForTimeout(30);
     peak = Math.max(peak, (await read()).y);
   }
   check(

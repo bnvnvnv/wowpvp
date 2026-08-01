@@ -32,6 +32,8 @@
 | [01-development-plan.md](01-development-plan.md) | 开发计划书：M0–M9 里程碑、交付物、验收用例、关键陷阱 |
 | [02-architecture.md](02-architecture.md) | 技术架构：技术选型理由、分层、目录、数据流、效果注册表、权威与预测 |
 | [PROGRESS.md](PROGRESS.md) | 完成情况、技术债、下一步 |
+| [13-roadmap-post-m9.md](13-roadmap-post-m9.md) | M9 之后的路线图：M10 联网 → M11 技术债 → M12 美术，含每阶段的完成判据（已全部完成）|
+| [14-roadmap-post-m12.md](14-roadmap-post-m12.md) | **当前路线图**：M13 对局入口 → M14 配平 → M15 新手引导 → M16 对局完整性 → M17 留存钩子 |
 
 ### 系统设计
 
@@ -41,6 +43,7 @@
 | [06-modes-and-maps.md](06-modes-and-maps.md) | 模式规则、回合与旗帜状态机、地图数据格式与公平约束 | 2、3、11、12 章 |
 | [07-client-render-camera.md](07-client-render-camera.md) | 镜头、输入、移动物理、动画状态机、特效与可读性、画质档位 | 4、13、14 章 |
 | [08-network-protocol.md](08-network-protocol.md) | 消息定义、权威边界、**视野裁剪（安全边界）**、预测与纠正、断线重连 | — （规格书不规定） |
+| [12-fairness-review.md](12-fairness-review.md) | 公平性设计审查：等级/永久装备/付费属性/外观稀有度四项逐条判据 | 17.1（验收 #52）|
 
 ### 自动生成的检查表
 

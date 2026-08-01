@@ -24,15 +24,25 @@
     "verify:m5": "tsx scripts/verify-m5.ts",
     "verify:m6": "tsx scripts/verify-m6.ts",
     "verify:m7": "tsx scripts/verify-m7.ts",
-    "typecheck": "tsc -b packages/shared packages/server packages/client",
-    "clean": "rimraf packages/*/dist packages/*/*.tsbuildinfo"
+    "verify:m8": "node scripts/verify-m8.mjs",
+    "typecheck": "tsc -b packages/shared packages/server packages/client && pnpm typecheck:tests",
+    "typecheck:tests": "tsc -p packages/shared/tsconfig.test.json && tsc -p packages/server/tsconfig.test.json && tsc -p packages/client/tsconfig.test.json",
+    "clean": "rimraf packages/*/dist packages/*/*.tsbuildinfo",
+    "verify:m9": "tsx scripts/verify-m9.ts",
+    "verify:m10": "tsx scripts/verify-m10.ts",
+    "verify:m12": "node scripts/verify-m12.mjs",
+    "verify:m13": "tsx scripts/verify-m13.ts",
+    "verify:m15": "tsx scripts/verify-m15.ts",
+    "balance": "tsx scripts/balance-report.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@types/ws": "^8.18.1",
     "playwright": "1.62.0",
     "rimraf": "^6.0.1",
     "tsx": "^4.23.1",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "ws": "^8.21.1"
   }
 }

@@ -12,7 +12,19 @@
 
 import { chromium } from 'playwright';
 
-const URL = process.env.VERIFY_URL ?? 'http://localhost:5173/';
+/**
+ * ★ M12：默认带 `?art=off`。
+ *
+ *   这一支验的是**规则有没有被接线**（移动、镜头、目标、打断…），
+ *   没有一条与美术有关。而美术层在 `--use-gl=swiftshader` 软件渲染下
+ *   把帧率从 27 压到 4 —— 那会让本脚本因为**跑不动**而超时，
+ *   得到一个与代码正确性无关的红灯。
+ *
+ *   `?art=off` 让画面精确回到 M11 的全程序化表现（见
+ *   `client/src/settings/artMode.ts`），于是这里的结论可以与
+ *   M0–M11 的历史结果直接对比。**美术层本身由 `verify:m12` 负责。**
+ */
+const URL = process.env.VERIFY_URL ?? 'http://localhost:5173/?art=off';
 const results = [];
 const check = (id, name, pass, detail) => {
   results.push({ id, pass });
@@ -57,7 +69,7 @@ const waitFor = async (fn, timeout = 15000, interval = 60) => {
 
 /**
  * 等目标开始读条，并在**读条剩余时间还够**时立刻按下打断键。
- * 假人法师的寒冰箭只有 1.4 秒，轮询间隔加上一次额外读取就能错过整个窗口 ——
+ * 假人法师的霜矢只有 1.4 秒，轮询间隔加上一次额外读取就能错过整个窗口 ——
  * 所以判定和按键必须在同一轮里做完，不能先 waitFor 再重新读一次。
  */
 const interruptWhenCasting = async (key, minRemaining = 0.5, timeout = 25000) => {
@@ -111,7 +123,7 @@ console.log('\n── 规格书 5.1–5.3 / 验收 #4：目标选择 ──');
 
 console.log('\n── 规格书 15.2：技能图标提示不可用原因 ──');
 {
-  // Tab 到 25 米之外的目标：火焰冲击射程 25 米、寒冰箭 32 米，
+  // Tab 到 25 米之外的目标：烈焰爆射程 25 米、霜矢 32 米，
   // 同一时刻一个变灰一个可用 —— 这才验证了提示是**按各技能距离**算的，而不是一刀切
   let dist = 0;
   for (let i = 0; i < 6 && dist <= 25; i++) {
@@ -125,7 +137,7 @@ console.log('\n── 规格书 15.2：技能图标提示不可用原因 ──'
   const frostbolt = clean(slots[0]);
   check('15.2a', '★ 超出距离的技能显示原因，射程更远的同时仍可用',
     dist > 25 && fireBlast.includes('超出距离') && !frostbolt.includes('超出距离'),
-    `目标 ${dist}m｜火焰冲击(25m)「${fireBlast}」｜寒冰箭(32m)「${frostbolt}」`);
+    `目标 ${dist}m｜烈焰爆(25m)「${fireBlast}」｜霜矢(32m)「${frostbolt}」`);
 
   check('15.2b', '脱离公共冷却的技能有明确标记（7.2）',
     slots.some((s) => s.includes('脱GCD')),
@@ -134,7 +146,7 @@ console.log('\n── 规格书 15.2：技能图标提示不可用原因 ──'
 
 console.log('\n── 规格书 7.2 / 验收 #15：专用打断与学派锁定 ──');
 {
-  const beforeInterrupt = await interruptWhenCasting('Digit3'); // 法术反制
+  const beforeInterrupt = await interruptWhenCasting('Digit3'); // 断法
   await page.waitForTimeout(500);
   const lines = await logLines();
   const interruptLine = lines.find((l) => l.includes('你打断了'));
@@ -164,16 +176,21 @@ console.log('\n── 规格书 7.5 / 验收 #18：假读条 ──');
   //    加上 Playwright 的 IPC 往返，1.4 秒的读条窗口经常抓不到。
   //    改为检查**日志序列**，这也更贴近 #18 的实质（取消这件事发生了没有）。
   const usable = await waitSlotUsable(0);
-  await page.keyboard.press('Digit1'); // 寒冰箭 1.4s 读条
+  await page.keyboard.press('Digit1'); // 霜矢 1.4s 读条
   // ⚠️ 战士假人有 0.45 秒反应时间：立刻取消的话它还没「决定」打断，骗不到。
-  //    等 0.25 秒让它起意，再在拳击落下之前取消 —— 这才是真正的骗打断。
+  //    等 0.25 秒让它起意，再在猛击落下之前取消 —— 这才是真正的骗打断。
   await page.waitForTimeout(250);
   await page.keyboard.press('Escape');
   await page.waitForTimeout(600);
 
   const lines = await logLines();
-  const startIdx = lines.findIndex((l) => l.includes('开始读条'));
-  const cancelIdx = lines.findIndex((l) => l.includes('主动取消'));
+  /**
+   * ⚠️ 必须认**玩家自己**那条读条 —— 假人牧师也会产生「开始读条」，
+   *   而它出现在玩家取消之后还是之前取决于时序。第一版只找「开始读条」，
+   *   于是这条测试**偶发失败**，看起来像回归实则是断言不够精确。
+   */
+  const startIdx = lines.findIndex((l) => l.includes('开始读条 霜矢'));
+  const cancelIdx = lines.findIndex((l) => l.includes('你主动取消了'));
   // 日志是倒序的（最新在前），所以「取消」的下标应当小于「开始读条」
   const sequenceOk = startIdx >= 0 && cancelIdx >= 0 && cancelIdx < startIdx;
 
@@ -181,11 +198,11 @@ console.log('\n── 规格书 7.5 / 验收 #18：假读条 ──');
     usable && sequenceOk,
     sequenceOk ? `${lines[startIdx]} → ${lines[cancelIdx]}` : `技能可用=${usable}；日志：${lines.slice(0, 3).join(' / ')}`);
 
-  // 7.5 的完整闭环：骗掉打断后，对方的拳击落空但仍进冷却（7.2）
+  // 7.5 的完整闭环：骗掉打断后，对方的猛击落空但仍进冷却（7.2）
   await page.waitForTimeout(1200);
   const baitLines = await logLines();
   const baited = baitLines.find((l) => l.includes('落空'));
-  check('7.5', '★ 假读条骗出打断：对方拳击落空但仍进入冷却',
+  check('7.5', '★ 假读条骗出打断：对方猛击落空但仍进入冷却',
     !!baited,
     baited ?? '(本轮战士假人未起手，属正常时序波动)');
 }

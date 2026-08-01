@@ -33,7 +33,7 @@ const REACH_KICK = 3;
  */
 const stealthAura = (): AuraDef => ({
   id: 'rogue.stealth',
-  name: '潜行',
+  name: '隐匿',
   kind: 'buff',
   duration: 600,
   dispelType: DispelType.None,
@@ -50,7 +50,7 @@ const stealthAura = (): AuraDef => ({
 const skills: SkillDef[] = [
   {
     id: asSkillId('rogue.stealth'),
-    name: '潜行',
+    name: '隐匿',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -65,9 +65,15 @@ const skills: SkillDef[] = [
     forbiddenWhileCarryingFlag: true,
     counters:
       '必须脱离战斗 4 秒才能起手，进入还要 1 秒，团战中基本不可用；3 米内可能被敌人直接发现，猎人照明弹（revealsStealth 地面区域）会直接揭露整片区域；任何伤害或主动攻击都会解除；持旗时完全不可进入（12.3 / 验收 #40）；竞技场决胜阶段潜行受限，位置会被大致暴露（8.5）。',
+    /**
+     * ★ M11：原本是一条 `custom`（`rogue.requireOutOfCombat`）。
+     *   ⚠️ 而那个 handler **从来没有注册过** —— 潜行因此**没有任何脱战限制**，
+     *      团战中随时可以起手，与 9.x「脱战 4 秒后才能起手」完全相反。
+     *   `SkillDef.requires` 在 M11 之前也是死 schema（零读取方），
+     *   现在 `validateCast()` 真的读它了，所以这条能迁过来。
+     */
+    requires: [{ kind: 'outOfCombat', seconds: 4 }],
     effects: [
-      // schema 没有「要求脱离战斗 N 秒」这类前置条件字段，用注册的自定义处理器补
-      { kind: 'custom', handler: 'rogue.requireOutOfCombat', params: { seconds: 4 } },
       { kind: 'enterStealth' },
       { kind: 'applyAura', target: 'self', aura: stealthAura() },
     ],
@@ -76,7 +82,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('rogue.backstab'),
-    name: '背刺',
+    name: '背袭',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -92,15 +98,16 @@ const skills: SkillDef[] = [
     counters:
       '距离只有 2.4 米，是全游戏最短的近战触及，被减速或击退就打不到；+50% 加成要求站在目标背后约 120 度扇形内（6.5），目标只要转身面向就吃不到，且只旋转镜头不改变朝向这条规则对双方同样成立；缴械后无法使用；双剑方案的背后加成明显降低。',
     effects: [
-      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 1.15 }, behindBonus: 0.5 },
+      // M14：1.15→0.7 —— 背刺无冷却，是能量的主要出口；配合背后 +50% 保留偷袭奖励
+      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.7 }, behindBonus: 0.5 },
       { kind: 'gainResource', resource: Resource.ComboPoints, amount: 1 },
     ],
-    description: '造成 115% 武器伤害并获得 1 个连击点。从背后攻击时伤害提高 50%。',
+    description: '造成 70% 武器伤害并获得 1 个连击点。从背后攻击时伤害提高 50%。',
     vfx: 'rogue_backstab',
   },
   {
     id: asSkillId('rogue.eviscerate'),
-    name: '刺骨',
+    name: '剜刺',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -120,15 +127,16 @@ const skills: SkillDef[] = [
       {
         kind: 'spendComboPoints',
         perPointMultiplier: 1,
-        base: { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.5 } },
+        // M14：0.5→0.42 —— 终结技随连击点修复（此前连击点长在敌人身上、终结技永远空转）而实际生效，随之回调
+        base: { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.42 } },
       },
     ],
-    description: '消耗全部连击点造成终结伤害，每点 50% 武器伤害（5 点约 250%）。',
+    description: '消耗全部连击点造成终结伤害，每点 42% 武器伤害（5 点约 210%）。',
     vfx: 'rogue_eviscerate',
   },
   {
     id: asSkillId('rogue.kidney_shot'),
-    name: '肾击',
+    name: '昏击',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -159,7 +167,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('rogue.shadowstep'),
-    name: '暗影步',
+    name: '影袭步',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -180,7 +188,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('rogue.kick'),
-    name: '脚踢',
+    name: '断招踢',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -217,7 +225,8 @@ const skills: SkillDef[] = [
     counters:
       '毒素类减益，德鲁伊/圣骑士的解毒和自由祝福都能移除（8.4）；普通减速不能被「战斗意志」解除（8.3），但消失、逃脱、死亡脚步同样可以摆脱；减速不与其他减速叠乘，取较强者；降低治疗只有 20%，与战士致死创伤同类效果不叠加；缴械后无法使用。',
     effects: [
-      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.55 } },
+      // M14：0.55→0.45 —— 毒刃与 DoT 是长局副输出，马拉松局（场均 60s）里权重高
+      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.45 } },
       {
         kind: 'applyAura',
         aura: {
@@ -268,7 +277,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('rogue.evasion'),
-    name: '闪避',
+    name: '疾闪',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -286,12 +295,13 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'rogue.evasion',
-          name: '闪避',
+          name: '疾闪',
           kind: 'buff',
           duration: 5,
           dispelType: DispelType.None,
           clearableByTrinket: false,
-          modifiers: { dodgeFront: 0.5 },
+          // M14：0.5→0.35 —— 五成正面闪避在 bot 无法绕后的基线里近乎半免伤窗口
+          modifiers: { dodgeFront: 0.35 },
           description: '正面闪避几率提高 50%。法术不受影响。',
           vfx: 'rogue_evasion',
         },
@@ -302,7 +312,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('rogue.vanish'),
-    name: '消失',
+    name: '遁形',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -329,7 +339,7 @@ const skills: SkillDef[] = [
   // 武器方案授予的技能
   {
     id: asSkillId('rogue.blade_flurry'),
-    name: '剑刃连击',
+    name: '双刃乱舞',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -354,7 +364,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('rogue.riposte'),
-    name: '反击刺',
+    name: '反刺',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -369,9 +379,17 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Energy, amount: 20 },
     counters:
       '仅匕首 + 格挡短刃方案可用；必须先成功招架一次才能按出来，对手改用法术输出就完全触发不了（招架只对正面物理生效）；缴械后禁用；该方案整体爆发降低 15%，反击刺补不回刺骨的伤害缺口。',
+    /**
+     * ★ M11：原本是一条 `custom`（`rogue.requireRecentParry`），**从未注册** ——
+     *   反击刺此前**没有任何招架前置**，随时能按，与 9.x「成功招架后可用」相反。
+     *
+     *   迁移的前提有两件，M11 都补齐了：
+     *     · `validateCast()` 真的读 `SkillDef.requires`（此前是零读取方的死 schema）
+     *     · **招架判定本身存在** —— 8.x 的闪避/招架/格挡此前从未实现，
+     *       `lastParryAt` 因此没有任何来源
+     */
+    requires: [{ kind: 'recentlyParried', withinSeconds: 5 }],
     effects: [
-      // schema 没有「近期发生过招架」这类触发条件字段，用注册的自定义处理器做前置校验
-      { kind: 'custom', handler: 'rogue.requireRecentParry', params: { windowSeconds: 5 } },
       { kind: 'damage', school: School.Physical, amount: { weaponPercent: 1.0 } },
       { kind: 'gainResource', resource: Resource.ComboPoints, amount: 1 },
     ],
@@ -390,7 +408,8 @@ const weapons: WeaponDef[] = [
     isDefault: true,
     handedness: 'dualWield',
     swingInterval: 0.7,
-    swingPercent: 0.6,
+    // M14：0.6→0.25 —— 站桩白字曾是 bot 基线的主宰源（盗贼一度 100% 胜率），重心移到技能与控制
+    swingPercent: 0.25,
     reach: RANGE.DAGGER,
     modifiers: { resourceGain: 1.15 },
     advantage: '背后爆发最高，能量循环快',
@@ -410,7 +429,8 @@ const weapons: WeaponDef[] = [
     isDefault: false,
     handedness: 'dualWield',
     swingInterval: 0.9,
-    swingPercent: 0.75,
+    // M14：0.75→0.32 —— 与匕首档协调（单击仍高于匕首、攻速更慢），保持 #31 取舍
+    swingPercent: 0.32,
     reach: RANGE.MELEE,
     advantage: '正面持续伤害稳定',
     cost: '背后加成降低，攻速慢',
@@ -428,7 +448,8 @@ const weapons: WeaponDef[] = [
     isDefault: false,
     handedness: 'oneHand',
     swingInterval: 0.85,
-    swingPercent: 0.65,
+    // M14：0.65→0.29 —— 同上，居中档
+    swingPercent: 0.29,
     // 9.4 表列 2.5 米，介于匕首 2.4 与标准近战 2.8 之间，不复用 RANGE 常量
     reach: 2.5,
     modifiers: { parry: 0.15 },
@@ -452,7 +473,8 @@ export const rogue: ClassDef = {
   role: '潜行侦察、单点控制、爆发与干扰',
   baseHealth: 950,
   resources: [
-    { resource: Resource.Energy, max: 100, start: 100, regenPerSecond: 10 },
+    // M14：10→6 —— 能量回复兑现（此前 regen 是死数据）后按 40 耗背刺 ≈ 6.7s 一发定节奏
+    { resource: Resource.Energy, max: 100, start: 100, regenPerSecond: 6 },
     // 连击点靠背刺、剑刃连击、反击刺产出，不自然回复
     { resource: Resource.ComboPoints, max: 5, start: 0, regenPerSecond: 0 },
   ],

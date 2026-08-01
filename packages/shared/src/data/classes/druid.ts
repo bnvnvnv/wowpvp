@@ -39,7 +39,7 @@ const FORM_AURA_DURATION = 3600;
 const skills: SkillDef[] = [
   {
     id: asSkillId('druid.moonfire'),
-    name: '月火术',
+    name: '月辉灼击',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -51,10 +51,12 @@ const skills: SkillDef[] = [
     triggersGcd: true,
     requiresLos: true,
     // 文档未给出具体资源消耗，这里按法力池（1000，每秒回 13）给出基线值
-    cost: { resource: Resource.Mana, amount: 45 },
+    // M14：45→40 —— 治疗（120 耗）与输出共享法力，回复 13/s 下让两者能并行
+    cost: { resource: Resource.Mana, amount: 40 },
     counters: '瞬发但伤害偏低，靠持续伤害积累；持续伤害属于魔法减益，可被驱散魔法直接移除（8.4），也不能被「战斗意志」解除（8.3）；沉默期间无法施放；只能在人形下使用，进入形态后失去这条消耗手段。',
     effects: [
-      { kind: 'damage', school: School.Nature, amount: { flat: 90, powerCoef: 0.35 } },
+      // M14：90→175 —— 月火是德鲁伊唯一直伤：占位值下他打不死任何人（基线 4.8% 胜率）
+      { kind: 'damage', school: School.Nature, amount: { flat: 175, powerCoef: 0.35 } },
       {
         kind: 'applyAura',
         aura: {
@@ -66,7 +68,8 @@ const skills: SkillDef[] = [
           clearableByTrinket: false,
           periodic: {
             interval: 3,
-            effects: [{ kind: 'damage', school: School.Nature, amount: { flat: 25, powerCoef: 0.1 } }],
+            // M14：25→55 —— DoT 与直伤同轮加码，长局职业吃满 12 秒跳
+            effects: [{ kind: 'damage', school: School.Nature, amount: { flat: 55, powerCoef: 0.1 } }],
           },
           description: '每 3 秒受到一次自然伤害，持续 12 秒。',
           vfx: 'druid_moonfire_dot',
@@ -93,7 +96,8 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 120 },
     counters: '1.3 秒读条且必须原地：专用打断会锁自然学派 3 秒（7.2），昏迷、恐惧、击退和主动移动都能打断；被「致死打击」一类降治疗减益压制时收益明显下降；形态下不可施放，切回人形本身要吃 1 秒公共冷却。',
     effects: [
-      { kind: 'heal', amount: { flat: 220, powerCoef: 0.6 } },
+      // M14：220→270 —— 主动治疗职业的生存底盘，与月火同轮定值
+      { kind: 'heal', amount: { flat: 270, powerCoef: 0.6 } },
       {
         kind: 'applyAura',
         aura: {
@@ -116,7 +120,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.rejuvenation'),
-    name: '回春术',
+    name: '回春',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
@@ -134,7 +138,7 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'druid.rejuvenation',
-          name: '回春术',
+          name: '回春',
           kind: 'buff',
           duration: 6,
           dispelType: DispelType.Magic,
@@ -152,7 +156,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.entangling_roots'),
-    name: '纠缠根须',
+    name: '缠根',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -174,7 +178,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.cyclone'),
-    name: '旋风',
+    name: '气旋囚笼',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -192,7 +196,7 @@ const skills: SkillDef[] = [
         kind: 'applyAura',
         aura: {
           id: 'druid.cyclone',
-          name: '旋风',
+          name: '气旋囚笼',
           kind: 'debuff',
           duration: 2.5,
           dispelType: DispelType.Magic,
@@ -210,7 +214,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.skull_bash'),
-    name: '迎头痛击',
+    name: '撞击',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Enemy,
@@ -233,7 +237,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.barkskin'),
-    name: '树皮术',
+    name: '硬化树皮',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -252,7 +256,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'druid.barkskin',
-          name: '树皮术',
+          name: '硬化树皮',
           kind: 'buff',
           duration: 4,
           dispelType: DispelType.Magic,
@@ -267,7 +271,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.bear_form'),
-    name: '熊形态',
+    name: '巨熊形态',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -287,7 +291,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'druid.bear_form',
-          name: '熊形态',
+          name: '巨熊形态',
           kind: 'buff',
           duration: FORM_AURA_DURATION,
           dispelType: DispelType.None,
@@ -303,7 +307,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.cat_form'),
-    name: '猎豹形态',
+    name: '迅猫形态',
     classId: CLASS_ID,
     targeting: Targeting.Self,
     targetFilter: TargetFilter.Self,
@@ -322,7 +326,7 @@ const skills: SkillDef[] = [
         target: 'self',
         aura: {
           id: 'druid.cat_form',
-          name: '猎豹形态',
+          name: '迅猫形态',
           kind: 'buff',
           duration: FORM_AURA_DURATION,
           dispelType: DispelType.None,
@@ -333,28 +337,26 @@ const skills: SkillDef[] = [
         },
       },
       /**
-       * schema 的 enterStealth 是「立即潜行」，无法表达文档 9.8 的
-       * 「**脱战后才**可潜行」+ 12.3 的「携旗时不能潜行」这两条条件。
-       * 交给自定义处理器：它在猎豹形态存在期间监听脱战与持旗状态，
-       * 满足条件才授予潜行，持旗时直接拒绝（而不是先掉旗）。
+       * ★ M11：原本是一条 `custom`（`druid.prowl`），**从未注册**。
+       *
+       *   ⚠️ 但它**不能**像盗贼潜行那样迁到 `requires` —— 语义不同：
+       *      `requires` 是**施法瞬间**的门禁（「现在能不能变形」），
+       *      而 9.8 要的是「变形**期间**脱战即可潜行」的**持续**能力。
+       *      写成 `requires: [{outOfCombat}]` 会变成「战斗中不能变猎豹」，
+       *      那是另一条规则，而且是错的。
+       *
+       *   所以这里**只删掉那个从未生效的 custom**，把「脱战可潜行」
+       *   如实降级为**尚未实现**（已登记在 PROGRESS 技术债）——
+       *   保留一个假装在工作的 handler 比缺失更糟。
+       *   12.3「携旗不能潜行」那一半由 `forbiddenWhileCarryingFlag` 覆盖。
        */
-      {
-        kind: 'custom',
-        handler: 'druid.prowl',
-        params: {
-          requiresOutOfCombat: true,
-          /** 12.3：旗手不能潜行，携旗期间该能力直接不可用 */
-          forbiddenWhileCarryingFlag: true,
-          graceSeconds: 1,
-        },
-      },
     ],
     description: '变为猎豹形态：移动速度提高 15%，脱离战斗后可潜行。使用能量。携带旗帜时不能潜行。',
     vfx: 'druid_cat_form',
   },
   {
     id: asSkillId('druid.wild_charge'),
-    name: '野性冲锋',
+    name: '野性突进',
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     // 形态决定目标阵营：熊/猎豹指向敌人，人形指向友方
@@ -393,7 +395,7 @@ const skills: SkillDef[] = [
   },
   {
     id: asSkillId('druid.stampeding_roar'),
-    name: '群奔咆哮',
+    name: '疾奔怒吼',
     classId: CLASS_ID,
     targeting: Targeting.SelfCenter,
     targetFilter: TargetFilter.Ally,
@@ -440,7 +442,8 @@ const weapons: WeaponDef[] = [
     isDefault: true,
     handedness: 'staff',
     swingInterval: 1.8,
-    swingPercent: 0.55,
+    // M14：0.55→0.6 —— 自然法杖白字 33/s，法系三家里最低（德鲁伊重治疗与机动）
+    swingPercent: 0.6,
     reach: 28,
     // 9.8 默认装备：28 米，约 1.8 秒一次自然法术弹 → 普通攻击走射击规则（7.6）
     isRanged: true,

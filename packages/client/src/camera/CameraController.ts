@@ -10,6 +10,11 @@
 
 import * as THREE from 'three';
 import { GEOMETRY, type Aabb, type Vec3 } from '@wowpvp/shared';
+import { CameraShake } from './CameraShake.js';
+import {
+  DEFAULT_ACCESSIBILITY,
+  type AccessibilitySettings,
+} from '../settings/accessibility.js';
 
 export const CAMERA = {
   /** 小于此距离进入第一人称表现 */
@@ -93,8 +98,27 @@ export class CameraController {
   private autoFollowResumeAt = 0;
   private elapsed = 0;
 
+  /** 镜头震动（docs/07 §1.7）。震动幅度全部经 shakeAmplitude() 归一 */
+  private readonly shake = new CameraShake();
+  private access: AccessibilitySettings = DEFAULT_ACCESSIBILITY;
+
   constructor(aspect: number) {
     this.camera = new THREE.PerspectiveCamera(CAMERA.FOV, aspect, CAMERA.NEAR, CAMERA.FAR);
+  }
+
+  /** 17.2「减弱镜头震动」的设置入口。用 setter 而不是 update 的新参数 —— 不动 20 条既有测试的调用签名 */
+  setAccessibility(s: AccessibilitySettings): void {
+    this.access = s;
+  }
+
+  /** 打击事件加创伤（HitFeedback 是唯一调用方）*/
+  addTrauma(t: number): void {
+    this.shake.add(t);
+  }
+
+  /** 诊断只读：当前创伤值 */
+  get trauma(): number {
+    return this.shake.traumaLevel;
   }
 
   /** 是否处于第一人称（供渲染层隐藏头部与躯干，4.1）*/
@@ -209,7 +233,27 @@ export class CameraController {
     this.collidedDistance += (allowed - this.collidedDistance) * expLerp(k, dt);
     this.collidedDistance = Math.min(this.collidedDistance, this.currentDistance);
 
-    const finalPos = this.orbitPosition(anchor, this.collidedDistance);
+    /**
+     * ★★ 震动的位移通道**只会把镜头往锚点方向拉，永远不会推远。**
+     *
+     *   `collidedDistance` 已经是 probe() 算出的**不穿墙的最大距离**，
+     *   而 `pullIn ≥ 0`，所以震动后的位置必定落在那条安全线段**内部**。
+     *   这不是「加了一次检查」，是**减法本身**保证的 —— 想让震动穿墙，
+     *   得先把这里的减号改成加号，那是一次会被 review 拦下的改动。
+     *   （docs/07 §1.4：镜头穿墙 = 免费的信息优势。）
+     *
+     * ⚠️ 震动用的 dt 是渲染时钟 —— 顿帧时震动跟着世界一起「冻住再爆开」，
+     *   这是想要的效果：顿帧与震动是同一记打击的两半。
+     */
+    this.shake.update(dt);
+    const sh = this.shake.active
+      ? this.shake.sample(this.access)
+      : undefined;
+    const shakenDistance = sh
+      ? Math.max(0.15, this.collidedDistance - sh.pullIn)
+      : this.collidedDistance;
+
+    const finalPos = this.orbitPosition(anchor, shakenDistance);
     this.camera.position.copy(finalPos);
 
     if (this.isFirstPerson) {
@@ -218,6 +262,14 @@ export class CameraController {
       this.camera.lookAt(anchor.clone().add(dir.multiplyScalar(10)));
     } else {
       this.camera.lookAt(anchor);
+    }
+
+    // 震动的角度通道：lookAt **之后**叠加 —— 位置一个字节都没动，
+    // 相机不可能因此进入几何体（结构性防穿墙的另一半）
+    if (sh && (sh.yaw !== 0 || sh.pitch !== 0 || sh.roll !== 0)) {
+      this.camera.rotateY(sh.yaw);
+      this.camera.rotateX(sh.pitch);
+      this.camera.rotateZ(sh.roll);
     }
   }
 

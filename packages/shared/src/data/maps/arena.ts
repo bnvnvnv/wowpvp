@@ -24,7 +24,9 @@
 import { MOVE } from '../../constants/combat.js';
 import { GameMode } from '../../types/enums.js';
 import { asMapId, TEAM_BLUE, TEAM_RED, type TeamId } from '../../types/ids.js';
-import { box, type MapDef, type MapVolume, type PrepRoom, type SpawnPoint } from './schema.js';
+import {
+  box, type MapDecorDef, type MapDef, type MapVolume, type PrepRoom, type SpawnPoint,
+} from './schema.js';
 
 /** 11.2 的「秒」换算成米 */
 const secondsToMeters = (s: number): number => s * MOVE.BASE_SPEED;
@@ -73,6 +75,59 @@ const makePillars = (count: number, ringRadius: number): MapVolume[] =>
       { w: 2.4, h: 5, d: 2.4 },
     );
   });
+
+/**
+ * 纯装饰摆设（M12 表现层）。★ sim 不读它（docs/06 §8.2），全部小件不挡路：
+ * 火盆守四角、酒桶贴柱根、雕像头靠中央矮墙两端、松树紧贴外墙
+ * （外墙本来就挡人，树贴着墙种视觉与判定天然一致）。
+ * 位置全部是 spec 的确定性函数 —— 同一张图在每个客户端一个样。
+ */
+const makeDecor = (spec: ArenaSpec, half: number, arenaHalf: number): MapDecorDef[] => {
+  const out: MapDecorDef[] = [];
+
+  // 四角火盆
+  const c = arenaHalf - 3;
+  for (const [sx, sz] of [[1, 1], [1, -1], [-1, 1], [-1, -1]] as const) {
+    out.push({
+      model: 'props/infernal_brazier',
+      position: { x: sx * c, y: 0, z: sz * c },
+      yaw: sx * 0.6 + sz * 1.7,
+    });
+  }
+
+  // 每根柱子：外侧一只酒桶、内侧一丛灌木（与 makePillars 同一套角度公式）
+  const r = half * 0.55;
+  for (let i = 0; i < spec.pillarCount; i++) {
+    const a = (i / spec.pillarCount) * Math.PI * 2 + Math.PI / spec.pillarCount;
+    const ox = Math.cos(a);
+    const oz = Math.sin(a);
+    out.push({
+      model: 'props/barrel',
+      position: { x: ox * (r + 2.1), y: 0, z: oz * (r + 2.1) },
+      yaw: a * 1.3,
+    });
+    out.push({
+      model: i % 2 === 0 ? 'foliage/bush' : 'foliage/bush_flowers',
+      position: { x: ox * (r - 2.3), y: 0, z: oz * (r - 2.3) },
+      yaw: a,
+    });
+  }
+
+  // 中央矮墙两端各一颗半埋雕像头（趣味观赏点，紧贴矮墙不占走位）
+  out.push({ model: 'props/statue_head', position: { x: half * 0.25 + 1.6, y: 0, z: 1.9 }, yaw: -0.7 });
+  out.push({ model: 'props/statue_head', position: { x: -(half * 0.25 + 1.6), y: 0, z: -1.9 }, yaw: 2.4 });
+
+  // 外圈松树：贴墙每 45° 一棵，让开 ±Z 出生走廊（准备区门宽 |x|<10）
+  const ring = arenaHalf - 2.4;
+  for (let i = 0; i < 8; i++) {
+    const a = i * (Math.PI / 4) + Math.PI / 8;
+    const x = Math.cos(a) * ring;
+    const z = Math.sin(a) * ring;
+    if (Math.abs(x) < 12) continue;
+    out.push({ model: `foliage/pine_${(i % 5) + 1}`, position: { x, y: 0, z }, yaw: a * 2 });
+  }
+  return out;
+};
 
 const buildArena = (spec: ArenaSpec): MapDef => {
   const half = secondsToMeters(spec.spawnToCenterSeconds); // 中央到出生点
@@ -138,6 +193,7 @@ const buildArena = (spec: ArenaSpec): MapDef => {
       max: { x: arenaHalf, y: 40, z: arenaHalf },
     },
     geometry,
+    decor: makeDecor(spec, half, arenaHalf),
     // 11.3：开门后准备区对所有人禁入
     forbidden: prepRooms.map((r) => ({
       id: `forbid_${r.id}`,

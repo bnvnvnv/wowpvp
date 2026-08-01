@@ -150,6 +150,22 @@ export const isPoisonSkill = (skill: SkillDef): boolean =>
 export const visualOf = (skill: SkillDef): AttributeVisual =>
   ATTRIBUTE_VISUALS[visualAttributeOf(skill)];
 
+/**
+ * 只按**伤害学派**取视觉属性（不含毒素判定）。
+ *
+ * ★ 用途：命中类战斗事件（`CombatEvent` 的 `damage`）只带 `school`，**不带 skillId** ——
+ *   多目标瞬发伤害在 sim 里是「一次结算多个目标」，事件里没有技能引用可查。
+ *   所以命中爆发的属性色只能退到学派。
+ *
+ * ★ 保真度取舍：**毒刃**的学派是 physical，用本函数会得到钢铁色而非黄绿。
+ *   但飞行体与释放/落地爆发走的是 `visualOf(skill)`（有 skillId，毒感知），
+ *   而毒类技能基本都是近战/投射物，命中爆发由那条路径覆盖 —— 真正落到本函数
+ *   的是「奥术冲击波」这类无 skillId 的瞬发学派伤害，用学派色恰好正确。
+ */
+/** 某学派的 `AttributeVisual`（命中爆发用）*/
+export const visualForSchool = (school: School): AttributeVisual =>
+  ATTRIBUTE_VISUALS[SCHOOL_TO_VISUAL[school]];
+
 /** 转成 CSS 颜色串，供 HUD 使用。HUD 与 3D 特效共用同一张表 */
 export const cssColor = (c: number): string => `#${c.toString(16).padStart(6, '0')}`;
 

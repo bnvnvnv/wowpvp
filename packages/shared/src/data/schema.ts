@@ -21,7 +21,7 @@ import type {
   TargetFilter,
   Targeting,
 } from '../types/enums.js';
-import type { ArmorId, ClassId, SkillId, WeaponId } from '../types/ids.js';
+import type { ArmorId, ClassId, ConsumableId, SkillId, WeaponId } from '../types/ids.js';
 
 // ════════════════════════════════════════════════════════════════
 //  范围形状
@@ -83,6 +83,19 @@ export interface AuraModifiers {
    * 用全局 damageTaken 近似会让抗法护甲连物理伤害一起减，违反 17.1 的横向取舍。
    */
   damageTakenBySchool?: Partial<Record<School, number>>;
+  /**
+   * 按学派拆分的**控制持续时间**承受乘算（10.8）。
+   *
+   * ★★ 抗法型护甲（Spellward）的身份是「削减**魔法**控制」，而抗控型护甲
+   *   （Tenacity）才是「削减**所有**控制」。只有全局的 `ccDurationTaken`
+   *   时，抗法护甲要么表达不了这一半优势，要么顺带削减物理控制 ——
+   *   那样两件护甲会互相踩线，而 10.9 / 验收 #32 要求「没有任何一件是全面上位」。
+   *   `armors.ts` 当时的选择是**宁可少表达一半优势，也不要表达错**。
+   *
+   * ★ 加进 schema 的判据与 `damageTakenBySchool` 一致（11-contributing §4 的
+   *   「三次即入 schema」）：「按学派区分」这个需求已经出现过两次。
+   */
+  ccDurationTakenBySchool?: Partial<Record<School, number>>;
   /** 自己**施加**的控制持续时间乘算（施加方向）。与 ccDurationTaken（承受方向）相反 */
   ccDurationDealt?: number;
   /** 造成的吸收护盾量乘算 */
@@ -455,6 +468,36 @@ export interface SkillModifier {
   rangeMultiplier?: number;
   /** 背刺加成的**增量**（不是乘算）。双剑「背后加成降低」→ -0.2 */
   behindBonusDelta?: number;
+}
+
+/**
+ * 消耗品（10.1 临时增益道具）。
+ *
+ * ★★ **这个类型此前根本不存在** —— `DropKind` 里有 `'consumable'`、
+ *   `Loadout.consumables` 也在、`stats.recordItemBuff()` 也留好了入口，
+ *   但**没有名字、没有效果、没有持续时间**，也从没有代码创建过一个消耗品掉落。
+ *   于是 16.2 的「增益期间击杀」结构上恒为 0（已登记为已知偏差 #2）。
+ *
+ * ★ 与 `WeaponDef` / `ArmorDef` 的区别：那两者是**持续**的装备修正，
+ *   消耗品是**一次性**触发一组效果 —— 所以它带 `effects` 而不是 `modifiers`。
+ *   增益本身由效果里的 `applyAura` 表达，持续时间就是那个光环的时长。
+ */
+export interface ConsumableDef {
+  id: ConsumableId;
+  name: string;
+  /** 10.2：职业归属。不匹配的玩家看得到但拿不走 */
+  classId?: ClassId;
+  /** 使用后触发的效果。增益走 applyAura */
+  effects: EffectDef[];
+  /**
+   * 增益窗口时长，秒。★ 16.2 的「增益期间击杀」按它计窗口。
+   * 与效果里光环的时长应当一致 —— 分开写是因为一个消耗品可以施加多个光环。
+   */
+  buffSeconds: number;
+  /** 使用后进入的冷却，秒。0 表示不进冷却 */
+  cooldown: number;
+  description: string;
+  vfx?: string;
 }
 
 export interface ArmorDef {

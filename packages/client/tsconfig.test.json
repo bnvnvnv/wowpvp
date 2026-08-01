@@ -1,0 +1,25 @@
+{
+  // 主 tsconfig 把 **/*.test.ts 排除在外，否则测试会被编进 dist ——
+  // 而 dist 里的**编译副本**会被 vitest 当成第二份测试再跑一遍。
+  //
+  // ★ 但「不编译」不等于「不检查」：测试文件不过类型检查时，从一个模块
+  //   import 它并不导出的符号会得到 `undefined` 而不是报错，
+  //   于是测试可能**因为错误的原因通过**。所以单独开一个 noEmit 项目检查它们。
+  //
+  // ★ M12：`types` 比主项目多一个 `node`。**只加在这里**是有意的 ——
+  //   测试跑在 node 里（skillIconMap.test.ts 要读磁盘校验图标没断链），
+  //   而 `src/` 本身仍然只有 `vite/client`，所以「往浏览器代码里
+  //   import node:fs」照旧是类型错误。测试与源码的运行环境不同，
+  //   类型环境就该跟着不同，而不是给源码一起放宽。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "incremental": false,
+    "types": ["vite/client", "node"]
+  },
+  "include": ["src/**/*"],
+  "exclude": []
+}

@@ -4,16 +4,59 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>wowpvp — M1 移动物理与自由镜头试验场</title>
+    <!-- ★ 内联 favicon（奥术紫圆 + 星，14.2 色板）：零素材、零许可。
+         没有它，部分浏览器（如 Edge headless）会自动请求 /favicon.ico 得到 404，
+         在控制台产生一条资源错误 —— 而 verify:m12 #12d 断言控制台零错误，
+         不能让验收结果取决于跑在哪个浏览器上。 -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23c39bff'/%3E%3Cpath d='M8 3.2 9.2 6.8 13 8 9.2 9.2 8 12.8 6.8 9.2 3 8 6.8 6.8Z' fill='%23fff'/%3E%3C/svg%3E" />
     <style>
+      /* ── M12 字体（assets/art/fonts，来源见 docs/09 §4）──────────
+         ★ 只声明拉丁与拉丁扩展子集：中文正文仍走系统字体。
+           Alegreya 没有中文字形，整段套上去会让每个汉字都走一次
+           fallback，反而比不换字体更慢。数字与标题受益最大，
+           而 HUD 里最需要「一眼读准」的恰恰是数字。
+         ★ font-display: swap —— 字体没到之前先用系统字体渲染，
+           不产生任何不可见文本期（15.2 的施法条读数不能有空窗）。 */
+      @font-face {
+        font-family: "Alegreya Sans";
+        src: url("/art/fonts/alegreya-sans-500-latin.woff2") format("woff2");
+        font-weight: 500; font-display: swap;
+        unicode-range: U+0000-00FF, U+2000-206F, U+2190-21BB, U+2600-26FF;
+      }
+      @font-face {
+        font-family: "Alegreya Sans";
+        src: url("/art/fonts/alegreya-sans-400-latin.woff2") format("woff2");
+        font-weight: 400; font-display: swap;
+        unicode-range: U+0000-00FF, U+2000-206F, U+2190-21BB, U+2600-26FF;
+      }
+      @font-face {
+        font-family: "Alegreya Sans";
+        src: url("/art/fonts/alegreya-sans-700-latin.woff2") format("woff2");
+        font-weight: 700; font-display: swap;
+        unicode-range: U+0000-00FF, U+2000-206F, U+2190-21BB, U+2600-26FF;
+      }
+      /* 标题用的衬线体，只给比分/奖励这类「牌面」文字 */
+      @font-face {
+        font-family: "Cinzel";
+        src: url("/art/fonts/cinzel-400-700-latin.woff2") format("woff2");
+        font-weight: 400 700; font-display: swap;
+        unicode-range: U+0000-00FF, U+2000-206F;
+      }
+
       :root { color-scheme: dark; }
       * { box-sizing: border-box; margin: 0; padding: 0; }
       html, body, #app { width: 100%; height: 100%; overflow: hidden; }
       body {
-        font: 13px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+        font: 13px/1.6 "Alegreya Sans", system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
         background: #14161c;
         color: #e6e8ee;
       }
-      #view { display: block; width: 100%; height: 100%; cursor: crosshair; }
+      /* M12 自定义光标。★ 保留 crosshair 作为兜底 —— 素材缺失时
+         光标不能变成默认箭头，那会让「现在能不能点」失去提示 */
+      #view { display: block; width: 100%; height: 100%;
+              cursor: url("/art/ui/cursors/hand-default.png") 4 2, crosshair; }
+      #view.cursor-attack { cursor: url("/art/ui/cursors/attack-sword.png") 4 2, crosshair; }
+      #view.cursor-friendly { cursor: url("/art/ui/cursors/friendly-shield.png") 4 2, pointer; }
 
       #hud { position: fixed; inset: 0; pointer-events: none; padding: 14px; }
       .panel {
@@ -34,7 +77,8 @@
       #stats b.warn { color: #e0b87e; }
       #stats hr { border: 0; border-top: 1px solid #2c313d; margin: 7px 0; }
 
-      #help { top: 14px; right: 14px; max-width: 360px; max-height: calc(100vh - 190px);
+      /* M8：让开右上角的小地图（168px + 间距）*/
+      #help { top: 196px; right: 14px; max-width: 360px; max-height: calc(100vh - 560px);
               overflow-y: auto; pointer-events: auto; }
       #help h3 { font-size: 12px; color: #6f9fd0; margin: 0 0 6px; font-weight: 600; }
       #help h3 + table + h3 { margin-top: 12px; }
@@ -51,6 +95,31 @@
         border-bottom-width: 2px; border-radius: 4px; padding: 0 5px;
         font: 11px/1.5 ui-monospace, monospace; color: #cfd6e4; margin-right: 3px;
       }
+
+      /* ── M9 可访问性（规格书 17.2）─────────────────────────────
+         界面缩放与语义色都走 CSS 自定义属性，由 CombatHud.applyAccessibility()
+         写在 #combat-hud 上。★ 挂在根节点上是有意的：15.1 的四区加装备栏共五块
+         面板，逐块应用一定会漏，而漏掉的那块只有把缩放调到 2.0 的人才会发现。
+         下面的默认值仅在 JS 还没写入时生效。                              */
+      #combat-hud {
+        --ui-scale: 1;
+        --c-hostile: #e5484d;
+        --c-friendly: #30a46c;
+        --c-neutral: #f5d90a;
+        --c-danger: #e5484d;
+        --c-own-flag: #e5484d;
+        --c-enemy-flag: #3e63dd;
+      }
+      /* 17.2 界面缩放。★ 姓名板层排除在外 —— 它的 transform 是**投影坐标**，
+         再套一层 scale 会让姓名板与 3D 里的角色错位。缩放要的是「UI 更大」，
+         不是「把整个画面放大」。 */
+      #combat-hud > *:not(#nameplates) {
+        transform-origin: top left;
+        zoom: var(--ui-scale);
+      }
+      /* 17.2 第三句：四项各自独立。这两条 class 由 applyAccessibility 切换 */
+      #combat-hud.no-damage-numbers .damage-number { display: none !important; }
+      #combat-hud.no-screen-flash .screen-flash { display: none !important; }
 
       /* ── M2 战斗 HUD（规格书 15.1 / 15.2）───────────────────── */
       #combat-hud { position: fixed; inset: 0; pointer-events: none; }
@@ -86,6 +155,16 @@
       /* 15.2：可打断=正常边框；不可打断=盾牌标记；物理射击准备=独立颜色 */
       .bar.cast { margin-top: 6px; height: 20px; }
       .bar.cast i { background: color-mix(in srgb, var(--school) 55%, #1b1f28); }
+
+      /* ★★ M12：施法条的**连续**填充。
+         HUD 每 50ms 重建一次 innerHTML，而 `width: X%` 在重建时是跳变的 ——
+         20Hz 的台阶在 144Hz 屏上非常明显，而 7.5 的假读条博弈要玩家
+         盯着这根条判断「还剩多少能打断」。
+         做法：让 CSS 动画自己跑满全程，用**负的 animation-delay**
+         把它拨到当前进度。元素重建时动画从正确的位置继续，
+         中间那 50ms 由浏览器合成器补，与 JS 刷新率无关。 */
+      @keyframes cast-fill { from { width: 0%; } to { width: 100%; } }
+      .bar.cast i.anim { animation: cast-fill linear forwards; }
       .bar.cast.castable { border-color: var(--school); }
       .bar.cast.shielded { border-color: #8e96a8; border-style: dashed; }
       .bar.cast.shot { border-color: #d8b45c; box-shadow: inset 0 0 0 1px rgba(216,180,92,.35); }
@@ -102,19 +181,84 @@
 
       #skill-bar { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
                    display: flex; gap: 6px; pointer-events: none; }
-      #skill-bar .slot { width: 92px; padding: 5px 7px; border-radius: 8px;
+      #skill-bar .slot { width: 108px; padding: 5px 7px; border-radius: 8px;
                          background: rgba(20,23,30,.9); border: 1px solid #2c313d;
                          border-top: 2px solid var(--school); }
       #skill-bar .slot.blocked { opacity: .5; }
       #skill-bar .slot.usable { box-shadow: 0 0 0 1px color-mix(in srgb, var(--school) 45%, transparent); }
-      #skill-bar .sk-name { font-size: 12px; font-weight: 600; margin: 2px 0 1px; }
+      #skill-bar .sk-head { display: flex; align-items: center; gap: 6px; margin: 2px 0 1px; }
+      #skill-bar .sk-icon { flex: none; display: block; }
+      #skill-bar .sk-name { font-size: 12px; font-weight: 600; white-space: nowrap; }
       #skill-bar .sk-meta { font-size: 10px; color: #7d8698; }
       #skill-bar .sk-block { font-size: 10px; color: #e08a8a; margin-top: 2px; }
 
+      /* ── M12 技能栏打磨 ──────────────────────────────────────── */
+      #skill-bar .slot {
+        transition: transform .09s ease-out, box-shadow .12s ease-out, opacity .12s;
+      }
+      #skill-bar .slot.usable:hover { transform: translateY(-2px); }
+      /* 真实图标：圆角 + 内描边，让方图与程序化 SVG 的边框语言一致 */
+      #skill-bar .sk-img {
+        border-radius: 5px; object-fit: cover;
+        box-shadow: inset 0 0 0 1px rgba(0,0,0,.55), 0 1px 3px rgba(0,0,0,.5);
+      }
+      #skill-bar .slot.blocked .sk-img { filter: grayscale(.75) brightness(.65); }
+
+      /* ★ 冷却扫层：conic-gradient 顺时针扫过图标。
+         ⚠️ 它是**第二**通道 —— `.sk-block` 里的秒数读数仍然照常显示。
+         14.4 不允许把关键信息只留一个通道，而「还有多久能用」是
+         15.2 明确要求提示的内容之一。 */
+      #skill-bar .sk-head { position: relative; }
+      #skill-bar .sk-cd {
+        position: absolute; left: 0; top: 0; width: 26px; height: 26px;
+        border-radius: 5px; pointer-events: none;
+        background: conic-gradient(rgba(10,12,18,.78) var(--cd-deg), transparent 0);
+      }
+      /* 按下技能时的一次脉冲，让「按了」有即时回执（不等服务器） */
+      @keyframes sk-press { 0% { transform: scale(1); } 45% { transform: scale(.9); } 100% { transform: scale(1); } }
+      #skill-bar .slot.pressed .sk-head { animation: sk-press .17s ease-out; }
+
+      /* ── M12 浮动伤害数字（14.1 命中反馈 / 17.2 可关闭）────────
+         ★ 关闭由 `#combat-hud.no-damage-numbers` 的 display:none 兜底，
+           但 FloatingNumbers 关掉时压根不建 DOM —— 见该文件头部。 */
+      #floating-numbers { position: absolute; inset: 0; pointer-events: none; }
+      .damage-number {
+        position: absolute; left: 0; top: 0; white-space: nowrap;
+        font-weight: 700; font-size: 15px; letter-spacing: .3px;
+        text-shadow: 0 1px 3px #000, 0 0 8px rgba(0,0,0,.9);
+        will-change: transform, opacity;
+      }
+      .fn-damage { color: #ffd9c0; }
+      /* 暴击的主通道是**尺寸与弹跳**（JS 的 POP_PEAK 1.9），颜色只是第三条 ——
+         17.2/915：不能只靠颜色。字重 900 + 字距是字形通道的一部分 */
+      .fn-crit   { color: #ffb057; font-size: 21px; font-weight: 900; letter-spacing: .6px; }
+      .fn-heal   { color: #86e5a2; }
+      .fn-absorb { color: #9fd2ff; }
+      /* 未命中/免疫是**文字**不是数字 —— 显示 0 会被读成「打中但减到 0」 */
+      .fn-miss   { color: #c2c8d6; font-size: 13px; font-weight: 600; }
+      .fn-immune { color: #ffe9a8; font-size: 13px; font-weight: 600; }
+
+      /* ── M12 受击屏幕闪烁（17.2 可独立关闭）────────────────────
+         ★ 只在**四周边缘**变红，中间保持全透明 —— 全屏泛红会盖住
+           14.4 点名不能隐藏的那些东西（控制状态、地面边界）。 */
+      #screen-flash {
+        position: absolute; inset: 0; pointer-events: none; opacity: 0;
+        transition: opacity .09s ease-out;
+        background: radial-gradient(ellipse at center,
+                    transparent 52%, rgba(190,30,30,.42) 100%);
+      }
+      #combat-hud.no-screen-flash #screen-flash { display: none; }
+
+      /* ★ M12：战斗日志此前是浅灰字直接压在深色背景上。引入 HDR 环境与
+         地面贴图后背景可能是**亮的**（白天的石板地），同一组颜色在那上面
+         几乎读不出来 —— 这是画面变亮带来的真实可读性回退，截图比对发现的。
+         做法是给文字加描边阴影而不是调亮颜色：颜色还要继续承担
+         ok/fail/interrupt 的语义区分（15.2），动了颜色就动了语义。 */
       #combat-log { position: absolute; left: 14px; bottom: 14px; width: 380px;
-                    font-size: 11px; font-variant-numeric: tabular-nums; }
-      .log { display: flex; gap: 6px; padding: 1px 0; color: #a8b0c2; }
-      .log span { color: #59617a; min-width: 34px; text-align: right; }
+                    font-size: 11px; font-variant-numeric: tabular-nums;
+                    text-shadow: 0 1px 2px #000, 0 0 6px rgba(0,0,0,.85); }
+      .log { display: flex; gap: 6px; padding: 1px 0; color: #c2c9d8; }
+      .log span { color: #808aa2; min-width: 34px; text-align: right; }
       .log.ok { color: #8fd0a0; }
       .log.fail { color: #e08a8a; }
       .log.interrupt { color: #e0c07e; }
@@ -130,6 +274,208 @@
       .np-cast { height: 4px; background: #2a2f3a; border-radius: 2px; overflow: hidden; margin-top: 2px; }
       .np-cast i { display: block; height: 100%; background: var(--school); }
       .np-cast.shielded { outline: 1px dashed #8e96a8; }
+
+      /* ── M8 HUD（规格书 15.1 / 15.3 / 15.4）───────────────────── */
+      /* 15.1 左侧：最多 12 名队友 */
+      /* 15.1 左侧。试验场里 #stats 占了左上角，队伍框让到它下面 */
+      #party-frame { position: absolute; left: 14px; top: 350px; width: 176px;
+                     display: flex; flex-direction: column; gap: 4px; }
+      .pf-member { background: rgba(20,23,30,.86); border: 1px solid #2c313d;
+                   border-radius: 6px; padding: 4px 6px; }
+      .pf-member.dead { opacity: .45; }
+      .pf-top { display: flex; align-items: center; gap: 4px; font-size: 11px; }
+      .pf-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pf-class { color: #7d8698; font-size: 10px; }
+      .pf-flag { color: #ffd76a; margin-left: auto; }
+      .pf-dead { color: #e08a8a; margin-left: auto; }
+      .pf-bar { height: 6px; border-radius: 3px; overflow: hidden; background: #22262f;
+                margin-top: 3px; }
+      .pf-bar i { display: block; height: 100%; background: #4fbf70; }
+      .pf-bar.res i { background: #5a8fd0; }
+      .pf-ctrls { display: flex; gap: 3px; min-height: 12px; margin-top: 2px; }
+      .pf-ctrl { font-size: 11px; color: #d0a8ff; }
+
+      /* 15.1 右上：小地图 */
+      #minimap { position: absolute; right: 14px; top: 14px; }
+
+      /* 15.4 模式专属。
+         ★ top 从 110px 下移到 158px：目标框（15.2 要求它显示职业、生命、
+         资源、武器、控制状态、施法条）本身就有 ~130px 高，110px 会让
+         模式面板压住目标框的下半截 —— 截图比对里「单手剑 + 盾牌」那行
+         正好被盖掉，而那是 10.6 要求敌人可见的信息。 */
+      #mode-hud { position: absolute; left: 50%; transform: translateX(-50%); top: 158px;
+                  min-width: 240px; text-align: center; background: rgba(20,23,30,.86);
+                  border: 1px solid #2c313d; border-radius: 8px; padding: 6px 12px;
+                  font-size: 12px; color: #b9c1d1; }
+      .mh-row { margin: 2px 0; }
+      .mh-row.urgent { color: #ffb86a; font-weight: 600; }
+      .mh-score { font-size: 18px; font-weight: 700; display: flex; gap: 10px;
+                  justify-content: center; align-items: baseline; }
+      .mh-vs { font-size: 11px; color: #6f7a90; font-weight: 400; }
+      .team.red { color: #ff8a7a; }
+      .team.blue { color: #7ab8ff; }
+      .mh-flag { font-size: 11px; margin: 1px 0; }
+      .mh-flag.red { color: #ff9c8a; }
+      .mh-flag.blue { color: #8fc4ff; }
+      .mh-msg { color: #ffd76a; font-size: 11px; }
+      .mh-glyph { display: inline-block; width: 12px; font-weight: 700; }
+
+      /* 15.3 战场装备栏 */
+      #loadout-panel { position: absolute; right: 14px; bottom: 14px; width: 250px;
+                       background: rgba(20,23,30,.9); border: 1px solid #2c313d;
+                       border-radius: 8px; padding: 8px 10px; font-size: 11px; }
+      .lp-title { font-size: 10px; letter-spacing: 1px; color: #6f7a90; margin-bottom: 5px; }
+      .lp-section-label { font-size: 10px; color: #7d8698; margin: 5px 0 3px; }
+      .lp-item { border: 1px solid #2c313d; border-radius: 5px; padding: 3px 5px; margin-bottom: 3px; }
+      .lp-item.current { border-color: #4a6f8f; background: rgba(74,111,143,.14); }
+      .lp-item.empty { color: #5d6577; text-align: center; }
+      .lp-item-name { font-weight: 600; }
+      .lp-tag { font-size: 9px; color: #6fd0ff; font-weight: 400; }
+      .lp-adv { color: #9ad48f; font-size: 10px; }
+      .lp-cost { color: #d8a07e; font-size: 10px; }
+      .lp-swap { margin-top: 6px; }
+      .lp-swap-label { font-size: 10px; color: #b9c1d1; }
+      .lp-bar { height: 6px; border-radius: 3px; background: #22262f; overflow: hidden; margin-top: 2px; }
+      .lp-bar i { display: block; height: 100%; background: #d0a85a; }
+      .lp-warn { font-size: 9px; color: #d8a07e; margin-top: 2px; }
+      .lp-interrupt { margin-top: 5px; color: #e08a8a; font-size: 10px; }
+      .lp-compare { margin-top: 6px; border-top: 1px solid #2c313d; padding-top: 5px; }
+      .lp-compare-label { font-size: 9px; color: #6f7a90; }
+      .lp-diff { font-size: 10px; color: #c9d1e0; }
+
+      /* ── M13 大厅（docs/14 §M13）──────────────────────────────────
+         与 HUD 同一套技术栈：纯 DOM、同一色板、同一个 --ui-scale 缩放
+         （由 LobbyShell 从 accessibility 读出写在 #lobby 上）。
+         ★ #lobby 自身 pointer-events:none —— 对局期间它只剩隐藏页面和
+           toast，不能挡住 3D 画布的鼠标；可见的页面各自恢复 auto。   */
+      #lobby { position: fixed; inset: 0; z-index: 30; pointer-events: none;
+               --ui-scale: 1; font-size: 14px; color: #cfd6e4; }
+      #lobby > * { zoom: var(--ui-scale); }
+      .lb-page { display: none; }
+      .lb-page.active { display: flex; align-items: center; justify-content: center;
+                        position: absolute; inset: 0; pointer-events: auto;
+                        background: radial-gradient(1200px 700px at 50% 30%, #232a3a 0%, #14171f 70%); }
+      .lb-panel { background: rgba(20,23,30,.92); border: 1px solid #2c313d;
+                  border-radius: 12px; padding: 22px 26px; box-shadow: 0 12px 40px rgba(0,0,0,.45); }
+      .lb-title { width: 380px; text-align: center; }
+      .lb-title h1 { font-family: Cinzel, serif; letter-spacing: 6px; margin: 4px 0 2px;
+                     color: #e8d9a0; font-size: 34px; }
+      .lb-sub { color: #8d97ab; font-size: 12px; margin: 0 0 18px; }
+      .lb-title label { display: block; text-align: left; font-size: 12px; color: #8d97ab; margin-bottom: 12px; }
+      .lb-title input, .lb-join input, .lb-share input {
+        width: 100%; box-sizing: border-box; margin-top: 4px; padding: 8px 10px;
+        background: #171b24; border: 1px solid #333a48; border-radius: 6px;
+        color: #e6ebf4; font-size: 14px; outline: none; }
+      .lb-title input:focus, .lb-join input:focus { border-color: #4a6f8f; }
+      .lb-row { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+      .lb-join { display: flex; gap: 8px; }
+      .lb-join input { margin-top: 0; text-transform: uppercase; letter-spacing: 2px; }
+      #lobby hr { border: none; border-top: 1px solid #2c313d; margin: 16px 0 10px; }
+      .lb-fine { font-size: 11px; color: #7d8698; }
+      .lb-btn { pointer-events: auto; cursor: pointer;
+                border: 1px solid #3a4252; background: #222836; color: #dfe6f2;
+                border-radius: 7px; padding: 9px 16px; font-size: 14px; width: 100%; }
+      .lb-btn:hover { background: #2a3245; border-color: #4a6f8f; }
+      .lb-btn:disabled { opacity: .45; cursor: not-allowed; }
+      .lb-btn.lb-primary { background: #2c4a6e; border-color: #4a6f8f; font-weight: 700; }
+      .lb-btn.lb-primary:hover { background: #35597f; }
+      .lb-btn.lb-armed { background: #274a33; border-color: #30a46c; }
+      .lb-btn.lb-ghost { background: transparent; }
+      .lb-btn.lb-small { width: auto; padding: 5px 12px; font-size: 12px; white-space: nowrap; }
+      .lb-btn.lb-red { border-color: #7a3a41; } .lb-btn.lb-red:hover { background: #4a262b; }
+      .lb-btn.lb-blue { border-color: #3a4f7a; } .lb-btn.lb-blue:hover { background: #26314a; }
+
+      /* 房间页 */
+      .lb-room { width: 620px; }
+      .lb-room-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+      .lb-code { font-family: Cinzel, serif; font-size: 30px; letter-spacing: 6px; color: #e8d9a0; }
+      .lb-share { flex: 1; display: flex; gap: 6px; align-items: center; max-width: 330px; }
+      .lb-share input { font-size: 11px; color: #8d97ab; }
+      .lb-roster { display: flex; gap: 10px; margin: 12px 0 4px; }
+      .lb-col { flex: 1; border: 1px solid #2c313d; border-radius: 8px; padding: 8px 10px; min-height: 108px; }
+      .lb-col h3 { margin: 0 0 6px; font-size: 13px; color: #b9c1d1; }
+      .lb-col h3 i { color: #6f7a90; font-style: normal; font-weight: 400; }
+      .lb-col-red { border-color: #52333a; } .lb-col-red h3 { color: #e08a8a; }
+      .lb-col-blue { border-color: #33405f; } .lb-col-blue h3 { color: #8fb7ff; }
+      .lb-col ul { list-style: none; margin: 0; padding: 0; }
+      .lb-col li { display: flex; gap: 6px; align-items: baseline; padding: 3px 0; font-size: 13px; }
+      .lb-col li span { color: #8d97ab; font-size: 11px; }
+      .lb-col li i { color: #6fd0ff; font-style: normal; font-size: 11px; }
+      .lb-col li em { margin-left: auto; font-style: normal; font-size: 11px; color: #5d6577; }
+      .lb-col li em.lb-ok { color: #30a46c; }
+      .lb-col li.lb-off { opacity: .5; }
+      .lb-col li.lb-empty { color: #5d6577; font-size: 12px; }
+      .lb-hints { margin: 4px 0; min-height: 16px; }
+      .lb-hint { display: inline-block; font-size: 11px; color: #d8c07e; margin-right: 10px; }
+      .lb-room-actions { border-top: 1px solid #2c313d; margin-top: 8px; padding-top: 4px; }
+
+      /* 选职业页 */
+      .lb-class { width: 900px; max-width: 96vw; }
+      .lb-class-head { display: flex; justify-content: space-between; align-items: center; }
+      .lb-class-head h2 { margin: 0; font-size: 18px; color: #e8d9a0; }
+      .lb-class-body { display: flex; gap: 14px; margin-top: 12px; }
+      .lb-cards { flex: 1; display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+      .lb-card { text-align: left; background: #1a1f2a; border: 1px solid #2c313d; border-radius: 9px;
+                 padding: 10px 12px; cursor: pointer; display: flex; flex-direction: column; gap: 4px;
+                 color: #cfd6e4; }
+      .lb-card:hover { border-color: #4a6f8f; background: #202737; }
+      .lb-card.selected { border-color: #d0a85a; box-shadow: 0 0 0 1px #d0a85a inset; }
+      .lb-card-head b { font-size: 15px; color: #e6ebf4; }
+      .lb-card-role { font-size: 11px; color: #6fd0ff; }
+      .lb-card-skills { display: flex; gap: 3px; flex-wrap: wrap; margin: 3px 0; }
+      .lb-card-skills .sk-icon { border-radius: 4px; }
+      .lb-card-line { font-size: 11px; color: #9ad48f; }
+      .lb-card-line.lb-weak { color: #d8a07e; }
+      .lb-preview { width: 300px; border: 1px solid #2c313d; border-radius: 9px;
+                    display: flex; flex-direction: column; align-items: center; justify-content: center;
+                    background: #12151d; padding: 8px; }
+      .lb-preview canvas { width: 280px; height: 340px; }
+
+      /* ── M15 新手教学任务面板（docs/14 §M15）──────────────────────
+         纯展示：面板 pointer-events:none，只有按钮恢复 —— 不挡画布。
+         位置在右侧中部：左侧是队伍框、右上是小地图、右下是装备栏，
+         这一块是 15.1 四区之外唯一的空档。                              */
+      #tutorial-hud { position: fixed; right: 14px; top: 190px; width: 292px;
+                      z-index: 25; pointer-events: none;
+                      font-size: 13px; color: #cfd6e4; }
+      .tut-panel, .tut-collapsed { background: rgba(20,23,30,.92);
+                      border: 1px solid #3a4252; border-radius: 10px; padding: 12px 14px; }
+      .tut-panel { border-color: #4a6f8f; }
+      .tut-title { font-weight: 700; font-size: 15px; color: #e8d9a0; margin-bottom: 6px; }
+      .tut-title i { font-style: normal; color: #6f7a90; font-size: 12px; }
+      .tut-lesson { font-size: 12px; color: #9ad48f; background: rgba(48,164,108,.08);
+                    border-left: 2px solid #30a46c; padding: 5px 8px; margin: 4px 0 8px;
+                    border-radius: 0 6px 6px 0; }
+      .tut-steps { list-style: none; margin: 0; padding: 0; }
+      .tut-step { display: flex; gap: 8px; padding: 4px 0; align-items: baseline; }
+      .tut-step.locked { opacity: .38; }
+      .tut-step.done { color: #7d8698; }
+      .tut-step.done b { color: #30a46c; font-weight: 400; }
+      .tut-step.current b { color: #ffd66e; }
+      .tut-mark { width: 18px; text-align: center; flex: none; color: #6f7a90; }
+      .tut-step.done .tut-mark { color: #30a46c; }
+      .tut-step.current .tut-mark { color: #ffd66e; }
+      .tut-goal { margin-top: 3px; font-size: 12px; line-height: 1.55; color: #cfd6e4; }
+      .tut-subs { list-style: none; margin: 4px 0 0; padding: 0; font-size: 12px; color: #8d97ab; }
+      .tut-subs li.done { color: #30a46c; }
+      .tut-actions { margin-top: 8px; display: flex; gap: 8px; }
+      .tut-btn { pointer-events: auto; cursor: pointer; border: 1px solid #3a4252;
+                 background: #222836; color: #dfe6f2; border-radius: 6px;
+                 padding: 5px 12px; font-size: 12px; }
+      .tut-btn:hover { background: #2a3245; border-color: #4a6f8f; }
+      .tut-btn.tut-ghost { background: transparent; color: #8d97ab; }
+
+      /* 结算横幅（浮在战场上）与 toast */
+      .lb-end { position: absolute; inset: 0; display: flex; align-items: center;
+                justify-content: center; pointer-events: auto; background: rgba(10,12,17,.55); }
+      /* ⚠️ display:flex 的优先级高于 UA 的 [hidden]{display:none} ——
+         不补这条的话横幅**从一开始就悬在标题页上拦截所有点击**（首跑验收抓到的）*/
+      .lb-end[hidden] { display: none; }
+      .lb-end-panel { text-align: center; min-width: 300px; }
+      .lb-end-panel h2 { font-family: Cinzel, serif; color: #e8d9a0; letter-spacing: 2px; }
+      #lb-toast { position: absolute; top: 24px; left: 50%; transform: translateX(-50%);
+                  background: rgba(20,23,30,.95); border: 1px solid #4a6f8f; border-radius: 8px;
+                  padding: 9px 18px; font-size: 13px; pointer-events: none; z-index: 40; }
     </style>
   </head>
   <body>

@@ -20,7 +20,7 @@
  */
 
 import { asMapId, asTeamId } from '../../types/ids.js';
-import { box, type MapDef, type MapVolume } from './schema.js';
+import { box, type MapDecorDef, type MapDef, type MapVolume } from './schema.js';
 
 const GROUND_SIZE = 70;
 
@@ -99,6 +99,47 @@ const geometry: MapVolume[] = [
 
 const TEAM_RED = asTeamId(0);
 
+/**
+ * 纯装饰摆设（M12 表现层）。★ sim 不读它（docs/06 §8.2）——
+ * 全部选点避开走位主干道（出生点 (0,26) → 假人 z 0..23 的 |x|<8 走廊）
+ * 与既有几何（楼梯/坡道/水塘/断崖），只放小件或贴边大件：
+ * 树贴外墙（外墙本来挡人）、棕榈贴水塘（水塘本来减速）、营地窝在东南角。
+ */
+const decor: MapDecorDef[] = [
+  // 周边树木（贴外墙/角落）
+  { model: 'foliage/oak_1', position: { x: -30, y: 0, z: 30 }, yaw: 0.7 },
+  { model: 'foliage/oak_3', position: { x: -29, y: 0, z: 16 }, yaw: 2.1 },
+  { model: 'foliage/pine_2', position: { x: -31, y: 0, z: -8 }, yaw: 1.2 },
+  { model: 'foliage/pine_4', position: { x: 31, y: 0, z: 8 }, yaw: 4.4 },
+  { model: 'foliage/twisted_1', position: { x: 30, y: 0, z: -14 }, yaw: 3.0 },
+  { model: 'foliage/oak_5', position: { x: 12, y: 0, z: 31 }, yaw: 5.5 },
+  // 水塘边一棵棕榈（水塘在东南 (24,24)，18..30 × 18..30）
+  { model: 'biome/beach_palm_1', position: { x: 16.5, y: 0, z: 17 }, yaw: 0.9 },
+  // 灌木与蕨（散点，全部离开走廊）
+  { model: 'foliage/bush', position: { x: -22, y: 0, z: 8 }, yaw: 0 },
+  { model: 'foliage/bush_flowers', position: { x: 12, y: 0, z: 24 }, yaw: 1.8 },
+  { model: 'foliage/bush', position: { x: 14, y: 0, z: 6 }, yaw: 3.6 },
+  { model: 'foliage/fern', position: { x: -18, y: 0, z: 20 }, yaw: 2.4 },
+  { model: 'foliage/mushroom', position: { x: -8, y: 0, z: -30 }, yaw: 0.5 },
+  // 岩石
+  { model: 'foliage/rock_1', position: { x: -26, y: 0, z: -2 }, yaw: 1.1 },
+  { model: 'foliage/rock_2', position: { x: 26, y: 0, z: 2 }, yaw: 4.0 },
+  { model: 'foliage/rock_3', position: { x: -4, y: 0, z: -31 }, yaw: 2.8 },
+  // 东南角营地小景（避开坡道 x 17..23）
+  { model: 'biome/camp_tent', position: { x: 28, y: 0, z: -29 }, yaw: -2.4 },
+  { model: 'biome/camp_fire_pit', position: { x: 24.5, y: 0, z: -26.5 }, yaw: 0 },
+  { model: 'biome/camp_signpost', position: { x: 22, y: 0, z: -29.5 }, yaw: 0.4 },
+  // 矮栏杆边的货物堆（栏杆 x 3..17，z≈14）
+  { model: 'props/crate_wooden', position: { x: 11, y: 0, z: 16.5 }, yaw: 0.3 },
+  { model: 'props/barrel', position: { x: 12.6, y: 0, z: 17.6 }, yaw: 1.5 },
+  // 半埋的雕像头（断崖旁的趣味点，断崖 x -26..-14, z -28..-20）
+  { model: 'props/statue_head', position: { x: -28, y: 0, z: -14 }, yaw: 0.9 },
+  // 拱门右侧一只火盆（拱门柱在 x 9.4, z 0）
+  { model: 'props/infernal_brazier', position: { x: 11, y: 0, z: 2 }, yaw: 0 },
+  // 出生点侧后的篝火
+  { model: 'props/bonfire', position: { x: -9, y: 0, z: 30 }, yaw: 0 },
+];
+
 export const testbed: MapDef = {
   id: asMapId('testbed'),
   name: '移动物理试验场',
@@ -109,6 +150,7 @@ export const testbed: MapDef = {
     max: { x: GROUND_SIZE / 2, y: 30, z: GROUND_SIZE / 2 },
   },
   geometry,
+  decor,
   forbidden: [],
   gates: [],
   fairness: {
