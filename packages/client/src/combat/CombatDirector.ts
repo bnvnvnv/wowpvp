@@ -336,7 +336,7 @@ export class CombatDirector {
          * 不在这里重算 —— 重算会在效果结算之后少数几个已经倒下的人。
          */
         onCastResolved: (caster, skill, targets) => {
-          this.onCastActivity?.('resolved', caster, skill);
+          this.onCastActivity?.('resolved', caster, skill, targets);
           if (needsGroundPlacement(skill)) {
             this.push(`${skill.name} 落地，范围内 ${targets.length} 个目标`, 'ok');
           } else if (usesNoTarget(skill)) {
@@ -420,11 +420,18 @@ export class CombatDirector {
 
   /** 每条战斗事件（伤害/治疗/光环/驱散/死亡/位移…）的旁路，与日志同源 */
   onCombatEvent?: (ev: CombatEvent) => void;
-  /** 施法生命周期：开始读条 / 完成 / 被打断 / 失败 */
+  /**
+   * 施法生命周期：开始读条 / 完成 / 被打断 / 失败。
+   *
+   * ★ `targets` 只在 `resolved` 时给出，是 tick 传来的**结算前**目标集合 ——
+   *   表现层（14.2 的表现用弹体）要知道「这一发飞向谁」。刻意不在这里重算：
+   *   重算会漏掉几个已经在本次结算中倒下的人，弹体就会少飞几发。
+   */
   onCastActivity?: (
     kind: 'started' | 'resolved' | 'interrupted' | 'failed',
     caster: CombatEntity,
     skill: SkillDef | undefined,
+    targets?: readonly CombatEntity[],
   ) => void;
   /** 换装结束（true=完成，false=中断）*/
   onSwapResult?: (completed: boolean) => void;
@@ -561,6 +568,14 @@ export class CombatDirector {
 
     // 执行阶段：按下去了就按下去了，此刻你还在不在读条决定命中与否
     this.warriorPummelAt = null;
+    /**
+     * ★ 表现通知：拳击**真的挥出去了**（无论命中与否）。
+     *   专用打断不走 requestCast/tickWorld，所以 `onCastResolved` 不会替它发 ——
+     *   没有这一句，战士出拳时身体纹丝不动、无声无光（用户实测反馈）。
+     *   走 onCastActivity 而不是新钩子：它就是一次技能释放，
+     *   音效/粒子/挥砍动画都该与玩家路径同源。
+     */
+    this.onCastActivity?.('resolved', warriorDummy, pummel, [this.player]);
     const out = applyInterrupt(this.world, this.store, this.player, interruptLockSeconds(pummel) ?? 3, {
       onInterrupted: (_c, st, _src, lock) => {
         const n = getSkill(st.skillId)?.name ?? st.skillId;
@@ -736,6 +751,10 @@ export class CombatDirector {
       this.push(`${skill.name} 无法释放：${FAIL_TEXT[pre.reason]}`, 'fail');
       return;
     }
+
+    // ★ 表现通知：断法确实放出去了（哪怕落空）。与战士拳击同理 ——
+    //   这条路径不经过 tickWorld，此前它是全 91 技能里唯一零表现的（用户实测反馈）
+    this.onCastActivity?.('resolved', this.player, skill, target ? [target] : []);
 
     const out = applyInterrupt(
       this.world,

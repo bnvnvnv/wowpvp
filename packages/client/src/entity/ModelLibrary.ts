@@ -22,7 +22,7 @@ import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.j
 import { clone as cloneWithSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { GEOMETRY } from '@wowpvp/shared';
 
-/** 八职业 → 玩家模型文件。上游恰好有八个骑士风格互异的人形模型 */
+/** 八职业 → 玩家模型文件。上游恰好有八个外形互异的卡通人形模型（基调见规格书 13.2）*/
 const CLASS_MODEL: Readonly<Record<string, string>> = {
   warrior: 'barbarian',
   paladin: 'paladin',
@@ -124,6 +124,15 @@ export class ModelLibrary {
     const s = GEOMETRY.HITBOX_HEIGHT / tpl.height;
     root.scale.setScalar(s);
     root.position.y = -tpl.minY * s;
+    /**
+     * ★★ 转 180°：上游 GLB 角色按 glTF 惯例**面向 +Z** 建模，而本项目
+     *   yaw=0 的「前方」是 **-Z**（`yawToDir` = (-sin, 0, -cos)，
+     *   胶囊体时代的朝向箭头也指 -Z）。不转的话每个模型都**倒着走** ——
+     *   往前跑看到的是脸不是背影，步态读作太空步。
+     *   M12 挂模型时漏了这一步：verify:m12 只量身高不看朝向，
+     *   人眼在浏览器里走两步才发现。武器挂在手部骨骼上，随根一起转，无需另处理。
+     */
+    root.rotation.y = Math.PI;
 
     root.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) {
@@ -145,6 +154,25 @@ export class ModelLibrary {
       handR: root.getObjectByName('handslot.r'),
       handL: root.getObjectByName('handslot.l'),
     };
+  }
+
+  /**
+   * 化形术（8.2「迷惑」）的小动物模型（`assets/art/models/creatures/`）。
+   * 归一化到给定身高、贴地、面向 -Z（与角色同一前方约定）。
+   * 素材缺失返回 null —— 那就不换模型，被变形只靠头顶标记表达（M11 的样子）。
+   */
+  async creatureFor(file: string, height = 0.9): Promise<THREE.Group | null> {
+    const tpl = await this.template(`/art/models/creatures/${file}.glb`);
+    if (!tpl) return null;
+    const g = tpl.gltf.scene.clone(true);
+    const s = height / tpl.height;
+    g.scale.setScalar(s);
+    g.position.y = -tpl.minY * s;
+    g.rotation.y = Math.PI;
+    g.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).castShadow = true;
+    });
+    return g;
   }
 
   /** 武器挂载模型；无映射或加载失败返回空对象（不挂就是了，不报错） */

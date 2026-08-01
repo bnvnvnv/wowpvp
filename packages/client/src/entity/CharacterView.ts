@@ -57,6 +57,21 @@ const CLIP: Record<AnimState, { name: string; loop?: 'once'; speed?: number; loc
 /** 施法覆盖动画：只在站立不动时覆盖 Idle（移动时腿部优先，7.3 原地读条也多为站桩） */
 const CASTING_CLIP = 'Spellcasting';
 
+/**
+ * 近战挥砍的候选片段，找到第一个存在的就用（上游同一骨架，片段名一致）。
+ * 一个都没有时安静跳过 —— 挥砍是氛围，刀光/伤害反馈不依赖它（13.4「缺失
+ * 专属动作时使用最接近的武器动作」，全缺就保持当前动作，绝不 T-pose）。
+ */
+const SWING_CLIPS = [
+  '1H_Melee_Attack_Slice_Diagonal',
+  '1H_Melee_Attack_Chop',
+  '2H_Melee_Attack_Chop',
+  'Unarmed_Melee_Attack_Punch_A',
+];
+
+/** 化形术的小动物。青蛙：够无害，也够 Q（13.6 德鲁伊形态另有专门一节，这里只管化形）*/
+const MORPH_CREATURE = 'frog';
+
 export class CharacterView {
   readonly group = new THREE.Group();
   /** 4.1 第一人称要隐藏的部分：胶囊阶段是头与躯干；模型阶段是整个模型 */
@@ -251,6 +266,83 @@ export class CharacterView {
     this.flashLeft = 0.12;
   }
 
+  /**
+   * 近战挥砍：一次性覆盖动作，播完自动回到状态机当前片段。
+   * ★ 素材缺片段时安静跳过 —— 刀光与伤害反馈不依赖它（M12 逐层兜底）。
+   */
+  playMeleeSwing(): void {
+    if (!this.mixer || !this.model) return;
+    const clips = this.model.clips as THREE.AnimationClip[];
+    const clip = SWING_CLIPS
+      .map((n) => THREE.AnimationClip.findByName(clips, n))
+      .find((c): c is THREE.AnimationClip => c !== null && c !== undefined);
+    if (!clip) return;
+
+    const swing = this.mixer.clipAction(clip);
+    const current = this.actions.get(this.currentClip);
+    swing.reset();
+    swing.setLoop(THREE.LoopOnce, 1);
+    swing.clampWhenFinished = false;
+    swing.timeScale = 1.3; // 稍快：出拳/挥砍要「脆」
+    if (current && current !== swing) current.fadeOut(0.07);
+    swing.fadeIn(0.07);
+    swing.play();
+
+    const onFinished = (e: { action: THREE.AnimationAction }): void => {
+      if (e.action !== swing) return;
+      this.mixer?.removeEventListener('finished', onFinished as never);
+      swing.fadeOut(0.1);
+      /**
+       * 回到状态机当前片段。★ 不能走 `applyClip()` 的去重路径：那边
+       * `prev === action` 时不做 fadeIn，而这个动作刚被 fadeOut 到权重 0 ——
+       * 会定格成绑定姿势。也刻意不 `reset()`：动作在权重 0 期间时间照走，
+       * 切回奔跑时步伐不跳帧。
+       */
+      const back = this.actions.get(this.currentClip);
+      if (back) {
+        back.enabled = true;
+        back.paused = false;
+        back.play();
+        back.fadeIn(0.1);
+      }
+    };
+    this.mixer.addEventListener('finished', onFinished as never);
+  }
+
+  // ── 化形术（8.2 迷惑）────────────────────────────────────────
+
+  private morphNode: THREE.Group | undefined;
+  private morphed = false;
+  private morphLoading = false;
+
+  /**
+   * 被变形 ↔ 恢复。变形期间隐藏人形（连同手上武器），显示小动物。
+   * ★ 素材缺失或 `?art=off`（ModelLibrary 没 init）时**什么都不做** ——
+   *   被变形仍由头顶标记表达，画面精确保持 M11。
+   */
+  setMorphed(on: boolean): void {
+    if (this.morphed === on) return;
+    this.morphed = on;
+    if (on && !this.morphNode && !this.morphLoading) {
+      this.morphLoading = true;
+      void ModelLibrary.instance?.creatureFor(MORPH_CREATURE, 0.9).then((g) => {
+        this.morphLoading = false;
+        if (!g || this.disposed) return;
+        this.morphNode = g;
+        this.group.add(g);
+        this.applyMorphVisibility();
+      });
+    }
+    this.applyMorphVisibility();
+  }
+
+  private applyMorphVisibility(): void {
+    const showCreature = this.morphed && this.morphNode !== undefined;
+    if (this.morphNode) this.morphNode.visible = showCreature && !this.firstPerson;
+    if (this.model) this.model.root.visible = !showCreature && !this.firstPerson;
+    // 胶囊体阶段没有小动物可换（见 setMorphed 头注），不动 capsuleParts
+  }
+
   /** 每帧推进动画与受击闪光。没挂模型时是空操作 */
   update(dt: number): void {
     this.mixer?.update(dt);
@@ -291,6 +383,8 @@ export class CharacterView {
     this.firstPerson = on;
     for (const o of this.hideInFirstPerson) o.visible = !on;
     // 朝向箭头保留 —— 它是地面指示器性质的信息，4.1 要求第一人称保留地面范围
+    // ★ 变形显隐与第一人称共用 model.root.visible，必须最后统一裁决一次
+    this.applyMorphVisibility();
   }
 
   setHitboxVisible(v: boolean): void {

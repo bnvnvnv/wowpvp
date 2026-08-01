@@ -34,9 +34,23 @@ const check = (id, name, pass, detail) => {
   console.log(`  ${pass ? '✓' : '✗'} ${id} ${name}\n      ${detail}`);
 };
 
-const browser = await chromium.launch({
-  args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'],
-});
+/**
+ * 捆绑 chromium 优先；装不上时退回系统 Edge / Chrome（与 verify-m12 同一回落）。
+ * ★ 回落只换浏览器载体，断言原样不动 —— 本机网络拉不动 Playwright CDN 时，
+ *   「跑不起来的验收」等于没有验收。
+ */
+const browser = await (async () => {
+  try {
+    return await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
+  } catch {
+    for (const channel of ['msedge', 'chrome']) {
+      try {
+        return await chromium.launch({ channel });
+      } catch { /* 试下一个 */ }
+    }
+    throw new Error('没有可用浏览器：捆绑 chromium 未安装，msedge/chrome 也不可用');
+  }
+})();
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const runtimeErrors = [];
 page.on('pageerror', (e) => runtimeErrors.push(e.message));
@@ -247,7 +261,16 @@ console.log('\n── 规格书 13.5 / 验收 #44：楼梯贴地、低障碍跨�
   let stairSamples = 0;
   let maxY = atBottom.y;
   await page.keyboard.down('KeyW');
-  for (let i = 0; i < 26; i++) {
+  /**
+   * ★ 按**进度**停，不按固定迭代数。此前是 `for (26 次 × 60ms)` ——
+   *   它在 swiftshader 下能走到顶，纯粹因为慢渲染把每次 `read()` 的往返
+   *   拖长了几百毫秒，白送了几秒步行时间。换到带真 GPU 的浏览器
+   *   （chromium 装不上时的 msedge 回落）后同一个循环只给 ~1.7 秒，
+   *   角色刚上三级楼梯就被收了键 —— 那是测量环境的伪影，不是物理的问题。
+   *   截止时间给足 8 秒：慢环境照常通过，快环境不再误报。
+   */
+  const stairDeadline = Date.now() + 8000;
+  while (Date.now() < stairDeadline) {
     await page.waitForTimeout(60);
     const r = await read();
     maxY = Math.max(maxY, r.y);

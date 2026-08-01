@@ -111,10 +111,60 @@ console.log('\n── §2 技能图标：91 个技能全覆盖，无断链 ─�
       (broken.length ? `：${broken.slice(0, 3).map((b) => b[1]).join(', ')}` : ''));
 }
 
+// ═══ §2.5 八属性粒子贴图（14.2）════════════════════════════════
+console.log('\n── §2.5 14.2 八属性粒子特效：16 张贴图全部在库且被引用 ──');
+{
+  const src = readFileSync(join(REPO, 'packages/client/src/vfx/particleTextures.ts'), 'utf8');
+  // 从 VFX_TEXTURE_FILES 数组里抽出登记的 16 个文件名
+  const arr = src.match(/VFX_TEXTURE_FILES\s*=\s*\[([\s\S]*?)\]/);
+  const registered = arr ? [...arr[1].matchAll(/'([a-z0-9_]+)'/g)].map((m) => m[1]) : [];
+
+  // 磁盘上 assets/art/vfx/ 的实际 png
+  const vfxDir = join(ASSETS, 'art/vfx');
+  const onDisk = existsSync(vfxDir)
+    ? readdirSync(vfxDir).filter((f) => f.endsWith('.png')).map((f) => f.replace(/\.png$/, ''))
+    : [];
+
+  const missing = registered.filter((n) => !onDisk.includes(n));
+  check('#14a', '★ 登记的每张 vfx 贴图都在 assets/art/vfx/ 里（无断链）',
+    registered.length === 16 && missing.length === 0,
+    `登记 ${registered.length} 张（应为 16），断链 ${missing.length}`
+      + (missing.length ? `：${missing.join(', ')}` : ''));
+
+  // 磁盘上没有一张是「在库却没登记 → 素材在手却没用」
+  const orphan = onDisk.filter((n) => !registered.includes(n));
+  check('#14b', '★ 素材在手都用上了：assets/art/vfx/ 没有未被引用的孤儿贴图',
+    orphan.length === 0,
+    orphan.length === 0 ? `${onDisk.length} 张全部被 particleTextures.ts 引用`
+      : `★ 未引用：${orphan.join(', ')}`);
+
+  // 八属性各有一张主粒子（PARTICLE_TEXTURE 恰好 8 项）
+  const pt = src.match(/PARTICLE_TEXTURE[\s\S]*?=\s*\{([\s\S]*?)\}/);
+  const particleEntries = pt ? [...pt[1].matchAll(/(\w+):\s*'([a-z0-9_]+)'/g)] : [];
+  check('#14c', '八属性各有一张主粒子贴图（PARTICLE_TEXTURE 8 项）',
+    particleEntries.length === 8,
+    `PARTICLE_TEXTURE 映射 ${particleEntries.length} 项（应为 8）`);
+}
+
 // ═══ 浏览器部分 ═══════════════════════════════════════════════
-const browser = await chromium.launch({
-  args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'],
-});
+/**
+ * 捆绑 chromium 优先；装不上时退回系统 Edge / Chrome。
+ * ★ 回落只换浏览器**载体**，下面每一条断言原样不动 —— 本机网络拉不动
+ *   Playwright CDN 时，「跑不起来的验收」等于没有验收。
+ *   （swiftshader 参数只给捆绑 chromium：系统浏览器带真 GPU，不需要也不认它）
+ */
+const browser = await (async () => {
+  try {
+    return await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
+  } catch {
+    for (const channel of ['msedge', 'chrome']) {
+      try {
+        return await chromium.launch({ channel });
+      } catch { /* 试下一个 */ }
+    }
+    throw new Error('没有可用浏览器：捆绑 chromium 未安装，msedge/chrome 也不可用');
+  }
+})();
 
 /** 开一页并等到场景装配完成（美术是异步加载的，要给它时间） */
 const open = async (url, settleMs = 14000) => {
@@ -166,6 +216,17 @@ const { page, errors } = await open(BASE);
 
   check('#12d', '开启美术后无运行时错误', errors.length === 0,
     errors.length === 0 ? '无' : errors.slice(0, 3).join(' | '));
+
+  /**
+   * 14.2：八属性特效子系统在运行时真的把 16 张贴图都解码了、八属性全覆盖。
+   * ★ 这是「素材在手却没用」被真正补齐的运行时证据 —— 静态检查证明文件在库，
+   *   这里证明它们被浏览器加载进了粒子系统。
+   */
+  check('#14d', '★★ 八属性粒子特效运行时加载全部 16 张贴图、覆盖 8 属性',
+    st?.vfx?.texturesLoaded === 16 && st?.vfx?.attributesCovered === 8,
+    st?.vfx
+      ? `贴图 ${st.vfx.texturesLoaded}/${st.vfx.texturesTotal} 解码，覆盖 ${st.vfx.attributesCovered} 属性`
+      : '读不到 __scene.artStatus.vfx');
 }
 
 // ═══ §4 验收 #48 重验：最低画质仍不隐藏关键信息 ═══════════════

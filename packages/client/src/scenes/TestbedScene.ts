@@ -7,8 +7,11 @@
 
 import * as THREE from 'three';
 import {
+  DrCategory,
   GEOMETRY,
   MOVE,
+  Targeting,
+  aurasOf,
   createMovementState,
   stepMovement,
   testbed,
@@ -48,6 +51,7 @@ import { artEnabled } from '../settings/artMode.js';
 import { audio } from '../audio/AudioManager.js';
 import { playCastActivity, playCombatEvent, type CombatAudioDeps } from '../audio/combatAudio.js';
 import { StatusMarkers } from '../vfx/StatusMarkers.js';
+import { SpellVfx } from '../vfx/SpellVfx.js';
 import { TargetRing } from '../vfx/TargetRing.js';
 import { CtfDemo } from '../combat/CtfDemo.js';
 import { CombatHud as Hud } from '../hud/CombatHud.js';
@@ -108,6 +112,11 @@ export class TestbedScene {
   /** M8：夺旗演示，用来把 M7 的规则接到真实操作与 15.4 HUD 上 */
   private readonly ctf: CtfDemo;
   private readonly flagMarkers: FlagMarkers;
+  /**
+   * M12 / 14.2：八属性技能粒子特效。★ 只在 `?art=on` 时构造 ——
+   * 关掉即回到 M11 无特效画面（与音效/模型/环境每一层同一门禁）。
+   */
+  private readonly spellVfx: SpellVfx | undefined;
   /** M12：目标 / 焦点的脚下指示环（5.2 / 14.4 关键元素）*/
   private readonly targetRing = new TargetRing();
   private readonly focusRing = new TargetRing();
@@ -188,12 +197,30 @@ export class TestbedScene {
       selfId: () => this.combat.player.id,
     };
     audio.install();
+
+    // ── M12 / 14.2：八属性粒子特效。★ 与音效同为只读旁路，只在 art 开时构造 ──
+    if (this.art) {
+      this.spellVfx = new SpellVfx();
+      this.scene.add(this.spellVfx.group);
+    }
+
     this.combat.onCombatEvent = (ev) => {
       playCombatEvent(audio, audioDeps, ev);
       this.showCombatFeedback(ev);
+      this.spellVfx?.onCombatEvent(ev, (id) => this.bodyPosOf(id));
     };
-    this.combat.onCastActivity = (kind, caster, skill) =>
+    this.combat.onCastActivity = (kind, caster, skill, targets) => {
       playCastActivity(audio, audioDeps, kind, caster.id, skill);
+      this.spellVfx?.onCast(kind, caster, skill, targets);
+      /**
+       * M12 / 13.3：近战技能的挥砍动作。
+       * 近战的签名 = 直接目标 + 6.1 近战档射程（≤3.8 米，取 8 米为界）。
+       * 素材缺片段时 playMeleeSwing 安静跳过。
+       */
+      if (kind === 'resolved' && skill && skill.targeting === Targeting.Direct && skill.range.max < 8) {
+        this.viewFor(caster.id)?.playMeleeSwing();
+      }
+    };
     this.combat.onSwapResult = (ok) =>
       audio.play(ok ? 'ui_weapon_unsheathe' : 'ui_error', { group: 'ui' });
 
@@ -265,6 +292,8 @@ export class TestbedScene {
     modelHeights: number[];
     charactersWithModel: number;
     charactersTotal: number;
+    /** 14.2 八属性特效自检：贴图加载数、覆盖属性数、当前活跃粒子/飞行体 */
+    vfx: import('../vfx/SpellVfx.js').SpellVfxStatus | undefined;
   } {
     const views = [this.view, ...this.dummyViews.values()];
     const withModel = views.filter((v) => v.hasModel);
@@ -277,6 +306,7 @@ export class TestbedScene {
       modelHeights: withModel.map((v) => v.modelHeight ?? 0),
       charactersWithModel: withModel.length,
       charactersTotal: views.length,
+      vfx: this.spellVfx?.status(),
     };
   }
 
@@ -296,6 +326,7 @@ export class TestbedScene {
     this.canvas.removeEventListener('mousedown', this.onCanvasMouseDown);
     this.canvas.removeEventListener('mousemove', this.onCanvasMouseMove);
     this.env.dispose();
+    this.spellVfx?.dispose();
     this.renderer.dispose();
   }
 
@@ -403,6 +434,29 @@ export class TestbedScene {
     if (this.shownWeapons.get(id) === weaponId) return;
     this.shownWeapons.set(id, weaponId);
     view.setWeapon(weaponId);
+  }
+
+  /** 某实体躯干中部的世界坐标，供命中粒子爆发定位（14.2）*/
+  private bodyPosOf(id: EntityId): { x: number; y: number; z: number } | undefined {
+    const e = this.combat.allEntities().find((x) => x.id === id);
+    return e ? { x: e.position.x, y: e.position.y + e.height * 0.5, z: e.position.z } : undefined;
+  }
+
+  /** 某实体的 3D 视图（玩家或假人）*/
+  private viewFor(id: EntityId): CharacterView | undefined {
+    return id === this.combat.player.id ? this.view : this.dummyViews.get(id as number);
+  }
+
+  /**
+   * M12 / 8.2「迷惑」：被化形术命中的实体换成小动物模型。
+   * ★ 判据是**光环的递减类别**而不是光环名 —— 8.2 的「迷惑」链
+   *   （incapacitate + stunned 标志）就是「被变成无害生物」这一类，
+   *   恐惧同类别但置 feared，据此排除。素材缺失时 setMorphed 内部安静跳过。
+   */
+  private isMorphed(id: EntityId): boolean {
+    return aurasOf(this.combat.auras, id).some(
+      (a) => a.def.drCategory === DrCategory.Incapacitate && a.def.flags?.stunned === true,
+    );
   }
 
   /**
@@ -760,6 +814,7 @@ export class TestbedScene {
     // M12：动画节奏跟速度（13.4）、施法姿态、手上武器、受击闪光推进
     this.view.setLocomotionTimeScale(this.anim.timeScale);
     this.view.setCasting(this.combat.playerCast !== undefined);
+    this.view.setMorphed(this.isMorphed(this.combat.player.id));
     this.syncWeapon(this.combat.player.id as number, this.view, this.combat.player.weaponId as string);
     this.view.update(dt);
 
@@ -803,9 +858,23 @@ export class TestbedScene {
         v.setLocomotionTimeScale(anim.timeScale);
       }
       v.setCasting(this.combat.castOf(e) !== undefined);
+      v.setMorphed(this.isMorphed(e.id));
       this.syncWeapon(e.id as number, v, e.weaponId as string);
       v.update(dt);
     }
+
+    // M12 / 14.2：弹体、地面区域、粒子池一次推进（顺序封在 SpellVfx.frame 里）。
+    // ★ 弹体主体/地面边界走 essential，任何画质都画；拖尾/内部粒子按画质裁。
+    this.spellVfx?.frame(dt, {
+      quality: this.quality.current,
+      cameraDistance: this.cam.distance,
+      // 点精灵的透视缩放：视口像素高 / (2·tan(fov/2))
+      pointScale:
+        this.canvas.clientHeight /
+        (2 * Math.tan((this.cam.camera.fov * Math.PI) / 360)),
+      projectiles: this.combat.projectiles,
+      ground: this.combat.ground,
+    });
 
     this.updateIndicators();
     this.updateStatusMarkers(dt);
