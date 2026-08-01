@@ -226,7 +226,13 @@ export class TestbedScene {
     };
     this.combat.onCastActivity = (kind, caster, skill, targets) => {
       playCastActivity(audio, audioDeps, kind, caster.id, skill);
-      this.spellVfx?.onCast(kind, caster, skill, targets);
+      // ★ track 闭包捕获**活的** CombatEntity —— 弹体每帧读 t.position 追人，
+      //   目标走位后爆发落在人身上而不是释放瞬间的旧坐标（sim 的 homing 同语义）
+      this.spellVfx?.onCast(kind, caster, skill, targets?.map((t) => ({
+        position: t.position,
+        height: t.height,
+        track: () => ({ x: t.position.x, y: t.position.y + t.height * 0.5, z: t.position.z }),
+      })));
       /**
        * M12 / 13.3：近战技能的挥砍动作。
        * 近战的签名 = 直接目标 + 6.1 近战档射程（≤3.8 米，取 8 米为界）。
@@ -893,9 +899,13 @@ export class TestbedScene {
       pointScale:
         this.canvas.clientHeight /
         (2 * Math.tan((this.cam.camera.fov * Math.PI) / 360)),
+      now: this.combat.world.time,
       projectiles: this.combat.projectiles.items.map((p) =>
         p.kind === 'delayedImpact'
-          ? { id: p.id, kind: p.kind, skillId: String(p.skillId), position: p.center, radius: p.radius }
+          ? {
+              id: p.id, kind: p.kind, skillId: String(p.skillId),
+              position: p.center, radius: p.radius, impactAt: p.impactAt,
+            }
           : { id: p.id, kind: p.kind, skillId: String(p.skillId), position: p.position },
       ),
       grounds: this.combat.ground.areas.map((a) => ({

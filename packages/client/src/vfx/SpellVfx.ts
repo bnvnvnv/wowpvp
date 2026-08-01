@@ -132,6 +132,8 @@ export interface ProjectileView {
   position: Vec3Like;
   /** 仅 delayedImpact：落点半径 */
   radius?: number;
+  /** 仅 delayedImpact：落地时刻（与 frame 的 `now` 同一时钟）。14.3 倒计时靠它 */
+  impactAt?: number;
 }
 
 /** 地面区域的表现视图（14.3 边界 + 内部装饰粒子所需的最小字段）*/
@@ -164,6 +166,8 @@ export interface SpellVfxFrame {
    * 由场景算好传进来 —— 本类不该知道 canvas 或相机参数。
    */
   pointScale: number;
+  /** 当前时钟（试验场 = world.time，联网 = serverTime）。倒计时用它减 impactAt */
+  now: number;
   projectiles: readonly ProjectileView[];
   grounds: readonly GroundAreaView[];
 }
@@ -177,15 +181,40 @@ interface ProjBody {
   fresh: boolean;
 }
 
-/** 表现用弹体：从施法者飞向命中点，抵达即爆。零规则影响 */
+/**
+ * 一圈持续边界环，延迟落点的环还带**倒计时数字**（14.3：
+ * 「延迟技能显示落点和倒计时」—— 看不到剩余秒数就不知道该什么时候躲开）。
+ * 环与数字都是 `ESSENTIAL_ROLES.groundBoundary`，任何画质都画。
+ */
+interface RingEntry {
+  mesh: THREE.Mesh;
+  label?: {
+    sprite: THREE.Sprite;
+    mat: THREE.SpriteMaterial;
+    tex: THREE.CanvasTexture;
+    canvas: HTMLCanvasElement;
+    /** 当前画着的秒数，变了才重绘（canvas 重绘 + 纹理上传不是免费的）*/
+    shown: number;
+  };
+}
+
+/**
+ * 表现用弹体：从施法者**追着目标**飞，追上即爆。零规则影响。
+ *
+ * ★★ **命中结果**在释放瞬间已锁定（6.6），但**终点不是**：
+ *   sim 的 HomingProjectile 每 tick 朝目标当前位置推进，表现弹体也一样 ——
+ *   否则目标一走位，弹体就打在他两秒前站的空地上，爆一朵空气花（用户实测）。
+ *   `track` 每帧给出目标当前的躯干位置；目标从视野消失（潜行/离场）时
+ *   返回 undefined，弹体飞向最后已知位置 —— 不追一个看不见的人。
+ */
 interface VisualBolt {
   group: THREE.Group;
   visual: AttributeVisual;
-  from: Vec3Like;
-  /** 终点在**释放瞬间**取定 —— 6.6：命中资格已定，目标之后怎么跑都不改变结果 */
+  /** 当前追踪的终点（有 track 时每帧刷新）*/
   to: Vec3Like;
-  distance: number;
-  traveled: number;
+  track?: (() => Vec3Like | undefined) | undefined;
+  /** 已飞行秒数。超过上限强制抵达 —— 别让弹体追一个反复闪现的人追到天荒地老 */
+  age: number;
 }
 
 export class SpellVfx {
@@ -204,7 +233,7 @@ export class SpellVfx {
   /** 表现用弹体（sim 里不存在，见文件头）*/
   private readonly bolts: VisualBolt[] = [];
   /** 延迟落点 / 地面区域的持续边界环。key = 'p'+id / 'g'+id */
-  private readonly rings = new Map<string, THREE.Mesh>();
+  private readonly rings = new Map<string, RingEntry>();
 
   /** 上一帧场上还在的投射物 id，用于检出「消失 → 补一发命中爆发」*/
   private seenProjectiles = new Set<number>();
@@ -257,8 +286,15 @@ export class SpellVfx {
     kind: 'started' | 'resolved' | 'interrupted' | 'failed',
     caster: { position: Vec3Like; height: number; yaw: number },
     skill: SkillDef | undefined,
-    /** 本次施法的结算目标（`onCastResolved` 给的那一份，结算前快照）*/
-    targets: readonly { position: Vec3Like; height: number }[] = [],
+    /**
+     * 本次施法的结算目标（`onCastResolved` 给的那一份，结算前快照）。
+     * `track` 可选：每帧返回该目标**当前**的躯干位置，弹体据此追踪（见 VisualBolt）。
+     */
+    targets: readonly {
+      position: Vec3Like;
+      height: number;
+      track?: () => Vec3Like | undefined;
+    }[] = [],
   ): void {
     if (!skill) return;
     const av = visualOf(skill);
@@ -292,7 +328,7 @@ export class SpellVfx {
         };
         const d = Math.hypot(to.x - hand.x, to.y - hand.y, to.z - hand.z);
         if (d < 1.5) continue; // 自身/贴脸：没有可看的飞行段
-        this.spawnBolt(hand, to, av, d);
+        this.spawnBolt(hand, to, av, t.track);
       }
       return;
     }
@@ -431,44 +467,59 @@ export class SpellVfx {
   frame(dt: number, ctx: SpellVfxFrame): void {
     this.cameraDistance = ctx.cameraDistance;
     this.pool.setScale(ctx.pointScale);
-    this.syncProjectiles(ctx.projectiles, ctx.quality, dt);
+    this.syncProjectiles(ctx.projectiles, ctx.quality, dt, ctx.now);
     this.syncGround(ctx.grounds, ctx.quality, dt);
     this.updateBolts(dt, ctx.quality);
     this.pool.update(dt);
     this.flashes.update(dt);
   }
 
-  /** 表现用弹体的推进：匀速直线，抵达即爆并回收 */
+  /**
+   * 表现用弹体的推进：**追踪**目标当前位置（每帧刷新终点），追上即爆并回收。
+   * ★ 追不上的极端情况（目标反复闪现）由 age 上限兜底强制抵达。
+   */
   private updateBolts(dt: number, quality: QualityTier): void {
     const showTrail = isVisible('projectileTrail', quality);
     for (let i = this.bolts.length - 1; i >= 0; i--) {
       const b = this.bolts[i]!;
-      b.traveled += BOLT_SPEED * dt;
-      const k = Math.min(1, b.traveled / b.distance);
-      const at = {
-        x: b.from.x + (b.to.x - b.from.x) * k,
-        y: b.from.y + (b.to.y - b.from.y) * k,
-        z: b.from.z + (b.to.z - b.from.z) * k,
-      };
-      b.group.position.set(at.x, at.y, at.z);
+      b.age += dt;
+      // 终点每帧刷新；目标不可见（潜行/离场）时保持最后已知位置
+      const tracked = b.track?.();
+      if (tracked) b.to = tracked;
 
-      if (showTrail) {
-        this.emitBurst(at, b.visual, {
-          count: 3, speed: 0.5, size: 0.42, life: 0.3, drag: 4, opacity: 0.9,
-        });
+      const g = b.group.position;
+      const dx = b.to.x - g.x;
+      const dy = b.to.y - g.y;
+      const dz = b.to.z - g.z;
+      const d = Math.hypot(dx, dy, dz);
+      const step = BOLT_SPEED * dt;
+
+      if (d > step && b.age < 2) {
+        const k = step / d;
+        g.set(g.x + dx * k, g.y + dy * k, g.z + dz * k);
+        if (showTrail) {
+          this.emitBurst(g, b.visual, {
+            count: 3, speed: 0.5, size: 0.42, life: 0.3, drag: 4, opacity: 0.9,
+          });
+        }
+        continue;
       }
 
-      if (k >= 1) {
-        // 抵达：命中爆发（命中资格早已在释放瞬间定死，这里只是把它演出来）
-        this.emitBurst(b.to, b.visual, { count: 18, speed: 4.4, size: 0.75, life: 0.55 });
-        this.emitAccent(b.to, 'debris', b.visual.secondary, 0.95);
-        this.disposeNode(b.group);
-        this.bolts.splice(i, 1);
-      }
+      // 抵达（或超龄强制抵达）：命中爆发在目标**当前**位置炸开 ——
+      // 命中资格早在释放瞬间定死（6.6），这里只是把它演在人身上而不是空地上
+      this.emitBurst(b.to, b.visual, { count: 18, speed: 4.4, size: 0.75, life: 0.55 });
+      this.emitAccent(b.to, 'debris', b.visual.secondary, 0.95);
+      this.disposeNode(b.group);
+      this.bolts.splice(i, 1);
     }
   }
 
-  private spawnBolt(from: Vec3Like, to: Vec3Like, av: AttributeVisual, distance: number): void {
+  private spawnBolt(
+    from: Vec3Like,
+    to: Vec3Like,
+    av: AttributeVisual,
+    track?: () => Vec3Like | undefined,
+  ): void {
     // 同时在飞的弹体设个上限：12v12 混战里这是唯一会无界增长的东西
     if (this.bolts.length >= 24) {
       const oldest = this.bolts.shift();
@@ -477,11 +528,7 @@ export class SpellVfx {
     const group = this.makeBoltNode(av);
     group.position.set(from.x, from.y, from.z);
     this.group.add(group);
-    this.bolts.push({
-      group, visual: av,
-      from: { ...from }, to: { ...to },
-      distance, traveled: 0,
-    });
+    this.bolts.push({ group, visual: av, to: { ...to }, track, age: 0 });
   }
 
   // ── 每帧：真实投射物（本地 sim 或服务器快照，都收 ProjectileView）──
@@ -492,7 +539,9 @@ export class SpellVfx {
    *   delayedImpact      → 持续落点边界环（essential，14.3 要求全程可见）
    * 消失的投射物在末位置补一发命中爆发。
    */
-  private syncProjectiles(items: readonly ProjectileView[], quality: QualityTier, dt: number): void {
+  private syncProjectiles(
+    items: readonly ProjectileView[], quality: QualityTier, dt: number, now: number,
+  ): void {
     this.trailTimer += dt;
     const trailDue = this.trailTimer >= 0.05;
     if (trailDue) this.trailTimer = 0;
@@ -506,10 +555,14 @@ export class SpellVfx {
         const key = `p${p.id}`;
         delayedPresent.add(key);
         const skill = getSkill(asSkillId(p.skillId));
-        this.ensureRing(
+        const entry = this.ensureRing(
           key, p.position, p.radius ?? 1,
           (skill ? visualOf(skill) : ATTRIBUTE_VISUALS.fire).primary,
         );
+        // 14.3：落点边界 + **倒计时**。剩余秒数向上取整（「还有 2 秒」比 1.7 可读）
+        if (p.impactAt !== undefined) {
+          this.updateCountdown(entry, Math.max(0, Math.ceil(p.impactAt - now)));
+        }
         continue;
       }
       // homing | colliding
@@ -728,11 +781,11 @@ export class SpellVfx {
     });
   }
 
-  private ensureRing(key: string, center: Vec3Like, radius: number, color: number): void {
-    let ring = this.rings.get(key);
-    if (!ring) {
+  private ensureRing(key: string, center: Vec3Like, radius: number, color: number): RingEntry {
+    let entry = this.rings.get(key);
+    if (!entry) {
       // 半径 1 的单位环，实例按真实半径缩放 —— 边界永远等于判定半径（14.3）
-      ring = new THREE.Mesh(
+      const mesh = new THREE.Mesh(
         new THREE.RingGeometry(0.9, 1, 48),
         new THREE.MeshBasicMaterial({
           color,
@@ -742,22 +795,70 @@ export class SpellVfx {
           depthWrite: false,
         }),
       );
-      ring.rotation.x = -Math.PI / 2;
-      ring.renderOrder = 3;
-      this.group.add(ring);
-      this.rings.set(key, ring);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.renderOrder = 3;
+      this.group.add(mesh);
+      entry = { mesh };
+      this.rings.set(key, entry);
     }
-    ring.scale.setScalar(radius);
-    ring.position.set(center.x, center.y + 0.05, center.z);
-    (ring.material as THREE.MeshBasicMaterial).color.set(color);
+    entry.mesh.scale.setScalar(radius);
+    entry.mesh.position.set(center.x, center.y + 0.05, center.z);
+    (entry.mesh.material as THREE.MeshBasicMaterial).color.set(color);
+    return entry;
+  }
+
+  /**
+   * 14.3「延迟技能显示落点和倒计时」的**倒计时**半边。
+   * 数字用 canvas 纹理 Sprite 悬在环心上方；秒数没变就不重绘不重传。
+   * ★ 与边界环同属 groundBoundary（essential）—— 没有任何画质分支。
+   */
+  private updateCountdown(entry: RingEntry, seconds: number): void {
+    if (!entry.label) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 128;
+      canvas.height = 128;
+      const tex = new THREE.CanvasTexture(canvas);
+      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
+      const sprite = new THREE.Sprite(mat);
+      sprite.renderOrder = 8;
+      // 挂在环 mesh 下会吃到环的 radius 缩放 —— 所以挂在顶层组里，位置手动跟
+      this.group.add(sprite);
+      entry.label = { sprite, mat, tex, canvas, shown: -1 };
+    }
+    const l = entry.label;
+    l.sprite.position.set(
+      entry.mesh.position.x,
+      entry.mesh.position.y + 1.4,
+      entry.mesh.position.z,
+    );
+    l.sprite.scale.setScalar(1.7);
+    if (l.shown === seconds) return;
+    l.shown = seconds;
+    const c = l.canvas.getContext('2d');
+    if (!c) return;
+    c.clearRect(0, 0, 128, 128);
+    c.font = 'bold 84px system-ui, sans-serif';
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.lineWidth = 10;
+    c.strokeStyle = 'rgba(0,0,0,0.85)';
+    c.strokeText(String(seconds), 64, 66);
+    c.fillStyle = '#ffffff';
+    c.fillText(String(seconds), 64, 66);
+    l.tex.needsUpdate = true;
   }
 
   private removeRing(key: string): void {
-    const ring = this.rings.get(key);
-    if (!ring) return;
-    this.group.remove(ring);
-    ring.geometry.dispose();
-    (ring.material as THREE.Material).dispose();
+    const entry = this.rings.get(key);
+    if (!entry) return;
+    this.group.remove(entry.mesh);
+    entry.mesh.geometry.dispose();
+    (entry.mesh.material as THREE.Material).dispose();
+    if (entry.label) {
+      this.group.remove(entry.label.sprite);
+      entry.label.mat.dispose();
+      entry.label.tex.dispose();
+    }
     this.rings.delete(key);
   }
 

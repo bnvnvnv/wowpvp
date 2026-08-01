@@ -428,9 +428,13 @@ export class NetworkScene {
         if (!skill) break;
         const caster = this.casterLike(msg.casterId);
         if (caster) {
+          // ★ track 闭包按 id 查**渲染中**的位置 —— 弹体追着插值后的角色飞
           const targets = msg.targetIds
-            .map((id) => this.bodyBaseOf(id))
-            .filter((t): t is { position: { x: number; y: number; z: number }; height: number } => t !== undefined);
+            .map((id) => {
+              const base = this.bodyBaseOf(id);
+              return base ? { ...base, track: () => this.bodyOf(id) } : undefined;
+            })
+            .filter((t): t is NonNullable<typeof t> => t !== undefined);
           this.spellVfx?.onCast('resolved', caster, skill, targets);
           // 近战挥砍（与试验场同一判据：直接目标 + 6.1 近战档射程）
           if (skill.targeting === Targeting.Direct && skill.range.max < 8 && msg.casterId !== undefined) {
@@ -725,6 +729,8 @@ export class NetworkScene {
       pointScale:
         this.canvas.clientHeight /
         (2 * Math.tan((this.cam.camera.fov * Math.PI) / 360)),
+      // 快照的 impactAt 是服务器时钟 —— now 用同一个钟（收快照时校准）
+      now: this.serverTime,
       projectiles: this.lastProjectiles,
       grounds: this.lastGrounds,
     });
