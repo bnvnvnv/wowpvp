@@ -229,7 +229,9 @@
         will-change: transform, opacity;
       }
       .fn-damage { color: #ffd9c0; }
-      .fn-crit   { color: #ffb057; font-size: 21px; }
+      /* 暴击的主通道是**尺寸与弹跳**（JS 的 POP_PEAK 1.9），颜色只是第三条 ——
+         17.2/915：不能只靠颜色。字重 900 + 字距是字形通道的一部分 */
+      .fn-crit   { color: #ffb057; font-size: 21px; font-weight: 900; letter-spacing: .6px; }
       .fn-heal   { color: #86e5a2; }
       .fn-absorb { color: #9fd2ff; }
       /* 未命中/免疫是**文字**不是数字 —— 显示 0 会被读成「打中但减到 0」 */

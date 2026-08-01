@@ -304,6 +304,8 @@ export class FlashPool {
     life: number;
     maxLife: number;
     size: number;
+    /** 生命末端的展开倍数（起点恒 0.55）。刀光 1.2；冲击波环给 3+ */
+    grow: number;
   }[] = [];
 
   constructor(capacity = 12) {
@@ -319,7 +321,7 @@ export class FlashPool {
       sprite.visible = false;
       sprite.renderOrder = 7;
       this.group.add(sprite);
-      this.items.push({ sprite, mat, life: 0, maxLife: 1, size: 1 });
+      this.items.push({ sprite, mat, life: 0, maxLife: 1, size: 1, grow: 1.2 });
     }
   }
 
@@ -332,6 +334,11 @@ export class FlashPool {
     life?: number;
     /** 弧度。刀光每次给随机值 */
     rotation?: number;
+    /**
+     * 生命末端的展开倍数。默认 1.2 = 原刀光行为（0.55 → 1.2）；
+     * 冲击波环给 3.8 —— 同一个池、同一批贴图，只是长得更开
+     */
+    grow?: number;
   }): void {
     if (!o.texture) return;
     let slot = this.items.find((i) => i.life <= 0);
@@ -340,6 +347,7 @@ export class FlashPool {
     slot.mat.color.set(o.color);
     slot.mat.rotation = o.rotation ?? 0;
     slot.size = o.size ?? 1;
+    slot.grow = o.grow ?? 1.2;
     slot.maxLife = slot.life = o.life ?? 0.22;
     slot.sprite.position.set(o.origin.x, o.origin.y, o.origin.z);
     slot.sprite.scale.setScalar(slot.size * 0.55);
@@ -358,7 +366,7 @@ export class FlashPool {
       const t = 1 - it.life / it.maxLife;
       // 只展开不回缩：刀光读作「划过」，回缩会读作「吸回去」
       it.mat.opacity = pop(t);
-      it.sprite.scale.setScalar(it.size * (0.55 + 0.65 * t));
+      it.sprite.scale.setScalar(it.size * (0.55 + (it.grow - 0.55) * t));
     }
   }
 

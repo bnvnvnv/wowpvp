@@ -70,8 +70,16 @@ import { SpellVfx, type SpellVfxStatus } from '../vfx/SpellVfx.js';
 import { StatusMarkers } from '../vfx/StatusMarkers.js';
 import { TargetRing } from '../vfx/TargetRing.js';
 import type { ControlKind } from '../vfx/status.js';
-import { paletteFor } from '../settings/accessibility.js';
+import {
+  DEFAULT_ACCESSIBILITY,
+  loadAccessibility,
+  paletteFor,
+  saveAccessibility,
+  type AccessibilitySettings,
+} from '../settings/accessibility.js';
 import { artEnabled } from '../settings/artMode.js';
+import { HitStop } from '../render/HitStop.js';
+import { HitFeedback } from '../feedback/HitFeedback.js';
 
 /** 技能栏槽位数。快捷键只有 1–8，职业技能多于 8 个时其余仅在 HUD 里可见 */
 const SKILL_SLOT_COUNT = 8;
@@ -122,6 +130,10 @@ export class NetworkScene {
   /** ★ 与试验场**同一个** HUD 类，喂的是快照视图而不是 CombatDirector */
   private readonly hud: CombatHud;
   private readonly view = new SnapshotCombatView();
+  /** 打击感：顿帧 + 反馈编排 + 可访问性（此前联网侧从不加载设置）*/
+  private readonly hitStop = new HitStop();
+  private feedback!: HitFeedback;
+  private access: AccessibilitySettings = DEFAULT_ACCESSIBILITY;
 
   private mapRenderer?: MapRenderer;
   private map?: MapDef;
@@ -211,6 +223,30 @@ export class NetworkScene {
     this.cam = new CameraController(canvas.clientWidth / canvas.clientHeight);
     this.input = new InputManager(canvas);
     this.hud = new CombatHud(canvas.parentElement ?? document.body);
+    /**
+     * 17.2：联网场景此前**从不加载**持久化的可访问性设置（只有试验场加载）——
+     * 色盲模式/关伤害数字在联网对局里每次都回到默认。打击感改造顺手补上：
+     * 震动/顿帧的开关要在联网侧生效，这一步是前提。
+     */
+    this.setAccessibility(loadAccessibility(globalThis.localStorage));
+
+    // 打击感：命中反馈统一编排（与试验场同一个类、同一份分档判据）
+    this.feedback = new HitFeedback({
+      selfId: () => this.selfId ?? undefined,
+      headOf: (id) => this.headOf(id),
+      audioAt: (id) => this.audioDistance(id),
+      viewOf: (id) => this.viewOfEntity(id),
+      floaters: {
+        push: (text, kind, at, opts) => this.hud.floaters.push(text, kind, at, opts),
+      },
+      flashScreen: () => this.hud.flashScreen(),
+      vfxDamage: (e) =>
+        this.spellVfx?.onCombatEvent({ t: 'damage', ...e }, (id) => this.bodyOf(id)),
+      addTrauma: (t) => this.cam.addTrauma(t),
+      hitStop: this.hitStop,
+      audio,
+      access: () => this.access,
+    });
     // 点姓名板选人 → 发 SetTarget（服务器仍会校验可见集合）
     this.view.onSelect = (id) => {
       this.currentTargetId = id;
@@ -231,8 +267,11 @@ export class NetworkScene {
      */
     this.loop = new GameLoop(
       (dt) => this.simulate(dt),
-      (alpha, dt) => this.draw(alpha, dt),
+      (alpha, dt, realDt) => this.draw(alpha, dt, realDt),
       (dt) => this.readInput(dt),
+      undefined,
+      // 顿帧：只缩放渲染 dt（模拟步/输入/插值时钟不受影响，docs/08 §5）
+      (realDt) => this.hitStop.scale(realDt),
     );
 
     window.addEventListener('resize', this.onResize);
@@ -243,6 +282,19 @@ export class NetworkScene {
     audio.install();
     this.conn.connect();
     this.loop.start();
+  }
+
+  /** 17.2：应用并持久化可访问性设置（与试验场同形的唯一入口）*/
+  setAccessibility(next: AccessibilitySettings): void {
+    this.access = next;
+    this.hud.applyAccessibility(next);
+    this.cam.setAccessibility(next);
+    this.hitStop.enabled = next.hitStop;
+    saveAccessibility(globalThis.localStorage, next);
+  }
+
+  get accessibility(): AccessibilitySettings {
+    return this.access;
   }
 
   dispose(): void {
@@ -366,31 +418,26 @@ export class NetworkScene {
       //   （例如没有 avoided/immune 的区分），所以声音也如实地少一层，
       //   ⚠️ 不编一个「大概是格挡」的音效：那会让玩家按不存在的反馈做判断
       case 'Damage': {
-        if (msg.immune) audio.play('buff_apply', { ...this.audioDistance(msg.targetId), rate: 0.8 });
-        else audio.playImpact(msg.school, this.audioDistance(msg.targetId));
-        if (msg.targetId === this.selfId) {
-          audio.playVariant('hurt', { volume: 0.85 });
-          if (msg.amount > 0) this.hud.flashScreen();
-        }
-        const at = this.headOf(msg.targetId);
-        if (at) {
-          if (msg.immune) this.hud.floaters.push('免疫', 'immune', at);
-          else if (msg.amount > 0) this.hud.floaters.push(String(msg.amount), 'damage', at);
-          else if (msg.absorbed > 0) this.hud.floaters.push(`吸收 ${msg.absorbed}`, 'absorb', at);
-        }
-        // 14.2 命中爆发（按学派配色）。posOf 用**渲染中**的位置，与角色平滑一致
-        this.spellVfx?.onCombatEvent(
-          { t: 'damage', targetId: msg.targetId, amount: msg.amount, school: msg.school, immune: msg.immune },
-          (id) => this.bodyOf(id),
-        );
-        if (msg.targetId === this.selfId && msg.amount > 0) this.viewOfEntity(msg.targetId)?.flashHit();
+        /**
+         * 打击感改造：整段交给 HitFeedback（与试验场同一编排、同一分档判据）。
+         * ★ 顺手修掉旧不一致：flashHit 此前只给自己（:386），现在所有可见
+         *   目标都闪 —— 与试验场一致。
+         * 联网侧的 crit/overkill 来自协议（PR-B），maxHealth 从快照查。
+         */
+        this.feedback.onHit({
+          targetId: msg.targetId, sourceId: msg.sourceId,
+          amount: msg.amount, absorbed: msg.absorbed, immune: msg.immune,
+          crit: msg.crit === true, overkill: msg.overkill, school: msg.school,
+          targetMaxHealth: this.lastEntities.find((e) => e.id === msg.targetId)?.maxHealth,
+        });
         this.view.push(`${this.nameOf(msg.sourceId)} → ${this.nameOf(msg.targetId)} ${msg.amount} 点伤害`, 'ok');
         break;
       }
       case 'Heal': {
         audio.play('heal_impact', this.audioDistance(msg.targetId));
-        const at = this.headOf(msg.targetId);
-        if (at && msg.amount > 0) this.hud.floaters.push(`+${msg.amount}`, 'heal', at);
+        this.feedback.onHeal({
+          targetId: msg.targetId, amount: msg.amount, crit: msg.crit === true,
+        });
         this.spellVfx?.onCombatEvent(
           { t: 'heal', targetId: msg.targetId, amount: msg.amount },
           (id) => this.bodyOf(id),
@@ -398,14 +445,20 @@ export class NetworkScene {
         this.view.push(`${this.nameOf(msg.sourceId)} 治疗 ${this.nameOf(msg.targetId)} ${msg.amount} 点`, 'ok');
         break;
       }
-      case 'Death':
+      case 'Death': {
         audio.playVariant('death', this.audioDistance(msg.entityId));
         this.spellVfx?.onCombatEvent(
           { t: 'death', targetId: msg.entityId },
           (id) => this.bodyOf(id),
         );
+        // 打击感：自己死 = 大创伤 + 顿帧；附近死亡按距离微量创伤
+        this.feedback.onDeath({
+          entityId: msg.entityId, killerId: msg.killerId,
+          distance: this.audioDistance(msg.entityId).distance,
+        });
         this.view.push(`${this.nameOf(msg.entityId)} 被击杀`, 'interrupt');
         break;
+      }
       case 'CastFailed':
         audio.play('ui_error', { group: 'ui', volume: 0.5 });
         this.view.push(`施法失败：${FAIL_TEXT[msg.reason] ?? msg.reason}`, 'fail');
@@ -439,6 +492,8 @@ export class NetworkScene {
           // 近战挥砍（与试验场同一判据：直接目标 + 6.1 近战档射程）
           if (skill.targeting === Targeting.Direct && skill.range.max < 8 && msg.casterId !== undefined) {
             this.viewOfEntity(msg.casterId)?.playMeleeSwing();
+            // 挥砍破空声（与试验场同款）
+            audio.playVariant('swing', { volume: 0.55, ...this.audioDistance(msg.casterId) });
           }
         }
         break;
@@ -711,13 +766,20 @@ export class NetworkScene {
     this.conn.send(this.predictor.sample(move));
   }
 
-  private draw(_alpha: number, dt: number): void {
+  /**
+   * `dt` 是渲染时钟（顿帧时被缩放），`realDt` 是真实时钟。
+   * ★★ serverTime **必须**走 realDt —— 它是插值取样的钟，被顿帧拖慢会让
+   *   取样落后于缓冲，解冻时全场角色猛跳一步。AnimationController 同理
+   *   （distance/dt 的表观速度会暴涨，见 GameLoop 的注释）。
+   */
+  private draw(_alpha: number, dt: number, realDt: number): void {
     // 服务器时间自己走，收到快照时校准 —— 插值要按它取样
-    this.serverTime += dt;
-    this.elapsed += dt;
+    this.serverTime += realDt;
+    this.elapsed += realDt;
+    this.feedback.update(realDt);
 
-    this.drawSelf(dt);
-    this.drawRemotes(dt);
+    this.drawSelf(dt, realDt);
+    this.drawRemotes(dt, realDt);
     this.updateTargetRing();
     this.updateIndicators();
 
@@ -777,7 +839,7 @@ export class NetworkScene {
     }
   }
 
-  private drawSelf(dt: number): void {
+  private drawSelf(dt: number, realDt: number): void {
     if (!this.predictor) return;
     /**
      * ★ 渲染位置 = 预测位置 + 尚未消化完的纠正量。
@@ -789,7 +851,7 @@ export class NetworkScene {
 
     this.selfAnim.update({
       horizontalDistance: s.lastHorizontalDistance,
-      dt,
+      dt: realDt, // ★ 状态机时钟（见 draw 头注）
       grounded: s.grounded,
       verticalVelocity: s.velocity.y,
       teleported: s.teleported,
@@ -820,7 +882,7 @@ export class NetworkScene {
     this.selfView.setFirstPerson(this.cam.isFirstPerson);
   }
 
-  private drawRemotes(dt: number): void {
+  private drawRemotes(dt: number, realDt: number): void {
     const sampled = this.interp.sample(this.serverTime, this.selfId ?? undefined);
     const seen = new Set<number>();
 
@@ -850,7 +912,7 @@ export class NetworkScene {
          *   而 `teleported` 正是为这件事存在的（见 Interpolator）。
          */
         horizontalDistance: e.teleported ? 0 : moved,
-        dt,
+        dt: realDt, // ★ 状态机时钟（见 draw 头注）
         grounded: true,
         verticalVelocity: 0,
         teleported: e.teleported,

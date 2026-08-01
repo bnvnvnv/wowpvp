@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { GEOMETRY, type Aabb } from '@wowpvp/shared';
 import { CAMERA, CameraController, type CameraInput } from './CameraController.js';
+import { DEFAULT_ACCESSIBILITY } from '../settings/accessibility.js';
 
 const DT = 1 / 60;
 const noInput: CameraInput = { wheel: 0, leftDrag: null, rightDrag: null, reset: false };
@@ -179,5 +180,64 @@ describe('4.3 — 跳跃时垂直跟随柔于水平跟随', () => {
 
   it('落地时垂直跟随更快，避免镜头拖在角色上方', () => {
     expect(CAMERA.VERTICAL_LERP_LANDING).toBeGreaterThan(CAMERA.VERTICAL_LERP);
+  });
+});
+
+describe('镜头震动（打击感改造，docs/07 §1.7）—— 不穿墙、可归零、不翻第一人称', () => {
+  const wallBehind: Aabb = {
+    min: { x: -20, y: 0, z: 4 },
+    max: { x: 20, y: 8, z: 5 },
+  };
+
+  const distToAnchor = (c: CameraController): number =>
+    Math.hypot(
+      c.camera.position.x,
+      c.camera.position.y - GEOMETRY.CHEST_HEIGHT,
+      c.camera.position.z,
+    );
+
+  it('★★ 满创伤连续 30 帧，镜头到锚点的距离恒 ≤ 无震动时的距离（只拉近，永不推远）', () => {
+    const c = new CameraController(16 / 9);
+    settle(c, [wallBehind], 200);
+    const baseline = distToAnchor(c);
+
+    c.addTrauma(1);
+    for (let i = 0; i < 30; i++) {
+      c.update(DT, target(), [wallBehind], false);
+      // 位移通道是减法：任何一帧都不该比无震动时更远（更远 = 可能穿墙）
+      expect(distToAnchor(c)).toBeLessThanOrEqual(baseline + 1e-6);
+      // 墙的硬边界照样成立
+      expect(c.camera.position.z).toBeLessThan(4);
+    }
+  });
+
+  it('★ cameraShake=0 时有无 addTrauma 的相机位置与朝向逐帧完全相同', () => {
+    const run = (shake: boolean) => {
+      const c = new CameraController(16 / 9);
+      c.setAccessibility({ ...DEFAULT_ACCESSIBILITY, cameraShake: 0 });
+      settle(c, []);
+      if (shake) c.addTrauma(1);
+      const frames: [number, number, number, number][] = [];
+      for (let i = 0; i < 20; i++) {
+        c.update(DT, target(), [], false);
+        frames.push([
+          c.camera.position.x, c.camera.position.y, c.camera.position.z,
+          c.camera.quaternion.w,
+        ]);
+      }
+      return frames;
+    };
+    expect(run(true)).toEqual(run(false));
+  });
+
+  it('★ 满创伤不会把 isFirstPerson 从 false 翻成 true（pullIn 不改玩家设定的缩放）', () => {
+    const c = new CameraController(16 / 9);
+    settle(c, []);
+    expect(c.isFirstPerson).toBe(false);
+    c.addTrauma(1);
+    for (let i = 0; i < 30; i++) {
+      c.update(DT, target(), [], false);
+      expect(c.isFirstPerson).toBe(false);
+    }
   });
 });

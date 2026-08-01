@@ -32,6 +32,7 @@ import {
   type ControlKind,
 } from './status.js';
 import { VfxPhase, phasesFor, vfxPlanFor } from './phases.js';
+import { burstPlanFor } from './SpellVfx.js';
 
 const allSkills = (): SkillDef[] => ALL_CLASSES.flatMap((c) => c.skills);
 
@@ -271,5 +272,41 @@ describe('14.1 技能表现六阶段', () => {
     const phases = phasesFor(fireball).map((p) => p.phase);
     expect(phases).toContain(VfxPhase.Release);
     expect(phases).toContain(VfxPhase.Impact);
+  });
+});
+
+describe('打击分档 → 爆发参数（burstPlanFor，纯函数无需 WebGL）', () => {
+  it('★ 档位越高，粒子数/尺寸/寿命单调不减', () => {
+    const tiers = ['light', 'normal', 'heavy', 'crit', 'critHeavy'] as const;
+    for (let i = 1; i < tiers.length; i++) {
+      const lo = burstPlanFor(tiers[i - 1]!, 150, 'high');
+      const hi = burstPlanFor(tiers[i]!, 150, 'high');
+      expect(hi.count).toBeGreaterThanOrEqual(lo.count);
+      expect(hi.size).toBeGreaterThanOrEqual(lo.size);
+      expect(hi.life).toBeGreaterThanOrEqual(lo.life);
+    }
+  });
+
+  it('★ count 恒 ≤ 48（Burst 的 MAX_PARTICLES，超了会被静默钳掉）', () => {
+    for (const tier of ['light', 'normal', 'heavy', 'crit', 'critHeavy', 'kill'] as const) {
+      expect(burstPlanFor(tier, 99999, 'high').count).toBeLessThanOrEqual(48);
+    }
+  });
+
+  it('★★ low 画质下没有碎屑层，但主爆发仍在（14.4：装饰可减，命中反馈不是装饰）', () => {
+    const plan = burstPlanFor('critHeavy', 400, 'low');
+    expect(plan.debris).toBe(false);
+    expect(plan.count).toBeGreaterThan(0);
+    // 冲击波与白核不是 impactDebris 角色 —— 它们是命中反馈本体，不随画质关
+    expect(plan.shockwave).toBe(true);
+    expect(plan.whiteCore).toBe(true);
+  });
+
+  it('★ 只有暴击档有白核；只有 heavy 及以上有冲击波', () => {
+    expect(burstPlanFor('normal', 150, 'high').shockwave).toBe(false);
+    expect(burstPlanFor('normal', 150, 'high').whiteCore).toBe(false);
+    expect(burstPlanFor('heavy', 250, 'high').shockwave).toBe(true);
+    expect(burstPlanFor('heavy', 250, 'high').whiteCore).toBe(false);
+    expect(burstPlanFor('crit', 100, 'high').whiteCore).toBe(true);
   });
 });

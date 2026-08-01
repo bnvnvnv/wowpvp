@@ -148,6 +148,20 @@ export interface AccessibilitySettings {
    *   都建立在「只有 `hiddenAtQuality(role: DecorativeRole)` 一个出口」上。
    */
   effectQuality: QualityTier;
+
+  /**
+   * 渲染顿帧（打击瞬间的短暂时间缩放，见 render/HitStop.ts。已知偏差 #8）。
+   *
+   * ★ **加这个开关不违反 17.2 第二句。** 那条禁止的是能把「形状/边框/字形」
+   *   这类**非颜色信息通道**关掉的开关（见 UNSWITCHABLE_CHANNELS）。
+   *   顿帧不隐藏、不淡化、不延迟任何一个元素 —— 它只是让**全部**渲染
+   *   在几十毫秒内慢下来，关掉它之后玩家能看到的信息一字不少。
+   * ★ 单独一项而不是搭 `cameraShake` 的车：对前庭敏感的人要关震动，
+   *   对输入延迟敏感的人要关顿帧，两类人不是同一批。
+   * ⚠️ **不进 INDEPENDENT_TOGGLES** —— 那张表是 17.2 第三句点名的四项，
+   *   长度被 accessibility.test.ts 钉在 4。
+   */
+  hitStop: boolean;
 }
 
 export const DEFAULT_ACCESSIBILITY: AccessibilitySettings = {
@@ -159,6 +173,7 @@ export const DEFAULT_ACCESSIBILITY: AccessibilitySettings = {
   weaponParticles: true,
   namePlateDensity: 1,
   effectQuality: 'high',
+  hitStop: true,
 };
 
 export const clampUiScale = (v: number): number =>
@@ -178,6 +193,7 @@ export const normalizeAccessibility = (
   weaponParticles: raw.weaponParticles ?? true,
   namePlateDensity: clamp01(raw.namePlateDensity ?? 1),
   effectQuality: isQualityTier(raw.effectQuality) ? raw.effectQuality : 'high',
+  hitStop: raw.hitStop ?? true,
 });
 
 const isColorblindMode = (v: unknown): v is ColorblindMode =>
@@ -196,10 +212,10 @@ const isQualityTier = (v: unknown): v is QualityTier =>
  * ★ 17.2 只要求「**减弱**镜头震动」，所以 0 是允许的（完全关闭）——
  *   与「降低特效」不同，震动本身不携带任何战斗信息，关掉它不影响公平。
  *
- * ⚠️ **本项目目前没有镜头震动效果**，所以这个函数还没有接线对象。
- *    它已实现并被测试覆盖，是为了在引入震动时有一个**唯一入口** ——
- *    震动一旦分散在多处实现，「减弱震动」这个设置就会只减弱其中一部分。
- *    见 docs/PROGRESS.md 的 M9 已知不足。
+ * ★ 接线对象是 `camera/CameraShake.ts`（打击感改造引入，偏差 #3 已关闭）：
+ *   `sample()` 的 yaw/pitch/roll/pullIn 四个通道**各自**过这个函数 ——
+ *   它是唯一入口，震动一旦分散在多处实现，「减弱震动」就会只减弱其中一部分。
+ *   `CameraShake.test.ts` 断言 cameraShake=0 时四通道全部归零。
  */
 export const shakeAmplitude = (base: number, s: AccessibilitySettings): number =>
   base * clamp01(s.cameraShake);

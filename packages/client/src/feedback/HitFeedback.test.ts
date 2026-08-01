@@ -1,0 +1,137 @@
+/**
+ * 命中反馈编排。重点是三条**独立性**规则：
+ *   · 关掉伤害数字，其余通道一条不少（8.1：必须给出清晰命中反馈）
+ *   · cameraShake=0 时 addTrauma 照样被调（归零在 shakeAmplitude 唯一入口）
+ *   · 震动/顿帧只在牵涉本地玩家时触发（12v12 防抖成筛子）
+ */
+
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { School, asEntityId } from '@wowpvp/shared';
+import { DEFAULT_ACCESSIBILITY, type AccessibilitySettings } from '../settings/accessibility.js';
+import { HitFeedback, type HitEvent } from './HitFeedback.js';
+
+const SELF = asEntityId(1);
+const ENEMY = asEntityId(2);
+const OTHER = asEntityId(3);
+
+const makeDeps = (access: Partial<AccessibilitySettings> = {}) => {
+  const settings = { ...DEFAULT_ACCESSIBILITY, ...access };
+  const view = { flashHit: vi.fn(), playHitReact: vi.fn() };
+  const deps = {
+    selfId: () => SELF,
+    headOf: () => ({ x: 0, y: 1.8, z: 0 }),
+    audioAt: () => ({}),
+    viewOf: () => view,
+    floaters: { push: vi.fn() },
+    flashScreen: vi.fn(),
+    vfxDamage: vi.fn(),
+    addTrauma: vi.fn(),
+    hitStop: { trigger: vi.fn() },
+    audio: { play: vi.fn(), playVariant: vi.fn(), playImpact: vi.fn() },
+    access: () => settings,
+  };
+  return { deps, view, feedback: new HitFeedback(deps) };
+};
+
+const hit = (over: Partial<HitEvent> = {}): HitEvent => ({
+  targetId: SELF, sourceId: ENEMY,
+  amount: 100, absorbed: 0, immune: false,
+  crit: false, overkill: 0, school: School.Fire,
+  targetMaxHealth: 1000,
+  ...over,
+});
+
+let ctx: ReturnType<typeof makeDeps>;
+beforeEach(() => { ctx = makeDeps(); });
+
+describe('★★ 通道独立性', () => {
+  it('★★ damageNumbers=false 时音效/屏闪/震动/粒子照常（8.1 红线）', () => {
+    const { deps, feedback } = makeDeps({ damageNumbers: false });
+    feedback.onHit(hit({ crit: true, amount: 300 }));
+    // 浮字开关在 FloatingNumbers 内部 —— HitFeedback 这层甚至不该少调 push
+    expect(deps.audio.playImpact).toHaveBeenCalled();
+    expect(deps.flashScreen).toHaveBeenCalled();
+    expect(deps.addTrauma).toHaveBeenCalled();
+    expect(deps.vfxDamage).toHaveBeenCalled();
+  });
+
+  it('★★ cameraShake=0 时 addTrauma 仍被调用（归零只在 shakeAmplitude 一处）', () => {
+    const { deps, feedback } = makeDeps({ cameraShake: 0 });
+    feedback.onHit(hit({ amount: 300 }));
+    expect(deps.addTrauma).toHaveBeenCalled();
+  });
+
+  it('★ hitStop=false 时 trigger 不被调用', () => {
+    const { deps, feedback } = makeDeps({ hitStop: false });
+    feedback.onHit(hit({ crit: true, amount: 300 }));
+    expect(deps.hitStop.trigger).not.toHaveBeenCalled();
+  });
+});
+
+describe('★★ 本地玩家筛选', () => {
+  it('★★ 别人打别人：不加创伤不顿帧，但浮字/粒子/闪白仍在', () => {
+    const { deps, view, feedback } = makeDeps();
+    feedback.onHit(hit({ targetId: OTHER, sourceId: ENEMY, crit: true, amount: 400 }));
+    expect(deps.addTrauma).not.toHaveBeenCalled();
+    expect(deps.hitStop.trigger).not.toHaveBeenCalled();
+    expect(deps.floaters.push).toHaveBeenCalled();
+    expect(deps.vfxDamage).toHaveBeenCalled();
+    expect(view.flashHit).toHaveBeenCalled();
+  });
+
+  it('★ 自己打出暴击：有创伤（攻击方的手感），弱于挨到暴击', () => {
+    const { deps, feedback } = makeDeps();
+    feedback.onHit(hit({ targetId: OTHER, sourceId: SELF, crit: true }));
+    const dealt = (deps.addTrauma as ReturnType<typeof vi.fn>).mock.calls[0]![0] as number;
+    ctx = makeDeps();
+    ctx.feedback.onHit(hit({ targetId: SELF, sourceId: ENEMY, crit: true }));
+    const taken = (ctx.deps.addTrauma as ReturnType<typeof vi.fn>).mock.calls[0]![0] as number;
+    expect(dealt).toBeGreaterThan(0);
+    expect(taken).toBeGreaterThan(dealt);
+  });
+});
+
+describe('分档驱动的表现', () => {
+  it('★ 重击及以上触发受击动作，普通命中只闪白', () => {
+    const { view, feedback } = makeDeps();
+    feedback.onHit(hit({ amount: 100 })); // normal
+    expect(view.playHitReact).not.toHaveBeenCalled();
+    feedback.onHit(hit({ amount: 300 })); // heavy
+    expect(view.playHitReact).toHaveBeenCalled();
+  });
+
+  it('★ 暴击浮字带「!」后缀（字形是第三通道）且走 crit 类型', () => {
+    const { deps, feedback } = makeDeps();
+    feedback.onHit(hit({ crit: true, amount: 123 }));
+    expect(deps.floaters.push).toHaveBeenCalledWith('123!', 'crit', expect.anything());
+  });
+
+  it('★ overkill>0 且自己击杀 → 击杀确认音', () => {
+    const { deps, feedback } = makeDeps();
+    feedback.onHit(hit({ targetId: OTHER, sourceId: SELF, overkill: 20 }));
+    expect(deps.audio.play).toHaveBeenCalledWith('ui_achievement', expect.objectContaining({ group: 'ui' }));
+  });
+
+  it('★ 被规避的一发：miss 浮字 + 规避音，不闪白不震动', () => {
+    const { deps, view, feedback } = makeDeps();
+    feedback.onHit(hit({ avoided: 'dodge', amount: 0 }));
+    expect(deps.floaters.push).toHaveBeenCalledWith('闪避', 'miss', expect.anything());
+    expect(deps.audio.playVariant).toHaveBeenCalledWith('dodge', expect.anything());
+    expect(view.flashHit).not.toHaveBeenCalled();
+    expect(deps.addTrauma).not.toHaveBeenCalled();
+  });
+
+  it('★ 暴击音效层有 120ms 节流（AOE 暴击 3 人只响一声）', () => {
+    const { deps, feedback } = makeDeps();
+    feedback.onHit(hit({ crit: true }));
+    feedback.onHit(hit({ crit: true, targetId: SELF }));
+    const critCalls = (deps.audio.playVariant as ReturnType<typeof vi.fn>).mock.calls
+      .filter((c) => c[0] === 'crit');
+    expect(critCalls.length).toBe(1);
+    feedback.update(0.2); // 过了节流窗口
+    feedback.onHit(hit({ crit: true }));
+    const after = (deps.audio.playVariant as ReturnType<typeof vi.fn>).mock.calls
+      .filter((c) => c[0] === 'crit');
+    expect(after.length).toBe(2);
+  });
+});

@@ -58,6 +58,7 @@ import {
   type AttributeVisual,
 } from './schools.js';
 import { QualityTier, decorativeDensity, isVisible } from '../render/quality.js';
+import type { ImpactTier } from '../feedback/impactTier.js';
 
 /** 每个属性的运动倾向（14.2「形状与运动」列的粒子化）*/
 const MOTION: Record<AttributeVisual['particle'], { gravity: number; swirl: number }> = {
@@ -151,11 +152,64 @@ export interface GroundAreaView {
  */
 export type SpellVfxEvent =
   | { t: 'damage'; targetId: EntityId; amount: number; school: School; immune: boolean
-      avoided?: 'dodge' | 'parry' | 'block' }
+      avoided?: 'dodge' | 'parry' | 'block'
+      /** 打击分档（由 HitFeedback 用 impactTierOf 算好传入 —— 本类不该知道 maxHealth）*/
+      tier?: ImpactTier }
   | { t: 'heal'; targetId: EntityId; amount: number }
   | { t: 'auraApplied'; targetId: EntityId; auraId: string }
   | { t: 'shieldBroken'; targetId: EntityId }
   | { t: 'death'; targetId: EntityId };
+
+// ── 打击分档 → 爆发参数（纯函数，vfx.test.ts 不用 WebGL 就能测）────
+
+/**
+ * 各档的额外放大。★ 单靠连续曲线不行：300 与 600 伤害在旧曲线
+ * `min(1.6, 0.7+a/400)` 下差别只有 0.85 vs 1.6，而玩家需要的「这一下
+ * 不一样」是一个**台阶**，不是一段斜坡。
+ */
+export const TIER_BOOST: Record<ImpactTier, number> = {
+  light: 0.8,
+  normal: 1.0,
+  heavy: 1.25,
+  crit: 1.45,
+  critHeavy: 1.6,
+  kill: 1.6,
+};
+
+export interface BurstPlan {
+  scale: number;
+  count: number;
+  speed: number;
+  size: number;
+  life: number;
+  /** heavy 及以上：一圈扩张的冲击波环 */
+  shockwave: boolean;
+  /** heavy 及以上且画质允许（impactDebris 装饰角色，14.4）：碎屑层 */
+  debris: boolean;
+  /** 暴击档：白色核心闪光 —— 白不是任何学派色，八学派下读作同一件事 */
+  whiteCore: boolean;
+}
+
+/** 命中爆发的参数计划。★ 总缩放钳在 2.1 → count 上限 38 < MAX_PARTICLES 48 */
+export const burstPlanFor = (
+  tier: ImpactTier,
+  amount: number,
+  quality: QualityTier,
+): BurstPlan => {
+  const scale = Math.min(2.1, (0.75 + amount / 320) * TIER_BOOST[tier]);
+  const heavyPlus = tier === 'heavy' || tier === 'crit' || tier === 'critHeavy' || tier === 'kill';
+  return {
+    scale,
+    count: Math.min(48, Math.round(18 * scale)),
+    speed: 4.6 * scale,
+    size: 0.72 * scale,
+    // ★ 旧实现 life 是常量 0.55 —— 重击应该「留」得久一点
+    life: 0.5 + 0.14 * scale,
+    shockwave: heavyPlus,
+    debris: heavyPlus && isVisible('impactDebris', quality),
+    whiteCore: tier === 'crit' || tier === 'critHeavy',
+  };
+};
 
 /** 每帧驱动所需的全部外部状态。一次传齐，见 `frame()` */
 export interface SpellVfxFrame {
@@ -220,8 +274,12 @@ interface VisualBolt {
 export class SpellVfx {
   readonly group = new THREE.Group();
   private readonly pool = new BurstPool(32);
-  /** 刀光与免疫白闪（要随机旋转，Points 做不了，见 FlashPool 文件头）*/
-  private readonly flashes = new FlashPool(12);
+  /**
+   * 刀光、免疫白闪与冲击波环（要随机旋转/展开，Points 做不了）。
+   * 16 而不是 12：冲击波是新消费者，重击一发要占两个槽（刀光 + 环）——
+   * verify:m12 读 activeFlashes 观察是否长期打满。
+   */
+  private readonly flashes = new FlashPool(16);
 
   /** 已解码的贴图（异步填充；未就绪时取到 null 走程序化兜底）*/
   private readonly particleTex = new Map<AttributeVisual['particle'], THREE.Texture | null>();
@@ -241,6 +299,8 @@ export class SpellVfx {
   private trailTimer = 0;
   private fillTimer = 0;
   private cameraDistance = 8;
+  /** 最近一帧的画质档（onCombatEvent 的碎屑门禁读它，事件到达时不在 frame 里）*/
+  private quality: QualityTier = 'high';
   private disposed = false;
 
   constructor() {
@@ -388,24 +448,70 @@ export class SpellVfx {
           return;
         }
         if (ev.avoided) {
-          this.emitBurst(at, NEUTRAL, { count: 4, speed: 1.2, size: 0.3, life: 0.35 });
+          /**
+           * 规避反馈三种形状（8.x 六种结果六种读法 —— 此前粒子层只有
+           * 一种 4 粒弱散，闪避/招架/格挡在粒子上读不出区别）：
+           *   dodge = 碟形侧散 + 低透明水平刀光 →「侧身让开」
+           *   parry = 火星上迸 + 一记小 glow →「金属格开」
+           *   block = 一枚盾面 glow →「盾接住了」
+           * 全部中性钢色、life ≤ 0.32，不抢真实伤害的注意力。
+           */
+          if (ev.avoided === 'dodge') {
+            this.emitBurst(at, NEUTRAL, {
+              count: 8, speed: 2.4, size: 0.34, life: 0.3, drag: 5, spread: 'disc',
+            });
+            this.flashes.emit({
+              origin: at, texture: this.accentTex.get('slash') ?? null,
+              color: 0xcfd8e3, size: 1.6, life: 0.22, rotation: Math.PI / 2,
+            });
+          } else if (ev.avoided === 'parry') {
+            this.emitAccent(at, 'spark', 0xffd890, 0.85);
+            this.flashes.emit({
+              origin: at, texture: this.accentTex.get('glow') ?? null,
+              color: 0xffe2a8, size: 1.1, life: 0.2,
+            });
+          } else {
+            this.flashes.emit({
+              origin: at, texture: this.accentTex.get('glow') ?? null,
+              color: 0xbfd4ff, size: 1.4, life: 0.28,
+            });
+            this.emitBurst(at, NEUTRAL, { count: 5, speed: 1.4, size: 0.3, life: 0.3 });
+          }
           return;
         }
         if (ev.amount <= 0) return;
         const av = visualForSchool(ev.school);
-        // 伤害越大爆发越猛（钳在合理范围）。Q 版基调：底数就大
-        const scale = Math.min(1.6, 0.7 + ev.amount / 400);
+        // 伤害越大爆发越猛，分档再上台阶（打击感改造）。Q 版基调：底数就大
+        const plan = burstPlanFor(ev.tier ?? 'normal', ev.amount, this.quality);
         this.emitBurst(at, av, {
-          count: Math.round(16 * scale),
-          speed: 4.2 * scale,
-          size: 0.7 * scale,
-          life: 0.55,
+          count: plan.count,
+          speed: plan.speed,
+          size: plan.size,
+          life: plan.life,
         });
+        // 重击冲击波：现成的 glow 贴图 + FlashPool 的 grow 展开，零新资源
+        if (plan.shockwave) {
+          this.flashes.emit({
+            origin: at, texture: this.accentTex.get('glow') ?? null,
+            color: av.secondary, size: 1.2 * plan.scale, life: 0.26, grow: 3.8,
+          });
+        }
+        // 碎屑层（impactDebris 装饰角色 —— M8 定义至今第一次被消费）
+        if (plan.debris) {
+          this.emitAccent(at, 'debris', av.secondary, 0.6 * plan.scale);
+        }
+        // 暴击白核：白不属于任何学派，八学派下都读作「暴击」
+        if (plan.whiteCore) {
+          this.flashes.emit({
+            origin: at, texture: this.accentTex.get('flash') ?? null,
+            color: 0xffffff, size: 2.4 * plan.scale, life: 0.18,
+          });
+        }
         // 第二通道点缀（14.2）：物理 = 刀光 + 迸溅火星；火/奥/圣见 HIT_ACCENT
         if (ev.school === School.Physical) {
           this.flashes.emit({
             origin: at, texture: this.accentTex.get('slash') ?? null,
-            color: 0xfff3e0, size: 2.2 * scale, life: 0.24,
+            color: 0xfff3e0, size: 2.2 * plan.scale, life: 0.24,
             rotation: (Math.random() - 0.5) * 2.6,
           });
           this.emitAccent(at, 'spark', av.secondary, 0.7);
@@ -449,7 +555,14 @@ export class SpellVfx {
       }
       case 'death': {
         const at = posOf(ev.targetId);
-        if (at) this.emitBurst(at, ATTRIBUTE_VISUALS.shadow, { count: 18, speed: 2.6, size: 0.8, life: 0.85 });
+        if (at) {
+          // 死亡是一局里最重的表现时刻：大爆发 + 一圈冲击波（Q 版的「砰」）
+          this.emitBurst(at, ATTRIBUTE_VISUALS.shadow, { count: 26, speed: 5.4, size: 0.9, life: 0.8 });
+          this.flashes.emit({
+            origin: at, texture: this.accentTex.get('glow') ?? null,
+            color: 0x9a86c8, size: 2.0, life: 0.3, grow: 4.2,
+          });
+        }
         break;
       }
       default:
@@ -466,6 +579,8 @@ export class SpellVfx {
    */
   frame(dt: number, ctx: SpellVfxFrame): void {
     this.cameraDistance = ctx.cameraDistance;
+    // 缓存画质给 onCombatEvent 的碎屑门禁用（事件不在 frame 里到达）
+    this.quality = ctx.quality;
     this.pool.setScale(ctx.pointScale);
     this.syncProjectiles(ctx.projectiles, ctx.quality, dt, ctx.now);
     this.syncGround(ctx.grounds, ctx.quality, dt);

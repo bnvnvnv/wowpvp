@@ -230,6 +230,8 @@ pnpm docs        # 若改了职业数据，重新生成检查表
 - [ ] 数值改动在 [00-design-spec.md](00-design-spec.md) 里有依据，或已登记为「已知偏差」
 - [ ] 没有在客户端单独实现任何命中判定（必须调用 `shared/math/geometry.ts`）
 - [ ] 没有让客户端决定伤害、命中、拾取归属
+- [ ] 没有缩放模拟步 —— 顿帧只作用于 `render` 的 dt（`GameLoop.test.ts` 钉着，docs/10 偏差 #8）
+- [ ] 所有镜头震动幅度都过 `shakeAmplitude()`，没有第二个入口（docs/07 §1.9）
 - [ ] 更新了 [PROGRESS.md](PROGRESS.md)
 - [ ] 若完成了某条验收标准，更新了 [10-acceptance-tracking.md](10-acceptance-tracking.md)
 - [ ] **没有用伪代码或占位图冒充完成**（附录A#7）

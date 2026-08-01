@@ -21,7 +21,7 @@
 
 | 谁决定 | 内容 |
 |---|---|
-| **仅服务器** | 伤害、治疗、命中与否、控制生效与时长、施法成功/失败、拾取归属、旗帜状态、死亡、存活人数、装备栏内容 |
+| **仅服务器** | 伤害、治疗、命中与否、**暴击**（偏差 #7）、控制生效与时长、施法成功/失败、拾取归属、旗帜状态、死亡、存活人数、装备栏内容 |
 | **客户端预测 + 服务器纠正** | 自己的位置与朝向 |
 | **仅客户端** | 镜头、特效、音效、HUD 布局、画质档位、按键映射 |
 
@@ -84,8 +84,12 @@ type ServerMessage =
       schoolLock?: { school: School; until: number } }
   | { t: 'CastFailed'; skillId: SkillId; reason: CastFailure }
   | { t: 'Damage'; sourceId: EntityId; targetId: EntityId; amount: number
-      school: School; absorbed?: number; blocked?: boolean; dodged?: boolean; immune?: boolean }
-  | { t: 'Heal'; sourceId: EntityId; targetId: EntityId; amount: number; overheal: number }
+      school: School; absorbed?: number; blocked?: boolean; dodged?: boolean; immune?: boolean
+      // 打击感改造（偏差 #7/#8 的表现信号）：crit 条件携带；
+      // overkill>0 = 致命一击（随后必有公开 Death，零泄露）
+      crit?: boolean; overkill: number }
+  | { t: 'Heal'; sourceId: EntityId; targetId: EntityId; amount: number; overheal: number
+      crit?: boolean }
   | { t: 'AuraApplied'; targetId: EntityId; auraId: string; duration: number; stacks: number }
   | { t: 'AuraRemoved'; targetId: EntityId; auraId: string; reason: 'expired' | 'dispelled' | 'broken' | 'cancelled' }
   | { t: 'Death'; entityId: EntityId; killerId?: EntityId }

@@ -67,11 +67,25 @@ const VARIANTS: Record<string, readonly string[]> = {
   jump: ['move_jump_1', 'move_jump_2', 'move_jump_3', 'move_jump_4', 'move_jump_5'],
   land: ['move_land_1', 'move_land_2', 'move_land_3', 'move_land_4'],
   step: ['foot_stone_1', 'foot_stone_2', 'foot_stone_3', 'foot_stone_4', 'foot_stone_5'],
-  swing: ['melee_swing_blade_1', 'melee_swing_blade_2', 'melee_swing_blade_3', 'melee_swing_blade_4'],
+  swing: [
+    'melee_swing_blade_1', 'melee_swing_blade_2', 'melee_swing_blade_3',
+    'melee_swing_blade_4', 'melee_swing_blade_5', 'melee_swing_blade_6', 'melee_swing_blade_7',
+  ],
   flesh: ['impact_flesh_1', 'impact_flesh_2', 'impact_flesh_3', 'impact_flesh_4'],
   parry: ['combat_parry_1', 'combat_parry_2', 'combat_parry_3'],
   dodge: ['combat_dodge_1', 'combat_dodge_2', 'combat_dodge_3'],
   block: ['combat_block_1', 'combat_block_2', 'combat_block_3'],
+  // ── 打击感分层（叠在基础命中音之上，不是替代）────────────────
+  // ★ 分层的每一层必须是**不同文件名**：play() 的 40ms 同名去重会吃掉
+  //   与基础层重名的叠加层 —— 所以重击层叫 bone 而不是再来一次 flesh
+  /** 暴击专用尖锐层 */
+  crit: ['combat_crit_1', 'combat_crit_2', 'combat_crit_3'],
+  /** 重击的低频骨感层 */
+  bone: ['impact_bone_1', 'impact_bone_2', 'impact_bone_3', 'impact_bone_4'],
+  /** 格挡的金属层 */
+  metal: ['impact_metal_1', 'impact_metal_2', 'impact_metal_3', 'impact_metal_4'],
+  /** 闪避的皮革掠过层 */
+  leather: ['impact_leather_1', 'impact_leather_2', 'impact_leather_3', 'impact_leather_4'],
 };
 
 export interface PlayOptions {

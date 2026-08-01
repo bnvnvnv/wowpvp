@@ -16,6 +16,7 @@ import {
   type MinimapBlip,
 } from './ModeHud.js';
 import { MAX_PARTY_MEMBERS, type PartyMemberView } from './PartyFrame.js';
+import { POP_IN, POP_PEAK, POP_SETTLE, popScale } from './FloatingNumbers.js';
 import { SWAP_INTERRUPT_TEXT, compareArmors, compareWeapons } from './LoadoutPanel.js';
 import { CONTROL_VISUALS } from '../vfx/status.js';
 
@@ -155,6 +156,26 @@ describe('★ 15.3 战场装备栏（验收 #35）', () => {
     for (const w of weapons as WeaponDef[]) {
       expect(w.advantage.length, w.name).toBeGreaterThan(0);
       expect(w.cost.length, w.name).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('浮动数字弹跳（打击感改造）', () => {
+  it('★ 曲线形状：起步 < 峰值、POP_IN 时刻 ≈ 峰值、结束后精确回到 1.0', () => {
+    const peak = POP_PEAK.crit;
+    expect(popScale(0, peak)).toBeLessThan(peak);
+    expect(popScale(POP_IN, peak)).toBeCloseTo(peak, 5);
+    expect(popScale(POP_IN + POP_SETTLE, peak)).toBeCloseTo(1, 6);
+    expect(popScale(1, peak)).toBeCloseTo(1, 6);
+  });
+
+  it('★★ 尺寸是暴击的主通道：crit 峰值 > damage 峰值 × 1.4（17.2 不能只靠颜色）', () => {
+    expect(POP_PEAK.crit).toBeGreaterThan(POP_PEAK.damage * 1.4);
+  });
+
+  it('★ 全部类型的曲线都收敛回 1.0 —— 数字不能永远比 CSS 字号大', () => {
+    for (const peak of Object.values(POP_PEAK)) {
+      expect(popScale(POP_IN + POP_SETTLE + 0.01, peak)).toBeCloseTo(1, 6);
     }
   });
 });

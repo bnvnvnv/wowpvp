@@ -86,6 +86,54 @@ HDR 环境光与天空、地面 PBR 材质、命中/施法/脚步/BGM 音效、�
 陨石的唯一反制方式是「看着倒计时走出去」，没有数字就不知道还来不来得及。
 与边界环同属 essential，任何画质都画；`impactAt` 随投射物视图传入，
 试验场用 `world.time`、联网用校准后的 `serverTime`，同一个钟做减法。
+
+**第六轮：打击感（game feel）整体改造** —— 用户实测反馈「打击效果不强烈，
+无法引起游戏快感」，拍板两条都做：**真暴击机制 + 全套表现层强化**。
+
+*玩法侧*（docs/10 偏差 #7）：全职业 10% / 1.5 倍暴击（含治疗），掷**攻击者**
+的按实体随机流（与闪避=被攻击者流对称）；免疫/被规避的一发不消耗随机数
+（否则回放不可复现）；DoT/HoT/地面 tick（`ctx.periodic`）与 8.5 压迫伤害不
+暴击。协议 `Damage`/`Heal` 加 `crit?`/`overkill`（>0 = 致命一击信号，零泄露），
+`'crit'` 仍在客户端字段黑名单。balance 基线已重出（+5% 均值）。
+
+*表现侧*：
+- **镜头震动**（`CameraShake`，关闭偏差 #3）：创伤模型、确定性哈希噪声；
+  防穿墙是结构性的 —— 角度通道不动位置、位移通道对碰撞后距离**只做减法**
+  （docs/07 §1.9）。四通道全过 `shakeAmplitude()` 唯一入口
+- **渲染顿帧**（`HitStop`，偏差 #8）：重击 55ms/暴击 75ms/击杀 90ms 冻结在
+  0.06×。★ GameLoop 只缩放渲染 dt —— 模拟步/输入/`serverTime`/
+  AnimationController 全走新增的第三参 `realDt`（喂缩放 dt 会让 #47 的
+  表观速度暴涨 16 倍、让联网插值解冻时猛跳，都有测试钉死）
+- **分档判据唯一来源**（`feedback/impactTier.ts`）：单击 ≥ 目标最大血量 18%
+  为重击；**编排唯一入口**（`feedback/HitFeedback.ts`）：两场景的伤害反馈
+  switch 收缩成一次 `onHit()`，顺手修掉联网只给自己 flashHit 的旧不一致。
+  震动/顿帧只在牵涉本地玩家时触发（12v12 防抖成筛子）
+- **浮字弹跳**：先胀后消曲线写进每帧 transform；暴击 1.9 倍峰值 + `!` 后缀 +
+  字重 900 —— 尺寸/运动/字形三通道，不只靠颜色（17.2/915）；满 40 条优先
+  淘汰非暴击
+- **爆发升级**（`burstPlanFor` 纯函数可测）：分档台阶 ×0.8–1.6、重击冲击波环
+  （FlashPool 加 `grow` 参数复用 glow 贴图）、暴击白核（白不属于任何学派）、
+  碎屑走 `impactDebris` 装饰角色（M8 定义至今**第一次被消费**）；规避反馈
+  三种形状（dodge 碟散/parry 火星/block 盾面）
+- **受击动作**：`playHitReact()`（Hit_A 一次性覆盖，重击及以上才播，0.35s 冷却）。
+  ★ 三条守卫是**正确性前提**不是体验优化：Hit_A 与 Land/Stunned 共享同一
+  AnimationAction，施法中踉跄会被读成「被打断」（#14）
+- **音效分层**：`combat_crit_*`/`impact_bone|metal|leather_*`/
+  `melee_swing_blade_*` 全部接上（此前躺在盘里零使用，swing 变体组
+  定义以来第一次被调用）；层与层不同文件名（40ms 同名去重会吃掉重名层）
+- **联网侧补齐 accessibility**：NetworkScene 此前**从不加载**持久化设置
+  （色盲/关伤害数字联网每次回默认）—— 顺手修掉
+
+*本轮发现并修掉的既有问题*：`playMeleeSwing` finished 监听器泄漏（连挥两刀
+第一刀永不 finished）；胶囊兜底路径受击零反馈（`?art=off` 下 14.1 少一条
+通道，现在闪 Lambert emissive）；NetworkScene 无 accessibility；
+`impactDebris` 角色与 `swing` 变体组「定义了没人用」。
+
+*验证*：typecheck ✓ · 892 测试（+49）✓ · verify:m1 14/14 · m8 12/12 ·
+m10 14/14 · m12 21/21 · balance 重出 · `scripts/diag-feel.mjs`（新增）四项全过：
+60 发内见暴击、traumaPeak 0.38、顿帧冻结抓到、贴墙满创伤 90 帧 maxX 34.08 <
+墙内侧 34.5。
+
 ★ **每一层都保留程序化兜底**：素材缺失或加载失败时自动回落到 M11 的画面，
 `?art=off` 可以显式回到那条路径 —— M1–M10 的 155 项验收正是跑在它上面
 （理由见下面的 M12 章节）。
@@ -704,6 +752,8 @@ export const hiddenAtQuality = (role: DecorativeRole, quality: QualityTier): boo
    **使用**它们，所以「增益期间」这个状态从不存在。`recordItemBuff()` 已留好入口。
 3. **「减弱镜头震动」没有接线对象** —— 本项目根本没有镜头震动。
    `shakeAmplitude()` 已实现并测试，是为了引入震动时有一个唯一入口。
+   ✅ **打击感改造已接上**（`CameraShake`，见「第六轮」与 docs/07 §1.9）——
+   当初留唯一入口的用意兑现：四个输出通道各自过它，归零有测试钉着。
 
 另外：
 

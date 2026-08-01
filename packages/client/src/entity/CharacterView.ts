@@ -70,6 +70,12 @@ const SWING_CLIPS = [
 ];
 
 /**
+ * 受击踉跄的最短间隔（秒）。12v12 里挨打频率能到每秒 3–4 次，
+ * 不加冷却角色会永久踉跄 —— 破坏 13.4 的移动节奏可读性。
+ */
+const HIT_REACT_COOLDOWN = 0.35;
+
+/**
  * 化形术的小动物。选 chicken_cow 不是审美偏好，是**测量诚实度**：
  * creatures 包里多数模型（frog/fox/alpaca…）是 meshopt 量化 + 蒙皮骨骼缩放，
  * `Box3.setFromObject` 对 SkinnedMesh 不算骨骼变换，量出的包围盒比渲染实高
@@ -268,10 +274,83 @@ export class CharacterView {
     this.applyClip();
   }
 
-  /** 受击反馈：0.12 秒的白闪。14.1 命中反馈的模型侧通道 */
-  flashHit(): void {
-    this.flashLeft = 0.12;
+  /**
+   * 受击反馈：白闪。14.1 命中反馈的模型侧通道。
+   * 打击感分档：普通 (0.85, 0.12)、重击 (1.1, 0.16)、暴击 (1.4, 0.2) ——
+   * 由 HitFeedback 决定，这里只执行。
+   */
+  flashHit(strength = 0.85, seconds = 0.12): void {
+    this.flashStrength = strength;
+    this.flashDuration = seconds;
+    this.flashLeft = seconds;
   }
+  private flashStrength = 0.85;
+  private flashDuration = 0.12;
+
+  /**
+   * 受击踉跄：一次性覆盖动作（打击感改造，只在重击及以上触发）。
+   *
+   * ⚠️★★ **`Hit_A` 同时是 Land 与 Stunned 的片段**（见 CLIP 表），而
+   *   `mixer.clipAction(clip)` 对同一个 clip 返回**同一个 AnimationAction
+   *   对象**。在昏迷/落地状态下再 `setLoop(LoopOnce)` 一次，会把状态机
+   *   自己那份循环**永久改坏**（人定格在受击最后一帧）。
+   *   下面前三条守卫因此不是「体验优化」，是**正确性前提**。
+   */
+  playHitReact(): void {
+    if (!this.mixer || !this.model) return;
+    // ★ 正确性守卫：这三个状态本身就在用 Hit_A / Death_A
+    if (
+      this.state === AnimState.Stunned ||
+      this.state === AnimState.Land ||
+      this.state === AnimState.Death
+    ) return;
+    // ★ 7.3 / 验收 #14：普通伤害**不打断施法**。读条中踉跄一下，玩家会读成
+    //   「我的法术被打断了」—— 那是对一条明确规则的误导。施法中被打走
+    //   加强版闪白（HitFeedback 已给了更强的参数），模型通道不缺席。
+    if (this.casting) return;
+    if (this.morphed) return; // 变形中人形是隐藏的
+    if (this.hitReactCooldown > 0) return;
+
+    const clip = THREE.AnimationClip.findByName(
+      this.model.clips as THREE.AnimationClip[], 'Hit_A',
+    );
+    if (!clip) return;
+    this.hitReactCooldown = HIT_REACT_COOLDOWN;
+
+    // 上一次的 finished 监听器还挂着（快速连续重击）→ 先清掉，防泄漏
+    this.hitReactOff?.();
+
+    const react = this.mixer.clipAction(clip);
+    const current = this.actions.get(this.currentClip);
+    react.reset();
+    react.setLoop(THREE.LoopOnce, 1);
+    react.clampWhenFinished = false;
+    react.timeScale = 1.5; // 踉跄要「短促」—— 全速播读作被击倒
+    if (current && current !== react) current.fadeOut(0.06);
+    react.fadeIn(0.06);
+    react.play();
+
+    const onFinished = (e: { action: THREE.AnimationAction }): void => {
+      if (e.action !== react) return;
+      this.hitReactOff?.();
+      react.fadeOut(0.1);
+      // 与 playMeleeSwing 同一手法：不走 applyClip 去重、不 reset（见那边注释）
+      const back = this.actions.get(this.currentClip);
+      if (back) {
+        back.enabled = true;
+        back.paused = false;
+        back.play();
+        back.fadeIn(0.1);
+      }
+    };
+    this.hitReactOff = () => {
+      this.mixer?.removeEventListener('finished', onFinished as never);
+      this.hitReactOff = undefined;
+    };
+    this.mixer.addEventListener('finished', onFinished as never);
+  }
+  private hitReactCooldown = 0;
+  private hitReactOff: (() => void) | undefined;
 
   /**
    * 近战挥砍：一次性覆盖动作，播完自动回到状态机当前片段。
@@ -295,9 +374,12 @@ export class CharacterView {
     swing.fadeIn(0.07);
     swing.play();
 
+    // ★ 上一次挥砍的 finished 监听器可能还挂着（0.6 秒内连挥两刀 ——
+    //   第一刀被 reset() 打断就永远不会 finished）→ 先清掉，防泄漏
+    this.swingOff?.();
     const onFinished = (e: { action: THREE.AnimationAction }): void => {
       if (e.action !== swing) return;
-      this.mixer?.removeEventListener('finished', onFinished as never);
+      this.swingOff?.();
       swing.fadeOut(0.1);
       /**
        * 回到状态机当前片段。★ 不能走 `applyClip()` 的去重路径：那边
@@ -313,8 +395,13 @@ export class CharacterView {
         back.fadeIn(0.1);
       }
     };
+    this.swingOff = () => {
+      this.mixer?.removeEventListener('finished', onFinished as never);
+      this.swingOff = undefined;
+    };
     this.mixer.addEventListener('finished', onFinished as never);
   }
+  private swingOff: (() => void) | undefined;
 
   // ── 化形术（8.2 迷惑）────────────────────────────────────────
 
@@ -350,13 +437,20 @@ export class CharacterView {
     // 胶囊体阶段没有小动物可换（见 setMorphed 头注），不动 capsuleParts
   }
 
-  /** 每帧推进动画与受击闪光。没挂模型时是空操作 */
+  /** 每帧推进动画与受击闪光 */
   update(dt: number): void {
     this.mixer?.update(dt);
+    if (this.hitReactCooldown > 0) this.hitReactCooldown -= dt;
     if (this.flashLeft > 0) {
       this.flashLeft = Math.max(0, this.flashLeft - dt);
-      const k = this.flashLeft / 0.12; // 最后一步 k=0，恰好把 emissive 归零
-      for (const m of this.flashMats) m.emissive.setScalar(k * 0.85);
+      const k = this.flashLeft / this.flashDuration; // 最后一步 k=0，恰好把 emissive 归零
+      if (this.flashMats.length > 0) {
+        for (const m of this.flashMats) m.emissive.setScalar(k * this.flashStrength);
+      } else {
+        // ★ 胶囊兜底（模型未加载 / ?art=off）：Lambert 也有 emissive ——
+        //   这条路径此前完全没有受击反馈，14.1 在 ?art=off 下少了一条通道
+        this.bodyMat.emissive.setScalar(k * Math.min(1, this.flashStrength) * 0.6);
+      }
     }
   }
 

@@ -38,24 +38,12 @@ export const playCombatEvent = (
   const self = deps.selfId();
 
   switch (ev.t) {
-    case 'damage': {
-      const onMe = ev.targetId === self;
-      const dist = onMe ? 0 : distanceFor(deps, ev.targetId);
-      const opts = { ...(dist === undefined ? {} : { distance: dist }) };
-
-      // 8.x 的六种结果各有各的声音 —— 玩家不看日志也知道刚才发生了什么
-      if (ev.immune) { audio.play('buff_apply', { ...opts, rate: 0.8, volume: 0.7 }); break; }
-      if (ev.avoided === 'dodge') { audio.playVariant('dodge', opts); break; }
-      if (ev.avoided === 'parry') { audio.playVariant('parry', opts); break; }
-      if (ev.avoided === 'block') { audio.playVariant('block', opts); break; }
-      if (ev.amount === 0 && ev.absorbed === 0) break;
-
-      audio.playImpact(ev.school as School, opts);
-      // 自己挨打时额外一声闷哼 —— 14.1 要求受击有明确反馈，而挨打是最需要的那次
-      if (onMe) audio.playVariant('hurt', { volume: 0.85 });
-      break;
-    }
-
+    /**
+     * ★ `damage` 不在这里 —— 打击感改造后，伤害的音效（基础命中 + 暴击/
+     *   重击/规避的分层）由 `feedback/HitFeedback.ts` 统一编排，与浮字/
+     *   闪白/震动/顿帧同一处定序。两处都播会叠成双响。
+     *   本函数保留其余与分档无关的分支。
+     */
     case 'heal': {
       if (ev.amount === 0) break;
       const dist = ev.targetId === self ? 0 : distanceFor(deps, ev.targetId);

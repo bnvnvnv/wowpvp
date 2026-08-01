@@ -264,3 +264,16 @@ describe('持久化', () => {
     expect(() => saveAccessibility(undefined, DEFAULT_ACCESSIBILITY)).not.toThrow();
   });
 });
+
+describe('渲染顿帧开关（偏差 #8）', () => {
+  it('★ 默认开启；normalize 补默认值', () => {
+    expect(DEFAULT_ACCESSIBILITY.hitStop).toBe(true);
+    expect(normalizeAccessibility({}).hitStop).toBe(true);
+    expect(normalizeAccessibility({ hitStop: false }).hitStop).toBe(false);
+  });
+
+  it('★ hitStop 不在 INDEPENDENT_TOGGLES 里 —— 那张表是 17.2 第三句点名的四项', () => {
+    expect(INDEPENDENT_TOGGLES).not.toContain('hitStop' as never);
+    expect(INDEPENDENT_TOGGLES.length).toBe(4);
+  });
+});

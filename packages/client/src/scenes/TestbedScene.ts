@@ -13,6 +13,7 @@ import {
   Targeting,
   aurasOf,
   createMovementState,
+  distance2D,
   stepMovement,
   testbed,
   TESTBED_SPAWN,
@@ -32,6 +33,8 @@ import { FAIL_TEXT } from '../combat/CombatDirector.js';
 import { Action, InputManager, type FrameInput } from '../input/InputManager.js';
 import { DecorRenderer } from '../render/DecorRenderer.js';
 import { GameLoop } from '../render/GameLoop.js';
+import { HitStop } from '../render/HitStop.js';
+import { HitFeedback } from '../feedback/HitFeedback.js';
 import { MapRenderer } from '../render/MapRenderer.js';
 import { AimingController, type AimInput } from '../targeting/AimingController.js';
 import { DirectionIndicator } from '../targeting/DirectionIndicator.js';
@@ -120,6 +123,9 @@ export class TestbedScene {
    * 关掉即回到 M11 无特效画面（与音效/模型/环境每一层同一门禁）。
    */
   private readonly spellVfx: SpellVfx | undefined;
+  /** 打击感：顿帧与反馈编排（构造函数里初始化，依赖 hud/cam/combat）*/
+  private readonly hitStop = new HitStop();
+  private feedback!: HitFeedback;
   /** M12：目标 / 焦点的脚下指示环（5.2 / 14.4 关键元素）*/
   private readonly targetRing = new TargetRing();
   private readonly focusRing = new TargetRing();
@@ -213,15 +219,65 @@ export class TestbedScene {
       this.scene.add(this.spellVfx.group);
     }
 
+    // ── 打击感：命中反馈统一编排（浮字/粒子/闪白/音效分层/震动/顿帧）──
+    this.feedback = new HitFeedback({
+      selfId: () => this.combat.player.id,
+      headOf: (id) => {
+        const e = this.combat.allEntities().find((x) => x.id === id);
+        return e
+          ? { x: e.position.x, y: e.position.y + e.height * 0.9, z: e.position.z }
+          : undefined;
+      },
+      audioAt: (id) => {
+        const at = audioDeps.positionOf(id);
+        return at ? { distance: distance2D(at, this.move.position) } : {};
+      },
+      viewOf: (id) =>
+        id === this.combat.player.id ? this.view : this.dummyViews.get(id as number),
+      // ★ 惰性转发：此刻 this.hud 还没构造（它在下面才 new），
+      //   直接传 this.hud.floaters 会在这里就崩
+      floaters: {
+        push: (text, kind, at, opts) => this.hud.floaters.push(text, kind, at, opts),
+      },
+      flashScreen: () => this.hud.flashScreen(),
+      vfxDamage: (e) =>
+        this.spellVfx?.onCombatEvent(
+          { t: 'damage', ...e },
+          (id) => this.bodyPosOf(id),
+        ),
+      addTrauma: (t) => this.cam.addTrauma(t),
+      hitStop: this.hitStop,
+      audio,
+      access: () => this.access,
+    });
+
     this.combat.onCombatEvent = (ev) => {
+      // 伤害走 HitFeedback（唯一编排者）；其余事件保持原有三条旁路
+      if (ev.t === 'damage') {
+        this.feedback.onHit({
+          targetId: ev.targetId, sourceId: ev.sourceId,
+          amount: ev.amount, absorbed: ev.absorbed, immune: ev.immune,
+          avoided: ev.avoided, crit: ev.crit === true, overkill: ev.overkill,
+          school: ev.school,
+          targetMaxHealth: this.combat.allEntities().find((e) => e.id === ev.targetId)?.maxHealth,
+        });
+        return;
+      }
       playCombatEvent(audio, audioDeps, ev);
       this.showCombatFeedback(ev);
       // ★ SpellVfx 只吃它声明的那几类（SpellVfxEvent）—— 收窄后网络场景也能喂同一个类
       if (
-        ev.t === 'damage' || ev.t === 'heal' || ev.t === 'auraApplied' ||
+        ev.t === 'heal' || ev.t === 'auraApplied' ||
         ev.t === 'shieldBroken' || ev.t === 'death'
       ) {
         this.spellVfx?.onCombatEvent(ev, (id) => this.bodyPosOf(id));
+      }
+      if (ev.t === 'death') {
+        const at = audioDeps.positionOf(ev.targetId);
+        this.feedback.onDeath({
+          entityId: ev.targetId, killerId: ev.killerId,
+          distance: at ? distance2D(at, this.move.position) : undefined,
+        });
       }
     };
     this.combat.onCastActivity = (kind, caster, skill, targets) => {
@@ -240,6 +296,14 @@ export class TestbedScene {
        */
       if (kind === 'resolved' && skill && skill.targeting === Targeting.Direct && skill.range.max < 8) {
         this.viewFor(caster.id)?.playMeleeSwing();
+        // 挥砍破空声（swing 变体组自 M12 定义以来第一次真的被调用）
+        const at = audioDeps.positionOf(caster.id);
+        audio.playVariant('swing', {
+          volume: 0.55,
+          ...(at && caster.id !== this.combat.player.id
+            ? { distance: distance2D(at, this.move.position) }
+            : {}),
+        });
       }
     };
     this.combat.onSwapResult = (ok) =>
@@ -268,8 +332,11 @@ export class TestbedScene {
 
     this.loop = new GameLoop(
       (dt) => this.simulate(dt),
-      (alpha, dt) => this.draw(alpha, dt),
+      (alpha, dt, realDt) => this.draw(alpha, dt, realDt),
       (dt) => this.readInput(dt),
+      undefined,
+      // 顿帧：只缩放渲染 dt。模拟步/输入采样在 GameLoop 里恒用真实 dt
+      (realDt) => this.hitStop.scale(realDt),
     );
 
     window.addEventListener('resize', this.onResize);
@@ -289,6 +356,9 @@ export class TestbedScene {
   setAccessibility(next: AccessibilitySettings): void {
     this.access = next;
     this.hud.applyAccessibility(next);
+    // 打击感开关：震动经 shakeAmplitude 归零（唯一入口）；顿帧直接停
+    this.cam.setAccessibility(next);
+    this.hitStop.enabled = next.hitStop;
     saveAccessibility(globalThis.localStorage, next);
   }
 
@@ -317,6 +387,8 @@ export class TestbedScene {
     vfx: import('../vfx/SpellVfx.js').SpellVfxStatus | undefined;
     /** 地图装饰摆设自检：登记数/加载数/当前可见性 */
     decor: import('../render/DecorRenderer.js').DecorStatus | undefined;
+    /** 打击感自检（诊断只读，diag-feel.mjs 消费）*/
+    feel: { critsSeen: number; traumaPeak: number; trauma: number; hitStopFrozen: boolean };
   } {
     const views = [this.view, ...this.dummyViews.values()];
     const withModel = views.filter((v) => v.hasModel);
@@ -331,6 +403,12 @@ export class TestbedScene {
       charactersTotal: views.length,
       vfx: this.spellVfx?.status(),
       decor: this.decorRenderer?.status(),
+      feel: {
+        critsSeen: this.feedback.critsSeen,
+        traumaPeak: this.feedback.traumaPeak,
+        trauma: this.cam.trauma,
+        hitStopFrozen: this.hitStop.frozen,
+      },
     };
   }
 
@@ -490,40 +568,18 @@ export class TestbedScene {
    *   模型闪白各自独立，关掉任意一条另外两条照常工作（17.2 第三句）。
    */
   private showCombatFeedback(ev: CombatEvent): void {
-    const self = this.combat.player.id;
     const posOf = (id: EntityId): { x: number; y: number; z: number } | undefined => {
       const e = this.combat.allEntities().find((x) => x.id === id);
       // 数字从**头顶**冒出来，不是从脚下
       return e ? { x: e.position.x, y: e.position.y + e.height * 0.9, z: e.position.z } : undefined;
     };
-    const viewOf = (id: EntityId): CharacterView | undefined =>
-      id === self ? this.view : this.dummyViews.get(id as number);
 
     switch (ev.t) {
-      case 'damage': {
-        const at = posOf(ev.targetId);
-        if (!at) break;
-        // 8.x 六种结果六种读法 —— 见 FloatingNumbers 文件头
-        if (ev.immune) this.hud.floaters.push('免疫', 'immune', at);
-        else if (ev.avoided) {
-          this.hud.floaters.push(
-            { dodge: '闪避', parry: '招架', block: '格挡' }[ev.avoided],
-            'miss',
-            at,
-          );
-        } else if (ev.amount > 0) {
-          this.hud.floaters.push(String(ev.amount), 'damage', at);
-          viewOf(ev.targetId)?.flashHit();
-        } else if (ev.absorbed > 0) {
-          this.hud.floaters.push(`吸收 ${ev.absorbed}`, 'absorb', at);
-        }
-        // 只有**自己**挨打才闪屏：别人挨打闪我的屏幕是错误的主语
-        if (ev.targetId === self && ev.amount > 0) this.hud.flashScreen();
-        break;
-      }
+      // ★ damage 不再走这里 —— 打击感改造后由 HitFeedback.onHit 统一编排
+      //  （浮字/闪白/屏闪/音效分层/震动/顿帧一处定序），见 onCombatEvent 的分流
       case 'heal': {
-        const at = posOf(ev.targetId);
-        if (at && ev.amount > 0) this.hud.floaters.push(`+${ev.amount}`, 'heal', at);
+        // 暴击治疗放大浮字（HitFeedback.onHeal 统一处理）
+        this.feedback.onHeal({ targetId: ev.targetId, amount: ev.amount, crit: ev.crit === true });
         break;
       }
       case 'shieldBroken': {
@@ -825,7 +881,16 @@ export class TestbedScene {
     this.combat.update(dt, this.move.position, this.characterYaw);
   }
 
-  private draw(alpha: number, dt: number): void {
+  /**
+   * `dt` 是渲染时钟（顿帧时被缩放到 0.06×），`realDt` 是真实时钟。
+   * ★★ 分配表（打击感改造，验收 #47 与网络插值靠它不回归）：
+   *   打击表现 = dt：mixer（CharacterView.update）、粒子（spellVfx.frame）、
+   *     浮字（hud.update）、镜头（cam.update，震动跟着世界一起冻/爆）
+   *   状态机与时钟 = realDt：AnimationController（:79 用 distance/dt 算表观
+   *     速度，喂缩放 dt 会暴涨 16 倍冲破 Run/Walk 阈值）、状态标记倒计时
+   */
+  private draw(alpha: number, dt: number, realDt: number): void {
+    this.feedback.update(realDt);
     // 渲染插值：模拟是固定步长，画面按帧率插值
     const p = this.prevPosition;
     const c = this.move.position;
@@ -871,7 +936,7 @@ export class TestbedScene {
       if (anim) {
         anim.update({
           horizontalDistance: teleported ? 0 : moved,
-          dt,
+          dt: realDt, // ★ 状态机时钟：缩放 dt 会让表观速度暴涨 16 倍（见 draw 头注）
           grounded: true,
           verticalVelocity: 0,
           teleported,
@@ -914,7 +979,7 @@ export class TestbedScene {
     });
 
     this.updateIndicators();
-    this.updateStatusMarkers(dt);
+    this.updateStatusMarkers(realDt); // 状态标记是倒计时，不在顿帧时钟上
     this.ctf.tick(this.combat.world.time);
     this.flagMarkers.cameraDistance = this.cam.distance;
     this.flagMarkers.update(this.ctf.views(), this.elapsed);
