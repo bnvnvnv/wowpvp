@@ -1185,13 +1185,16 @@ advantage 文案改回「法术伤害与魔法控制时长降低」。
 ## 给下一个接手的人
 
 1. 先跑 `pnpm install && pnpm test && pnpm typecheck`，确认基线是绿的
-   （**669 个单元测试**；`typecheck` 现在也检查测试文件本身，见 M9 章节）
-2. 读本文件的「👉 下一步：联网对战」一节。
-   ★ 规格书的 52 条验收标准**已全部完成**，剩下的是规格书之外的工程 ——
-   所以从这里开始不再有「照着验收标准做」这条捷径，需要自己定义完成标准
-3. 表现层**保持全程序化，不引入外部美术素材** ——
-   这是 M8 的显式决定，理由见 [09-asset-license.md](09-asset-license.md) §5。
-   要引入必须先走完该文件 §6 的流程（附录A#5：素材必须先完成许可清单）
+   （**892 个单元测试**；`typecheck` 也检查测试文件本身，见 M9 章节。
+   e2e 验收需先起 `pnpm --filter @wowpvp/client dev`）
+2. 读 [14-roadmap-post-m12.md](14-roadmap-post-m12.md) —— **当前路线图**
+   （M13 对局入口 → M14 配平 → M15 引导 → M16 对局完整性），每阶段
+   带完成判据与红线，从 M13 大厅开始。
+   ★ 规格书的 52 条验收标准与 docs/13 的 M10–M12 已全部完成；
+   打击感改造（暴击 + 震动/顿帧/分层反馈）见上方 M12 章节第六轮
+3. 素材引入走 [09-asset-license.md](09-asset-license.md) §6 的流程
+   （M12 起已有 GH 档素材包在库，按包登记在 §4；`?art=off` 是
+   无素材回归路径，M1–M10 验收跑在它上面）
 4. 动手前看一眼 [11-contributing.md](11-contributing.md) 的提交前检查清单
 5. **不要改 [00-design-spec.md](00-design-spec.md)** —— 它是基线。
    要偏离就去 [10-acceptance-tracking.md](10-acceptance-tracking.md) 登记

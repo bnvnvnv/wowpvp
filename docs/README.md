@@ -32,7 +32,8 @@
 | [01-development-plan.md](01-development-plan.md) | 开发计划书：M0–M9 里程碑、交付物、验收用例、关键陷阱 |
 | [02-architecture.md](02-architecture.md) | 技术架构：技术选型理由、分层、目录、数据流、效果注册表、权威与预测 |
 | [PROGRESS.md](PROGRESS.md) | 完成情况、技术债、下一步 |
-| [13-roadmap-post-m9.md](13-roadmap-post-m9.md) | M9 之后的路线图：M10 联网 → M11 技术债 → M12 美术，含每阶段的完成判据 |
+| [13-roadmap-post-m9.md](13-roadmap-post-m9.md) | M9 之后的路线图：M10 联网 → M11 技术债 → M12 美术，含每阶段的完成判据（已全部完成）|
+| [14-roadmap-post-m12.md](14-roadmap-post-m12.md) | **当前路线图**：M13 对局入口 → M14 配平 → M15 新手引导 → M16 对局完整性 → M17 留存钩子 |
 
 ### 系统设计
 
