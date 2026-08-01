@@ -208,6 +208,30 @@ export const startMatch = (room: Room): SelectResult => {
   return { ok: true };
 };
 
+/**
+ * 对局结束后把房间放回「可再开一局」的状态（M13 大厅，docs/14 §M13）。
+ *
+ * ★ 在此之前 `started` 一经置 true 就永不复位 —— 3.1 的「比赛开始后职业锁定」
+ *   因此在赛后仍然生效，房间等于一次性的。复位是它的唯一出口，
+ *   规则放在这里而不是服务器里，与本文件头的理由相同：
+ *   服务器只做传输，房间状态怎么变必须有测试盯着。
+ *
+ * 三条语义，每条都有对应测试：
+ *   · 解锁 —— started=false，选阵营/选职业重新可用（3.1 的锁只锁比赛期间）
+ *   · 全员取消准备 —— 再开一局必须是全体**重新**同意，不能沿用上一局的 ready
+ *   · 剔除已断线者 —— 掉线超时/主动退出的人不会回到这条连接上，
+ *     留着只会永远堵住 canStart（一个永不准备的名额）。他们想回来
+ *     走的是全新的 JoinRoom，不是这份名单
+ *
+ * ★ 阵营与职业**保留** —— 「再来一局」的常见语义就是原班人马原阵容，
+ *   想换的人在房间页里换（此刻已解锁）。
+ */
+export const resetForRematch = (room: Room): void => {
+  room.started = false;
+  room.players = room.players.filter((p) => p.connected);
+  for (const p of room.players) p.ready = false;
+};
+
 // ── 11.5 断线与退出 ──────────────────────────────────────────────
 
 /**

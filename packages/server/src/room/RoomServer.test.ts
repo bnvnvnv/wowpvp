@@ -339,6 +339,153 @@ describe('A3：两个真客户端从房间跑到快照', () => {
     blue.close();
   });
 
+  /**
+   * ── M13 赛后复位（docs/14 §M13）─────────────────────────────
+   *
+   * 「MatchEnd 后回到房间页可再开一局」的**服务器侧闭环**。
+   * 在 resetAfterMatch 之前，房间打完一局就是死路：started 永不复位、
+   * session 停在 Match 阶段，赛后的 SelectClass/SetReady 全被拒绝。
+   *
+   * ★ 结束一局用的是 verify:m10 的同一套白盒手法：advance() 快进过
+   *   18 秒准备阶段，把败方打死，再 advance 过结算窗口 —— 布置是白盒的，
+   *   断言全部落在客户端**真实收到的消息**上。
+   */
+  it('★★ M13：MatchEnd 后房间复位 → 换职业 → 全员再准备 → 第二局开起来', async () => {
+    const red = await TestClient.connect(server.port);
+    const blue = await TestClient.connect(server.port);
+    await readyUp(red, 'rematch', '红方', 'red', 'mage');
+    await readyUp(blue, 'rematch', '蓝方', 'blue', 'warrior');
+    const start1 = await red.waitFor('MatchStart');
+    const blueStart1 = await blue.waitFor('MatchStart');
+
+    // 白盒收尾：快进过准备阶段 → 打死蓝方 → 快进过结算窗口
+    const match = server.rooms.matchOf('rematch')!;
+    const loop = server.rooms.loopOf('rematch')!;
+    for (let i = 0; i < 400 && !match.arena?.outcome; i++) loop.advance();
+    const loser = match.world.entities.get(blueStart1.you)!;
+    loser.alive = false;
+    loser.health = 0;
+    for (let i = 0; i < 60 && !match.arena?.outcome; i++) loop.advance();
+    await red.waitFor('MatchEnd');
+    await blue.waitFor('MatchEnd');
+
+    // ★ MatchEnd 之后必须跟一条「回到房间」的 RoomState：
+    //   started=false、全员 ready 清空、阵营与职业保留
+    const afterEnd = (c: TestClient) => {
+      const idx = c.received.findIndex((m) => m.t === 'MatchEnd');
+      return c.received.slice(idx + 1);
+    };
+    const deadline = Date.now() + 3000;
+    let roomState: Extract<ServerMessage, { t: 'RoomState' }> | undefined;
+    while (!roomState && Date.now() < deadline) {
+      roomState = afterEnd(red).find(
+        (m): m is Extract<ServerMessage, { t: 'RoomState' }> => m.t === 'RoomState',
+      );
+      if (!roomState) await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(roomState, 'MatchEnd 后没有收到复位的 RoomState').toBeDefined();
+    expect(roomState!.started).toBe(false);
+    expect(roomState!.players.every((p) => !p.ready)).toBe(true);
+    expect(roomState!.players.find((p) => p.name === '红方')?.classId).toBe('mage');
+
+    // ★ 上一局的重连令牌此刻必须作废 —— 它指向的那局已经不存在
+    const probe = await TestClient.connect(server.port);
+    probe.send({ t: 'Reconnect', token: start1.reconnectToken });
+    const tokenRejected = await probe.waitFor('Rejected');
+    expect(tokenRejected.what).toBe('Reconnect');
+    probe.close();
+
+    // ★ 阶段已回 Room、职业锁已解：换职业不再被拒绝
+    red.received.length = 0;
+    red.send({ t: 'SelectClass', classId: asClassId('priest') });
+    const echoed = await red.waitFor('RoomState');
+    expect(
+      red.received.filter((m) => m.t === 'Rejected'),
+      '赛后换职业仍被拒绝 —— 阶段或职业锁没有复位',
+    ).toEqual([]);
+    expect(echoed.players.find((p) => p.name === '红方')?.classId).toBe('priest');
+
+    // ★ 全员重新准备 → 第二局真的开起来（新 MatchStart + 新快照在流）
+    red.received.length = 0;
+    blue.received.length = 0;
+    red.send({ t: 'SetReady', ready: true });
+    blue.send({ t: 'SetReady', ready: true });
+    const start2 = await red.waitFor('MatchStart');
+    await blue.waitFor('MatchStart');
+    await red.waitFor('Snapshot');
+    // 新令牌属于新的一局，不该沿用上一局的
+    expect(start2.reconnectToken).not.toBe(start1.reconnectToken);
+
+    red.close();
+    blue.close();
+  });
+
+  /**
+   * ★ M13：败方**中途退出**的一局结束后，他不在复位名单里 ——
+   *   留着等于一个永不准备的名额，房间从此再也开不了局。
+   */
+  it('★ M13：中途退出的人不进复位名单，且能重新按码加入', async () => {
+    const red = await TestClient.connect(server.port);
+    const blue = await TestClient.connect(server.port);
+    await readyUp(red, 'quitroom', '红方', 'red', 'mage');
+    await readyUp(blue, 'quitroom', '蓝方', 'blue', 'warrior');
+    await red.waitFor('MatchStart');
+    await blue.waitFor('MatchStart');
+
+    // 蓝方中途退出 → 按淘汰处理（11.5）→ 只剩红方，回合结算 → MatchEnd
+    blue.send({ t: 'LeaveMatch' });
+    const match = server.rooms.matchOf('quitroom')!;
+    const loop = server.rooms.loopOf('quitroom')!;
+    for (let i = 0; i < 500 && !match.arena?.outcome; i++) loop.advance();
+    await red.waitFor('MatchEnd');
+
+    const idx = red.received.findIndex((m) => m.t === 'MatchEnd');
+    const deadline = Date.now() + 3000;
+    let rs: Extract<ServerMessage, { t: 'RoomState' }> | undefined;
+    while (!rs && Date.now() < deadline) {
+      rs = red.received.slice(idx + 1).find(
+        (m): m is Extract<ServerMessage, { t: 'RoomState' }> => m.t === 'RoomState',
+      );
+      if (!rs) await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(rs!.players.map((p) => p.name)).toEqual(['红方']);
+
+    // ★ 退出者的 session 已被放干净：按码重新加入同一房间必须成功
+    blue.received.length = 0;
+    blue.send({ t: 'JoinRoom', roomId: 'quitroom', name: '蓝方回归' });
+    const back = await blue.waitFor('RoomState');
+    expect(back.players.map((p) => p.name).sort()).toEqual(['红方', '蓝方回归']);
+    expect(blue.received.filter((m) => m.t === 'Rejected')).toEqual([]);
+
+    red.close();
+    blue.close();
+  });
+
+  /**
+   * ★ M13：开局前离开房间后，session 要被放干净 —— 此前 `session.roomId`
+   *   一直挂着，之后任何 JoinRoom 都被「已经在一个房间里了」拒绝。
+   *   大厅有了「离开房间」按钮，这条路径第一次真的被走到。
+   */
+  it('★ M13：开局前离开房间 → 能加入另一个房间（session 被放干净）', async () => {
+    const c = await TestClient.connect(server.port);
+    await c.waitFor('Welcome');
+    c.send({ t: 'JoinRoom', roomId: 'left-a', name: '游子' });
+    await c.waitFor('RoomState');
+
+    c.send({ t: 'LeaveMatch' });
+    await new Promise((r) => setTimeout(r, 100));
+
+    c.received.length = 0;
+    c.send({ t: 'JoinRoom', roomId: 'left-b', name: '游子' });
+    const rs = await c.waitFor('RoomState');
+    expect(rs.players.map((p) => p.name)).toEqual(['游子']);
+    expect(
+      c.received.filter((m) => m.t === 'Rejected'),
+      '离开旧房间后加入新房间仍被拒绝 —— session.roomId 没清',
+    ).toEqual([]);
+    c.close();
+  });
+
   /** ★ 阶段鉴权：比赛开始后再发 SelectClass 是越权 */
   it('★ 战斗中发 SelectClass 被拒绝（阶段鉴权）', async () => {
     const red = await TestClient.connect(server.port);

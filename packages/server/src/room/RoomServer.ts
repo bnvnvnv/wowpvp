@@ -29,6 +29,7 @@ import {
   leaveMatch,
   markDisconnected,
   markReconnected,
+  resetForRematch,
   selectClass,
   selectSlot,
   setReady,
@@ -139,8 +140,15 @@ export class RoomServer {
       });
     } else {
       leaveMatch(sr.room, session.playerId);
-      this.broadcastRoomState(sr);
+      if (!this.dropIfEmpty(sr)) this.broadcastRoomState(sr);
     }
+  }
+
+  /** 没人（名单空且无连接）的房间从注册表回收，房间码可复用 */
+  private dropIfEmpty(sr: ServerRoom): boolean {
+    if (sr.room.players.length > 0 || sr.sessions.size > 0) return false;
+    this.rooms.delete(sr.room.id);
+    return true;
   }
 
   // ── 消息路由 ──────────────────────────────────────────────────
@@ -364,6 +372,49 @@ export class RoomServer {
   private endMatch(sr: ServerRoom, winner: TeamId | 'draw'): void {
     this.broadcast(sr, { t: 'MatchEnd', winner });
     sr.loop?.stop();
+    this.resetAfterMatch(sr);
+  }
+
+  /**
+   * M13：赛后把房间放回「可再开一局」的状态（docs/14 §M13 —— 在此之前
+   * `started` 永不复位，房间是一次性的：赛后 `SelectClass`/`SetReady` 全被
+   * 「比赛已开始」拒绝，MatchEnd 就是死路）。
+   *
+   * 顺序上紧跟 MatchEnd 广播 —— 客户端先收到胜负、随后一条 `RoomState
+   * (started=false)`，什么时候把画面从结算切回房间页由客户端自己决定。
+   * ★ 不引入任何新消息类型（M13 红线）：复位对客户端就是一条普通 RoomState。
+   *
+   * 名单规则在 `resetForRematch()`（shared，有测试盯着），这里只做传输侧的
+   * 对应清理：
+   *   · match/loop 置空 —— `matchOf()` 不该再把上一局翻出来
+   *   · 重连令牌与宽限登记清空 —— 上一局的令牌换不回任何东西（那局没了），
+   *     留着反而能被 `onReconnect` 兑换进一个不存在的 match
+   *   · 名单里还在的人回 Room 阶段（否则 ROOM_ONLY 消息全被阶段门禁拒掉）；
+   *     被剔除的人（退出/超时淘汰）踢回 Lobby 并清 roomId —— 他们想回来
+   *     走全新的 JoinRoom
+   */
+  private resetAfterMatch(sr: ServerRoom): void {
+    resetForRematch(sr.room);
+    sr.match = undefined;
+    sr.loop = undefined;
+    sr.tokens.clear();
+    sr.tokenByPlayer.clear();
+    sr.reconnects = createReconnectRegistry();
+
+    for (const s of [...sr.sessions]) {
+      s.clearInputs();
+      s.following = undefined;
+      if (sr.room.players.some((p) => p.id === s.playerId)) {
+        s.phase = SessionPhase.Room;
+      } else {
+        sr.sessions.delete(s);
+        s.roomId = undefined;
+        s.phase = SessionPhase.Lobby;
+      }
+    }
+
+    // 全员断线的房间没有观众，直接回收 —— 房间码可复用，注册表不积尸体
+    if (!this.dropIfEmpty(sr)) this.broadcastRoomState(sr);
   }
 
   private eliminate(sr: ServerRoom, playerId: string, reason: 'timeout' | 'left'): void {
@@ -425,8 +476,17 @@ export class RoomServer {
       leaveImmediately(sr.reconnects, session.playerId);
       this.eliminate(sr, session.playerId, 'left');
     } else {
+      /**
+       * M13：离开的人要把 session 也放干净 —— 此前只改了房间名单，
+       * `session.roomId` 还挂着，于是他之后的任何 `JoinRoom` 都被
+       * 「已经在一个房间里了」拒绝。大厅有了「离开房间」按钮后
+       * 这条路径第一次真的被走到。
+       */
       leaveMatch(sr.room, session.playerId);
-      this.broadcastRoomState(sr);
+      sr.sessions.delete(session);
+      session.roomId = undefined;
+      session.phase = SessionPhase.Lobby;
+      if (!this.dropIfEmpty(sr)) this.broadcastRoomState(sr);
     }
   }
 
