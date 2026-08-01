@@ -212,7 +212,8 @@ export const CRIT = {
  *     19 处伤害占位值当初都没写说明，于是它们的由来在代码里完全找不到。
  */
 export const COMBAT_SWING = {
-  RAGE_PER_SWING: 5,
+  // M14 配平定值：盾剑 1.7s 一跳 ≈ 3.5 怒/s，重创斩（20 耗）约 6 秒一发，冲锋 +15 组成开局节奏
+  RAGE_PER_SWING: 6,
 } as const;
 
 export const SIM = {

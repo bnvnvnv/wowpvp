@@ -28,7 +28,8 @@ import {
   addEntity, allocEntityId, createArena, createArsenalStore, createAuraStore,
   createCastingStore, createDrStore, createEntity, createGroundStore, createLoadout,
   createLoadoutStore, createMovementState, createProjectileStore, createPickupStore,
-  createSwapStore, createSwingStore, beginSwing, createWorld, distance2D, dirToYaw, getSkill, sub, tickWorld,
+  createSwapStore, createSwingStore, beginSwing, createWorld, distance2D, dirToYaw,
+  getSkill, getWeapon, isCasting, magnitudeOf, sub, tickWorld,
   validateCast, vec3, ArenaPreset,
   type CastIntent, type ClassDef, type CombatEntity, type EntityId,
   type MovementState, type SkillDef, type TickDeps, type World,
@@ -44,6 +45,16 @@ const arg = (name: string, fallback: number): number => {
 const SEED = arg('seed', 1);
 const ROUNDS = arg('rounds', 3);
 const AS_JSON = process.argv.includes('--json');
+/** 打印对阵矩阵（行视角的胜场/总场）。配平时定位「谁在收割谁」用 */
+const AS_MATRIX = process.argv.includes('--matrix');
+/** 只跑一对并输出每场明细（`--pair rogue,warrior`）。定位「他怎么赢的」用 */
+const PAIR = ((): [string, string] | undefined => {
+  const i = process.argv.indexOf('--pair');
+  const raw = i >= 0 ? process.argv[i + 1] : undefined;
+  if (!raw) return undefined;
+  const [a, b] = raw.split(',');
+  return a && b ? [a, b] : undefined;
+})();
 
 /**
  * 种子化 PRNG（mulberry32）。
@@ -63,6 +74,79 @@ const rngFrom = (seed: number) => {
 const MAX_SECONDS = 90;
 const START_DISTANCE = 12;
 
+// ── 站位（AI 的「打多远」）─────────────────────────────────────────
+
+/** 一个伤害技能的**名义**持续 DPS：只用于站位估算，不进任何结算 */
+const nominalDps = (sk: SkillDef, self: CombatEntity): number => {
+  let perCast = 0;
+  for (const e of sk.effects) {
+    if (e.kind === 'damage') perCast += magnitudeOf(e.amount, self);
+    if (e.kind === 'spawnProjectile') {
+      for (const h of e.onHit) if (h.kind === 'damage') perCast += magnitudeOf(h.amount, self);
+    }
+    // 光环周期伤按整段跳完计（站位粗估用，够了）
+    if (e.kind === 'applyAura' && e.aura.periodic) {
+      const ticks = Math.floor(e.aura.duration / e.aura.periodic.interval);
+      for (const h of e.aura.periodic.effects) {
+        if (h.kind === 'damage') perCast += magnitudeOf(h.amount, self) * ticks;
+      }
+    }
+  }
+  // 节奏 = 冷却 / 读条 / 公共冷却的最大者。资源节流不进估算 —— 这是站位
+  // 用的粗粒度权重，不是伤害模型
+  return perCast / Math.max(sk.cooldown, sk.cast.time, 1.5);
+};
+
+const isHealSkill = (sk: SkillDef): boolean =>
+  sk.effects.some((e) =>
+    e.kind === 'heal' || e.kind === 'healPercentMaxHealth' || e.kind === 'healFromRecentDamage');
+
+/**
+ * 技能是否**产出伤害** —— 直伤、投射物命中、或光环周期伤（DoT）。
+ * ⚠️ 少了第三类时，战士的剑刃风暴（伤害全在光环 periodic 里，4 秒 8 跳）
+ *   被 AI 当成杂项增益，几乎从不进输出循环 —— 他最大的爆发键躺着不用。
+ */
+const hasDamage = (sk: SkillDef): boolean =>
+  sk.effects.some((e) =>
+    e.kind === 'damage' ||
+    (e.kind === 'spawnProjectile' && e.onHit.some((h) => h.kind === 'damage')) ||
+    (e.kind === 'applyAura' &&
+      (e.aura.periodic?.effects.some((h) => h.kind === 'damage') ?? false)));
+
+/**
+ * ★★ 站位：**保有至少六成火力的前提下站得越远越好。**
+ *
+ * 前两版的教训都在 think() 里注释着；第三版「够着此刻可用的最远伤害技能」
+ * 修好了战士，却把猎人钉在 35 米 —— 瞄准射击（35m）可用时他站在弓（28m）
+ * 射程之外，白字全程落空，DPS 反而掉到白字理论值以下。
+ *
+ * 通用规则：把「武器触及 + 各伤害技能射程」当候选站位，给每个站位算
+ * 「站在这里还打得出的名义 DPS」（白字 + 技能），**取火力 ≥ 最大值 60% 的
+ * 最远者**。八职业各得其所：法师留在 32 米（放弃近战斩的 12%，保距离），
+ * 猎人站 25 米（弓/秘法箭/瞄准全部在射程内），圣骑士/战士走进近战
+ * （远程件只有全火力的两三成，过不了线）。
+ * ⚠️ 60% 是站位偏好的阈值，不是平衡参数 —— 它只决定 AI 站哪，不改任何结算。
+ */
+const standOff = (self: CombatEntity, skills: readonly SkillDef[]): number => {
+  const w = getWeapon(self.weaponId);
+  const whiteDps = w ? (w.swingPercent * 100) / w.swingInterval : 0;
+  const damaging = skills.filter((sk) => sk.targeting !== 'ground' && !isHealSkill(sk) && hasDamage(sk));
+
+  const candidates = new Set<number>([w?.reach ?? 2]);
+  for (const sk of damaging) candidates.add(sk.range.max);
+
+  const scoreAt = (c: number): number =>
+    (w && w.reach >= c ? whiteDps : 0) +
+    damaging.reduce((sum, sk) => sum + (sk.range.max >= c ? nominalDps(sk, self) : 0), 0);
+
+  const max = Math.max(...[...candidates].map(scoreAt));
+  let best = w?.reach ?? 2;
+  for (const c of candidates) {
+    if (scoreAt(c) >= max * 0.6 && c > best) best = c;
+  }
+  return best;
+};
+
 // ── 一场对决 ─────────────────────────────────────────────────────
 
 interface DuelResult {
@@ -71,6 +155,8 @@ interface DuelResult {
   damage: Record<'a' | 'b', number>;
   healing: Record<'a' | 'b', number>;
   casts: Record<'a' | 'b', number>;
+  /** `--pair` 明细：双方每个技能被选择的次数 */
+  picks: Record<'a' | 'b', Map<string, number>>;
 }
 
 /**
@@ -104,6 +190,7 @@ const duel = (clsA: ClassDef, clsB: ClassDef, rng: () => number): DuelResult => 
   const damage = { a: 0, b: 0 };
   const healing = { a: 0, b: 0 };
   const casts = { a: 0, b: 0 };
+  const picks = { a: new Map<string, number>(), b: new Map<string, number>() };
   const sideOf = (id: EntityId): 'a' | 'b' => (id === a.id ? 'a' : 'b');
 
   /**
@@ -139,7 +226,7 @@ const duel = (clsA: ClassDef, clsB: ClassDef, rng: () => number): DuelResult => 
   });
 
   /**
-   * 极简 AI：面向对手、不到射程就往前走、能放就放一个能放的技能。
+   * 极简 AI：面向对手、打不到就往前走、半血以下先保命、能输出就输出。
    * ⚠️ 它**不会**假读条、不会留打断、不会绕柱 —— 见文件头的 ⚠️。
    */
   const think = (
@@ -148,36 +235,57 @@ const duel = (clsA: ClassDef, clsB: ClassDef, rng: () => number): DuelResult => 
     const yaw = dirToYaw(sub(foe.position, self.position));
     const d = distance2D(self.position, foe.position);
 
-    const skills = ALL_CLASSES.find((c) => c.id === self.classId)!.skills;
-    const usable: SkillDef[] = [];
-    for (const sk of skills) {
-      if (sk.targeting === 'ground') continue; // AI 不选落点
-      const ok = validateCast({ world, caster: self, skill: sk, target: foe, phase: 'start' });
-      if (ok === CastFailure.Ok) usable.push(sk);
+    /**
+     * ★★ **读条期间不出手。**
+     *   ⚠️ 第三版之前没有这条 —— 于是瞄准射击起手后的 32 个 tick 里，
+     *      AI 继续对唯一还「可用」的免公共冷却技能（断法箭）发起新施法，
+     *      每一次都把读条中的瞄准射击顶掉重来：**读条技能永远完不成**。
+     *      诊断脚本抓到的样子是：断法箭被选中 43 次却一次都没进冷却、
+     *      猎人 DPS 恰好等于白字理论值 —— 法师冰枪/牧师惩击/圣光术同病。
+     *      读条中站着不动、等它完成，是任何操作水平的底线，与反制链无关。
+     */
+    if (isCasting(casting, self.id)) {
+      return { move: { forward: 0, strafe: 0, jump: false, yaw } };
     }
 
+    const skills = ALL_CLASSES.find((c) => c.id === self.classId)!.skills;
     /**
-     * ★★ **走位判据看的是「能不能打到他」，不是「有没有技能能放」。**
-     *
-     *   ⚠️ 第一版写的是 `usable.length === 0 && d > 2` —— 于是任何**自身增益**
-     *      （防御姿态、树皮术…）只要可用，近战就**站在原地不动**，
-     *      永远走不进近战距离。跑出来的结果是战士/死骑 0% 胜率、场均 37–76 秒，
-     *      而那测的是 AI 的愚蠢，不是职业强弱。
-     *      **一份错的基线比没有基线更糟** —— 它会把人引去调错的数字。
-     *
-     *   改成：看自己**伤害技能**里射程最远的那个，够不着就贴近。
+     * ★ 治疗要按**自己**为目标验，进攻要按**对手**为目标验。
+     *   ⚠️ 第二版之前全部技能都拿 foe 去 validateCast —— 于是 TargetFilter.Ally
+     *      的治疗永远验不过、永远不在可用集合里：三个治疗职业 HPS 恒为 0，
+     *      「治疗职业」在基线里根本不存在，胜率垫底测的是 AI 不会奶自己。
      */
-    const reach = Math.max(
-      0,
-      ...skills
-        .filter((sk) => sk.effects.some((e) => e.kind === 'damage'))
-        .map((sk) => sk.range.max),
-    );
+    const usableOn = (sk: SkillDef, target: CombatEntity): boolean =>
+      sk.targeting !== 'ground' && // AI 不选落点
+      validateCast({ world, caster: self, skill: sk, target, phase: 'start' }) === CastFailure.Ok;
+
+    const offensive = skills.filter((sk) => !isHealSkill(sk) && usableOn(sk, foe));
+
+    /**
+     * ★★ 走位历史（每一版都是一次「错基线引人调错数字」的教训）：
+     *   第一版 `usable.length === 0 && d > 2` —— 自身增益可用时近战原地罚站，
+     *   战士/死骑 0%。第二版「全部伤害技能的最大射程」—— 战士被 25 秒冷却的
+     *   掷锤（20m）钉在 18 米外，而掷锤要的怒气只能靠 2.8 米的挥击攒：
+     *   死锁，0% 胜率测的是死锁不是职业。第三版「此刻可用的最远伤害技能」——
+     *   修好战士，却把猎人钉在瞄准射击的 35 米上：弓是 28 米，白字全程落空。
+     *   现行：standOff() 的六成火力规则，见其注释。
+     */
+    const reach = standOff(self, skills);
     const move = { forward: d > reach * 0.9 ? 1 : 0, strafe: 0, jump: false, yaw };
 
+    // 半血以下且有治疗可用 → 先保命。这是「同等操作水平」的底线共识，
+    // 不属于反制链博弈（那些 AI 依然不会，见文件头）
+    if (self.health < self.maxHealth * 0.5) {
+      const heals = skills.filter((sk) => isHealSkill(sk) && usableOn(sk, self));
+      if (heals.length > 0) {
+        const pick = heals[Math.floor(rng() * heals.length)]!;
+        return { move, cast: { skillId: pick.id, targetId: self.id } };
+      }
+    }
+
     // 有伤害技能可用时优先输出，否则退而求其次放别的（增益/控制）
-    const damaging = usable.filter((sk) => sk.effects.some((e) => e.kind === 'damage'));
-    const pool = damaging.length > 0 ? damaging : usable;
+    const damaging = offensive.filter(hasDamage);
+    const pool = damaging.length > 0 ? damaging : offensive;
     if (pool.length === 0) return { move };
     const pick = pool[Math.floor(rng() * pool.length)]!;
     return { move, cast: { skillId: pick.id, targetId: foe.id } };
@@ -192,12 +300,18 @@ const duel = (clsA: ClassDef, clsB: ClassDef, rng: () => number): DuelResult => 
     for (const [self, foe] of [[a, b], [b, a]] as const) {
       const r = think(self, foe);
       inputs.set(self.id, r.move);
-      if (r.cast) { requests.set(self.id, r.cast); casts[sideOf(self.id)]++; }
+      if (r.cast) {
+        requests.set(self.id, r.cast);
+        casts[sideOf(self.id)]++;
+        const m = picks[sideOf(self.id)];
+        m.set(r.cast.skillId as string, (m.get(r.cast.skillId as string) ?? 0) + 1);
+      }
     }
 
-    // 4.x：右键目标即开始普通攻击。★ beginSwing 幂等，不会刷新节奏
-    beginSwing(swings, a.id, world.time, 2);
-    beginSwing(swings, b.id, world.time, 2);
+    // 4.x：有敌方硬目标即开火（与 MatchLoop.syncSwings 同一判据）。
+    // ★ beginSwing 幂等，不会刷新节奏；首击间隔与真实对局一致取武器值
+    beginSwing(swings, a.id, world.time, getWeapon(a.weaponId)?.swingInterval ?? 2);
+    beginSwing(swings, b.id, world.time, getWeapon(b.weaponId)?.swingInterval ?? 2);
     const result = tickWorld(deps(inputs, requests), SIM.TICK_DT);
     for (const ev of result.events) {
       if (ev.t === 'damage') damage[sideOf(ev.sourceId)] += ev.amount;
@@ -208,7 +322,7 @@ const duel = (clsA: ClassDef, clsB: ClassDef, rng: () => number): DuelResult => 
   return {
     winner: !b.alive && a.alive ? 'a' : !a.alive && b.alive ? 'b' : 'draw',
     seconds: world.time,
-    damage, healing, casts,
+    damage, healing, casts, picks,
   };
 };
 
@@ -229,14 +343,32 @@ const of = (id: string): ClassStat => {
 const rng = rngFrom(SEED);
 let duels = 0;
 let draws = 0;
+/** `${a}|${b}` → a 视角的胜场数（a、b 各打 ROUNDS 场的两个方向分开记）*/
+const pairWins = new Map<string, number>();
 
 for (const clsA of ALL_CLASSES) {
   for (const clsB of ALL_CLASSES) {
     if (clsA.id === clsB.id) continue;
+    if (PAIR && !(PAIR.includes(clsA.id as string) && PAIR.includes(clsB.id as string))) continue;
     for (let r = 0; r < ROUNDS; r++) {
       const res = duel(clsA, clsB, rng);
       duels++;
+      if (PAIR) {
+        const fmt = (m: Map<string, number>) =>
+          [...m.entries()].map(([k, v]) => `${k.split('.')[1]}×${v}`).join(' ');
+        console.log(
+          `${clsA.id} vs ${clsB.id} 第${r + 1}场：胜者=${res.winner} ` +
+          `${res.seconds.toFixed(1)}s 伤害A=${res.damage.a.toFixed(0)} B=${res.damage.b.toFixed(0)} ` +
+          `治疗A=${res.healing.a.toFixed(0)} B=${res.healing.b.toFixed(0)}\n` +
+          `  A 选技: ${fmt(res.picks.a)}\n  B 选技: ${fmt(res.picks.b)}`,
+        );
+      }
       if (res.winner === 'draw') draws++;
+      if (res.winner === 'a') {
+        pairWins.set(`${clsA.id}|${clsB.id}`, (pairWins.get(`${clsA.id}|${clsB.id}`) ?? 0) + 1);
+      } else if (res.winner === 'b') {
+        pairWins.set(`${clsB.id}|${clsA.id}`, (pairWins.get(`${clsB.id}|${clsA.id}`) ?? 0) + 1);
+      }
 
       const sa = of(clsA.id as string);
       const sb = of(clsB.id as string);
@@ -283,6 +415,21 @@ if (AS_JSON) {
   const spread = rows.length ? rows[0]!.winRate - rows[rows.length - 1]!.winRate : 0;
   console.log('─'.repeat(52));
   console.log(`胜率极差：${(spread * 100).toFixed(1)} 个百分点`);
+
+  if (AS_MATRIX) {
+    // 行=攻方视角：该行职业对每个列职业赢了几场（双向共 2×ROUNDS 场）
+    const ids = rows.map((r) => r.id);
+    console.log('\n对阵矩阵（行 vs 列：胜场/双向总场）');
+    console.log(''.padEnd(13) + ids.map((c) => c.slice(0, 6).padEnd(7)).join(''));
+    for (const a of ids) {
+      const cells = ids.map((b) => {
+        if (a === b) return '—'.padEnd(7);
+        const w = pairWins.get(`${a}|${b}`) ?? 0;
+        return `${w}/${ROUNDS * 2}`.padEnd(7);
+      });
+      console.log(a.slice(0, 12).padEnd(13) + cells.join(''));
+    }
+  }
   console.log(
     '\n⚠️ 这份数据是**回归基线**，不是平衡性结论 —— AI 不会假读条、不会留打断、\n' +
     '   不会绕柱，而 8.x 的反制链恰恰是这个游戏的核心。改一个数值后看谁动了多少，\n' +

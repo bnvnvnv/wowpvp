@@ -29,7 +29,7 @@ describe('★★ 可区分性', () => {
     expect(collisions, '同职业内出现撞脸图标').toEqual([]);
   });
 
-  it('★ 全部 91 个技能都能生成图标（加技能自动有图标）', () => {
+  it('★ 全部 90 个技能都能生成图标（加技能自动有图标）', () => {
     for (const sk of ALL_SKILLS) {
       expect(() => skillIconSvg(sk), `${sk.id} 生成失败`).not.toThrow();
     }

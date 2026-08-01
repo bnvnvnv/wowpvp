@@ -41,10 +41,11 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 25 },
     counters: '纯武器技能：缴械后完全禁用（7.3），但沉默和神圣学派锁定拦不住它；要求贴身 3 米并把目标保持在前方 180 度（6.5），被风筝或被定身拉开就断了圣能来源，荣耀圣令随之哑火。',
     effects: [
-      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 1.1 } },
+      // M14：1.1→0.8 —— 圣能修复（此前长在敌人身上，荣耀圣言从未施放过）后主动治疗增多，输出侧回调
+      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.8 } },
       { kind: 'gainResource', resource: Resource.HolyPower, amount: 1 },
     ],
-    description: '造成 110% 武器伤害并获得 1 点圣能。',
+    description: '造成 80% 武器伤害并获得 1 点圣能。',
     vfx: 'paladin_crusader_strike',
   },
   {
@@ -64,7 +65,8 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 40 },
     counters: '神圣学派：被责难以外的专用打断锁住神圣学派、或自己处于沉默期间都用不出来（7.2 / 7.3）；易伤是魔法减益，敌方驱散一次就抹掉 4 秒增伤窗口（8.4）；释放瞬间失去视线或超出 25 米直接失败（7.4），柱子绕视野是最省事的应对。',
     effects: [
-      { kind: 'damage', school: School.Holy, amount: { flat: 110 } },
+      // M14：110→70 —— 审判附带 +10% 易伤（casterScoped），本体压低
+      { kind: 'damage', school: School.Holy, amount: { flat: 70 } },
       {
         kind: 'applyAura',
         aura: {
@@ -106,7 +108,8 @@ const skills: SkillDef[] = [
     requiresLos: true,
     cost: { resource: Resource.Mana, amount: 220 },
     counters: '1.5 秒读条是圣骑士最大的破绽：专用打断命中会锁神圣学派 3 秒（7.2），沉默、昏迷、恐惧、击退拉拽以及自己主动移动都会直接中止（7.3）；完成瞬间目标死亡、超出 30 米或失去视线同样失败（7.4）；治疗量还会被致死创伤类降治疗减益和竞技场战斗抑制（8.5）压低。',
-    effects: [{ kind: 'heal', amount: { flat: 340 } }],
+    // M14：340→200 —— 1.5s 读条大治疗：占位值下圣骑不可击杀，六轮迭代逐步压到位
+    effects: [{ kind: 'heal', amount: { flat: 200 } }],
     description: '为友方恢复大量生命。1.5 秒读条，必须原地，可被打断。',
     vfx: 'paladin_holy_light',
   },
@@ -126,7 +129,8 @@ const skills: SkillDef[] = [
     // 消耗 3 点圣能。圣能只能靠十字军打击（或权杖方案的圣光弹）积攒
     cost: { resource: Resource.HolyPower, amount: 3 },
     counters: '瞬发不可打断，但受制于资源链：必须先贴身打出 3 次十字军打击，把圣骑士风筝开、缴械或控在近战距离外就等于封了这个技能；治疗量同样吃降低治疗减益与战斗抑制（8.5）；沉默期间作为魔法技能不可使用（7.3）。',
-    effects: [{ kind: 'heal', amount: { flat: 260 } }],
+    // M14：260→155 —— 圣能修复后荣耀圣言真的会被施放了，数值按「瞬发不可打断」折价
+    effects: [{ kind: 'heal', amount: { flat: 155 } }],
     description: '消耗 3 点圣能，立刻为友方恢复中等生命。',
     vfx: 'paladin_word_of_glory',
   },
@@ -420,7 +424,8 @@ const weapons: WeaponDef[] = [
     isDefault: true,
     handedness: 'oneHand',
     swingInterval: 1.8,
-    swingPercent: 0.9,
+    // M14：0.9→0.72 —— 圣骑曾以 85.7% 胜率霸榜；治疗+圣盾的生存性由白字侧买单
+    swingPercent: 0.72,
     reach: RANGE.MELEE,
     modifiers: { block: 0.15, damageTaken: 0.88 },
     advantage: '防御 +12%，可格挡',
@@ -452,7 +457,8 @@ const weapons: WeaponDef[] = [
     isDefault: false,
     handedness: 'ranged',
     swingInterval: 1.6,
-    swingPercent: 0.65,
+    // M14：0.65→0.5 —— 权杖档随剑盾档同比例回调
+    swingPercent: 0.5,
     reach: RANGE.MEDIUM,
     // 7.6：普通攻击走远程圣光弹规则
     isRanged: true,
@@ -487,7 +493,8 @@ export const paladin: ClassDef = {
   role: '近战支援、治疗、祝福与保护',
   baseHealth: 1100,
   resources: [
-    { resource: Resource.Mana, max: 1000, start: 1000, regenPerSecond: 12 },
+    // M14：12→8 —— 法力回复兑现后圣骑马拉松续航过强，压回复而不是继续压单次治疗量
+    { resource: Resource.Mana, max: 1000, start: 1000, regenPerSecond: 8 },
     // 圣能只能靠十字军打击 / 圣光弹积攒，不自然回复
     { resource: Resource.HolyPower, max: 5, start: 0, regenPerSecond: 0 },
   ],

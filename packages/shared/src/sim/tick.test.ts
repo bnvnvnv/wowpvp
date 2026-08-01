@@ -15,13 +15,13 @@ import { box } from '../data/maps/schema.js';
 import { dirToYaw, sub, vec3 } from '../math/vec3.js';
 import { ARENA } from '../constants/combat.js';
 import { ArenaPreset, CastFailure, GameMode, School } from '../types/enums.js';
-import { asSkillId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
+import { asSkillId, asWeaponId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
 import { usesNoTarget } from './aiming.js';
 import { createAuraStore, type AuraStore } from './aura.js';
 import { beginCast, createCastingStore, validateCast, type CastingStore } from './casting.js';
 import { createDrStore, type DrStore } from './dr.js';
 import { createArsenalStore, createPickupStore, type ArsenalStore, type PickupStore } from './arsenal.js';
-import { createEntity, type CombatEntity } from './entity.js';
+import { createEntity, skillsAvailableWith, type CombatEntity } from './entity.js';
 import { createGroundStore, type GroundStore } from './groundArea.js';
 import {
   addWeapon, beginSwap, createLoadout, createLoadoutStore, SwapKind,
@@ -382,6 +382,13 @@ describe('事件回调', () => {
     player.health = 1;
     foe.position = vec3(0, 0, 3);
     player.position = vec3(0, 0, 2);
+    /**
+     * 战士唯一的无目标瞬发伤害技（顺劈）是巨剑方案专属 —— A#4 的
+     * removes/grants 自 M14 起真的被 validateCast 执行。装上巨剑并按
+     * 装备路径的同一条规则刷新技能集合，是夹具的责任（同上面的资源给满）。
+     */
+    foe.weaponId = asWeaponId('warrior.greatsword');
+    foe.availableSkills = skillsAvailableWith(getClass(foe.classId)!, foe.weaponId);
     const aoe = pickCastable(
       foe, player,
       (sk) => usesNoTarget(sk) && sk.effects.some((e) => e.kind === 'damage'),
@@ -431,5 +438,114 @@ describe('事件回调', () => {
     expect(Object.keys(r).sort()).toEqual(
       ['consumables', 'deaths', 'events', 'flags', 'pickups', 'respawns', 'swaps', 'swings'],
     );
+  });
+});
+
+describe('9.x 资源回复（tick 第 6c 步 —— M14 前 regenPerSecond 是零读取方的死数据）', () => {
+  it('★★ 法力按 regenPerSecond 随 tick 回复', () => {
+    const rate = mage.resources.find((r) => r.resource === 'mana')!.regenPerSecond;
+    expect(rate, '法师法力回复率为 0，这条测试就没意义').toBeGreaterThan(0);
+    player.resources.set('mana' as never, 100);
+    for (let i = 0; i < 40; i++) tickWorld(deps(), DT); // 2 秒
+    expect(player.resources.get('mana' as never)).toBeCloseTo(100 + rate * 2, 5);
+  });
+
+  it('★ 回复封顶于 max，不溢出', () => {
+    const max = player.maxResources.get('mana' as never)!;
+    player.resources.set('mana' as never, max - 0.5);
+    for (let i = 0; i < 40; i++) tickWorld(deps(), DT);
+    expect(player.resources.get('mana' as never)).toBe(max);
+  });
+
+  it('★ 怒气 regen=0：不随时间回复 —— 它的来源只有挥击与技能（7.6）', () => {
+    foe.resources.set('rage' as never, 30);
+    for (let i = 0; i < 40; i++) tickWorld(deps(), DT);
+    expect(foe.resources.get('rage' as never)).toBe(30);
+  });
+
+  it('死人不回资源', () => {
+    player.alive = false;
+    player.resources.set('mana' as never, 100);
+    for (let i = 0; i < 20; i++) tickWorld(deps(), DT);
+    expect(player.resources.get('mana' as never)).toBe(100);
+  });
+});
+
+describe('M14：gainResource 回到施法者（此前攒在敌人身上、花在自己身上，账永远对不上）', () => {
+  it('★★ 背刺的连击点长在盗贼自己身上，不长在目标身上', () => {
+    const rogue = getClass('rogue' as never)!;
+    const r = spawn(rogue as typeof mage, TEAM_RED, 0, 1.5); // 贴身（背刺射程 2.4，foe 在 z=3）
+    for (const [res, max] of r.maxResources) r.resources.set(res, max);
+    r.resources.set('comboPoints' as never, 0);
+    r.yaw = dirToYaw(sub(foe.position, r.position));
+
+    const backstab = getSkill(asSkillId('rogue.backstab'))!;
+    tickWorld(deps({ castRequests: new Map([[r.id, { skillId: backstab.id, targetId: foe.id }]]) }), DT);
+
+    expect(r.resources.get('comboPoints' as never), '连击点没回到盗贼自己').toBeGreaterThan(0);
+    expect(foe.resources.get('comboPoints' as never) ?? 0, '连击点长在目标身上').toBe(0);
+  });
+});
+
+describe('M14：旋刃斩不再自残（光环周期伤打的是持有者 —— 挂自己身上就是打自己）', () => {
+  it('★★ 释放旋刃斩：自己一滴血不掉，圈内敌人持续掉血', () => {
+    for (const [res, max] of foe.maxResources) foe.resources.set(res, max);
+    foe.yaw = dirToYaw(sub(player.position, foe.position));
+    const beforeSelf = foe.health;
+    const beforePlayer = player.health;
+
+    const bs = getSkill(asSkillId('warrior.bladestorm'))!;
+    tickWorld(deps({ castRequests: new Map([[foe.id, { skillId: bs.id }]]) }), DT);
+    for (let i = 0; i < 90; i++) tickWorld(deps(), DT); // 4.5 秒：转完整段
+
+    expect(foe.health, '旋刃斩在打自己 —— 周期伤挂错了目标').toBe(beforeSelf);
+    expect(player.health, '圈内敌人没掉血 —— 区域没生效').toBeLessThan(beforePlayer);
+  });
+});
+
+describe('附录A#4 武器方案的技能门禁（M14 前 removes/grants 只在装备面板显示，sim 从不执行）', () => {
+  it('★★ 方案专属技能：短弓猎人放不出重弩专属的穿透弩箭', () => {
+    const hunter = getClass('hunter' as never)!;
+    const h = spawn(hunter as typeof mage, TEAM_RED, 0, 6);
+    for (const [res, max] of h.maxResources) h.resources.set(res, max);
+    const piercing = getSkill(asSkillId('hunter.piercing_bolt'))!;
+    expect(
+      validateCast({ world, caster: h, skill: piercing, target: foe, phase: 'start' }),
+    ).toBe(CastFailure.WeaponMismatch);
+  });
+
+  it('★ 换上授予它的武器方案后可以释放（walk 真实换装路径）', () => {
+    const hunter = getClass('hunter' as never)!;
+    const h = spawn(hunter as typeof mage, TEAM_RED, 0, 6);
+    for (const [res, max] of h.maxResources) h.resources.set(res, max);
+    h.yaw = dirToYaw(sub(foe.position, h.position));
+    h.weaponId = asWeaponId('hunter.heavy_crossbow');
+    h.availableSkills = skillsAvailableWith(hunter, h.weaponId);
+    const piercing = getSkill(asSkillId('hunter.piercing_bolt'))!;
+    expect(
+      validateCast({ world, caster: h, skill: piercing, target: foe, phase: 'start' }),
+    ).toBe(CastFailure.Ok);
+  });
+
+  it('★ removes = 禁用：巨剑战士没有盾牌专属的盾击', () => {
+    foe.weaponId = asWeaponId('warrior.greatsword');
+    foe.availableSkills = skillsAvailableWith(warrior, foe.weaponId);
+    for (const [res, max] of foe.maxResources) foe.resources.set(res, max);
+    foe.position = vec3(0, 0, 1);
+    foe.yaw = dirToYaw(sub(player.position, foe.position));
+    const slam = getSkill(asSkillId('warrior.shield_slam'))!;
+    expect(
+      validateCast({ world, caster: foe, skill: slam, target: player, phase: 'start' }),
+    ).toBe(CastFailure.WeaponMismatch);
+  });
+
+  it('未被任何方案声明的基础技能不受门禁影响（重创斩人人可用）', () => {
+    for (const [res, max] of foe.maxResources) foe.resources.set(res, max);
+    foe.position = vec3(0, 0, 1);
+    foe.yaw = dirToYaw(sub(player.position, foe.position));
+    const ms = getSkill(asSkillId('warrior.mortal_strike'))!;
+    expect(
+      validateCast({ world, caster: foe, skill: ms, target: player, phase: 'start' }),
+    ).toBe(CastFailure.Ok);
   });
 });

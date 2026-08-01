@@ -41,6 +41,7 @@ import {
   createMovementState, type MovementInput, type MovementState,
 } from '../movement.js';
 import { createProjectileStore, type ProjectileStore } from '../projectile.js';
+import { createSwingStore, type SwingStore } from '../autoAttack.js';
 import { createStats, registerPlayer, type StatsStore } from '../stats.js';
 import type { CastIntent, TickDeps } from '../tick.js';
 import { addEntity, allocEntityId, createWorld, type World } from '../world.js';
@@ -77,6 +78,13 @@ export interface Match {
 
   movement: Map<EntityId, MovementState>;
   stats: StatsStore;
+  /**
+   * 7.6 普通攻击的挥击计时（M14 接线）。
+   * ★ 在此之前 `TickDeps.swings` 是可选项且真实对局从不传 —— 普攻只在
+   *   测试与 balance-report 里存在（老教训第五次应验）。谁开火由
+   *   MatchLoop 按「敌方硬目标存活」同步，试验场没有这份 store，不受影响。
+   */
+  swings: SwingStore;
 
   /** 夺旗模式才有。★ 竞技场是 undefined —— 与 15.4 两种 HUD 视图不相交同源 */
   ctf?: { state: CtfState; deps: CtfDeps; map: MapDef };
@@ -196,6 +204,7 @@ export const createMatch = (room: Room, map: MapDef): Match => {
     arsenal: createArsenalStore(room.config.preset),
     movement,
     stats,
+    swings: createSwingStore(),
     entityOf,
     playerOf,
   };
@@ -273,6 +282,7 @@ export const tickDepsOf = (
   pickups: m.pickups,
   arsenal: m.arsenal,
   movement: m.movement,
+  swings: m.swings,
   inputs,
   ...(castRequests ? { castRequests } : {}),
   getSkill,

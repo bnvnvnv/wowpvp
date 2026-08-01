@@ -51,10 +51,12 @@ const skills: SkillDef[] = [
     triggersGcd: true,
     requiresLos: true,
     // 文档未给出具体资源消耗，这里按法力池（1000，每秒回 13）给出基线值
-    cost: { resource: Resource.Mana, amount: 45 },
+    // M14：45→40 —— 治疗（120 耗）与输出共享法力，回复 13/s 下让两者能并行
+    cost: { resource: Resource.Mana, amount: 40 },
     counters: '瞬发但伤害偏低，靠持续伤害积累；持续伤害属于魔法减益，可被驱散魔法直接移除（8.4），也不能被「战斗意志」解除（8.3）；沉默期间无法施放；只能在人形下使用，进入形态后失去这条消耗手段。',
     effects: [
-      { kind: 'damage', school: School.Nature, amount: { flat: 90, powerCoef: 0.35 } },
+      // M14：90→175 —— 月火是德鲁伊唯一直伤：占位值下他打不死任何人（基线 4.8% 胜率）
+      { kind: 'damage', school: School.Nature, amount: { flat: 175, powerCoef: 0.35 } },
       {
         kind: 'applyAura',
         aura: {
@@ -66,7 +68,8 @@ const skills: SkillDef[] = [
           clearableByTrinket: false,
           periodic: {
             interval: 3,
-            effects: [{ kind: 'damage', school: School.Nature, amount: { flat: 25, powerCoef: 0.1 } }],
+            // M14：25→55 —— DoT 与直伤同轮加码，长局职业吃满 12 秒跳
+            effects: [{ kind: 'damage', school: School.Nature, amount: { flat: 55, powerCoef: 0.1 } }],
           },
           description: '每 3 秒受到一次自然伤害，持续 12 秒。',
           vfx: 'druid_moonfire_dot',
@@ -93,7 +96,8 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 120 },
     counters: '1.3 秒读条且必须原地：专用打断会锁自然学派 3 秒（7.2），昏迷、恐惧、击退和主动移动都能打断；被「致死打击」一类降治疗减益压制时收益明显下降；形态下不可施放，切回人形本身要吃 1 秒公共冷却。',
     effects: [
-      { kind: 'heal', amount: { flat: 220, powerCoef: 0.6 } },
+      // M14：220→270 —— 主动治疗职业的生存底盘，与月火同轮定值
+      { kind: 'heal', amount: { flat: 270, powerCoef: 0.6 } },
       {
         kind: 'applyAura',
         aura: {
@@ -438,7 +442,8 @@ const weapons: WeaponDef[] = [
     isDefault: true,
     handedness: 'staff',
     swingInterval: 1.8,
-    swingPercent: 0.55,
+    // M14：0.55→0.6 —— 自然法杖白字 33/s，法系三家里最低（德鲁伊重治疗与机动）
+    swingPercent: 0.6,
     reach: 28,
     // 9.8 默认装备：28 米，约 1.8 秒一次自然法术弹 → 普通攻击走射击规则（7.6）
     isRanged: true,

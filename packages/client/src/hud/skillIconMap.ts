@@ -75,7 +75,7 @@ export const SKILL_ICON_FILES: Readonly<Record<string, string>> = {
   'rogue.riposte': 'rogue/sinister_strike', // ◆ 招架后的还刺
 
   // ── 猎人 ──────────────────────────────────────────────────────
-  'hunter.auto_shot': 'hunter/rapid_fire', // ◆ 连绵不断的箭 —— 自动射击
+  // hunter.auto_shot 已于 M14 删除 —— 自动射击回归 7.6 挥击系统，不再是按钮技能
   'hunter.aimed_shot': 'hunter/aimed_shot',
   'hunter.arcane_shot': 'hunter/arcane_shot',
   'hunter.concussive_shot': 'hunter/concussive_shot',

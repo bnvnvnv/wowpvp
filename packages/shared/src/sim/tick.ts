@@ -46,7 +46,7 @@ import type { SkillDef } from '../data/schema.js';
 import type { MapDef } from '../data/maps/schema.js';
 import type { EntityId, SkillId } from '../types/ids.js';
 import type { Vec3 } from '../math/vec3.js';
-import type { CombatEntity } from './entity.js';
+import { gainResource, type CombatEntity } from './entity.js';
 import { deriveStatusFlags, tickAuras, type AuraStore } from './aura.js';
 import { beginCast, tickCasting, type CastEvents, type CastState, type CastingStore } from './casting.js';
 import { resolveCastTargets } from './castResolve.js';
@@ -395,6 +395,20 @@ export const tickWorld = (
       }
       sinks.onSwing?.(sw);
     }
+  }
+
+  // ── 6c. 资源回复（9.x 资源表的 regenPerSecond）──────────────
+  /**
+   * ⚠️ M14 之前这一步**不存在**：`regenPerSecond` 写在每个职业的资源表里、
+   *   数据体检也校验它 ≥ 0，但全 sim 零读取方 —— 第六个死 schema。
+   *   实际后果：所有职业都在用「开局资源池 + 白字」打完整场，
+   *   焦点猎人放完三个技能就永久哑火（配平诊断：焦点全场钉死在 10）。
+   * ★ 只回存活者；封顶由 `gainResource` 负责；怒气 regen=0 天然不受影响
+   *   （怒气来源是挥击与技能，见 6b 与 COMBAT_SWING）。
+   */
+  for (const e of listEntities(deps.world)) {
+    if (!e.alive) continue;
+    for (const [r, rate] of e.resourceRegen) gainResource(e, r, rate * dt);
   }
 
   // ── 7. deriveStatusFlags ────────────────────────────────────

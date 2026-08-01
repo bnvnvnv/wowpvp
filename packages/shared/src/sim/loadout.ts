@@ -16,7 +16,7 @@ import { EQUIP } from '../constants/combat.js';
 import { getArmor, getClass, getWeapon } from '../data/index.js';
 import type { ArmorDef, WeaponDef } from '../data/schema.js';
 import type { ArmorId, ClassId, ConsumableId, EntityId, WeaponId } from '../types/ids.js';
-import type { CombatEntity } from './entity.js';
+import { skillsAvailableWith, type CombatEntity } from './entity.js';
 
 // ── 装备栏 ───────────────────────────────────────────────────────
 
@@ -281,9 +281,21 @@ export const cancelSwap = (swaps: SwapStore, id: EntityId): boolean => swaps.del
 export const completeSwap = (entity: CombatEntity, state: SwapState): void => {
   if (state.kind === SwapKind.Weapon && state.weaponId) {
     entity.weaponId = state.weaponId;
+    refreshAvailableSkills(entity);
   } else if (state.kind === SwapKind.Armor && state.armorId) {
     entity.armorId = state.armorId;
   }
+};
+
+/**
+ * M14：换装/复位后重算武器方案的技能集合（附录A#4，规则在
+ * `skillsAvailableWith`）。武器写点一共三处 —— 换装完成、死亡收缴、
+ * 回合复位 —— 都必须跟着调这里，漏一处的表现是「换回默认武器后
+ * 方案专属技能还亮着」。
+ */
+const refreshAvailableSkills = (entity: CombatEntity): void => {
+  const cls = getClass(entity.classId);
+  if (cls) entity.availableSkills = skillsAvailableWith(cls, entity.weaponId);
 };
 
 export interface SwapTickEvent {
@@ -431,6 +443,7 @@ export const onDeath = (entity: CombatEntity, loadout: Loadout, swaps: SwapStore
   loadout.consumables = [];
   entity.weaponId = loadout.defaultWeaponId;
   entity.armorId = loadout.defaultArmorId;
+  refreshAvailableSkills(entity);
   swaps.delete(entity.id);
 };
 
@@ -451,6 +464,7 @@ export const resetLoadouts = (
     l.consumables = [];
     e.weaponId = l.defaultWeaponId;
     e.armorId = l.defaultArmorId;
+    refreshAvailableSkills(e);
   }
   swaps.clear();
 };

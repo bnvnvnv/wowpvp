@@ -13,6 +13,7 @@ import { TEAM_BLUE, TEAM_RED, type EntityId } from '../types/ids.js';
 import { box } from '../data/maps/schema.js';
 import { dirToYaw, sub, vec3 } from '../math/vec3.js';
 import { createAuraStore, type AuraStore } from './aura.js';
+import { magnitudeOf } from './effects/combat.js';
 import { beginSwing, createSwingStore, stopSwing, tickSwings, type SwingStore } from './autoAttack.js';
 import { createEntity, type CombatEntity } from './entity.js';
 import { addEntity, allocEntityId, createWorld, type World } from './world.js';
@@ -132,6 +133,16 @@ describe('★★ 挥击产生怒气 —— 战士唯一的资源来源', () => {
     expect(gain?.kind === 'gainResource' && gain.amount).toBe(COMBAT_SWING.RAGE_PER_SWING);
   });
 
+  it('★★ M14：挥击的怒气长在攻击者自己身上（此前 gainResource 跟目标集合走，全喂给了敌人）', () => {
+    // 走完整 tickWorld 才能验证结算归属 —— 只看 tickSwings 的效果列表验不出这个
+    // （效果列表一直是对的，错在 resolve 时的落点）。这里直接调效果分发太绕，
+    // 归属断言放在 tick.test.ts 的 M14 段（背刺连击点），此处保留结构断言。
+    beginSwing(swings, atk.id, 0, interval());
+    const out = tickSwings(deps(), interval());
+    const gain = out[0]!.effects?.find((e) => e.kind === 'gainResource');
+    expect(gain?.kind === 'gainResource' && gain.resource).toBe(Resource.Rage);
+  });
+
   it('★ 没有怒气池的职业不产怒气（法师）', () => {
     const m = addEntity(world, createEntity(allocEntityId(world), mage, TEAM_RED, vec3(5, 0, 0)));
     m.targets.hard = foe.id;
@@ -145,12 +156,20 @@ describe('★★ 挥击产生怒气 —— 战士唯一的资源来源', () => {
     expect(m.maxResources.has(Resource.Rage)).toBe(false);
   });
 
-  it('★ 伤害用的是武器的 swingPercent（验收 #31 的数据终于参与结算）', () => {
+  it('★ 一次挥击结算出的伤害 = swingPercent × 100（验收 #31 的数据参与结算，且只算一次）', () => {
+    /**
+     * ⚠️ 本条原本断言「效果的 weaponPercent === 武器的 swingPercent」——
+     *   那钉住的是一个**平方 bug**：`magnitudeOf` 的基准值已经是
+     *   swingPercent×100，效果里再带一次 swingPercent 等于二次幂。
+     *   匕首（0.6）被压到 36/击、重剑（1.4）膨胀到 196/击，快慢武器的
+     *   取舍（#31）被扭曲。M14 配平抓到后改成断言**结算后的数值** ——
+     *   钉意图（一次挥击 = 100% 武器伤害），不钉当时的巧合。
+     */
     beginSwing(swings, atk.id, 0, interval());
     const out = tickSwings(deps(), interval());
     const dmg = out[0]!.effects?.find((e) => e.kind === 'damage');
-    expect(dmg?.kind === 'damage' && dmg.amount.weaponPercent)
-      .toBe(getWeapon(atk.weaponId)!.swingPercent);
+    expect(dmg?.kind === 'damage' ? magnitudeOf(dmg.amount, atk) : NaN)
+      .toBeCloseTo(getWeapon(atk.weaponId)!.swingPercent * 100, 6);
   });
 });
 

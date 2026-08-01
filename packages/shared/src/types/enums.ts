@@ -168,6 +168,8 @@ export const CastFailure = {
   InvalidGroundPosition: 'invalidGroundPosition',
   /** 10.2 职业不匹配 */
   ClassMismatch: 'classMismatch',
+  /** 附录A#4：当前武器方案不提供该技能（removes = 禁用 / grants = 方案专属）*/
+  WeaponMismatch: 'weaponMismatch',
   /** 12.3 旗手限制 */
   CarryingFlag: 'carryingFlag',
   AlreadyCasting: 'alreadyCasting',

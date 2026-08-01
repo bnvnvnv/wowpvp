@@ -53,11 +53,12 @@ const skills: SkillDef[] = [
     counters:
       '要求贴身并面向目标（6.5）；缴械后无法使用（7.3）；纯物理伤害会被减伤、护盾和物理免疫吃掉；一次吃掉 2 枚符文，符文回复约 3 秒一枚，被风筝时很难续上。',
     effects: [
-      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 1.5 } },
+      // M14：1.5→1.35 —— 死骑基线 66-74% 偏高，主要输出件回调一档
+      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 1.35 } },
       // 文档未给出符文能量产出，按 9.3「符文 + 符文能量」的资源循环补：重击产能，冰霜技能耗能
       { kind: 'gainResource', resource: Resource.RunicPower, amount: 15 },
     ],
-    description: '造成 150% 武器伤害，消耗 2 枚符文并获得 15 点符文能量。',
+    description: '造成 135% 武器伤害，消耗 2 枚符文并获得 15 点符文能量。',
     vfx: 'deathknight_obliterate',
   },
   {
@@ -353,8 +354,9 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.RunicPower, amount: 20 },
     counters:
       '仅双持符文刃方案可用；要求贴身并面向目标；虽是武器技能但结算冰霜魔法伤害，会被反魔法护罩、法术免疫和吸收吃掉，同时缴械和冰霜学派锁定都能封住它（7.3）。',
-    effects: [{ kind: 'damage', school: School.Frost, amount: { weaponPercent: 0.9 } }],
-    description: '一次迅捷的符文刃斩击，造成 90% 武器伤害的冰霜伤害。仅双持符文刃方案可用。',
+    // M14：0.9→0.8 —— 同轮回调（符文能量出口）
+    effects: [{ kind: 'damage', school: School.Frost, amount: { weaponPercent: 0.8 } }],
+    description: '一次迅捷的符文刃斩击，造成 80% 武器伤害的冰霜伤害。仅双持符文刃方案可用。',
     vfx: 'deathknight_frost_strike',
   },
   {
@@ -420,7 +422,8 @@ const weapons: WeaponDef[] = [
     isDefault: false,
     handedness: 'dualWield',
     swingInterval: 0.8,
-    swingPercent: 0.55,
+    // M14：0.55→0.48 —— 与双手档协调（白字 60/s ≈ 双手 61/s，优势让给「获得快速冰霜打击」）
+    swingPercent: 0.48,
     reach: RANGE.MELEE,
     modifiers: { resourceGain: 1.2, damageTaken: 1.05 },
     advantage: '符文能量获取 +20%，持续压制',

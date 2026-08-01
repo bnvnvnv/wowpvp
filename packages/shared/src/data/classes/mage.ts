@@ -46,7 +46,8 @@ const skills: SkillDef[] = [
     counters:
       '原地读条：任何主动移动都会自行终止（7.3）；可被专用打断并锁定冰霜学派 3 秒、被沉默、硬控制或击退终止；减速属于魔法效果，可被驱散魔法或自由祝福解除，且不与其他减速叠乘。',
     effects: [
-      { kind: 'damage', school: School.Frost, amount: { flat: 120 } },
+      // M14：120→205 —— 白字压回「低伤害」后主读条承担输出，读条可打断即其反制面
+      { kind: 'damage', school: School.Frost, amount: { flat: 205 } },
       {
         kind: 'applyAura',
         aura: {
@@ -82,7 +83,8 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 40 },
     counters:
       '瞬发不能被专用打断，但沉默、火焰学派锁定和硬控制仍会封住它；距离只有 25 米，是法师技能里最容易被拉开的；8 秒冷却，被计时后可以预判躲视线。',
-    effects: [{ kind: 'damage', school: School.Fire, amount: { flat: 150 } }],
+    // M14：150→225 —— 瞬发爆发件，8s 冷却
+    effects: [{ kind: 'damage', school: School.Fire, amount: { flat: 225 } }],
     description: '瞬发造成中等火焰伤害，可在移动中使用。',
     vfx: 'mage_fire_blast',
   },
@@ -201,7 +203,8 @@ const skills: SkillDef[] = [
           duration: 8,
           // 9.6 未标注该护盾可被驱散，按不可驱散处理，避免凭空给对手一个解法
           dispelType: DispelType.None,
-          absorb: 220,
+          // M14：220→400 —— 吸收盾是法系对近战冲脸唯一的结构性抗性（bot 不会风筝，真人只会更强）
+          absorb: 400,
           description: '吸收 220 点伤害，持续 8 秒。',
           vfx: 'mage_ice_barrier',
         },
@@ -373,7 +376,8 @@ const weapons: WeaponDef[] = [
     handedness: 'staff',
     // 9.6：120% 法术弹，2 秒，32 米
     swingInterval: 2,
-    swingPercent: 1.2,
+    // M14：1.2→0.5 —— 规格 376 行写明法杖是「低伤害法术弹」；1.2 时白字 60/s 反超冰枪，法系变白字职业
+    swingPercent: 0.5,
     reach: RANGE.RANGED_LONG,
     isRanged: true,
     modifiers: { damageDealt: 1.12, castSpeed: 1.1, damageTaken: 1.08 },
@@ -395,7 +399,8 @@ const weapons: WeaponDef[] = [
     handedness: 'ranged',
     // 9.6：70% 法术弹，1.2 秒，28 米
     swingInterval: 1.2,
-    swingPercent: 0.7,
+    // M14：0.7→0.45 —— 与法杖档协调（攻速快单发低）
+    swingPercent: 0.45,
     reach: 28,
     isRanged: true,
     modifiers: { castSpeed: 0.88, damageDealt: 0.92, resourceGain: 1.15 },

@@ -98,10 +98,11 @@ const skills: SkillDef[] = [
     counters:
       '距离只有 2.4 米，是全游戏最短的近战触及，被减速或击退就打不到；+50% 加成要求站在目标背后约 120 度扇形内（6.5），目标只要转身面向就吃不到，且只旋转镜头不改变朝向这条规则对双方同样成立；缴械后无法使用；双剑方案的背后加成明显降低。',
     effects: [
-      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 1.15 }, behindBonus: 0.5 },
+      // M14：1.15→0.7 —— 背刺无冷却，是能量的主要出口；配合背后 +50% 保留偷袭奖励
+      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.7 }, behindBonus: 0.5 },
       { kind: 'gainResource', resource: Resource.ComboPoints, amount: 1 },
     ],
-    description: '造成 115% 武器伤害并获得 1 个连击点。从背后攻击时伤害提高 50%。',
+    description: '造成 70% 武器伤害并获得 1 个连击点。从背后攻击时伤害提高 50%。',
     vfx: 'rogue_backstab',
   },
   {
@@ -126,10 +127,11 @@ const skills: SkillDef[] = [
       {
         kind: 'spendComboPoints',
         perPointMultiplier: 1,
-        base: { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.5 } },
+        // M14：0.5→0.42 —— 终结技随连击点修复（此前连击点长在敌人身上、终结技永远空转）而实际生效，随之回调
+        base: { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.42 } },
       },
     ],
-    description: '消耗全部连击点造成终结伤害，每点 50% 武器伤害（5 点约 250%）。',
+    description: '消耗全部连击点造成终结伤害，每点 42% 武器伤害（5 点约 210%）。',
     vfx: 'rogue_eviscerate',
   },
   {
@@ -223,7 +225,8 @@ const skills: SkillDef[] = [
     counters:
       '毒素类减益，德鲁伊/圣骑士的解毒和自由祝福都能移除（8.4）；普通减速不能被「战斗意志」解除（8.3），但消失、逃脱、死亡脚步同样可以摆脱；减速不与其他减速叠乘，取较强者；降低治疗只有 20%，与战士致死创伤同类效果不叠加；缴械后无法使用。',
     effects: [
-      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.55 } },
+      // M14：0.55→0.45 —— 毒刃与 DoT 是长局副输出，马拉松局（场均 60s）里权重高
+      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.45 } },
       {
         kind: 'applyAura',
         aura: {
@@ -297,7 +300,8 @@ const skills: SkillDef[] = [
           duration: 5,
           dispelType: DispelType.None,
           clearableByTrinket: false,
-          modifiers: { dodgeFront: 0.5 },
+          // M14：0.5→0.35 —— 五成正面闪避在 bot 无法绕后的基线里近乎半免伤窗口
+          modifiers: { dodgeFront: 0.35 },
           description: '正面闪避几率提高 50%。法术不受影响。',
           vfx: 'rogue_evasion',
         },
@@ -404,7 +408,8 @@ const weapons: WeaponDef[] = [
     isDefault: true,
     handedness: 'dualWield',
     swingInterval: 0.7,
-    swingPercent: 0.6,
+    // M14：0.6→0.25 —— 站桩白字曾是 bot 基线的主宰源（盗贼一度 100% 胜率），重心移到技能与控制
+    swingPercent: 0.25,
     reach: RANGE.DAGGER,
     modifiers: { resourceGain: 1.15 },
     advantage: '背后爆发最高，能量循环快',
@@ -424,7 +429,8 @@ const weapons: WeaponDef[] = [
     isDefault: false,
     handedness: 'dualWield',
     swingInterval: 0.9,
-    swingPercent: 0.75,
+    // M14：0.75→0.32 —— 与匕首档协调（单击仍高于匕首、攻速更慢），保持 #31 取舍
+    swingPercent: 0.32,
     reach: RANGE.MELEE,
     advantage: '正面持续伤害稳定',
     cost: '背后加成降低，攻速慢',
@@ -442,7 +448,8 @@ const weapons: WeaponDef[] = [
     isDefault: false,
     handedness: 'oneHand',
     swingInterval: 0.85,
-    swingPercent: 0.65,
+    // M14：0.65→0.29 —— 同上，居中档
+    swingPercent: 0.29,
     // 9.4 表列 2.5 米，介于匕首 2.4 与标准近战 2.8 之间，不复用 RANGE 常量
     reach: 2.5,
     modifiers: { parry: 0.15 },
@@ -466,7 +473,8 @@ export const rogue: ClassDef = {
   role: '潜行侦察、单点控制、爆发与干扰',
   baseHealth: 950,
   resources: [
-    { resource: Resource.Energy, max: 100, start: 100, regenPerSecond: 10 },
+    // M14：10→6 —— 能量回复兑现（此前 regen 是死数据）后按 40 耗背刺 ≈ 6.7s 一发定节奏
+    { resource: Resource.Energy, max: 100, start: 100, regenPerSecond: 6 },
     // 连击点靠背刺、剑刃连击、反击刺产出，不自然回复
     { resource: Resource.ComboPoints, max: 5, start: 0, regenPerSecond: 0 },
   ],

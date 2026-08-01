@@ -78,7 +78,7 @@ describe('14.2 八属性视觉语言', () => {
     expect(visualAttributeOf(fireball)).toBe(VisualAttribute.Fire);
   });
 
-  it('★ 全部 91 个技能都能解析出视觉属性 —— 没有技能会「没有特效」', () => {
+  it('★ 全部 90 个技能都能解析出视觉属性 —— 没有技能会「没有特效」', () => {
     for (const s of allSkills()) {
       const a = visualAttributeOf(s);
       expect(ATTRIBUTE_VISUALS[a], `${s.name} 解析不出视觉`).toBeDefined();
@@ -247,7 +247,7 @@ describe('14.1 技能表现六阶段', () => {
     }
   });
 
-  it('★ 全部 91 个技能都能推导出阶段表 —— 不需要手工维护 91 份特效配置', () => {
+  it('★ 全部 90 个技能都能推导出阶段表 —— 不需要手工维护 90 份特效配置', () => {
     for (const s of allSkills()) {
       const plan = vfxPlanFor(s);
       expect(plan.phases.length, s.name).toBeGreaterThan(0);

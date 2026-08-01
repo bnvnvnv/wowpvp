@@ -152,6 +152,21 @@ export interface CombatEntity {
    */
   rng: number;
 
+  /**
+   * 当前武器方案下可用的技能集合（附录A#4：grants = 新增、removes = 禁用）。
+   * ★ 由**装备路径**维护（createEntity / 换装完成 / 死亡与回合复位），
+   *   `validateCast` 只读它 —— casting.ts 因此不必 import 数据注册表。
+   * ⚠️ M14 之前这两个字段是死数据：removes/grants 只有客户端装备面板在
+   *   **显示**，sim 从不执行 —— 短弓猎人照放重弩专属的穿透弩箭。
+   */
+  availableSkills: ReadonlySet<SkillId>;
+  /**
+   * 9.x 资源表的每秒回复率，`tickWorld` 第 6c 步消费。
+   * ⚠️ M14 之前 `regenPerSecond` 同样是死数据（全 sim 零读取方）——
+   *   所有职业实际在用「开局资源池 + 白字」打完整场。
+   */
+  resourceRegen: ReadonlyMap<Resource, number>;
+
   /** 技能冷却结束的绝对时间（秒）*/
   cooldowns: Map<SkillId, number>;
   /** 公共冷却结束的绝对时间 */
@@ -163,6 +178,26 @@ export interface CombatEntity {
   isPet: boolean;
 }
 
+/**
+ * 附录A#4：某武器方案下该职业可用的技能。
+ *
+ * 规则两条：当前武器 `removesSkills` 里的**禁用**；被任何武器 `grantsSkills`
+ * 声明过的技能是「方案专属」，只有声明它的方案才**新增**它，其余方案没有。
+ * ★ 纯函数（只吃 ClassDef），createEntity 与 loadout 的换装/复位路径共用 ——
+ *   两处各写一遍的话，迟早一处漏改。
+ */
+export const skillsAvailableWith = (cls: ClassDef, weaponId: WeaponId): ReadonlySet<SkillId> => {
+  const current = cls.weapons.find((w) => w.id === weaponId);
+  const out = new Set<SkillId>();
+  for (const s of cls.skills) {
+    if (current?.removesSkills?.includes(s.id)) continue;
+    const granters = cls.weapons.filter((w) => w.grantsSkills?.includes(s.id));
+    if (granters.length > 0 && !granters.some((w) => w.id === weaponId)) continue;
+    out.add(s.id);
+  }
+  return out;
+};
+
 export const createEntity = (
   id: EntityId,
   cls: ClassDef,
@@ -172,9 +207,11 @@ export const createEntity = (
 ): CombatEntity => {
   const resources = new Map<Resource, number>();
   const maxResources = new Map<Resource, number>();
+  const resourceRegen = new Map<Resource, number>();
   for (const r of cls.resources) {
     resources.set(r.resource, r.start);
     maxResources.set(r.resource, r.max);
+    if (r.regenPerSecond > 0) resourceRegen.set(r.resource, r.regenPerSecond);
   }
   return {
     id,
@@ -193,6 +230,8 @@ export const createEntity = (
     maxResources,
     weaponId: cls.defaultWeaponId,
     armorId: cls.defaultArmorId,
+    availableSkills: skillsAvailableWith(cls, cls.defaultWeaponId),
+    resourceRegen,
     nextSwingAt: 0,
     swingRecoveryUntil: 0,
     lastCombatAt: -Infinity,

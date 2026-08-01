@@ -28,13 +28,17 @@ import {
   beginFlagInteract,
   beginPickup,
   beginSwap,
+  beginSwing,
   buildSnapshot,
   buildSpectatorSnapshot,
   cancelCast,
   cancelFlagInteract,
   distance2D,
+  getWeapon,
   isVisibleTo,
+  listEntities,
   setHardTarget,
+  stopSwing,
   tabTarget,
   tickDepsOf,
   tickWorld,
@@ -162,6 +166,7 @@ export class MatchLoop {
     const outbound: ServerMessage[] = [];
 
     this.applyCommands();
+    this.syncSwings();
     const inputs = this.collectInputs();
     const result = tickWorld(
       { ...tickDepsOf(this.match, inputs, this.pendingCasts), consumableRequests: this.pendingConsumables },
@@ -353,6 +358,41 @@ export class MatchLoop {
           }
           break;
         }
+      }
+    }
+  }
+
+  /**
+   * 7.6 / 4.x 普通攻击的开火判据（M14 接线）。
+   *
+   * ★★ 在此之前 `SwingStore` 只在测试与 balance-report 里被登记过 ——
+   *   真实对局里普攻**不存在**，战士因此没有任何怒气来源（技术债 §2b
+   *   说「7.6 已实现」，实现了规则、没接谁开火。老教训第五次应验）。
+   *
+   * v1 判据：**敌方硬目标存活 = 开火**；失去目标/换成友方/自己死了 = 收手。
+   * 4.x 原文是「右键点击敌方目标：开始或停止普通攻击」的手动开关 ——
+   * 简化为目标驱动登记为 docs/10 已知偏差 #9：目标制战斗里「选中敌人却
+   * 不想打他」的场景（如仅为观察目标框）极少，而漏开火的代价（零怒气、
+   * 零白字）是结构性的。
+   *
+   * ★ beginSwing 幂等 —— 换目标**不刷新**挥击计时（7.6：计时不被重置），
+   *   所以每 tick 同步是安全的；stopSwing 后再交战则从整个间隔重新起算。
+   * ★ 放在 applyCommands 之后：本 tick 的 SetTarget 立即参与判定。
+   * ★ 试验场没有这条路径（CombatDirector 不建 SwingStore）—— 141 项验收
+   *   的假人不会突然开始白打玩家。
+   */
+  private syncSwings(): void {
+    const now = this.match.world.time;
+    for (const e of listEntities(this.match.world)) {
+      const target = e.targets.hard !== undefined
+        ? this.match.world.entities.get(e.targets.hard)
+        : undefined;
+      const engaged =
+        e.alive && target !== undefined && target.alive && target.team !== e.team;
+      if (engaged) {
+        beginSwing(this.match.swings, e.id, now, getWeapon(e.weaponId)?.swingInterval ?? 2);
+      } else {
+        stopSwing(this.match.swings, e.id);
       }
     }
   }

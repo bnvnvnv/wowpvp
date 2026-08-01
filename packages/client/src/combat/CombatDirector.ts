@@ -927,6 +927,7 @@ export const FAIL_TEXT: Record<CastFailure, string> = {
   dead: '已死亡',
   invalidGroundPosition: '超出地图边界',
   classMismatch: '职业不匹配',
+  weaponMismatch: '当前武器方案不提供该技能',
   carryingFlag: '持旗时禁用',
   inCombat: '需要脱离战斗',
   noRecentParry: '需要近期招架过',

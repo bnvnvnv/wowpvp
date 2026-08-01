@@ -45,7 +45,8 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 30 },
     counters:
       '读条可被专用打断并锁神圣学派 3 秒，也可被移动、控制、强制位移和失去视线终止（7.1 / 7.3）；学派锁定期间快速治疗和群体驱散会一起被封，是牧师最大的软肋。',
-    effects: [{ kind: 'damage', school: School.Holy, amount: { flat: 140 } }],
+    // M14：140→155 —— 惩击是牧师唯一不锁武器方案的主动输出
+    effects: [{ kind: 'damage', school: School.Holy, amount: { flat: 155 } }],
     description: '造成基础神圣伤害。1.2 秒读条，原地施放。',
     vfx: 'priest_smite',
   },
@@ -135,7 +136,8 @@ const skills: SkillDef[] = [
           dispelType: DispelType.Magic,
           clearableByTrinket: false,
           // 归零时触发 14.3 的「破裂」表现
-          absorb: 260,
+          // M14：260→330 —— 盾在近战贴脸时机上价值最高；与法师冰盾同一轮定值
+          absorb: 330,
           description: '吸收一定伤害，持续 6 秒。',
           vfx: 'priest_power_word_shield',
         },
@@ -394,7 +396,8 @@ const weapons: WeaponDef[] = [
     isDefault: false,
     handedness: 'ranged',
     swingInterval: 1.2,
-    swingPercent: 0.6,
+    // M14：0.6→0.45 —— 魔杖档与权杖档拉平（法杖 0.5 为上限，白字只是补刀）
+    swingPercent: 0.45,
     reach: 28,
     isRanged: true,
     /**

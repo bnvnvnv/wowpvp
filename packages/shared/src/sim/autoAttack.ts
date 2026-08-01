@@ -150,7 +150,14 @@ export const tickSwings = (deps: SwingDeps, now: number): SwingResult[] => {
       {
         kind: 'damage',
         school: School.Physical,
-        amount: { weaponPercent: weapon?.swingPercent ?? 1 },
+        /**
+         * ★ weaponPercent **必须是 1**：`magnitudeOf` 的基准值已经是
+         *   `swingPercent × 100`（「一次挥击」的定义就在那里），这里再传
+         *   swingPercent 会把它**平方** —— M14 配平时抓到：匕首（0.6）白字
+         *   被压到 36/击 而重剑（1.4）膨胀到 196/击，快慢武器的取舍
+         *   （验收 #31）被二次幂扭曲。一次挥击 = 100% 武器伤害，就这么多。
+         */
+        amount: { weaponPercent: 1 },
       },
     ];
 

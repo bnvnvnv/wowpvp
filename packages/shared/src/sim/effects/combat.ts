@@ -536,12 +536,22 @@ registerEffect('dispel', (ctx, e, targets) => {
   }
 });
 
-registerEffect('gainResource', (ctx, e, targets) => {
-  const list = targets.length > 0 ? targets : [ctx.source];
-  for (const t of list) {
-    gainResource(t, e.resource, e.amount);
-    ctx.events.push({ t: 'resource', targetId: t.id, resource: e.resource, delta: e.amount });
-  }
+registerEffect('gainResource', (ctx, e) => {
+  /**
+   * ★★ M14：资源永远回到**施法者**身上，无视技能的目标集合。
+   *
+   *   此前这里跟着 targets 结算 —— 于是冲锋的 +15 怒气、背刺的连击点、
+   *   挥击的怒气、十字军打击的圣能，全部落在**敌人**头上：战士全场怒气
+   *   趋零（基线 0% 胜率的第二真根因）、盗贼的终结技永远找到 0 连击点
+   *   而静默空转、圣骑士的荣耀圣言从来没有施放过（圣能恒 0）。
+   *   与 `resolveResourceSpender` 花的是 `ctx.source` 的池子对读 ——
+   *   攒在敌人身上、花在自己身上，这对不上的账没有任何测试对过。
+   *
+   *   数据里全部 9 处 gainResource 的意图无一例外是「自己获得」；
+   *   「给目标充能」的设计如果将来出现，那时再加显式的 target 字段。
+   */
+  gainResource(ctx.source, e.resource, e.amount);
+  ctx.events.push({ t: 'resource', targetId: ctx.source.id, resource: e.resource, delta: e.amount });
 });
 
 registerEffect('spendComboPoints', (ctx, e, targets) => {

@@ -101,6 +101,15 @@ export const validateCast = (ctx: CastContext): CastFailure => {
   if (caster.flags.silenced && isMagicSchool(skill.school)) return CastFailure.Silenced;
   if (caster.flags.disarmed && isWeaponSkill(skill)) return CastFailure.Disarmed;
 
+  /**
+   * 附录A#4：removes = **禁用**、grants = 方案专属 —— 武器方案没给的技能
+   * 连起手都不行。集合由装备路径维护在实体上（`skillsAvailableWith`），
+   * 这里只读 —— 本文件保持零数据注册表依赖。
+   * ⚠️ M14 之前无人执行这条：短弓猎人照放重弩专属的穿透弩箭，
+   *   配平 bot 第一个撞上（客户端装备面板只是不「显示」，服务器照收）。
+   */
+  if (!caster.availableSkills.has(skill.id)) return CastFailure.WeaponMismatch;
+
   // 7.2 学派锁定
   if (isMagicSchool(skill.school) && isSchoolLocked(caster, skill.school, now)) {
     return CastFailure.SchoolLocked;
