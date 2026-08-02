@@ -67,7 +67,7 @@ import { FAIL_TEXT } from '../combat/CombatDirector.js';
 import { AimingController, type AimInput } from '../targeting/AimingController.js';
 import { DirectionIndicator } from '../targeting/DirectionIndicator.js';
 import { GroundIndicator, screenToGround } from '../targeting/GroundIndicator.js';
-import { SpellVfx, type SpellVfxStatus } from '../vfx/SpellVfx.js';
+import { SpellVfx, type CastView, type SpellVfxStatus } from '../vfx/SpellVfx.js';
 import { StatusMarkers } from '../vfx/StatusMarkers.js';
 import { TargetRing } from '../vfx/TargetRing.js';
 import type { ControlKind } from '../vfx/status.js';
@@ -813,14 +813,44 @@ export class NetworkScene {
   /** 施法者视图：位置 + 身高 + 朝向（释放点要沿朝向前移，见 SpellVfx.onCast）*/
   private casterLike(
     id: EntityId | undefined,
-  ): { position: { x: number; y: number; z: number }; height: number; yaw: number } | undefined {
+  ): {
+    position: { x: number; y: number; z: number }; height: number; yaw: number; id: number;
+  } | undefined {
     if (id === undefined) return undefined;
     const p = this.baseOf(id);
     if (!p) return undefined;
     const yaw = id === this.selfId
       ? this.characterYaw
       : this.lastEntities.find((e) => e.id === id)?.yaw ?? 0;
-    return { position: p, height: GEOMETRY.HITBOX_HEIGHT, yaw };
+    // ★ 带上 id：打断/释放时 SpellVfx 据此立刻摘掉这个人的蓄力法阵
+    return { position: p, height: GEOMETRY.HITBOX_HEIGHT, yaw, id: id as number };
+  }
+
+  /**
+   * 施法注册表 → `CastView`（14.1「预备」的数据源）。
+   * ★ 位置走 `baseOf`：自己用预测位置、别人用插值后的渲染位置 ——
+   *   法阵贴在**看得见的那个人**脚下，而不是快照里那个还没插值到的位置。
+   */
+  private castViews(): CastView[] {
+    const out: CastView[] = [];
+    for (const [id, st] of this.view.activeCasts()) {
+      const p = this.baseOf(id);
+      if (!p) continue; // 看不见的人（潜行/离场）不画 —— 与协议的裁剪同向
+      const yaw = id === this.selfId
+        ? this.characterYaw
+        : this.lastEntities.find((e) => e.id === id)?.yaw ?? 0;
+      out.push({
+        id: id as number,
+        skillId: String(st.skillId),
+        position: p,
+        height: GEOMETRY.HITBOX_HEIGHT,
+        yaw,
+        startedAt: st.startedAt,
+        endsAt: st.endsAt,
+        ...(st.channelEndsAt !== undefined ? { channelEndsAt: st.channelEndsAt } : {}),
+      });
+    }
+    return out;
   }
 
   private tabTarget(reverse: boolean): void {
@@ -893,6 +923,9 @@ export class NetworkScene {
         (2 * Math.tan((this.cam.camera.fov * Math.PI) / 360)),
       // 快照的 impactAt 是服务器时钟 —— now 用同一个钟（收快照时校准）
       now: this.serverTime,
+      cameraPosition: this.cam.camera.position,
+      // 14.1「预备」：数据来自施法注册表（快照里没有施法字段，协议用事件表达）
+      casts: this.castViews(),
       projectiles: this.lastProjectiles,
       grounds: this.lastGrounds,
     });

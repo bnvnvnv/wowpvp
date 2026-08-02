@@ -57,7 +57,7 @@ import { artEnabled } from '../settings/artMode.js';
 import { audio } from '../audio/AudioManager.js';
 import { playCastActivity, playCombatEvent, type CombatAudioDeps } from '../audio/combatAudio.js';
 import { StatusMarkers } from '../vfx/StatusMarkers.js';
-import { SpellVfx } from '../vfx/SpellVfx.js';
+import { SpellVfx, type CastView } from '../vfx/SpellVfx.js';
 import { TargetRing } from '../vfx/TargetRing.js';
 import { CtfDemo } from '../combat/CtfDemo.js';
 import { CombatHud as Hud } from '../hud/CombatHud.js';
@@ -554,6 +554,32 @@ export class TestbedScene {
     view.setWeapon(weaponId);
   }
 
+  /**
+   * 场上所有正在施法的单位 → `CastView`（14.1「预备」阶段的数据源）。
+   *
+   * ★ 试验场这份是**免费**的：`castOf` 本来就每帧被调一次用来切施法姿态，
+   *   这里只是把同一份状态多喂给一个消费者。联网场景的对应实现读的是
+   *   `SnapshotCombatView` 的施法注册表 —— 两条路殊途同归到同一个视图类型。
+   */
+  private castViews(): CastView[] {
+    const out: CastView[] = [];
+    for (const e of this.combat.allEntities()) {
+      const st = this.combat.castOf(e);
+      if (!st) continue;
+      out.push({
+        id: e.id as number,
+        skillId: String(st.skillId),
+        position: e.position,
+        height: e.height,
+        yaw: e.yaw,
+        startedAt: st.startedAt,
+        endsAt: st.endsAt,
+        ...(st.channelEndsAt !== undefined ? { channelEndsAt: st.channelEndsAt } : {}),
+      });
+    }
+    return out;
+  }
+
   /** 某实体躯干中部的世界坐标，供命中粒子爆发定位（14.2）*/
   private bodyPosOf(id: EntityId): { x: number; y: number; z: number } | undefined {
     const e = this.combat.allEntities().find((x) => x.id === id);
@@ -989,6 +1015,9 @@ export class TestbedScene {
         this.canvas.clientHeight /
         (2 * Math.tan((this.cam.camera.fov * Math.PI) / 360)),
       now: this.combat.world.time,
+      cameraPosition: this.cam.camera.position,
+      // 14.1「预备」：读条/引导期间的蓄力法阵与聚能粒子（自己 + 所有可见实体）
+      casts: this.castViews(),
       projectiles: this.combat.projectiles.items.map((p) =>
         p.kind === 'delayedImpact'
           ? {

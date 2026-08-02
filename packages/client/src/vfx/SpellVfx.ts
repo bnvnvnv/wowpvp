@@ -58,7 +58,12 @@ import {
   type AttributeVisual,
 } from './schools.js';
 import { QualityTier, decorativeDensity, isVisible } from '../render/quality.js';
+import { fizzlePlanFor, windupPlanFor } from './castVfx.js';
 import type { ImpactTier } from '../feedback/impactTier.js';
+
+/** 水平+垂直平方距离。★ 只用于排序，不开根号 */
+const sqDist = (a: Vec3Like, b: Vec3Like): number =>
+  (a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2;
 
 /** 每个属性的运动倾向（14.2「形状与运动」列的粒子化）*/
 const MOTION: Record<AttributeVisual['particle'], { gravity: number; swirl: number }> = {
@@ -119,6 +124,10 @@ export interface SpellVfxStatus {
   visualBolts: number;
   /** 当前在场的持续边界环数（地面区域 + 延迟落点，14.3）*/
   groundRings: number;
+  /** 当前正在画蓄力法阵的施法者数（14.1 预备）*/
+  activeWindups: number;
+  /** 其中真的在冒聚能粒子的（受 MAX_WINDUP_EMITTERS 与画质约束）*/
+  windupEmitters: number;
   /** 当前存活的一次性闪光数（刀光/免疫白闪）*/
   activeFlashes: number;
 }
@@ -149,6 +158,27 @@ export interface GroundAreaView {
   skillId: string;
   center: Vec3Like;
   radius: number;
+}
+
+/**
+ * 正在施法的单位 —— 14.1「预备」阶段的驱动源。
+ *
+ * ★★ 与 `ProjectileView` / `GroundAreaView` 同一个套路：收窄到画蓄力所需的最小字段，
+ *   于是本地 sim（`CombatDirector.castOf`）与联网快照（`SnapshotCombatView` 的
+ *   施法注册表）都能喂同一个类，而它**读不到** targetId/groundPoint 这些
+ *   本不该关心的东西。
+ */
+export interface CastView {
+  id: number;
+  skillId: string;
+  position: Vec3Like;
+  /** 角色身高，用于把法阵放脚下、聚能放手上 */
+  height: number;
+  yaw: number;
+  startedAt: number;
+  endsAt: number;
+  /** 引导结束时刻。仅引导技能有 —— 没有它，暴风雪的法阵会在第 0.8 秒就消失 */
+  channelEndsAt?: number;
 }
 
 /**
@@ -230,6 +260,14 @@ export interface SpellVfxFrame {
   now: number;
   projectiles: readonly ProjectileView[];
   grounds: readonly GroundAreaView[];
+  /** 正在施法的单位（14.1 预备阶段）。不传 = 本场景不提供施法信息，如实不画 */
+  casts?: readonly CastView[];
+  /**
+   * 相机世界位置。★ 装饰层按距离取最近 N 个发射器 ——
+   * 12v12 混战里同时有十几个人在读条，每个都冒粒子会瞬间打满细流池。
+   * 被裁掉的只有粒子，法阵（关键信息「这个人在施法」）一个都不少。
+   */
+  cameraPosition?: Vec3Like;
 }
 
 interface ProjBody {
@@ -277,6 +315,36 @@ interface VisualBolt {
   age: number;
 }
 
+/**
+ * 一个人的蓄力表现（14.1「预备」）：脚下法阵 + 手上聚能粒子。
+ * ★ 法阵是 `ESSENTIAL_ROLES.character`（`phases.ts` 早就这么归的）——
+ *   「这个人在施法」是关键信息，任何画质都画；粒子才是装饰。
+ */
+interface WindupEntry {
+  group: THREE.Group;
+  /** 外圈：干净的圆环轮廓，一眼读出「这是个法阵」而不是「地上有片光」 */
+  ring: THREE.Mesh;
+  ringMat: THREE.MeshBasicMaterial;
+  /** 内层符文（`magic_04`）。★ 与外圈**反向**转 —— 两层反转是「机关在动」的最短路径 */
+  runes?: THREE.Mesh;
+  runeMat?: THREE.MeshBasicMaterial;
+  visual: AttributeVisual;
+  /** 聚能粒子的节拍计时器 */
+  timer: number;
+  /** 累计旋转角 */
+  spin: number;
+  /** 打断时要用：攒到哪儿了、在哪儿散 */
+  lastProgress: number;
+  lastPos: Vec3Like;
+}
+
+/**
+ * 同时冒聚能粒子的施法者上限（按到相机的距离取最近的几个）。
+ * ★ 12v12 混战里十几个人一起读条，每人一路细流会瞬间打满池子；
+ *   远处那些只留法阵，玩家读到的信息一样不少。
+ */
+const MAX_WINDUP_EMITTERS = 4;
+
 export class SpellVfx {
   readonly group = new THREE.Group();
   /**
@@ -309,6 +377,10 @@ export class SpellVfx {
   private readonly bolts: VisualBolt[] = [];
   /** 延迟落点 / 地面区域的持续边界环。key = 'p'+id / 'g'+id */
   private readonly rings = new Map<string, RingEntry>();
+  /** 正在施法的单位的蓄力表现。key = 实体 id */
+  private readonly windups = new Map<number, WindupEntry>();
+  /** 最近一帧真的在冒聚能粒子的施法者数（自检用）*/
+  private windupEmitterCount = 0;
 
   /** 上一帧场上还在的投射物 id，用于检出「消失 → 补一发命中爆发」*/
   private seenProjectiles = new Set<number>();
@@ -362,7 +434,8 @@ export class SpellVfx {
    */
   onCast(
     kind: 'started' | 'resolved' | 'interrupted' | 'failed',
-    caster: { position: Vec3Like; height: number; yaw: number },
+    /** ★ `id` 可选：带上才能把蓄力法阵在这一刻立刻摘掉（不等下一帧差分） */
+    caster: { position: Vec3Like; height: number; yaw: number; id?: number },
     skill: SkillDef | undefined,
     /**
      * 本次施法的结算目标（`onCastResolved` 给的那一份，结算前快照）。
@@ -388,10 +461,30 @@ export class SpellVfx {
     };
 
     if (kind === 'started') {
+      // 起手一记 pop；**持续**蓄力由 frame() 的 casts 驱动（见 syncCasts）
       this.emitBurst(hand, av, { count: 6, speed: 1.0, size: 0.42, life: 0.5, drag: 3.5 });
       return;
     }
+
+    /**
+     * 打断/失败：攒的东西**垮下去**。
+     * ★ 立刻摘法阵而不是等下一帧的 present 差分 —— 差分要等场景下一次喂
+     *   `casts`，而打断消息与 frame 之间隔着的那一帧里，法阵还亮着，
+     *   读起来像「打断没生效」。7.5 的博弈里这半帧就是全部意义。
+     */
+    if (kind === 'interrupted' || kind === 'failed') {
+      const entry = caster.id !== undefined ? this.windups.get(caster.id) : undefined;
+      const plan = fizzlePlanFor(entry?.lastProgress ?? 0.5);
+      this.emitBurst(entry?.lastPos ?? hand, av, {
+        count: plan.count, speed: plan.speed, size: plan.size,
+        life: plan.life, gravity: plan.gravity, drag: 1.6,
+      });
+      if (caster.id !== undefined) this.removeWindup(caster.id);
+      return;
+    }
     if (kind !== 'resolved') return;
+    // 释放接管：蓄力到此结束（引导技能的 resolved 在引导**结束**才到，见协议注释）
+    if (caster.id !== undefined) this.removeWindup(caster.id);
 
     // Q 版基调：释放要「砰」地一下 —— 大、密、亮
     this.emitBurst(hand, av, { count: 16, speed: 3.0, size: 0.72, life: 0.55 });
@@ -601,12 +694,184 @@ export class SpellVfx {
     this.quality = ctx.quality;
     this.pool.setScale(ctx.pointScale);
     this.streams.setScale(ctx.pointScale);
+    this.syncCasts(ctx.casts ?? [], ctx.quality, dt, ctx.now, ctx.cameraPosition);
     this.syncProjectiles(ctx.projectiles, ctx.quality, dt, ctx.now);
     this.syncGround(ctx.grounds, ctx.quality, dt);
     this.updateBolts(dt, ctx.quality);
     this.pool.update(dt);
     this.streams.update(dt);
     this.flashes.update(dt);
+  }
+
+  // ── 每帧：施法蓄力（14.1「预备」）─────────────────────────────
+
+  /**
+   * 读条/引导期间的持续表现：脚下旋转符文法阵 + 手上聚能粒子。
+   *
+   * ★★ 14.1 的「预备」阶段此前只有**一帧** pop —— 一个 1.5 秒的读条里
+   *   有 1.4 秒施法者身上什么都没有。这个方法就是那句话的兑现。
+   *
+   * ★ 数据来源与场景无关：试验场喂 `CombatDirector.castOf`，
+   *   联网喂施法注册表 —— 两边都收窄成 `CastView`。
+   */
+  private syncCasts(
+    casts: readonly CastView[],
+    quality: QualityTier,
+    dt: number,
+    now: number,
+    cameraPosition?: Vec3Like,
+  ): void {
+    const density = decorativeDensity(quality);
+
+    /**
+     * 谁能冒粒子：按到相机的距离取最近的几个。
+     * ★ 只裁装饰粒子 —— 法阵下面照画不误（验收 #48）。
+     */
+    const emitters = new Set<number>();
+    if (density > 0 && casts.length > 0) {
+      const ranked = cameraPosition
+        ? [...casts].sort(
+            (a, b) => sqDist(a.position, cameraPosition) - sqDist(b.position, cameraPosition),
+          )
+        : casts;
+      for (const c of ranked.slice(0, MAX_WINDUP_EMITTERS)) emitters.add(c.id);
+    }
+    this.windupEmitterCount = emitters.size;
+
+    const present = new Set<number>();
+    for (const c of casts) {
+      present.add(c.id);
+      const skill = getSkill(asSkillId(c.skillId));
+      const av = skill ? visualOf(skill) : ATTRIBUTE_VISUALS.arcane;
+      const plan = windupPlanFor({
+        now,
+        startedAt: c.startedAt,
+        endsAt: c.endsAt,
+        ...(c.channelEndsAt !== undefined ? { channelEndsAt: c.channelEndsAt } : {}),
+        density,
+      });
+
+      const entry = this.ensureWindup(c.id, av);
+      entry.lastProgress = plan.progress;
+
+      // 法阵贴在脚下，跟着人走（施法期间也可能被击退/位移）
+      entry.spin += plan.circleSpin * dt;
+      entry.group.position.set(c.position.x, c.position.y + 0.06, c.position.z);
+      entry.group.scale.setScalar(2.2 * plan.circleScale);
+      entry.ring.rotation.z = entry.spin;
+      if (entry.runes) entry.runes.rotation.z = -entry.spin * 0.6;
+      // 第一人称压透明度，与粒子的 closeFade 同一条规矩（14.3 / 验收 #49）
+      const fade = plan.circleOpacity * (this.cameraDistance < 3 ? 0.45 : 1);
+      entry.ringMat.opacity = fade;
+      if (entry.runeMat) entry.runeMat.opacity = fade * 0.7;
+
+      // 手部锚点：与释放 pop 用同一个前移半米的算法，两者才接得上
+      const hand: Vec3Like = {
+        x: c.position.x - Math.sin(c.yaw) * 0.5,
+        y: c.position.y + c.height * 0.62,
+        z: c.position.z - Math.cos(c.yaw) * 0.5,
+      };
+      entry.lastPos = hand;
+
+      if (plan.count <= 0 || plan.cadence <= 0 || !emitters.has(c.id)) continue;
+      entry.timer += dt;
+      if (entry.timer < plan.cadence) continue;
+      entry.timer = 0;
+      /**
+       * ★ 聚能是**向内**的：粒子生在环上、朝手心收 —— 用负 speed 做不到
+       *   （speed 是标量），所以生在环上、给一个朝内的初速度。
+       *   `drag` 调大让它们很快停在手上而不是穿过去。
+       */
+      const ang = Math.random() * Math.PI * 2;
+      const r = plan.gatherRadius;
+      this.emitBurst(
+        { x: hand.x + Math.cos(ang) * r, y: hand.y + (Math.random() - 0.5) * 0.5, z: hand.z + Math.sin(ang) * r },
+        av,
+        {
+          count: plan.count,
+          speed: 0.35,
+          size: plan.size,
+          life: plan.life,
+          gravity: 0.6,
+          drag: 3.4,
+          stream: true,
+        },
+      );
+    }
+
+    for (const id of [...this.windups.keys()]) {
+      if (!present.has(id)) this.removeWindup(id);
+    }
+  }
+
+  /**
+   * 法阵节点 = **外圈轮廓 + 内层符文**，两层反向转。
+   *
+   * ★★ 只用符文贴图（`magic_04` 是一团实心符文斑）铺在地上，实测读作
+   *   「地上有片光」而不是「一个法阵」—— 圆形轮廓才是「法阵」这个符号的
+   *   识别特征。所以外圈用程序化 `RingGeometry` 画一道干净的环，
+   *   符文贴图缩在里面当纹理层；素材缺失时只剩外圈，**信息一点不丢**
+   *   （与本文件其它退化路径同一条原则）。
+   */
+  private ensureWindup(id: number, av: AttributeVisual): WindupEntry {
+    let entry = this.windups.get(id);
+    if (entry) return entry;
+
+    const group = new THREE.Group();
+    group.rotation.x = -Math.PI / 2;
+
+    // ★ 几何体逐实例新建 —— removeWindup 会释放它（共享的话第一个人施法结束
+    //   就会把全场法阵打成空白，与 disposeNode 的 ★★ 是同一个坑）
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: av.primary,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+    });
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.86, 1, 56), ringMat);
+    ring.renderOrder = 3;
+    group.add(ring);
+
+    let runes: THREE.Mesh | undefined;
+    let runeMat: THREE.MeshBasicMaterial | undefined;
+    const tex = this.particleTex.get('rune');
+    if (tex) {
+      runeMat = new THREE.MeshBasicMaterial({
+        map: tex,
+        color: av.secondary,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+      });
+      runes = new THREE.Mesh(new THREE.PlaneGeometry(1.55, 1.55), runeMat);
+      runes.renderOrder = 3;
+      group.add(runes);
+    }
+
+    this.group.add(group);
+    entry = {
+      group, ring, ringMat,
+      ...(runes ? { runes } : {}),
+      ...(runeMat ? { runeMat } : {}),
+      visual: av, timer: 0, spin: 0, lastProgress: 0, lastPos: { x: 0, y: 0, z: 0 },
+    };
+    this.windups.set(id, entry);
+    return entry;
+  }
+
+  private removeWindup(id: number): void {
+    const entry = this.windups.get(id);
+    if (!entry) return;
+    this.group.remove(entry.group);
+    entry.ring.geometry.dispose();
+    entry.ringMat.dispose();
+    entry.runes?.geometry.dispose();
+    entry.runeMat?.dispose();
+    this.windups.delete(id);
   }
 
   /**
@@ -1017,6 +1282,8 @@ export class SpellVfx {
       projectileBodies: this.projBodies.size,
       visualBolts: this.bolts.length,
       groundRings: this.rings.size,
+      activeWindups: this.windups.size,
+      windupEmitters: this.windupEmitterCount,
       activeFlashes: this.flashes.activeCount,
     };
   }
@@ -1027,6 +1294,7 @@ export class SpellVfx {
     for (const b of this.bolts) this.disposeNode(b.group);
     this.bolts.length = 0;
     for (const key of [...this.rings.keys()]) this.removeRing(key);
+    for (const id of [...this.windups.keys()]) this.removeWindup(id);
     this.pool.dispose();
     this.streams.dispose();
     this.flashes.dispose();
