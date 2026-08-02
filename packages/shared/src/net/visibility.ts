@@ -107,6 +107,20 @@ export interface AuraSnapshot {
   stacks: number;
   /** 剩余秒数。persistent 光环为 null */
   remaining: number | null;
+  /**
+   * 吸收盾的剩余量 / 初始量。**只有吸收类光环才有这两个字段**（>0 才投影）。
+   *
+   * ★★ 14.3 要求护盾有「激活/承伤/衰减/破裂」四种反馈，而联网侧此前
+   *   **一份数据都没有** —— `NetworkScene.updateMarkersFor` 只能如实不画，
+   *   那条注释就是本字段要还的欠条（docs/14 §M16d 的两笔协议债之一）。
+   *
+   * ★ 不泄露任何东西：纯数字、没有 id、没有来源，且只挂在**已经可见**的
+   *   实体上（不可见的实体整个不进快照 —— verify:m10 第 1 条验的就是这个）。
+   *   「敌人的盾还剩多少」本来就是 14.3 要求双方都看得见的信息：
+   *   看不出盾快破了，「先破盾再爆发」这条打法就不存在。
+   */
+  absorbRemaining?: number;
+  absorbInitial?: number;
 }
 
 /**
@@ -405,6 +419,10 @@ const snapshotEntity = (
       auraId: a.def.id,
       stacks: a.stacks,
       remaining: Number.isFinite(a.expiresAt) ? Math.max(0, a.expiresAt - deps.world.time) : null,
+      // ★ 非吸收光环一个字节都不带（八职业 90 技能里只有 4 个盾）
+      ...(a.absorbRemaining > 0
+        ? { absorbRemaining: a.absorbRemaining, absorbInitial: a.absorbInitial }
+        : {}),
     })),
     carryingFlag: e.flags.carryingFlag,
     flags: {

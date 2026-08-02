@@ -8,9 +8,10 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mage, priest, rogue, warrior } from '../data/index.js';
+import { DispelType } from '../types/enums.js';
 import { vec3 } from '../math/vec3.js';
 import { asEntityId, asSkillId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
-import { createAuraStore, type AuraStore } from '../sim/aura.js';
+import { applyAura, createAuraStore, type AuraStore } from '../sim/aura.js';
 import { createEntity, isSelectableBy, type CombatEntity } from '../sim/entity.js';
 import {
   addWeapon, createLoadout, createSwapStore, type Loadout, type SwapStore,
@@ -435,6 +436,69 @@ describe('14.3 / 14.4 投射物与地面区域进快照', () => {
     expect(snap.grounds[0]).toMatchObject({ skillId: 'mage.blizzard', radius: 6, expiresAt: 8 });
     // 陷阱的任何痕迹都不在快照字节里 —— 「看不见、踩上才触发」是它的玩法本体
     expect(JSON.stringify(snap)).not.toContain('frost_trap');
+  });
+});
+
+/**
+ * M16d 协议债之一：护盾吸收量。
+ *
+ * ★★ 14.3 要求护盾有「激活/承伤/衰减/破裂」四种反馈，而联网侧此前
+ *   **一份数据都没有** —— `AuraSnapshot` 只有 auraId/stacks/remaining（时长），
+ *   客户端连「这人有没有盾」都判不出来，只能如实不画。
+ */
+describe('14.3 护盾吸收量进快照（M16d）', () => {
+  const shieldDef = {
+    id: 'mage.ice_barrier',
+    name: '霜甲护盾',
+    kind: 'buff' as const,
+    duration: 8,
+    dispelType: DispelType.None,
+    absorb: 400,
+    description: '',
+  };
+  const plainDef = {
+    id: 'mage.frostbolt.chill',
+    name: '寒冰',
+    kind: 'debuff' as const,
+    duration: 3,
+    dispelType: DispelType.Magic,
+    description: '',
+  };
+
+  it('吸收类光环带上剩余/初始吸收量', () => {
+    applyAura(auras, foe, shieldDef, foe.id, 0);
+    const snap = buildSnapshot(deps(), me);
+    const aura = snap.entities.find((e) => e.id === foe.id)?.auras
+      .find((a) => a.auraId === 'mage.ice_barrier');
+    expect(aura?.absorbRemaining).toBe(400);
+    expect(aura?.absorbInitial).toBe(400);
+  });
+
+  it('★ 非吸收光环一个字节都不带（八职业 90 技能里只有 4 个盾）', () => {
+    applyAura(auras, foe, plainDef, me.id, 0);
+    const snap = buildSnapshot(deps(), me);
+    const aura = snap.entities.find((e) => e.id === foe.id)?.auras
+      .find((a) => a.auraId === 'mage.frostbolt.chill');
+    expect(aura).toBeDefined();
+    expect(aura).not.toHaveProperty('absorbRemaining');
+    expect(aura).not.toHaveProperty('absorbInitial');
+  });
+
+  it('★ 打空的盾不再投影 —— 「衰减到 0」与「没有盾」在表现上是两回事', () => {
+    const inst = applyAura(auras, foe, shieldDef, foe.id, 0);
+    inst.absorbRemaining = 0;
+    const snap = buildSnapshot(deps(), me);
+    const aura = snap.entities.find((e) => e.id === foe.id)?.auras
+      .find((a) => a.auraId === 'mage.ice_barrier');
+    expect(aura).not.toHaveProperty('absorbRemaining');
+  });
+
+  it('★★ 不改变可见性面：潜行者身上的盾照样整个不进快照（验收 #5）', () => {
+    sneak.flags.stealthed = true;
+    applyAura(auras, sneak, shieldDef, sneak.id, 0);
+    const snap = buildSnapshot(deps(), me);
+    expect(snap.entities.map((e) => e.id as number)).not.toContain(sneak.id as number);
+    expect(JSON.stringify(snap)).not.toContain('ice_barrier');
   });
 });
 
