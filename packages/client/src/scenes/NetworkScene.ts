@@ -61,7 +61,7 @@ import { Interpolator } from '../net/Interpolator.js';
 import { Predictor } from '../net/Predictor.js';
 import { pickTabTargetFromSnapshot } from '../net/snapshotTargeting.js';
 import { CombatHud } from '../hud/CombatHud.js';
-import { SnapshotCombatView } from '../net/SnapshotCombatView.js';
+import { SnapshotCombatView, castStateFromStarted } from '../net/SnapshotCombatView.js';
 import { audio } from '../audio/AudioManager.js';
 import { FAIL_TEXT } from '../combat/CombatDirector.js';
 import { AimingController, type AimInput } from '../targeting/AimingController.js';
@@ -127,6 +127,12 @@ export interface NetStatus {
    * M13：verify:m13 靠它判断「走到射程内了没」—— 只读快照里本来就有的数据
    */
   nearestEnemy: number | undefined;
+  /**
+   * 施法注册表自检。★ 存在的理由很具体：`playerCast` 曾经是一个
+   * **声明了但全仓库无人赋值**的字段，四条施法条一起死了却没有任何断言发现 ——
+   * 现在 `verify:m13` 盯着 `casting.self`。
+   */
+  casting: { self: boolean; total: number };
 }
 
 export class NetworkScene {
@@ -361,6 +367,10 @@ export class NetworkScene {
       lastCorrection: this.lastCorrection,
       vfx: this.spellVfx?.status(),
       nearestEnemy: this.nearestEnemyDistance(),
+      casting: {
+        self: this.view.playerCast !== undefined,
+        total: this.view.activeCasts().length,
+      },
     };
   }
 
@@ -494,6 +504,8 @@ export class NetworkScene {
       }
       case 'Death': {
         audio.playVariant('death', this.audioDistance(msg.entityId));
+        // 7.3：死亡终止一切施法。服务器不会为此再发一条 CastInterrupted
+        this.view.endCast(msg.entityId);
         this.spellVfx?.onCombatEvent(
           { t: 'death', targetId: msg.entityId },
           (id) => this.bodyOf(id),
@@ -512,7 +524,9 @@ export class NetworkScene {
         break;
       case 'CastStarted': {
         audio.playCast(msg.school, { ...this.audioDistance(msg.casterId), volume: 0.7 });
-        // 14.1 预备：读条蓄力微光
+        // ★ 施法注册表：HUD 的四条施法条与 14.1「预备」阶段的蓄力法阵同吃这一份
+        this.view.beginCast(msg.casterId, castStateFromStarted(msg, this.serverTime));
+        // 14.1 预备：读条起手 pop（持续蓄力由 frame() 的 casts 驱动）
         const caster = this.casterLike(msg.casterId);
         if (caster) this.spellVfx?.onCast('started', caster, getSkill(msg.skillId));
         break;
@@ -524,6 +538,13 @@ export class NetworkScene {
        *   释放 pop 和弹体，目标身上的到位表现仍由 Damage/AuraApplied 驱动。
        */
       case 'CastResolved': {
+        /**
+         * ★ 无条件出注册表：引导技能的 `CastResolved` 是在**引导结束**才发的
+         *   （`casting.ts` 的 channel 分支只在 `world.time >= channelEndsAt` 才
+         *   调 onCompleted），所以这里不需要「引导例外」分支。
+         * ⚠️ `casterId` 可空（施法者不可见），那条路径靠 `pruneCasts` 超时兜底。
+         */
+        if (msg.casterId !== undefined) this.view.endCast(msg.casterId);
         const skill = getSkill(msg.skillId);
         if (!skill) break;
         const caster = this.casterLike(msg.casterId);
@@ -545,12 +566,21 @@ export class NetworkScene {
         }
         break;
       }
-      case 'CastInterrupted':
+      case 'CastInterrupted': {
         audio.play('ui_error', {
           group: 'ui',
           volume: msg.casterId === this.selfId ? 0.9 : 0.5,
         });
+        /**
+         * ★ `CastInterrupted` **不带 skillId** —— 想知道被打断的是什么法术，
+         *   只能从注册表回捞。这也是注册表除了施法条之外的第二个用处。
+         */
+        const st = this.view.castOfId(msg.casterId);
+        const caster = this.casterLike(msg.casterId);
+        if (st && caster) this.spellVfx?.onCast('interrupted', caster, getSkill(st.skillId));
+        this.view.endCast(msg.casterId);
         break;
+      }
       case 'AuraApplied':
         audio.play('buff_apply', { ...this.audioDistance(msg.targetId), volume: 0.5 });
         // 纯光环技能的到位反馈（化形术等）。control.* 在 SpellVfx 内部安静跳过
@@ -846,6 +876,12 @@ export class NetworkScene {
     this.drawRemotes(dt, realDt);
     this.updateTargetRing();
     this.updateIndicators();
+
+    // 施法注册表兜底清理（超时 / 施法者离场），必须在读它之前
+    this.view.pruneCasts(
+      this.serverTime,
+      (id) => this.lastEntities.some((e) => (e.id as number) === id),
+    );
 
     // 14.2/14.3/14.4：投射物主体、地面边界、粒子池 —— 数据来自最近的快照。
     // ★ 快照类型与 SpellVfx 的表现视图字段兼容，直接喂，不做拷贝
