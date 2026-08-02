@@ -52,6 +52,15 @@ export interface BurstOptions {
   life?: number;
   /** 整体不透明度上限（近镜头降透明时由 SpellVfx 压低）*/
   opacity?: number;
+  /**
+   * 生成范围的**水平半径**（米）。默认 0.06（一小簇）。
+   *
+   * ★★ 天气类填充（暴风雪的雪、毒云的雾）必须给它一个真实的区域半径：
+   *   一次 emit 的粒子若全挤在 0.12 米的小盒里，读作「地上有两团东西」
+   *   而不是「这一片在下雪」。而把一片区域拆成十几次小 emit 又会把
+   *   池槽吃光 —— 用一次大范围 emit 覆盖整片，是唯一同时满足两边的写法。
+   */
+  originRadius?: number;
 }
 
 /**
@@ -193,13 +202,17 @@ class Burst {
     this.bornAt = now;
     this.alive = true;
 
+    // 水平生成半径：默认一小簇；天气类填充传区域半径，一次覆盖整片
+    const originRadius = Math.max(0.06, o.originRadius ?? 0.06);
     for (let i = 0; i < n; i++) {
       const i3 = i * 3;
-      // 从 origin 的一个小球内出发，避免所有粒子叠在一个点
-      const jitter = 0.12;
-      this.posAttr.array[i3] = o.origin.x + (Math.random() - 0.5) * jitter;
-      this.posAttr.array[i3 + 1] = o.origin.y + (Math.random() - 0.5) * jitter;
-      this.posAttr.array[i3 + 2] = o.origin.z + (Math.random() - 0.5) * jitter;
+      // ★ sqrt 修正：不修正的话粒子会朝圆心堆积，边缘看着比中心稀
+      const rr = originRadius * Math.sqrt(Math.random());
+      const ra = Math.random() * Math.PI * 2;
+      this.posAttr.array[i3] = o.origin.x + Math.cos(ra) * rr;
+      // 竖直方向仍只做小抖动 —— 生成**高度**由调用方的 origin.y 决定
+      this.posAttr.array[i3 + 1] = o.origin.y + (Math.random() - 0.5) * 0.12;
+      this.posAttr.array[i3 + 2] = o.origin.z + Math.sin(ra) * rr;
 
       // 方向
       let dx: number, dy: number, dz: number;

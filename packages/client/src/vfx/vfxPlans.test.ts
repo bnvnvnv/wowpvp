@@ -9,7 +9,11 @@
 import { describe, expect, it } from 'vitest';
 import { MOTION, boltOrientation, trailPlanFor } from './boltVfx.js';
 import { fizzlePlanFor, windupPlanFor } from './castVfx.js';
+import {
+  MAX_FILL_AREAS, groundFillPlanFor, verticalTravel, waveEase, wavePlanFor,
+} from './groundVfx.js';
 import { ATTRIBUTE_VISUALS } from './schools.js';
+import { QualityTier } from '../render/quality.js';
 
 /** 冰霜风暴：0.8 秒读条 + 4 秒引导，从 t=0 起手 */
 const blizzard = (now: number, density = 1) =>
@@ -163,6 +167,105 @@ describe('trailPlanFor', () => {
       const plan = trailPlanFor('ember', d);
       expect(Math.ceil(plan.life / plan.cadence)).toBeLessThanOrEqual(6);
     }
+  });
+});
+
+describe('wavePlanFor / waveEase', () => {
+  it('★ 低画质砍掉染色盘，但波本体仍在（它画的是这次 AOE 的真实半径，essential）', () => {
+    const low = wavePlanFor(5, QualityTier.Low);
+    expect(low.decal).toBe(false);
+    expect(low.life).toBeGreaterThan(0);
+    expect(low.ringOpacity).toBeGreaterThan(0);
+    expect(wavePlanFor(5, QualityTier.High).decal).toBe(true);
+  });
+
+  it('范围越大扩得越久 —— 大范围扩太快会读成一次闪光', () => {
+    expect(wavePlanFor(12, QualityTier.High).life)
+      .toBeGreaterThan(wavePlanFor(5, QualityTier.High).life);
+  });
+
+  it('★ 扩张缓动先快后慢：半程时已经铺开六成以上', () => {
+    expect(waveEase(0)).toBeCloseTo(0, 6);
+    expect(waveEase(1)).toBeCloseTo(1, 6);
+    expect(waveEase(0.5)).toBeGreaterThan(0.6);
+    // 单调
+    expect(waveEase(0.3)).toBeLessThan(waveEase(0.6));
+  });
+
+  it('缓动对越界输入钳到 [0,1]', () => {
+    expect(waveEase(-1)).toBe(0);
+    expect(waveEase(2)).toBe(1);
+  });
+});
+
+describe('groundFillPlanFor —— 天气', () => {
+  it('★★ 冰是从高处**往下**落的 —— 直接钉住「暴风雪啥都没有」那条反馈', () => {
+    const snow = groundFillPlanFor('snowflake', 6, 1);
+    expect(snow.mode).toBe('fall');
+    expect(snow.gravity).toBeLessThan(0);
+    expect(snow.spawnHeight).toBeGreaterThan(2);
+  });
+
+  it('火与圣是贴地**升起**的', () => {
+    for (const p of ['ember', 'beam'] as const) {
+      const plan = groundFillPlanFor(p, 6, 1);
+      expect(plan.mode).toBe('rise');
+      expect(plan.gravity).toBeGreaterThan(0);
+      expect(plan.spawnHeight).toBeLessThan(0.5);
+    }
+  });
+
+  it('★ 八属性的填充方向与 MOTION 同号（同一张表派生，不会各写各的）', () => {
+    for (const av of Object.values(ATTRIBUTE_VISUALS)) {
+      const plan = groundFillPlanFor(av.particle, 6, 1);
+      expect(Math.sign(plan.gravity)).toBe(Math.sign(MOTION[av.particle].gravity));
+    }
+  });
+
+  it('★ 区域越大撒得越多，但加在**每簇粒子数**上 —— 簇数是线性吃池槽的', () => {
+    expect(groundFillPlanFor('snowflake', 12, 1).count)
+      .toBeGreaterThan(groundFillPlanFor('snowflake', 2, 1).count);
+    // 每簇不超过细流池的单格容量（超了会被 Burst.emit 静默钳掉）
+    expect(groundFillPlanFor('snowflake', 40, 1).count).toBeLessThanOrEqual(32);
+    expect(groundFillPlanFor('snowflake', 40, 1).clusters).toBeLessThanOrEqual(2);
+  });
+
+  it('低画质不发填充粒子、不画染色盘（边界环另有 essential 保证）', () => {
+    const low = groundFillPlanFor('snowflake', 6, 0);
+    expect(low.clusters).toBe(0);
+    expect(low.count).toBe(0);
+    expect(low.tintOpacity).toBe(0);
+  });
+
+  it('★ 单片区域并发槽 ≤ 6、三片合计 ≤ 18（细流池 48 = 蓄力 12 + 拖尾 18 + 地面 18）', () => {
+    for (const d of [1, 0.5]) {
+      for (const av of Object.values(ATTRIBUTE_VISUALS)) {
+        const plan = groundFillPlanFor(av.particle, 12, d);
+        const slots = Math.ceil(plan.life / plan.cadence) * plan.clusters;
+        expect(slots).toBeLessThanOrEqual(6);
+      }
+    }
+    expect(MAX_FILL_AREAS * 6).toBeLessThanOrEqual(18);
+  });
+});
+
+describe('verticalTravel —— 参数错在单测里就红', () => {
+  it('★★ 雪真的落得到地面：3.2 米生成高度，life 内至少落 2.5 米', () => {
+    const snow = groundFillPlanFor('snowflake', 6, 1);
+    const drop = verticalTravel(snow.gravity, snow.drag, snow.life);
+    expect(drop).toBeLessThan(-2.5); // 向下为负
+    // 也别穿到地底太深（穿过地面几米就成了「雪往地心钻」）
+    expect(drop).toBeGreaterThan(-snow.spawnHeight - 2);
+  });
+
+  it('火的余烬真的升得起来（life 内上升 > 0.5 米）', () => {
+    const fire = groundFillPlanFor('ember', 6, 1);
+    expect(verticalTravel(fire.gravity, fire.drag, fire.life)).toBeGreaterThan(0.5);
+  });
+
+  it('零重力不产生位移；阻力越大位移越小', () => {
+    expect(verticalTravel(0, 1, 1)).toBeCloseTo(0, 6);
+    expect(Math.abs(verticalTravel(-3, 5, 1))).toBeLessThan(Math.abs(verticalTravel(-3, 0.2, 1)));
   });
 });
 

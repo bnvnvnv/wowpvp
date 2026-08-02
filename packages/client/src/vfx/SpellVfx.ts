@@ -60,6 +60,7 @@ import {
 import { QualityTier, decorativeDensity, isVisible } from '../render/quality.js';
 import { MOTION, boltOrientation, trailPlanFor } from './boltVfx.js';
 import { fizzlePlanFor, windupPlanFor } from './castVfx.js';
+import { MAX_FILL_AREAS, groundFillPlanFor, wavePlanFor, waveEase } from './groundVfx.js';
 import type { ImpactTier } from '../feedback/impactTier.js';
 
 /** 水平+垂直平方距离。★ 只用于排序，不开根号 */
@@ -122,6 +123,10 @@ export interface SpellVfxStatus {
   windupEmitters: number;
   /** 当前在冒拖尾粒子的弹体数（受 MAX_TRAIL_EMITTERS 与画质约束）*/
   trailEmitters: number;
+  /** 当前在扩张的瞬发 AOE 地面波 */
+  groundWaves: number;
+  /** 当前在场的地面染色盘（波残留 + 区域底色，装饰层）*/
+  groundDecals: number;
   /** 当前存活的一次性闪光数（刀光/免疫白闪）*/
   activeFlashes: number;
 }
@@ -280,6 +285,17 @@ interface ProjBody {
  */
 interface RingEntry {
   mesh: THREE.Mesh;
+  /**
+   * 区域内部的填充节拍计时器。★ 每片区域各一份 —— 全局共用一个的话
+   * 多片区域会同一帧齐发，一阵一阵地闪（本轮修的）。
+   */
+  fillTimer?: number;
+  /** 地面染色盘（装饰层，低画质隐藏而不是销毁 —— 画质可以来回切）*/
+  tint?: {
+    mesh: THREE.Mesh;
+    mat: THREE.MeshBasicMaterial;
+    visible?: boolean;
+  };
   label?: {
     sprite: THREE.Sprite;
     mat: THREE.SpriteMaterial;
@@ -341,8 +357,42 @@ interface WindupEntry {
  */
 const MAX_WINDUP_EMITTERS = 4;
 
-/** 同时冒拖尾粒子的表现用弹体上限（同上，按到相机的距离取最近的几发）*/
-const MAX_TRAIL_EMITTERS = 4;
+/**
+ * 同时冒拖尾粒子的表现用弹体上限（同上，按到相机的距离取最近的几发）。
+ * ★ 3 而不是 4：一发弹体只活半秒，而一片暴风雪要撑 4 秒 —— 槽位该给后者。
+ *   彗尾条零池占用，所以被裁掉的弹体仍然拖着那条连贯的尾巴。
+ */
+const MAX_TRAIL_EMITTERS = 3;
+
+/**
+ * 一次瞬发范围技能在地上留下的**扩张冲击波**。
+ *
+ * ★★ 与 `FlashPool` 那个叫「冲击波」的东西不是一回事：那是面向镜头的
+ *   广告牌光斑，从上往下看就是一团光。这个是**贴地的环**，
+ *   扩张终点恰好等于 `shape.radius` —— 它画的就是这次 AOE 的真实覆盖范围。
+ *
+ * ★ 公平性：波在**结算之后**才出现，不提供任何预判信息，双方对称可见
+ *   （docs/10 已知偏差登记的依据）。
+ */
+interface GroundWave {
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+  age: number;
+  life: number;
+  radius: number;
+}
+
+/** 波之后留下的地面染色（装饰层）*/
+interface GroundDecal {
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+  age: number;
+  life: number;
+  opacity: number;
+}
+
+const MAX_WAVES = 12;
+const MAX_DECALS = 8;
 
 export class SpellVfx {
   readonly group = new THREE.Group();
@@ -358,10 +408,10 @@ export class SpellVfx {
    *   而最旧的往往正是刚才那记重击）。分池之后两边互不影响。
    *
    * ★ 48 格是三类细流的**预算和**，每一项都由 `vfxPlans.test.ts` 钉着上限：
-   *     蓄力 3 格 × 4 个 + 拖尾 6 格 × 4 发 + 地面 4 格 × 3 片 = 48。
+   *     蓄力 3 格 × 4 个 + 拖尾 6 格 × 3 发 + 地面 6 格 × 3 片 = 48。
    *   改任何一处的 life/cadence 都会先在单测里撞线，而不是在 12v12 里掉帧。
    */
-  private readonly streams = new BurstPool(48, 24);
+  private readonly streams = new BurstPool(48, 32);
   /**
    * 刀光、免疫白闪与冲击波环（要随机旋转/展开，Points 做不了）。
    * 16 而不是 12：冲击波是新消费者，重击一发要占两个槽（刀光 + 环）——
@@ -382,6 +432,10 @@ export class SpellVfx {
   private readonly rings = new Map<string, RingEntry>();
   /** 正在施法的单位的蓄力表现。key = 实体 id */
   private readonly windups = new Map<number, WindupEntry>();
+  /** 瞬发范围技能的地面冲击波（瞬时，自然消亡）*/
+  private readonly waves: GroundWave[] = [];
+  /** 波之后的地面染色（装饰层）*/
+  private readonly decals: GroundDecal[] = [];
   /** 最近一帧真的在冒聚能粒子的施法者数（自检用）*/
   private windupEmitterCount = 0;
   /** 最近一帧真的在冒拖尾粒子的弹体数（自检用）*/
@@ -494,6 +548,20 @@ export class SpellVfx {
     // Q 版基调：释放要「砰」地一下 —— 大、密、亮
     this.emitBurst(hand, av, { count: 16, speed: 3.0, size: 0.72, life: 0.55 });
     this.emitAccent(hand, 'glow', av.secondary, 1.4);
+
+    /**
+     * ★★ 自身中心的圆形范围技能 → 贴地扩张冲击波。
+     *
+     *   霜爆新星（`SelfCenter` + `circle radius 5`，纯定身无伤害）此前走的是
+     *   下面那条「无弹体且无伤害」分支，地上一点痕迹都没有 ——
+     *   玩家实测反馈「就闪了一下」。带伤害的自身中心 AOE 同样受益。
+     *
+     *   ★ 判定放在**所有分支之前**：它与「有没有伤害」「有没有弹体」正交，
+     *     漏进哪条分支都会少画一批技能。
+     */
+    if (skill.targeting === Targeting.SelfCenter && skill.shape.kind === 'circle') {
+      this.spawnWave(caster.position, skill.shape.radius, av);
+    }
 
     if (this.flies(skill)) {
       for (const t of targets) {
@@ -701,11 +769,103 @@ export class SpellVfx {
     this.streams.setScale(ctx.pointScale);
     this.syncCasts(ctx.casts ?? [], ctx.quality, dt, ctx.now, ctx.cameraPosition);
     this.syncProjectiles(ctx.projectiles, ctx.quality, dt, ctx.now);
-    this.syncGround(ctx.grounds, ctx.quality, dt);
+    this.syncGround(ctx.grounds, ctx.quality, dt, ctx.cameraPosition);
     this.updateBolts(dt, ctx.quality, ctx.cameraPosition);
+    this.updateWaves(dt);
     this.pool.update(dt);
     this.streams.update(dt);
     this.flashes.update(dt);
+  }
+
+  // ── 瞬发范围技能的地面冲击波 ──────────────────────────────────
+
+  /**
+   * 放一圈从 0 扩到 `radius` 的贴地环，外加一张淡出的染色盘。
+   * ★ 环的终点半径 = 技能的 `shape.radius`，与判定同源 —— 与
+   *   `ensureRing`（地面区域边界）遵守同一条「边界即判定」的规矩（14.3）。
+   */
+  private spawnWave(center: Vec3Like, radius: number, av: AttributeVisual): void {
+    const plan = wavePlanFor(radius, this.quality);
+
+    if (this.waves.length >= MAX_WAVES) {
+      const oldest = this.waves.shift();
+      if (oldest) this.disposeGroundMesh(oldest.mesh, oldest.mat);
+    }
+    const mat = new THREE.MeshBasicMaterial({
+      color: av.primary,
+      transparent: true,
+      opacity: plan.ringOpacity,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    // 单位环按半径缩放 —— 与 ensureRing 同一手法
+    const mesh = new THREE.Mesh(new THREE.RingGeometry(0.88, 1, 56), mat);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(center.x, center.y + 0.05, center.z);
+    mesh.scale.setScalar(0.01);
+    mesh.renderOrder = 3;
+    this.group.add(mesh);
+    this.waves.push({ mesh, mat, age: 0, life: plan.life, radius });
+
+    if (!plan.decal) return;
+    if (this.decals.length >= MAX_DECALS) {
+      const oldest = this.decals.shift();
+      if (oldest) this.disposeGroundMesh(oldest.mesh, oldest.mat);
+    }
+    const decalMat = new THREE.MeshBasicMaterial({
+      color: av.primary,
+      transparent: true,
+      opacity: plan.decalOpacity,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      // ★ 正常混合而不是加法：加法会把本来就亮的地面糊成白斑
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+    });
+    const decal = new THREE.Mesh(new THREE.CircleGeometry(1, 40), decalMat);
+    decal.rotation.x = -Math.PI / 2;
+    decal.position.set(center.x, center.y + 0.02, center.z);
+    decal.scale.setScalar(radius);
+    decal.renderOrder = 2; // 排在边界环之下
+    this.group.add(decal);
+    this.decals.push({
+      mesh: decal, mat: decalMat, age: 0, life: plan.decalLife, opacity: plan.decalOpacity,
+    });
+  }
+
+  /** 波与染色盘的推进。两者都是「自然消亡」的瞬时对象，没有 present 差分 */
+  private updateWaves(dt: number): void {
+    for (let i = this.waves.length - 1; i >= 0; i--) {
+      const w = this.waves[i]!;
+      w.age += dt;
+      const t = w.age / w.life;
+      if (t >= 1) {
+        this.disposeGroundMesh(w.mesh, w.mat);
+        this.waves.splice(i, 1);
+        continue;
+      }
+      // 先快后慢地铺开，同时淡出
+      w.mesh.scale.setScalar(Math.max(0.01, w.radius * waveEase(t)));
+      w.mat.opacity = 0.9 * (1 - t);
+    }
+    for (let i = this.decals.length - 1; i >= 0; i--) {
+      const d = this.decals[i]!;
+      d.age += dt;
+      const t = d.age / d.life;
+      if (t >= 1) {
+        this.disposeGroundMesh(d.mesh, d.mat);
+        this.decals.splice(i, 1);
+        continue;
+      }
+      d.mat.opacity = d.opacity * (1 - t);
+    }
+  }
+
+  private disposeGroundMesh(mesh: THREE.Mesh, mat: THREE.Material): void {
+    this.group.remove(mesh);
+    mesh.geometry.dispose();
+    mat.dispose();
   }
 
   // ── 每帧：施法蓄力（14.1「预备」）─────────────────────────────
@@ -1077,12 +1237,15 @@ export class SpellVfx {
    * 地面持续区域（暴风雪、毒云…）：
    *   持续边界环（essential，14.3「边界全程可见」）+ 内部上升装饰粒子（decorative，可淡出）。
    */
-  private syncGround(areas: readonly GroundAreaView[], quality: QualityTier, dt: number): void {
-    this.fillTimer += dt;
-    const fillDue = this.fillTimer >= 0.12;
-    if (fillDue) this.fillTimer = 0;
+  private syncGround(
+    areas: readonly GroundAreaView[], quality: QualityTier, dt: number, cameraPosition?: Vec3Like,
+  ): void {
     const showFill = isVisible('groundFill', quality);
     const density = decorativeDensity(quality);
+    // 只有离相机最近的几片冒粒子；其余照画边界环与染色盘（边界是 essential）
+    const emitters = this.nearestIds(
+      areas.map((a) => ({ id: a.id, position: a.center })), cameraPosition, MAX_FILL_AREAS,
+    );
 
     const present = new Set<string>();
     for (const a of areas) {
@@ -1090,18 +1253,43 @@ export class SpellVfx {
       present.add(key);
       const skill = getSkill(asSkillId(a.skillId));
       const av = skill ? visualOf(skill) : ATTRIBUTE_VISUALS.frost;
-      this.ensureRing(key, a.center, a.radius, av.primary);
+      const entry = this.ensureRing(key, a.center, a.radius, av.primary);
+      const plan = groundFillPlanFor(av.particle, a.radius, density);
 
-      if (fillDue && showFill && density > 0) {
-        // 区域内随机点冒一小簇，贴地起、向上飘
-        const r = a.radius * Math.sqrt(Math.random());
-        const ang = Math.random() * Math.PI * 2;
+      // 地面染色盘：让区域读作「这里有东西」，而不只是一圈线
+      this.syncAreaTint(entry, a, av.primary, showFill ? plan.tintOpacity : 0);
+
+      if (!showFill || plan.clusters <= 0 || !emitters.has(a.id)) continue;
+      /**
+       * ★ 每片区域**自带计时器**（此前是一个全局 fillTimer）：
+       *   多片区域同时在场时，全局计时器会让它们同一帧齐发 ——
+       *   一帧吃掉好几个池槽，下一帧又全空，观感是一阵一阵地闪。
+       */
+      entry.fillTimer = (entry.fillTimer ?? 0) + dt;
+      if (entry.fillTimer < plan.cadence) continue;
+      entry.fillTimer = 0;
+
+      for (let i = 0; i < plan.clusters; i++) {
         this.emitBurst(
-          { x: a.center.x + Math.cos(ang) * r, y: a.center.y, z: a.center.z + Math.sin(ang) * r },
+          {
+            x: a.center.x,
+            // ★ 关键的一行：雪从三米多高开始飘，火从贴地升起 ——
+            //   此前这里写死 y = center.y、gravity = +1.4，把「雪花飘落」掰成了上升
+            y: a.center.y + plan.spawnHeight,
+            z: a.center.z,
+          },
           av,
           {
-            count: Math.max(2, Math.round(4 * density)),
-            speed: 0.6, size: 0.34, life: 0.8, gravity: 1.4, spread: 'disc',
+            count: plan.count,
+            speed: plan.mode === 'fall' ? 0.35 : 0.6,
+            size: plan.size,
+            life: plan.life,
+            gravity: plan.gravity,
+            drag: plan.drag,
+            spread: plan.spread,
+            // ★ 一次 emit 铺满整片区域 —— 此前是「在区域内随机挑一个点撒一小簇」，
+            //   实测读作「地上有两团东西」而不是「这一片在下雪」
+            originRadius: a.radius,
             stream: true,
           },
         );
@@ -1111,6 +1299,41 @@ export class SpellVfx {
     for (const key of [...this.rings.keys()]) {
       if (key.startsWith('g') && !present.has(key)) this.removeRing(key);
     }
+  }
+
+  /**
+   * 区域的地面染色盘。★ 正常混合而不是加法 —— 加法会把明亮的地面糊成白斑，
+   * 而这一层的作用恰恰是「地面被这个法术改了颜色」。
+   */
+  private syncAreaTint(
+    entry: RingEntry, area: GroundAreaView, color: number, opacity: number,
+  ): void {
+    if (opacity <= 0) {
+      if (entry.tint) entry.tint.visible = false;
+      return;
+    }
+    if (!entry.tint) {
+      const mat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+      });
+      const mesh = new THREE.Mesh(new THREE.CircleGeometry(1, 40), mat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.renderOrder = 2; // 排在边界环（3）之下
+      this.group.add(mesh);
+      entry.tint = { mesh, mat };
+    }
+    entry.tint.visible = true;
+    entry.tint.mesh.visible = true;
+    entry.tint.mat.color.set(color);
+    entry.tint.mat.opacity = opacity;
+    entry.tint.mesh.scale.setScalar(area.radius);
+    entry.tint.mesh.position.set(area.center.x, area.center.y + 0.02, area.center.z);
   }
 
   // ── 发射工具 ──────────────────────────────────────────────────
@@ -1129,6 +1352,8 @@ export class SpellVfx {
       opacity?: number;
       /** 覆盖默认的属性主粒子贴图（拖尾用轨迹条时传）。null = 程序化软圆点 */
       texture?: THREE.Texture | null;
+      /** 水平生成半径（天气类填充传区域半径，一次铺满整片）*/
+      originRadius?: number;
       /**
        * 走**细流池**而不是事件池。★ 拖尾/地面填充/蓄力这类每隔几十毫秒
        * 就发一次的必须传 true —— 否则它们会把命中爆发挤出事件池。
@@ -1153,6 +1378,7 @@ export class SpellVfx {
       drag: opts.drag,
       spread: opts.spread,
       opacity: (opts.opacity ?? 1) * closeFade,
+      ...(opts.originRadius !== undefined ? { originRadius: opts.originRadius } : {}),
     });
   }
 
@@ -1416,6 +1642,7 @@ export class SpellVfx {
     this.group.remove(entry.mesh);
     entry.mesh.geometry.dispose();
     (entry.mesh.material as THREE.Material).dispose();
+    if (entry.tint) this.disposeGroundMesh(entry.tint.mesh, entry.tint.mat);
     if (entry.label) {
       this.group.remove(entry.label.sprite);
       entry.label.mat.dispose();
@@ -1439,6 +1666,9 @@ export class SpellVfx {
       activeWindups: this.windups.size,
       windupEmitters: this.windupEmitterCount,
       trailEmitters: this.trailEmitterCount,
+      groundWaves: this.waves.length,
+      groundDecals:
+        this.decals.length + [...this.rings.values()].filter((r) => r.tint?.visible).length,
       activeFlashes: this.flashes.activeCount,
     };
   }
@@ -1450,6 +1680,10 @@ export class SpellVfx {
     this.bolts.length = 0;
     for (const key of [...this.rings.keys()]) this.removeRing(key);
     for (const id of [...this.windups.keys()]) this.removeWindup(id);
+    for (const w of this.waves) this.disposeGroundMesh(w.mesh, w.mat);
+    this.waves.length = 0;
+    for (const d of this.decals) this.disposeGroundMesh(d.mesh, d.mat);
+    this.decals.length = 0;
     this.pool.dispose();
     this.streams.dispose();
     this.flashes.dispose();
