@@ -7,7 +7,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { MOTION, boltOrientation, trailPlanFor } from './boltVfx.js';
 import { fizzlePlanFor, windupPlanFor } from './castVfx.js';
+import { ATTRIBUTE_VISUALS } from './schools.js';
 
 /** 冰霜风暴：0.8 秒读条 + 4 秒引导，从 t=0 起手 */
 const blizzard = (now: number, density = 1) =>
@@ -99,6 +101,67 @@ describe('windupPlanFor —— 画质', () => {
     for (const t of [0.05, 0.4, 0.8, 1.2, 1.39]) {
       const p = frostbolt(t);
       expect(Math.ceil(p.life / p.cadence)).toBeLessThanOrEqual(3);
+    }
+  });
+});
+
+describe('boltOrientation', () => {
+  it('正前方（-Z）/ 正后方（+Z）/ 正右（+X）的 yaw 各就各位', () => {
+    // 本项目的「前方」是 -Z（见 ModelLibrary 的归一化注释）
+    expect(boltOrientation({ x: 0, y: 0, z: -1 }).yaw).toBeCloseTo(Math.PI, 6);
+    expect(boltOrientation({ x: 0, y: 0, z: 1 }).yaw).toBeCloseTo(0, 6);
+    expect(boltOrientation({ x: 1, y: 0, z: 0 }).yaw).toBeCloseTo(Math.PI / 2, 6);
+  });
+
+  it('俯仰：水平为 0，正上为 +90°，正下为 -90°', () => {
+    expect(boltOrientation({ x: 0, y: 0, z: 1 }).pitch).toBeCloseTo(0, 6);
+    expect(boltOrientation({ x: 0, y: 1, z: 0 }).pitch).toBeCloseTo(Math.PI / 2, 6);
+    expect(boltOrientation({ x: 0, y: -1, z: 0 }).pitch).toBeCloseTo(-Math.PI / 2, 6);
+  });
+
+  it('45° 斜上飞的俯仰是 45°', () => {
+    expect(boltOrientation({ x: 0, y: 1, z: 1 }).pitch).toBeCloseTo(Math.PI / 4, 6);
+  });
+
+  it('★ 零向量不产生 NaN —— NaN 进 rotation 会让整发弹体从画面上消失', () => {
+    const o = boltOrientation({ x: 0, y: 0, z: 0 });
+    expect(Number.isFinite(o.yaw)).toBe(true);
+    expect(Number.isFinite(o.pitch)).toBe(true);
+  });
+
+  it('长度不影响角度（只看方向）', () => {
+    const near = boltOrientation({ x: 0.001, y: 0, z: -0.001 });
+    const far = boltOrientation({ x: 10, y: 0, z: -10 });
+    expect(near.yaw).toBeCloseTo(far.yaw, 6);
+  });
+});
+
+describe('trailPlanFor', () => {
+  it('★★ 拖尾方向与 MOTION 同号 —— 火向上飘、冰向下落', () => {
+    for (const av of Object.values(ATTRIBUTE_VISUALS)) {
+      const plan = trailPlanFor(av.particle, 1);
+      expect(Math.sign(plan.gravity)).toBe(Math.sign(MOTION[av.particle].gravity));
+    }
+    // 逐个点名两条最容易写反的
+    expect(trailPlanFor('ember', 1).gravity).toBeGreaterThan(0);
+    expect(trailPlanFor('snowflake', 1).gravity).toBeLessThan(0);
+  });
+
+  it('★ 阻力足够小，尾巴才拖得住（旧值 4 会在 0.25 秒内把粒子拽停）', () => {
+    expect(trailPlanFor('ember', 1).drag).toBeLessThan(2);
+    expect(trailPlanFor('ember', 1).life).toBeGreaterThanOrEqual(0.4);
+  });
+
+  it('低画质不发拖尾粒子（彗尾条另有画质门禁）', () => {
+    const low = trailPlanFor('ember', 0);
+    expect(low.count).toBe(0);
+    expect(low.cadence).toBe(0);
+  });
+
+  it('★ 单发弹体的并发槽占用不超过 6 格（细流池预算：6×4 + 蓄力 12 + 地面 12 = 48）', () => {
+    for (const d of [1, 0.5]) {
+      const plan = trailPlanFor('ember', d);
+      expect(Math.ceil(plan.life / plan.cadence)).toBeLessThanOrEqual(6);
     }
   });
 });

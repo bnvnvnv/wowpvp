@@ -58,6 +58,7 @@ import {
   type AttributeVisual,
 } from './schools.js';
 import { QualityTier, decorativeDensity, isVisible } from '../render/quality.js';
+import { MOTION, boltOrientation, trailPlanFor } from './boltVfx.js';
 import { fizzlePlanFor, windupPlanFor } from './castVfx.js';
 import type { ImpactTier } from '../feedback/impactTier.js';
 
@@ -65,17 +66,8 @@ import type { ImpactTier } from '../feedback/impactTier.js';
 const sqDist = (a: Vec3Like, b: Vec3Like): number =>
   (a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2;
 
-/** 每个属性的运动倾向（14.2「形状与运动」列的粒子化）*/
-const MOTION: Record<AttributeVisual['particle'], { gravity: number; swirl: number }> = {
-  ember: { gravity: 2.2, swirl: 0.2 },      // 火：热浪上升
-  beam: { gravity: 2.6, swirl: 0 },         // 神圣：光柱上冲
-  smoke: { gravity: 0.7, swirl: 0.4 },      // 暗影：烟雾缓升
-  snowflake: { gravity: -1.2, swirl: 0.6 }, // 寒冰：雪花飘落
-  rune: { gravity: 0.4, swirl: 2.6 },       // 奥术：符文旋绕
-  leaf: { gravity: -0.4, swirl: 2.0 },      // 自然：叶片打旋
-  spark: { gravity: -3.2, swirl: 0 },       // 物理：火花迸落
-  droplet: { gravity: -4.2, swirl: 0 },     // 毒素：液滴下坠
-};
+// ★ MOTION 表已挪进 `boltVfx.ts` 成为唯一来源 —— 此前它只活在本文件里，
+//   而地面填充写死了一个向上的 gravity 把 frost 的「雪花飘落」掰成了上升。
 
 /**
  * 命中时叠加的**第二通道**点缀（14.2「形状与运动」列里的余烬/星屑）。
@@ -128,6 +120,8 @@ export interface SpellVfxStatus {
   activeWindups: number;
   /** 其中真的在冒聚能粒子的（受 MAX_WINDUP_EMITTERS 与画质约束）*/
   windupEmitters: number;
+  /** 当前在冒拖尾粒子的弹体数（受 MAX_TRAIL_EMITTERS 与画质约束）*/
+  trailEmitters: number;
   /** 当前存活的一次性闪光数（刀光/免疫白闪）*/
   activeFlashes: number;
 }
@@ -313,6 +307,8 @@ interface VisualBolt {
   track?: (() => Vec3Like | undefined) | undefined;
   /** 已飞行秒数。超过上限强制抵达 —— 别让弹体追一个反复闪现的人追到天荒地老 */
   age: number;
+  /** 拖尾节拍计时器。★ 此前拖尾是**每帧**发的，把池刷空了（见 boltVfx.ts 文件头）*/
+  trailTimer: number;
 }
 
 /**
@@ -345,6 +341,9 @@ interface WindupEntry {
  */
 const MAX_WINDUP_EMITTERS = 4;
 
+/** 同时冒拖尾粒子的表现用弹体上限（同上，按到相机的距离取最近的几发）*/
+const MAX_TRAIL_EMITTERS = 4;
+
 export class SpellVfx {
   readonly group = new THREE.Group();
   /**
@@ -357,8 +356,12 @@ export class SpellVfx {
    * ★★ 与事件池分开是**结构性修复**不是优化：细流每隔几十毫秒就要占一格，
    *   合在一起时它们会把命中爆发挤出池子（回收策略是「最旧的」，
    *   而最旧的往往正是刚才那记重击）。分池之后两边互不影响。
+   *
+   * ★ 48 格是三类细流的**预算和**，每一项都由 `vfxPlans.test.ts` 钉着上限：
+   *     蓄力 3 格 × 4 个 + 拖尾 6 格 × 4 发 + 地面 4 格 × 3 片 = 48。
+   *   改任何一处的 life/cadence 都会先在单测里撞线，而不是在 12v12 里掉帧。
    */
-  private readonly streams = new BurstPool(40, 24);
+  private readonly streams = new BurstPool(48, 24);
   /**
    * 刀光、免疫白闪与冲击波环（要随机旋转/展开，Points 做不了）。
    * 16 而不是 12：冲击波是新消费者，重击一发要占两个槽（刀光 + 环）——
@@ -381,6 +384,8 @@ export class SpellVfx {
   private readonly windups = new Map<number, WindupEntry>();
   /** 最近一帧真的在冒聚能粒子的施法者数（自检用）*/
   private windupEmitterCount = 0;
+  /** 最近一帧真的在冒拖尾粒子的弹体数（自检用）*/
+  private trailEmitterCount = 0;
 
   /** 上一帧场上还在的投射物 id，用于检出「消失 → 补一发命中爆发」*/
   private seenProjectiles = new Set<number>();
@@ -697,7 +702,7 @@ export class SpellVfx {
     this.syncCasts(ctx.casts ?? [], ctx.quality, dt, ctx.now, ctx.cameraPosition);
     this.syncProjectiles(ctx.projectiles, ctx.quality, dt, ctx.now);
     this.syncGround(ctx.grounds, ctx.quality, dt);
-    this.updateBolts(dt, ctx.quality);
+    this.updateBolts(dt, ctx.quality, ctx.cameraPosition);
     this.pool.update(dt);
     this.streams.update(dt);
     this.flashes.update(dt);
@@ -878,8 +883,13 @@ export class SpellVfx {
    * 表现用弹体的推进：**追踪**目标当前位置（每帧刷新终点），追上即爆并回收。
    * ★ 追不上的极端情况（目标反复闪现）由 age 上限兜底强制抵达。
    */
-  private updateBolts(dt: number, quality: QualityTier): void {
+  private updateBolts(dt: number, quality: QualityTier, cameraPosition?: Vec3Like): void {
     const showTrail = isVisible('projectileTrail', quality);
+    const density = decorativeDensity(quality);
+    // 只有离相机最近的几发冒拖尾粒子；彗尾条（零池占用）每发都有
+    const emitters = this.nearestIds(this.bolts.map((b, i) => ({ id: i, position: b.group.position })), cameraPosition, MAX_TRAIL_EMITTERS);
+    let emitting = 0;
+
     for (let i = this.bolts.length - 1; i >= 0; i--) {
       const b = this.bolts[i]!;
       b.age += dt;
@@ -897,12 +907,19 @@ export class SpellVfx {
       if (d > step && b.age < 2) {
         const k = step / d;
         g.set(g.x + dx * k, g.y + dy * k, g.z + dz * k);
-        if (showTrail) {
-          this.emitBurst(g, b.visual, {
-            count: 3, speed: 0.5, size: 0.42, life: 0.3, drag: 4, opacity: 0.9,
-            stream: true,
-          });
-        }
+        this.orientBolt(b.group, { x: dx, y: dy, z: dz }, b.visual, dt, showTrail);
+
+        const plan = trailPlanFor(b.visual.particle, density);
+        if (!showTrail || plan.count <= 0 || !emitters.has(i)) continue;
+        emitting += 1;
+        b.trailTimer += dt;
+        if (b.trailTimer < plan.cadence) continue;
+        b.trailTimer = 0;
+        this.emitBurst(g, b.visual, {
+          count: plan.count, speed: 0.7, size: plan.size, life: plan.life,
+          gravity: plan.gravity, drag: plan.drag, opacity: plan.opacity,
+          stream: true,
+        });
         continue;
       }
 
@@ -913,6 +930,26 @@ export class SpellVfx {
       this.disposeNode(b.group);
       this.bolts.splice(i, 1);
     }
+    this.trailEmitterCount = emitting;
+  }
+
+  /**
+   * 离相机最近的 N 个 id（装饰层 LOD 的唯一实现）。
+   * ★ 只用于裁**装饰**发射器 —— essential 部件（弹体主体、边界环、法阵）
+   *   一个都不裁，验收 #48 的边界在这里就守住了。
+   */
+  private nearestIds(
+    items: readonly { id: number; position: Vec3Like }[],
+    cameraPosition: Vec3Like | undefined,
+    limit: number,
+  ): Set<number> {
+    if (items.length <= limit) return new Set(items.map((it) => it.id));
+    const ranked = cameraPosition
+      ? [...items].sort(
+          (a, b) => sqDist(a.position, cameraPosition) - sqDist(b.position, cameraPosition),
+        )
+      : items;
+    return new Set(ranked.slice(0, limit).map((it) => it.id));
   }
 
   private spawnBolt(
@@ -929,7 +966,7 @@ export class SpellVfx {
     const group = this.makeBoltNode(av);
     group.position.set(from.x, from.y, from.z);
     this.group.add(group);
-    this.bolts.push({ group, visual: av, to: { ...to }, track, age: 0 });
+    this.bolts.push({ group, visual: av, to: { ...to }, track, age: 0, trailTimer: 0 });
   }
 
   // ── 每帧：真实投射物（本地 sim 或服务器快照，都收 ProjectileView）──
@@ -944,9 +981,8 @@ export class SpellVfx {
     items: readonly ProjectileView[], quality: QualityTier, dt: number, now: number,
   ): void {
     this.trailTimer += dt;
-    const trailDue = this.trailTimer >= 0.05;
-    if (trailDue) this.trailTimer = 0;
     const showTrail = isVisible('projectileTrail', quality);
+    const density = decorativeDensity(quality);
 
     const present = new Set<number>();
     const delayedPresent = new Set<string>();
@@ -988,19 +1024,30 @@ export class SpellVfx {
         g.y += (p.position.y - g.y) * k;
         g.z += (p.position.z - g.z) * k;
       }
+      // ★ 真投射物没有「目标」可指 —— 方向取本帧的**位移**（平滑后的），
+      //   位移过小说明刚生成/静止，保持上一帧朝向不动（避免抖成陀螺）
+      const dir = { x: g.x - body.lastPos.x, y: g.y - body.lastPos.y, z: g.z - body.lastPos.z };
+      if (Math.hypot(dir.x, dir.y, dir.z) > 1e-4) {
+        this.orientBolt(body.group, dir, body.visual, dt, showTrail);
+      }
       body.lastPos.x = g.x;
       body.lastPos.y = g.y;
       body.lastPos.z = g.z;
 
-      if (trailDue && showTrail) {
+      const plan = trailPlanFor(body.visual.particle, density);
+      if (showTrail && plan.count > 0 && this.trailTimer >= plan.cadence) {
         // 真投射物（弩箭）的拖尾用轨迹条贴图 trace_05，与法术弹体的属性粒子区分
         this.emitBurst(body.lastPos, body.visual, {
-          count: 3, speed: 0.5, size: 0.45, life: 0.32, drag: 4, opacity: 0.9,
+          count: plan.count, speed: 0.6, size: plan.size, life: plan.life,
+          gravity: plan.gravity, drag: plan.drag, opacity: plan.opacity,
           texture: this.accentTex.get('trail') ?? this.texFor(body.visual.particle),
           stream: true,
         });
       }
     }
+    // ★ 节拍计时器在**遍历之后**清零：多发弩箭同帧共用一个节拍，
+    //   不会因为「第一发清了零」让后面几发这一帧发不出来
+    if (this.trailTimer >= trailPlanFor('spark', density).cadence) this.trailTimer = 0;
 
     // 消失的飞行体 → 命中爆发 + 回收
     for (const id of this.seenProjectiles) {
@@ -1125,16 +1172,70 @@ export class SpellVfx {
 
   // ── 飞行体节点 ────────────────────────────────────────────────
 
-  /** 弹体外观：实心核（无贴图也可见）+ 加法辉光贴片。Q 版基调 —— 弹体要大到看不漏 */
+  /**
+   * 弹体外观。**整组沿速度方向定向**（见 `boltOrientation`），所有拉长的部件
+   * 都摆在本地 -Z（后方），于是一转就自动跟着飞行方向走。
+   *
+   * 五层，从内到外：
+   *   1. 实心核  —— 无贴图也可见的最后一道保底（essential）
+   *   2. 拖长锥  —— 沿速度拉长的尾锥，「这是飞过去的」的形状信号（essential）
+   *   3. 属性头  —— 火用 `fire_01`、冰用 `star_07`… 这才是「火焰球 / 冰晶球」
+   *   4. 辉光    —— 一圈软光晕
+   *   5. 彗尾条  —— `trace_05` 拉长的一条尾迹（decorative，低画质裁）
+   *
+   * ★★ **几何体一律逐实例新建，绝不共享**：`disposeNode()` 会 traverse 释放
+   *   所有 Mesh 的几何体 —— 共享的话第一发弹体消失就把全场弹体打成空白。
+   *   （与文件里那条「Sprite 全体共用一个模块级几何体」是同一个坑的两面。）
+   */
   private makeBoltNode(av: AttributeVisual): THREE.Group {
     const g = new THREE.Group();
+
+    // 1. 实心核
     const core = new THREE.Mesh(
-      new THREE.SphereGeometry(0.3, 12, 12),
+      new THREE.SphereGeometry(0.24, 12, 12),
       new THREE.MeshBasicMaterial({ color: av.primary }),
     );
     core.renderOrder = 5;
     g.add(core);
 
+    // 2. 拖长锥：底面在前、尖端朝后 —— 读作「拖着走」
+    //    ConeGeometry 默认尖端在 +Y；rotateX(-90°) 把 +Y 转到 **-Z**（后方）
+    const coneGeo = new THREE.ConeGeometry(0.2, 0.95, 12, 1, true);
+    coneGeo.rotateX(-Math.PI / 2);
+    const cone = new THREE.Mesh(
+      coneGeo,
+      new THREE.MeshBasicMaterial({
+        color: av.secondary,
+        transparent: true,
+        opacity: 0.7,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+      }),
+    );
+    cone.position.z = -0.5;
+    cone.renderOrder = 5;
+    g.add(cone);
+
+    // 3. 属性头部：火焰/冰晶/符文…（Sprite 恒面向镜头，任何角度都认得出属性）
+    const head = this.particleTex.get(av.particle);
+    if (head) {
+      const sprite = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: head,
+          color: av.primary,
+          transparent: true,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        }),
+      );
+      sprite.scale.setScalar(1.35);
+      sprite.position.z = 0.12;
+      sprite.renderOrder = 6;
+      g.add(sprite);
+    }
+
+    // 4. 辉光（比旧实现小一圈，给头部让位）
     const glow = this.accentTex.get('glow');
     if (glow) {
       const sprite = new THREE.Sprite(
@@ -1146,11 +1247,64 @@ export class SpellVfx {
           blending: THREE.AdditiveBlending,
         }),
       );
-      sprite.scale.setScalar(1.7);
+      sprite.scale.setScalar(1.25);
       sprite.renderOrder = 5;
       g.add(sprite);
     }
+
+    /**
+     * 5. 彗尾条：★ 连贯的那条尾巴是它，粒子只负责撒落的余烬/雪花。
+     *    零池占用 —— 挂在已定向的组下面，自动沿速度对齐。
+     *
+     * ★★ **两片交叉**而不是一片：一片贴片沿飞行方向躺平之后，从侧面看是
+     *   一条零厚度的线（几乎不可见）。交叉双片（法线一个朝 Y、一个朝 X）
+     *   在任何视角都至少有一片正对镜头 —— 拖尾/火焰的老办法，
+     *   比让它 billboard 便宜，也不会在弹体转向时打转。
+     */
+    const trailTex = this.accentTex.get('trail');
+    if (trailTex) {
+      const tailMat = new THREE.MeshBasicMaterial({
+        map: trailTex,
+        color: av.primary,
+        transparent: true,
+        opacity: 0.5,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+      });
+      for (const roll of [0, Math.PI / 2]) {
+        // 贴图长边是 Y：绕 X 转 -90° 让长边躺进 -Z（后方），再绕长轴滚 0/90°
+        const geo = new THREE.PlaneGeometry(0.62, 3.2);
+        geo.rotateX(-Math.PI / 2);
+        if (roll !== 0) geo.rotateZ(roll);
+        const tail = new THREE.Mesh(geo, tailMat);
+        tail.position.z = -1.7;
+        tail.renderOrder = 4;
+        tail.name = 'bolt-tail'; // 画质裁剪按名字找它（projectileTrail 装饰角色）
+        g.add(tail);
+      }
+    }
     return g;
+  }
+
+  /**
+   * 弹体定向 + 彗尾条的画质门禁。两件事都只跟「这一帧往哪飞」有关，收在一处。
+   * ★ `swirl > 0` 的属性（奥术符文、自然叶片）再叠一层自旋 —— 14.2 的
+   *   「符文旋绕 / 叶片打旋」在弹体上的兑现。
+   */
+  private orientBolt(
+    group: THREE.Group, dir: Vec3Like, av: AttributeVisual, dt: number, showTrail: boolean,
+  ): void {
+    const { yaw, pitch } = boltOrientation(dir);
+    group.rotation.order = 'YXZ';
+    group.rotation.y = yaw;
+    group.rotation.x = pitch;
+    const swirl = MOTION[av.particle].swirl;
+    if (swirl > 0) group.rotation.z += swirl * dt;
+    // ★ 两片交叉的尾条都要切（getObjectByName 只返回第一个，会漏掉另一片）
+    for (const child of group.children) {
+      if (child.name === 'bolt-tail') child.visible = showTrail;
+    }
   }
 
   private ensureProjBody(id: number, skillId: string): ProjBody {
@@ -1284,6 +1438,7 @@ export class SpellVfx {
       groundRings: this.rings.size,
       activeWindups: this.windups.size,
       windupEmitters: this.windupEmitterCount,
+      trailEmitters: this.trailEmitterCount,
       activeFlashes: this.flashes.activeCount,
     };
   }
