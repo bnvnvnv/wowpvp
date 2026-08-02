@@ -107,7 +107,13 @@ export interface SpellVfxStatus {
   texturesLoaded: number;
   texturesTotal: number;
   attributesCovered: number;
+  /**
+   * 当前存活的爆发数。★ **两池之和** —— 分池是内部结构调整，
+   * 既有诊断脚本（diag-vfx / diag-net）读的是这个语义，不能变。
+   */
   activeBursts: number;
+  /** 其中细流池占用（拖尾/地面填充/蓄力）。低画质下应恒为 0 */
+  streamBursts: number;
   projectileBodies: number;
   /** 当前在飞的表现用弹体数 */
   visualBolts: number;
@@ -273,7 +279,18 @@ interface VisualBolt {
 
 export class SpellVfx {
   readonly group = new THREE.Group();
+  /**
+   * **事件型**爆发：命中、释放 pop、死亡、破盾、规避。
+   * ★ 短促、要立刻被看见 —— 48 粒 × 32 格，一发 8 目标 AOE 占 16 格。
+   */
   private readonly pool = new BurstPool(32);
+  /**
+   * **持续型**细流：弹体拖尾、地面区域填充、施法蓄力。
+   * ★★ 与事件池分开是**结构性修复**不是优化：细流每隔几十毫秒就要占一格，
+   *   合在一起时它们会把命中爆发挤出池子（回收策略是「最旧的」，
+   *   而最旧的往往正是刚才那记重击）。分池之后两边互不影响。
+   */
+  private readonly streams = new BurstPool(40, 24);
   /**
    * 刀光、免疫白闪与冲击波环（要随机旋转/展开，Points 做不了）。
    * 16 而不是 12：冲击波是新消费者，重击一发要占两个槽（刀光 + 环）——
@@ -306,6 +323,7 @@ export class SpellVfx {
   constructor() {
     this.group.name = 'spell-vfx';
     this.group.add(this.pool.group);
+    this.group.add(this.streams.group);
     this.group.add(this.flashes.group);
     void this.preload();
   }
@@ -582,10 +600,12 @@ export class SpellVfx {
     // 缓存画质给 onCombatEvent 的碎屑门禁用（事件不在 frame 里到达）
     this.quality = ctx.quality;
     this.pool.setScale(ctx.pointScale);
+    this.streams.setScale(ctx.pointScale);
     this.syncProjectiles(ctx.projectiles, ctx.quality, dt, ctx.now);
     this.syncGround(ctx.grounds, ctx.quality, dt);
     this.updateBolts(dt, ctx.quality);
     this.pool.update(dt);
+    this.streams.update(dt);
     this.flashes.update(dt);
   }
 
@@ -615,6 +635,7 @@ export class SpellVfx {
         if (showTrail) {
           this.emitBurst(g, b.visual, {
             count: 3, speed: 0.5, size: 0.42, life: 0.3, drag: 4, opacity: 0.9,
+            stream: true,
           });
         }
         continue;
@@ -711,6 +732,7 @@ export class SpellVfx {
         this.emitBurst(body.lastPos, body.visual, {
           count: 3, speed: 0.5, size: 0.45, life: 0.32, drag: 4, opacity: 0.9,
           texture: this.accentTex.get('trail') ?? this.texFor(body.visual.particle),
+          stream: true,
         });
       }
     }
@@ -768,6 +790,7 @@ export class SpellVfx {
           {
             count: Math.max(2, Math.round(4 * density)),
             speed: 0.6, size: 0.34, life: 0.8, gravity: 1.4, spread: 'disc',
+            stream: true,
           },
         );
       }
@@ -794,12 +817,17 @@ export class SpellVfx {
       opacity?: number;
       /** 覆盖默认的属性主粒子贴图（拖尾用轨迹条时传）。null = 程序化软圆点 */
       texture?: THREE.Texture | null;
+      /**
+       * 走**细流池**而不是事件池。★ 拖尾/地面填充/蓄力这类每隔几十毫秒
+       * 就发一次的必须传 true —— 否则它们会把命中爆发挤出事件池。
+       */
+      stream?: boolean;
     },
   ): void {
     const motion = MOTION[av.particle];
     // 近镜头（第一人称）压低透明度，不糊满屏（14.3）
     const closeFade = this.cameraDistance < 3 ? 0.45 : 1;
-    this.pool.emit({
+    (opts.stream === true ? this.streams : this.pool).emit({
       origin,
       count: opts.count,
       primary: av.primary,
@@ -984,7 +1012,8 @@ export class SpellVfx {
       texturesLoaded: this.texturesLoaded,
       texturesTotal: VFX_TEXTURE_FILES.length,
       attributesCovered: Object.keys(PARTICLE_TEXTURE).length,
-      activeBursts: this.pool.activeCount,
+      activeBursts: this.pool.activeCount + this.streams.activeCount,
+      streamBursts: this.streams.activeCount,
       projectileBodies: this.projBodies.size,
       visualBolts: this.bolts.length,
       groundRings: this.rings.size,
@@ -999,6 +1028,7 @@ export class SpellVfx {
     this.bolts.length = 0;
     for (const key of [...this.rings.keys()]) this.removeRing(key);
     this.pool.dispose();
+    this.streams.dispose();
     this.flashes.dispose();
   }
 }

@@ -54,6 +54,11 @@ export interface BurstOptions {
   opacity?: number;
 }
 
+/**
+ * 单个爆发的粒子数上限。
+ * ★ 这是**默认值**，不是硬上限：细流池（拖尾/地面填充/蓄力）用更小的每格容量，
+ *   同样的显存换更多并发格子 —— 见 `BurstPool` 的 `particleCap`。
+ */
 const MAX_PARTICLES = 48;
 
 /** 先胀后消：t∈[0,1] → 0→1→0，起手略大好让 pop 立刻可见 */
@@ -109,11 +114,13 @@ class Burst {
   private readonly alphaAttr: THREE.BufferAttribute;
 
   // per-particle 运行时状态（不进 GPU）
-  private readonly vel = new Float32Array(MAX_PARTICLES * 3);
-  private readonly life = new Float32Array(MAX_PARTICLES);
-  private readonly maxLife = new Float32Array(MAX_PARTICLES);
-  private readonly baseSize = new Float32Array(MAX_PARTICLES);
+  private readonly vel: Float32Array;
+  private readonly life: Float32Array;
+  private readonly maxLife: Float32Array;
+  private readonly baseSize: Float32Array;
 
+  /** 本格的粒子容量。emit 的 count 超过它会被静默钳下来 */
+  private readonly capacity: number;
   private count = 0;
   private gravity = 0;
   private drag = 0;
@@ -122,12 +129,19 @@ class Burst {
   bornAt = 0;
   alive = false;
 
-  constructor() {
+  constructor(capacity = MAX_PARTICLES) {
+    this.capacity = Math.max(1, Math.floor(capacity));
+    const cap = this.capacity;
+    this.vel = new Float32Array(cap * 3);
+    this.life = new Float32Array(cap);
+    this.maxLife = new Float32Array(cap);
+    this.baseSize = new Float32Array(cap);
+
     const geo = new THREE.BufferGeometry();
-    this.posAttr = new THREE.BufferAttribute(new Float32Array(MAX_PARTICLES * 3), 3);
-    this.colAttr = new THREE.BufferAttribute(new Float32Array(MAX_PARTICLES * 3), 3);
-    this.sizeAttr = new THREE.BufferAttribute(new Float32Array(MAX_PARTICLES), 1);
-    this.alphaAttr = new THREE.BufferAttribute(new Float32Array(MAX_PARTICLES), 1);
+    this.posAttr = new THREE.BufferAttribute(new Float32Array(cap * 3), 3);
+    this.colAttr = new THREE.BufferAttribute(new Float32Array(cap * 3), 3);
+    this.sizeAttr = new THREE.BufferAttribute(new Float32Array(cap), 1);
+    this.alphaAttr = new THREE.BufferAttribute(new Float32Array(cap), 1);
     this.posAttr.setUsage(THREE.DynamicDrawUsage);
     this.colAttr.setUsage(THREE.DynamicDrawUsage);
     this.sizeAttr.setUsage(THREE.DynamicDrawUsage);
@@ -162,7 +176,7 @@ class Burst {
   }
 
   emit(o: BurstOptions, now: number): void {
-    const n = Math.min(MAX_PARTICLES, Math.max(1, Math.floor(o.count)));
+    const n = Math.min(this.capacity, Math.max(1, Math.floor(o.count)));
     const speed = o.speed ?? 3.2;
     const spread = o.spread ?? 'sphere';
     const swirl = o.swirl ?? 0;
@@ -382,16 +396,28 @@ export class FlashPool {
 
 /**
  * 有界爆发池。全部 Burst 一次性 add 进 `group`，emit 只是复用其中一个。
+ *
+ * ★★ **两个参数是两种用法**：
+ *   · `capacity` = 并发格子数 —— 同时能有多少发爆发在场
+ *   · `particleCap` = 每格粒子上限 —— 一发爆发最多多密
+ *
+ *   事件型（命中/释放/死亡）要**密而少**：48 粒 × 32 格。
+ *   持续型（拖尾/地面填充/蓄力）要**稀而多**：24 粒 × 40 格 ——
+ *   它们本来就是每隔几十毫秒撒一小簇，密度靠频率而不是靠单簇粒子数。
+ *
+ *   ⚠️ 两者混在一个池里的后果实测过：拖尾每帧每弹体各占一格，
+ *   24 发在飞时 60fps 下每秒申请 1440 次 emit，32 格的池被自己刷空 ——
+ *   玩家看到的是「拖尾很稀」和「命中爆发时有时无」，而参数明明写着不稀。
  */
 export class BurstPool {
   readonly group = new THREE.Group();
   private readonly bursts: Burst[] = [];
   private clock = 0;
 
-  constructor(capacity = 24) {
+  constructor(capacity = 24, particleCap = MAX_PARTICLES) {
     this.group.name = 'spell-vfx-bursts';
     for (let i = 0; i < capacity; i++) {
-      const b = new Burst();
+      const b = new Burst(particleCap);
       this.bursts.push(b);
       this.group.add(b.points);
     }
