@@ -46,7 +46,9 @@ const skills: SkillDef[] = [
     counters:
       '读条可被专用打断并锁神圣学派 3 秒，也可被移动、控制、强制位移和失去视线终止（7.1 / 7.3）；学派锁定期间快速治疗和群体驱散会一起被封，是牧师最大的软肋。',
     // M14：140→155 —— 惩击是牧师唯一不锁武器方案的主动输出
-    effects: [{ kind: 'damage', school: School.Holy, amount: { flat: 155 } }],
+    // M14b：155→195 —— 减速/位移生效后牧师被压制（基线 31.0%→28.6%）：输给法师/死骑的都是
+    //   窄差竞速，175 不足以翻回，再抬一档
+    effects: [{ kind: 'damage', school: School.Holy, amount: { flat: 195 } }],
     description: '造成基础神圣伤害。1.2 秒读条，原地施放。',
     vfx: 'priest_smite',
   },

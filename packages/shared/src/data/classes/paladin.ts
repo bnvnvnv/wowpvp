@@ -42,10 +42,12 @@ const skills: SkillDef[] = [
     counters: '纯武器技能：缴械后完全禁用（7.3），但沉默和神圣学派锁定拦不住它；要求贴身 3 米并把目标保持在前方 180 度（6.5），被风筝或被定身拉开就断了圣能来源，荣耀圣令随之哑火。',
     effects: [
       // M14：1.1→0.8 —— 圣能修复（此前长在敌人身上，荣耀圣言从未施放过）后主动治疗增多，输出侧回调
-      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.8 } },
+      // M14b：0.8→0.72 —— 潜行 bug 修复批后圣骑以 64~67% 稳居首位；压治疗反而缩短对手
+      //   击杀窗口使胜率上升（实测 155→135 时 64.3→66.7），改压输出件
+      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.72 } },
       { kind: 'gainResource', resource: Resource.HolyPower, amount: 1 },
     ],
-    description: '造成 80% 武器伤害并获得 1 点圣能。',
+    description: '造成 72% 武器伤害并获得 1 点圣能。',
     vfx: 'paladin_crusader_strike',
   },
   {
@@ -66,7 +68,8 @@ const skills: SkillDef[] = [
     counters: '神圣学派：被责难以外的专用打断锁住神圣学派、或自己处于沉默期间都用不出来（7.2 / 7.3）；易伤是魔法减益，敌方驱散一次就抹掉 4 秒增伤窗口（8.4）；释放瞬间失去视线或超出 25 米直接失败（7.4），柱子绕视野是最省事的应对。',
     effects: [
       // M14：110→70 —— 审判附带 +10% 易伤（casterScoped），本体压低
-      { kind: 'damage', school: School.Holy, amount: { flat: 70 } },
+      // M14b：70→58 —— 与圣愈术同批：输出与续航各让一档，而不是把单一件砍穿
+      { kind: 'damage', school: School.Holy, amount: { flat: 58 } },
       {
         kind: 'applyAura',
         aura: {
@@ -109,7 +112,9 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 220 },
     counters: '1.5 秒读条是圣骑士最大的破绽：专用打断命中会锁神圣学派 3 秒（7.2），沉默、昏迷、恐惧、击退拉拽以及自己主动移动都会直接中止（7.3）；完成瞬间目标死亡、超出 30 米或失去视线同样失败（7.4）；治疗量还会被致死创伤类降治疗减益和竞技场战斗抑制（8.5）压低。',
     // M14：340→200 —— 1.5s 读条大治疗：占位值下圣骑不可击杀，六轮迭代逐步压到位
-    effects: [{ kind: 'heal', amount: { flat: 200 } }],
+    // M14b：200→160 —— 减速/位移生效后圣骑在每轮基线都以 62~69% 稳居首位，
+    //   续航是他每一轮的胜因（场均 24~27s 的消耗局），逐步压到位
+    effects: [{ kind: 'heal', amount: { flat: 140 } }],
     description: '为友方恢复大量生命。1.5 秒读条，必须原地，可被打断。',
     vfx: 'paladin_holy_light',
   },
@@ -430,7 +435,8 @@ const weapons: WeaponDef[] = [
     handedness: 'oneHand',
     swingInterval: 1.8,
     // M14：0.9→0.72 —— 圣骑曾以 85.7% 胜率霸榜；治疗+圣盾的生存性由白字侧买单
-    swingPercent: 0.72,
+    // M14b：0.72→0.68 —— 对非治疗职业的竞速差值只有 100~250（治疗 200~540 兜底），白字再让半档
+    swingPercent: 0.68,
     reach: RANGE.MELEE,
     modifiers: { block: 0.15, damageTaken: 0.88 },
     advantage: '防御 +12%，可格挡',

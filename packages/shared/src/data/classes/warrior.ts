@@ -63,7 +63,8 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Rage, amount: 20 },
     counters: '要求贴身并面向目标；缴械后无法使用；降低治疗的减益属于魔法以外的物理效果，不可被驱散魔法移除。',
     effects: [
-      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 1.6 } },
+      // M14b：1.6→1.5 —— 断筋减速生效后战士贴脸时间大增（基线 61.9%），主输出件回调
+      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 1.5 } },
       {
         kind: 'applyAura',
         aura: {
@@ -79,7 +80,7 @@ const skills: SkillDef[] = [
         },
       },
     ],
-    description: '造成 160% 武器伤害，并使目标受到的治疗降低 25%，持续 5 秒。',
+    description: '造成 150% 武器伤害，并使目标受到的治疗降低 25%，持续 5 秒。',
   },
   {
     id: asSkillId('warrior.hamstring'),

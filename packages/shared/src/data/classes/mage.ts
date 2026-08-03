@@ -47,7 +47,8 @@ const skills: SkillDef[] = [
       '原地读条：任何主动移动都会自行终止（7.3）；可被专用打断并锁定冰霜学派 3 秒、被沉默、硬控制或击退终止；减速属于魔法效果，可被驱散魔法或自由祝福解除，且不与其他减速叠乘。',
     effects: [
       // M14：120→205 —— 白字压回「低伤害」后主读条承担输出，读条可打断即其反制面
-      { kind: 'damage', school: School.Frost, amount: { flat: 205 } },
+      // M14b：205→230 —— 位移生效后近战 7~8 秒贴脸击杀，法师输在 100~300 伤害的窄差（基线 28.6%）
+      { kind: 'damage', school: School.Frost, amount: { flat: 230 } },
       {
         kind: 'applyAura',
         aura: {

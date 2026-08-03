@@ -99,10 +99,14 @@ const skills: SkillDef[] = [
       '距离只有 2.4 米，是全游戏最短的近战触及，被减速或击退就打不到；+50% 加成要求站在目标背后约 120 度扇形内（6.5），目标只要转身面向就吃不到，且只旋转镜头不改变朝向这条规则对双方同样成立；缴械后无法使用；双剑方案的背后加成明显降低。',
     effects: [
       // M14：1.15→0.7 —— 背刺无冷却，是能量的主要出口；配合背后 +50% 保留偷袭奖励
-      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.7 }, behindBonus: 0.5 },
+      // M14b：曾按「61.9% 磨血全胜」回调到 0.65，随后查明那是潜行永不解除的 bug
+      //   （见 combat.ts 的 breakStealthOf）—— bug 修掉后盗贼跌到 11.9%，数值退回 M14 原值
+      // M14b：0.7→0.9 —— M14 的 1.15→0.7 是按着潜行 bug 的虚高压的；bug 修掉后盗贼
+      //   变成 DPS 全场最低（28）的普通近战，主输出件抬回大半
+      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.9 }, behindBonus: 0.5 },
       { kind: 'gainResource', resource: Resource.ComboPoints, amount: 1 },
     ],
-    description: '造成 70% 武器伤害并获得 1 个连击点。从背后攻击时伤害提高 50%。',
+    description: '造成 90% 武器伤害并获得 1 个连击点。从背后攻击时伤害提高 50%。',
     vfx: 'rogue_backstab',
   },
   {
@@ -128,10 +132,13 @@ const skills: SkillDef[] = [
         kind: 'spendComboPoints',
         perPointMultiplier: 1,
         // M14：0.5→0.42 —— 终结技随连击点修复（此前连击点长在敌人身上、终结技永远空转）而实际生效，随之回调
-        base: { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.42 } },
+        // M14b：曾误判「69% 是磨血过强」回调到 0.36 —— 真根因是潜行永不解除的 bug，
+        //   修掉后退回 M14 原值
+        // M14b：0.42→0.48 —— 与背袭同理由，终结技随主输出件同抬（潜行 bug 修复批）
+        base: { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.48 } },
       },
     ],
-    description: '消耗全部连击点造成终结伤害，每点 42% 武器伤害（5 点约 210%）。',
+    description: '消耗全部连击点造成终结伤害，每点 48% 武器伤害（5 点约 240%）。',
     vfx: 'rogue_eviscerate',
   },
   {
@@ -302,12 +309,12 @@ const skills: SkillDef[] = [
           clearableByTrinket: false,
           // M14：0.5→0.35 —— 五成正面闪避在 bot 无法绕后的基线里近乎半免伤窗口
           modifiers: { dodgeFront: 0.35 },
-          description: '正面闪避几率提高 50%。法术不受影响。',
+          description: '正面闪避几率提高 35%。法术不受影响。',
           vfx: 'rogue_evasion',
         },
       },
     ],
-    description: '5 秒内正面闪避几率提高 50%。法术不受影响。',
+    description: '5 秒内正面闪避几率提高 35%。法术不受影响。',
     vfx: 'rogue_evasion',
   },
   {
@@ -414,7 +421,9 @@ const weapons: WeaponDef[] = [
     handedness: 'dualWield',
     swingInterval: 0.7,
     // M14：0.6→0.25 —— 站桩白字曾是 bot 基线的主宰源（盗贼一度 100% 胜率），重心移到技能与控制
-    swingPercent: 0.25,
+    // M14b：0.25→0.4 —— 当年的 100% 胜率其实是「潜行永不解除」bug 的产物（对手全程打不到他），
+    //   0.25 是按着 bug 校准的过度矫正；bug 修掉后盗贼 DPS 全场最低（28~30），白字抬回一部分
+    swingPercent: 0.45,
     reach: RANGE.DAGGER,
     modifiers: { resourceGain: 1.15 },
     advantage: '背后爆发最高，能量循环快',
@@ -435,7 +444,8 @@ const weapons: WeaponDef[] = [
     handedness: 'dualWield',
     swingInterval: 0.9,
     // M14：0.75→0.32 —— 与匕首档协调（单击仍高于匕首、攻速更慢），保持 #31 取舍
-    swingPercent: 0.32,
+    // M14b：0.32→0.56 —— 随匕首档同抬（见上），保持「单击更高、攻速更慢」的相对关系
+    swingPercent: 0.56,
     reach: RANGE.MELEE,
     advantage: '正面持续伤害稳定',
     cost: '背后加成降低，攻速慢',
@@ -479,7 +489,9 @@ export const rogue: ClassDef = {
   baseHealth: 950,
   resources: [
     // M14：10→6 —— 能量回复兑现（此前 regen 是死数据）后按 40 耗背刺 ≈ 6.7s 一发定节奏
-    { resource: Resource.Energy, max: 100, start: 100, regenPerSecond: 6 },
+    // M14b：6→10 —— 潜行 bug 修复后全场竞速加快（场均 9~25s），6/s 下背袭（40 耗）
+    //   靠回复 6.7 秒一刀，盗贼在短局里能量饥荒（DPS 28 全场最低）。对齐德鲁伊能量档
+    { resource: Resource.Energy, max: 100, start: 100, regenPerSecond: 10 },
     // 连击点靠背刺、剑刃连击、反击刺产出，不自然回复
     { resource: Resource.ComboPoints, max: 5, start: 0, regenPerSecond: 0 },
   ],

@@ -56,7 +56,8 @@ const skills: SkillDef[] = [
     counters: '瞬发但伤害偏低，靠持续伤害积累；持续伤害属于魔法减益，可被驱散魔法直接移除（8.4），也不能被「战斗意志」解除（8.3）；沉默期间无法施放；只能在人形下使用，进入形态后失去这条消耗手段。',
     effects: [
       // M14：90→175 —— 月火是德鲁伊唯一直伤：占位值下他打不死任何人（基线 4.8% 胜率）
-      { kind: 'damage', school: School.Nature, amount: { flat: 175, powerCoef: 0.35 } },
+      // M14b：175→205 —— 减速与位移生效后近战贴脸时间变长，唯一直伤再抬一档（基线 19.0%）
+      { kind: 'damage', school: School.Nature, amount: { flat: 205, powerCoef: 0.35 } },
       {
         kind: 'applyAura',
         aura: {
