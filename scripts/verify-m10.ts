@@ -17,6 +17,7 @@ import {
   clearAuras,
   encodeClientMessage,
   asClassId,
+  School,
   type AuraDef,
   type ClientMessage,
   type ServerMessage,
@@ -33,6 +34,21 @@ const STEALTH_AURA: AuraDef = {
   duration: 999,
   kind: 'buff',
   flags: { stealthed: true },
+} as AuraDef;
+
+/**
+ * 一个最小的持续伤害光环，给 1c 用：**保持隐身的伤害来源**。
+ * ★ 「攻击解除潜行」落地后（`combat.ts` 的 `breakStealthOf`），主动施法
+ *   会当场现身 —— 来源抹除规则的适用场景只剩「人不可见、伤害还在跳」
+ *   （典型：挂着 DoT 遁形）。周期跳不破**施加者**的潜行（`!ctx.periodic`）。
+ * ★ 间隔取 0.2s 是让测试少推几个 tick，不是玩法数值。
+ */
+const DOT_AURA: AuraDef = {
+  id: 'verify.dot',
+  name: '验收用持续伤害',
+  duration: 999,
+  kind: 'debuff',
+  periodic: { interval: 0.2, effects: [{ kind: 'damage', school: School.Shadow, amount: { flat: 30 } }] },
 } as AuraDef;
 
 import { startServer } from '../packages/server/src/index.ts';
@@ -196,26 +212,58 @@ console.log('\n── 验收 #5 / #36：裁剪发生在快照层，不是客户�
     for (const [r, max] of redE.maxResources) redE.resources.set(r, max);
     redE.cooldowns.clear();
     redE.gcdUntil = 0;
-    redE.targets.hard = blueId;
+    /**
+     * ★ 1c 期间红方**不能有硬目标**：有目标就会白字自动攻击，而普攻是
+     *   主动攻击、会正确地解除潜行（breakStealthOf）—— 那测的就成了 1d。
+     *   隐身挂 DoT 的人不在平砍，这也是真实场景。1d 的施法请求自带 targetId。
+     */
+    redE.targets.hard = undefined;
 
-    applyAura(match.auras, redE, STEALTH_AURA, redId, match.world.time);
+    /**
+     * ★★ 1c 的场景在「攻击解除潜行」落地后换了载体：主动施法会**当场现身**
+     *   （9.4 的原文，此前全仓库没人实现，见 `combat.ts` 的 `breakStealthOf`），
+     *   所以「人不可见、伤害还在跳」只剩一种真实形态 —— 挂着 DoT 隐身。
+     *   周期跳不破施加者的潜行（`!ctx.periodic`），这正是要验的组合。
+     */
     const loop = server.rooms.loopOf('cull')!;
+    applyAura(match.auras, blueE, DOT_AURA, redId, match.world.time);
+    applyAura(match.auras, redE, STEALTH_AURA, redId, match.world.time);
     loop.advance();               // 让潜行光环派生进 flags
     blue.clear();
 
-    // ★ 走**真实客户端**的路径发施法请求
-    red.send({ t: 'CastRequest', skillId: 'mage.fire_blast' as never, targetId: blueId });
-    for (let i = 0; i < 6; i++) { loop.advance(); await sleep(20); }
+    for (let i = 0; i < 30; i++) { loop.advance(); await sleep(5); }
     await sleep(200);
 
     const dmg = blue.msgs.filter((m) => m.t === 'Damage');
     const leaksSource = blue.raw.some(
       (f) => f.includes('"Damage"') && f.includes(`"sourceId":${redId}`),
     );
-    check('1c', '★★ 被不可见者攻击：伤害可见但来源被抹掉（14.1 × 验收 #5）',
+    check('1c', '★★ 被不可见者的 DoT 打到：伤害可见但来源被抹掉（14.1 × 验收 #5）',
       dmg.length > 0 && !leaksSource,
       `蓝方收到 ${dmg.length} 条 Damage（必须 >0，否则这条平凡成立）；` +
       `带潜行者 sourceId 的帧＝${leaksSource ? '有（泄露）' : '无'}`);
+
+    clearAuras(match.auras, blueId);
+
+    /**
+     * ★ 1d：**主动攻击**则相反 —— 攻击解除潜行，攻击者现身，
+     *   受害者应当收到带来源的伤害事件（打你的人就站在你面前）。
+     *   这条与 1c 互为边界：抹除只保护仍然不可见的来源，不是永久匿名权。
+     */
+    blue.clear();
+    red.send({ t: 'CastRequest', skillId: 'mage.fire_blast' as never, targetId: blueId });
+    for (let i = 0; i < 6; i++) { loop.advance(); await sleep(20); }
+    await sleep(200);
+
+    const dmg2 = blue.msgs.filter((m) => m.t === 'Damage');
+    const sourceVisible = blue.raw.some(
+      (f) => f.includes('"Damage"') && f.includes(`"sourceId":${redId}`),
+    );
+    const stillStealthed = redE.flags.stealthed;
+    check('1d', '★ 从潜行中主动攻击 → 当场现身，来源可见（9.4 攻击解除潜行）',
+      dmg2.length > 0 && sourceVisible && !stillStealthed,
+      `蓝方收到 ${dmg2.length} 条 Damage；来源可见＝${sourceVisible}；` +
+      `攻击后仍隐身＝${stillStealthed ? '是（bug）' : '否'}`);
 
     clearAuras(match.auras, redId);
   }

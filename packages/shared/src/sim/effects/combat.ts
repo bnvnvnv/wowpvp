@@ -16,6 +16,7 @@ import { asSkillId } from '../../types/ids.js';
 import {
   applyAura,
   applyDamageToBreakables,
+  aurasOf,
   clearByTrinket,
   consumeAbsorb,
   dispel as dispelAuras,
@@ -93,6 +94,21 @@ export const dealDamage = (
   opts: DamageOptions = {},
 ): number => {
   if (!target.alive || rawAmount <= 0) return 0;
+
+  /**
+   * ★★ 攻击解除**自己的**潜行（9.4 / 潜行光环的说明原文：
+   *   「攻击、受到伤害或被近距离发现会解除」）。
+   *
+   *   在此之前**全仓库没有任何实现移除潜行光环** —— 又一条「写在数据里、
+   *   没人实现」：盗贼从潜行中攻击后**仍然隐身**，对手永远无法选中他
+   *   （验收 #5 的不可选中是对的，错在潜行永不结束）。配平基线里
+   *   盗贼因此把所有不会治疗的职业单方面磨死（对手整场 0 伤害）。
+   *
+   * ★ `!ctx.periodic`：自己**过去**挂的 DoT 跳伤不破自己的新潜行 ——
+   *   否则毒刃 12 秒 DoT 期间遁形永远无效，「遁形」这个技能等于不存在。
+   *   受害者侧（下方）不受此限：被任何伤害打到都解除潜行。
+   */
+  if (!ctx.periodic) breakStealthOf(ctx, ctx.source);
 
   const flags = target.flags;
   const fullyImmune = flags.immuneAll && !opts.bypassImmunity;
@@ -190,6 +206,9 @@ export const dealDamage = (
   const dealt = before - target.health;
   const overkill = Math.max(0, remaining - before);
 
+  // ★ 受到伤害解除**目标的**潜行（含被护盾吸收的 —— 挨了一下就是挨了一下）
+  if (dealt > 0 || absorbed > 0) breakStealthOf(ctx, target);
+
   ctx.events.push({
     t: 'damage', sourceId: ctx.source.id, targetId: target.id,
     amount: dealt, school, absorbed, overkill, immune: false,
@@ -215,6 +234,24 @@ export const dealDamage = (
 };
 
 const drCategoryOfAura = (def: AuraDef): DrCategory | undefined => def.drCategory;
+
+/**
+ * 解除一个实体身上的全部潜行光环（按 `flags.stealthed` 识别，不硬编码光环 id）。
+ * 立即同步实体标志 —— `deriveStatusFlags` 在 tick 第 6 步才跑，
+ * 不同步的话同一 tick 内后续的选中/命中判定还会把他当隐身。
+ */
+const breakStealthOf = (ctx: EffectContext, entity: CombatEntity): void => {
+  if (!entity.flags.stealthed) return;
+  for (const a of [...aurasOf(ctx.auras, entity.id)]) {
+    if (a.def.flags?.stealthed !== true) continue;
+    for (const r of removeAuraById(ctx.auras, entity.id, a.def.id, 'broken')) {
+      ctx.events.push({
+        t: 'auraRemoved', targetId: entity.id, auraId: r.aura.def.id, reason: 'broken',
+      });
+    }
+  }
+  entity.flags.stealthed = false;
+};
 
 /** 一次伤害被完全规避的方式。8.x / 815 行：命中反馈要能区分它们 */
 export type Avoidance = 'dodge' | 'parry' | 'block';

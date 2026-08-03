@@ -660,6 +660,59 @@ describe('★ StatusFlags 由光环派生 —— M2 的手动赋值被真正的�
   });
 });
 
+/**
+ * ★★ 潜行的解除。光环说明从 M9 起就写着「攻击、受到伤害或被近距离发现会解除」，
+ *   但全仓库**没有任何实现移除过潜行光环** —— 盗贼从潜行中攻击后仍然隐身，
+ *   对手永远无法选中他。配平基线里他因此把所有不会治疗的职业单方面磨死
+ *   （对手整场 0 伤害），69% 居首测的是这个 bug，不是职业强度。
+ */
+describe('★ 潜行解除（9.4：攻击、受到伤害会解除）', () => {
+  const stealth = (): AuraDef => ({
+    id: 'test.stealth', name: '潜行', kind: 'buff', duration: 600,
+    dispelType: DispelType.None, flags: { stealthed: true }, description: '',
+  });
+
+  it('★★ 攻击解除自己的潜行', () => {
+    run([{ kind: 'applyAura', target: 'self', aura: stealth() }], [caster]);
+    caster.flags = deriveStatusFlags(auras, caster);
+    expect(caster.flags.stealthed).toBe(true);
+
+    run([{ kind: 'damage', school: School.Physical, amount: { flat: 50 } }]);
+    expect(caster.flags.stealthed).toBe(false);
+    expect(aurasOf(auras, caster.id)).toHaveLength(0);
+  });
+
+  it('★★ 受到伤害解除目标的潜行（含被护盾吸收的）', () => {
+    run([{ kind: 'applyAura', target: 'target', aura: stealth() }]);
+    run([{ kind: 'applyAura', target: 'target', aura: shieldAura(1000) }]);
+    target.flags = deriveStatusFlags(auras, target);
+    expect(target.flags.stealthed).toBe(true);
+
+    run([{ kind: 'damage', school: School.Fire, amount: { flat: 50 } }]);
+    // 全被护盾吃掉也算「受到伤害」
+    expect(target.flags.stealthed).toBe(false);
+  });
+
+  it('★ 自己过去挂的 DoT 跳伤不破自己的新潜行（否则遁形在毒刃 DoT 期间永远无效）', () => {
+    run([{ kind: 'applyAura', target: 'target', aura: dotAura() }]);
+    run([{ kind: 'applyAura', target: 'self', aura: stealth() }], [caster]);
+    caster.flags = deriveStatusFlags(auras, caster);
+
+    // 推进到 DoT 跳伤：periodic 结算走 ctx.periodic = true
+    world.time += 1.1;
+    const ticks = tickAuras(auras, world.time).ticks;
+    expect(ticks.length).toBeGreaterThan(0);
+    for (const t of ticks) {
+      resolveEffects(
+        { world, auras, dr, projectiles, ground: groundStore, source: caster, skillId: 'dot', periodic: true },
+        t.effects, [target],
+      );
+    }
+    expect(caster.flags.stealthed).toBe(true); // 施加者的潜行不破
+    expect(target.flags.stealthed).toBe(false); // 被打的一方照常解除（本来也没潜行）
+  });
+});
+
 describe('真实技能数据能跑通', () => {
   it('战士致死打击造成伤害并施加降治疗减益', () => {
     const w = spawn(warrior, RED, 0, -4);
