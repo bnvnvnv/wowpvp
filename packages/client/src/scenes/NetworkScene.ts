@@ -139,6 +139,14 @@ export interface NetStatus {
    * 现在 M16d 补上了 —— 这两个数就是「补上了没有」的可执行证据。
    */
   shields: { visible: number; absorbs: number; breaks: number };
+  /**
+   * 最近 0.5 秒的平均帧率。
+   *
+   * ★★ 联网路径此前**完全没有任何帧率读数** —— 而 12v12 恰恰是最坏情况所在，
+   *   `#stats` 面板只在试验场渲染。零新增计算（`GameLoop` 本来就在算）。
+   * ★ 不作为验收判据，理由同 `TestbedScene.artStatus.fps`。
+   */
+  fps: number;
 }
 
 export class NetworkScene {
@@ -384,6 +392,7 @@ export class NetworkScene {
         absorbs: this.feedback.shieldAbsorbsSeen,
         breaks: this.feedback.shieldBreaksSeen,
       },
+      fps: this.loop.fps,
     };
   }
 

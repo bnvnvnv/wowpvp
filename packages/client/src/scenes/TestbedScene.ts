@@ -416,6 +416,17 @@ export class TestbedScene {
     };
     /** 14.3 护盾四态自检：当前几个人有壳、分别处于哪一态 */
     shields: { visible: number; states: string[] };
+    /**
+     * 最近 0.5 秒的平均帧率。
+     *
+     * ★ **零新增计算** —— `GameLoop` 每帧本来就在算它（只是此前只喂给
+     *   `#stats` 那个 DOM 面板）。挂在这里是为了让联网场景与诊断脚本也读得到。
+     * ★★ **不作为任何验收判据**：0.5 秒窗口平均值掩盖长尾帧，
+     *   而软件渲染下的绝对值更说明不了什么 —— `verify-m8.mjs` 的注释
+     *   已经论证过这一点，那个判断是对的。这个数只给人看，
+     *   用来回答「这一轮特效加下去，帧率有没有明显塌」。
+     */
+    fps: number;
   } {
     const views = [this.view, ...this.dummyViews.values()];
     const withModel = views.filter((v) => v.hasModel);
@@ -444,6 +455,7 @@ export class TestbedScene {
           .map((m) => m.shieldState)
           .filter((s): s is NonNullable<typeof s> => s !== null),
       },
+      fps: this.loop.fps,
     };
   }
 
