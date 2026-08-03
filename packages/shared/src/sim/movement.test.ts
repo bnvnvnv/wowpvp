@@ -233,6 +233,47 @@ describe('13.5 / 验收 #45 跳跃 — 保留动量、不增速、不瞬间反�
     expect(maxSpeed).toBeLessThanOrEqual(cap + 0.01);
   });
 
+  /**
+   * ★★ 8.4 × 13.5 的边界（docs/10 偏差 #13 的闭合断言，设计侧已拍板按 bug 口径）：
+   *   **被减速时跳起来也是减速的** —— 起跳不是反减速的操作技巧。
+   *
+   *   两道闸共同保证：空中目标速度 = `BASE_SPEED × speedMultiplier`（缩放过），
+   *   且 `airSpeedCap` 锁的是**起跳瞬间的实际速度**。任何一道被改掉
+   *   （比如空中目标改回未缩放的 BASE_SPEED），这两条断言就红。
+   *   偏差 #13 当时实测到 6.97 m/s，是试验场尚未接 speedMultiplier 时量的。
+   */
+  it('★ 被减速起跳：空中同样被减速，回不到基础速度', () => {
+    const slowed = { speedMultiplier: 0.7 };
+    let s = settle();
+    for (let i = 0; i < 120; i++) s = stepMovement(s, fwd(), DT, [ground], slowed).state;
+    const groundSpeed = Math.hypot(s.velocity.x, s.velocity.z);
+    expect(groundSpeed).toBeCloseTo(MOVE.BASE_SPEED * 0.7, 1);
+
+    s = stepMovement(s, { ...fwd(), jump: true }, DT, [ground], slowed).state;
+    let maxAir = 0;
+    for (let i = 0; i < 120 && !s.grounded; i++) {
+      s = stepMovement(s, fwd(), DT, [ground], slowed).state;
+      maxAir = Math.max(maxAir, Math.hypot(s.velocity.x, s.velocity.z));
+    }
+    expect(maxAir).toBeLessThanOrEqual(groundSpeed + 0.01);
+  });
+
+  it('★ 减速在空中到期，也不能超过起跳前的速度（airSpeedCap 锁在起跳瞬间）', () => {
+    const slowed = { speedMultiplier: 0.7 };
+    let s = settle();
+    for (let i = 0; i < 120; i++) s = stepMovement(s, fwd(), DT, [ground], slowed).state;
+    const jumpSpeed = Math.hypot(s.velocity.x, s.velocity.z);
+
+    s = stepMovement(s, { ...fwd(), jump: true }, DT, [ground], slowed).state;
+    let maxAir = 0;
+    for (let i = 0; i < 120 && !s.grounded; i++) {
+      // 减速到期：倍率回到 1，目标速度回到 7 —— 但空中上限不放行
+      s = stepMovement(s, fwd(), DT, [ground]).state;
+      maxAir = Math.max(maxAir, Math.hypot(s.velocity.x, s.velocity.z));
+    }
+    expect(maxAir).toBeLessThanOrEqual(jumpSpeed + 0.01);
+  });
+
   it('空中转向明显慢于地面（有限空中修正）', () => {
     // 地面上反向
     let groundState = run(settle(), fwd(0), [ground], 120);
