@@ -62,7 +62,7 @@ import { tickArena, type ArenaEvents, type ArenaState } from './match/arena.js';
 import { tickFlags, type CtfDeps, type CtfState, type FlagEvent } from './match/flag.js';
 import { tickRespawn, type RespawnEvent, type RespawnState } from './match/respawn.js';
 import {
-  stepMovement, type MovementInput, type MovementState,
+  separationVelocity, stepMovement, type MovementInput, type MovementState,
 } from './movement.js';
 import { pruneInvalidTargets } from './targeting.js';
 import { tickSwings, type SwingResult, type SwingStore } from './autoAttack.js';
@@ -359,10 +359,22 @@ export const tickWorld = (
      *   与 `deriveStatusFlags` 在第 7 步同理：本 tick 新挂的减速下一 tick 才生效，
      *   差一个 50ms 的 tick，可接受且确定性。
      */
+    /**
+     * ★★ 13.5 / 验收 #43 的软推开（`separationVelocity` 此前**零调用方**，
+     *   又一条「写好了没接线」：角色可以完全重叠站成一个点）。
+     *   对**所有**其他存活实体算 —— 包括没有移动条目的（站桩假人也占地方）。
+     * ★ 与移动的其它输入同规矩：只对**有输入条目**的实体积分 ——
+     *   联网客户端每 tick 都发输入（哪怕全零），所以真实对局全员生效。
+     */
+    const others: Vec3[] = [];
+    for (const o of listEntities(deps.world)) {
+      if (o.id !== id && o.alive) others.push(o.position);
+    }
     const r = stepMovement(state, input, dt, obstacles, {
       radius: e.radius,
       height: e.height,
       speedMultiplier: moveSpeedMultiplierOf(deps.auras, e, deps.world.time),
+      separation: separationVelocity(state.position, others, e.radius),
     });
     deps.movement.set(id, r.state);
     e.position = r.state.position;

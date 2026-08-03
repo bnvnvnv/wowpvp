@@ -16,6 +16,7 @@ import {
   distance2D,
   stepMovement,
   moveSpeedMultiplierOf,
+  separationVelocity,
   teleportTo,
   testbed,
   TESTBED_SPAWN,
@@ -988,6 +989,18 @@ export class TestbedScene {
          */
         speedMultiplier: moveSpeedMultiplierOf(
           this.combat.auras, this.combat.player, this.combat.now,
+        ),
+        /**
+         * ★ 13.5 / 验收 #43 软推开，与 `tickWorld` 第 2 步同源：
+         *   走到假人身上不再完全重叠成一个点，而是被轻轻挤开 —— 可以穿过
+         *   （硬碰撞会堵门）。同样只进位移不进速度，见 stepMovement 的注释。
+         */
+        separation: separationVelocity(
+          this.move.position,
+          this.combat.allEntities()
+            .filter((e) => e.alive && e.id !== this.combat.player.id)
+            .map((e) => e.position),
+          GEOMETRY.HITBOX_RADIUS,
         ),
       },
     );

@@ -226,6 +226,28 @@ describe('tickWorld 基本推进', () => {
     expect(player.position.x).toBeCloseTo(landed.x, 3);
     expect(player.position.z).toBeCloseTo(landed.z, 3);
   });
+
+  /**
+   * ★★ 13.5 / 验收 #43 软推开的接线断言 —— `separationVelocity` 此前零调用方，
+   *   两个角色可以完全重叠站成一个点。
+   * ★ 触发条件同位移测试：必须给**全零输入**条目 —— 第 2 步对无输入实体
+   *   直接 continue。真实对局里客户端每 tick 都发输入，所以全员生效。
+   */
+  it('★★ 重叠站位会被软推开（separationVelocity 接进 tickWorld）', () => {
+    // 把对手挪到几乎重叠的位置（0.2 米 < 2 × 半径 0.45）
+    foe.position = vec3(0.2, 0, 0);
+    movement.set(player.id, createMovementState(player.position));
+    movement.set(foe.id, createMovementState(foe.position));
+    inputs.set(player.id, { forward: 0, strafe: 0, jump: false, yaw: 0 });
+    inputs.set(foe.id, { forward: 0, strafe: 0, jump: false, yaw: 0 });
+
+    for (let i = 0; i < 40; i++) tickWorld(deps(), DT);
+
+    const gap = Math.hypot(player.position.x - foe.position.x, player.position.z - foe.position.z);
+    expect(gap, '两人应被推出重叠').toBeGreaterThanOrEqual(player.radius * 2 - 0.05);
+    // 软推开不是弹飞：推开后停在贴身距离附近，不会越推越远
+    expect(gap).toBeLessThan(2);
+  });
 });
 
 // ════════════════════════════════════════════════════════════════

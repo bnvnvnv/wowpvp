@@ -439,7 +439,18 @@ export class NetworkScene {
          */
         this.predictor = new Predictor(
           createMovementState({ x: 0, y: 0, z: 0 }, 0),
-          { obstacles: this.map?.geometry ?? [] },
+          {
+            obstacles: this.map?.geometry ?? [],
+            /**
+             * ★ 13.5 软推开的预测输入：最新快照里其他存活实体的位置。
+             *   与服务器的权威位置有一个快照间隔的偏差，但只在「与人重叠」的
+             *   短暂窗口内起效 —— 比完全不预测（重叠期每份快照橡皮筋）小得多。
+             */
+            others: () =>
+              this.lastEntities
+                .filter((e) => e.alive && e.id !== this.selfId)
+                .map((e) => e.position),
+          },
         );
         /**
          * ★ 重连也走这条分支（服务器重连成功后会再发一次 MatchStart）。

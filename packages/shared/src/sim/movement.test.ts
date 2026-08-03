@@ -341,6 +341,38 @@ describe('13.5 玩家碰撞 — 软推开，不形成实体堵门（验收 #43�
     const v = separationVelocity(vec3(0, 0, 0), [vec3(0.01, 0, 0)], GEOMETRY.HITBOX_RADIUS);
     expect(Math.hypot(v.x, v.z)).toBeLessThanOrEqual(MOVEMENT.SEPARATION_STRENGTH + 0.01);
   });
+
+  /**
+   * ★★ 接线断言：`stepMovement` 的 `separation` 输入真的会把人挪开。
+   *   `separationVelocity` 从 M1 就在、测试也绿 —— 但**零调用方**，
+   *   角色可以完全重叠站成一个点。这两条钉的是「函数被积分消费」这件事。
+   */
+  it('★ separation 输入参与位移积分：站着不动也会被挤开', () => {
+    let s = settle();
+    const other = vec3(0.3, 0, 0); // 深度重叠
+    for (let i = 0; i < 30; i++) {
+      const sep = separationVelocity(s.position, [other], GEOMETRY.HITBOX_RADIUS);
+      s = stepMovement(s, idle, DT, [ground], { separation: sep }).state;
+    }
+    const d = Math.hypot(s.position.x - other.x, s.position.z - other.z);
+    expect(d).toBeGreaterThanOrEqual(GEOMETRY.HITBOX_RADIUS * 2 - 0.05); // 被推出重叠
+    // 软推开是外力位移不是动量：推完不留残余速度（松开后不继续滑）
+    expect(Math.hypot(s.velocity.x, s.velocity.z)).toBeLessThan(0.05);
+  });
+
+  it('★ 软推开推不进墙 —— 与玩家自己的移动受同一套碰撞约束', () => {
+    const wall = box('w', 'wall', { x: -1.45, y: 0, z: -2 }, { w: 1, h: 3, d: 4 });
+    let s = settle();
+    // 对手站在正东侧、把人往墙（西侧）里推
+    for (let i = 0; i < 30; i++) {
+      const sep = separationVelocity(s.position, [vec3(0.3, 0, 0)], GEOMETRY.HITBOX_RADIUS);
+      s = stepMovement(s, idle, DT, [ground, wall], { separation: sep }).state;
+    }
+    // 确实被推向了墙的方向……
+    expect(s.position.x).toBeLessThan(-0.3);
+    // ……但停在墙面（x=-0.95）+ 胶囊半径（0.45）处，绝不能进墙
+    expect(s.position.x).toBeGreaterThan(-0.95 + GEOMETRY.HITBOX_RADIUS - 0.02);
+  });
 });
 
 describe('13.4 / 验收 #47 — 传送不能被识别为高速跑步', () => {

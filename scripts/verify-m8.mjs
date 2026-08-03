@@ -223,13 +223,21 @@ console.log('\n── 验收 #48：低画质下关键信息仍可见（14.4）�
    *   回程慢了停在半路够不着战士，于是 #40 与 #48b 一起变成时好时坏。
    *   出生点 x=0，直接走到 x≈0 为止，与速度无关。
    */
+  /**
+   * ★ 停止条件是 `x < 0.6` 而不是 `|x| < 0.35`：全速 7 m/s 下一个 100ms
+   *   轮询步就是 0.7 米，恰好能**跨过** ±0.35 的窗口 —— 错过一次就一路
+   *   滑到西墙（实测停在 34 米外，第一发新星放空进 18s 冷却，#48b 全窗报
+   *   「冷却中」）。从东侧回来，「降到 0.6 以下」怎么采样都不会错过；
+   *   即使惯性再滑出半米，离战士也仍在霜爆新星 5 米半径内（它要的余量
+   *   比当年猛击的 3 米宽裕得多）。轮询同时加密到 60ms。
+   */
   await page.keyboard.down('KeyQ');
   {
     const deadline = Date.now() + 8000;
     while (Date.now() < deadline) {
-      await page.waitForTimeout(100);
+      await page.waitForTimeout(60);
       const x = await page.evaluate(() => globalThis.__scene.move.position.x);
-      if (Math.abs(x) < 0.35) break;
+      if (x < 0.6) break;
     }
   }
   await page.keyboard.up('KeyQ');
@@ -296,6 +304,21 @@ console.log('\n── 验收 #48：低画质下关键信息仍可见（14.4）�
       await page.waitForTimeout(200);
     }
   }
+  // ★ 失败诊断：这条断言时好时坏过不止一次，「字形=[]」说不清是
+  //   没选中战士、人不在新星半径内、技能在冷却，还是别的
+  const novaDiag = await page.evaluate(() => {
+    const s = globalThis.__scene;
+    const p = s.combat.player;
+    const target = s.combat.allEntities().find((e) => e.id === p.targets.hard);
+    const warrior = s.combat.allEntities().find((e) => e.classId === 'warrior');
+    const dist = (a, b) => Math.hypot(a.position.x - b.position.x, a.position.z - b.position.z).toFixed(2);
+    return {
+      target: target?.name ?? '无',
+      warriorDist: warrior ? dist(p, warrior) : '?',
+      novaCd: (p.cooldowns.get('mage.frost_nova') ?? 0) - s.combat.now,
+      log: (s.combat.log ?? []).slice(0, 3).map((l) => l.text),
+    };
+  });
 
   const fpsLow = await fps();
   await page.screenshot({ path: 'scripts/_verify-m8-low.png' });
@@ -312,7 +335,9 @@ console.log('\n── 验收 #48：低画质下关键信息仍可见（14.4）�
   check('#48b', '★★ **最低画质下**控制状态、旗帜信息、队伍框、小地图全部可见',
     lowGlyphs.length > 0 && modeLow.includes('旗') && minimapLow,
     `最低画质下目标框控制字形=[${lowGlyphs.join('')}]，队伍框高画质时=[${highGlyphs.join('')}]，` +
-    `旗帜信息在=${modeLow.includes('旗')}，小地图在=${minimapLow}`);
+    `旗帜信息在=${modeLow.includes('旗')}，小地图在=${minimapLow}` +
+    `｜目标=${novaDiag.target} 战士距离=${novaDiag.warriorDist} 新星冷却=${novaDiag.novaCd.toFixed(1)}s` +
+    `｜日志:${novaDiag.log.join('/')}`);
 
   // 切回高画质
   await page.keyboard.press('F2');

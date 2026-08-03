@@ -23,9 +23,11 @@ import {
   add,
   distance,
   scale,
+  separationVelocity,
   stepMovement,
   sub,
   vec3,
+  GEOMETRY,
   type Aabb,
   type InputMessage,
   type MovementInput,
@@ -70,6 +72,17 @@ export interface PredictorOptions {
   obstacles: readonly Aabb[];
   radius?: number;
   height?: number;
+  /**
+   * 其他角色的当前位置（13.5 软推开的输入）。回调而不是数组 ——
+   * 每次积分时取**最新**快照里的位置，而不是构造预测器那一刻的。
+   *
+   * ★ 这是**近似**：服务器用它当 tick 的权威位置算分离，客户端只有
+   *   插值/快照位置。误差只在「与人重叠」的短暂窗口内存在且有界
+   *   （≤ 对方速度 × 快照间隔），比完全不算（重叠期每份快照拽 0.1~0.5 米）
+   *   小一个量级 —— speedMultiplier 那次的教训：预测漏算权威侧的输入，
+   *   代价就是平滑档里的持续橡皮筋。
+   */
+  others?: () => readonly Vec3[];
 }
 
 export class Predictor {
@@ -98,6 +111,28 @@ export class Predictor {
     this.predicted = initial;
   }
 
+  /**
+   * 一次积分的完整选项。`sample()` 与 `reconcile()` 的重放**必须同源** ——
+   * speedMultiplier 那轮只接了重放路径，sample 仍按满速走：减速期间最新
+   * 一两帧预测总是超前 ~0.1 米/tick，下份快照又拽回来，表现为贴身微抖。
+   * 收口成一个方法后「只改一处」这类漏接在结构上写不出来。
+   */
+  private stepOpts(position: Vec3): Parameters<typeof stepMovement>[4] {
+    return {
+      ...(this.opts.radius !== undefined ? { radius: this.opts.radius } : {}),
+      ...(this.opts.height !== undefined ? { height: this.opts.height } : {}),
+      speedMultiplier: this.speedMultiplier,
+      // 13.5 软推开（近似输入，见 opts.others 注释）。没提供回调 = 不算
+      ...(this.opts.others
+        ? {
+            separation: separationVelocity(
+              position, this.opts.others(), this.opts.radius ?? GEOMETRY.HITBOX_RADIUS,
+            ),
+          }
+        : {}),
+    };
+  }
+
   /** 当前预测的权威位置（不含平滑偏移）。发给服务器/做碰撞判断用这个 */
   get position(): Vec3 { return this.predicted.position; }
   get yaw(): number { return this.predicted.yaw; }
@@ -114,8 +149,7 @@ export class Predictor {
     this.seq++;
     this.predicted = stepMovement(
       this.predicted, input, SIM.TICK_DT, this.opts.obstacles,
-      { ...(this.opts.radius !== undefined ? { radius: this.opts.radius } : {}),
-        ...(this.opts.height !== undefined ? { height: this.opts.height } : {}) },
+      this.stepOpts(this.predicted.position),
     ).state;
     this.pending.push({ seq: this.seq, input });
 
@@ -179,15 +213,10 @@ export class Predictor {
         : {}),
     };
 
-    // 第 6 步：重放剩余指令 —— 用**同一份** movement，**同一个**步长
+    // 第 6 步：重放剩余指令 —— 用**同一份** movement，**同一个**步长、
+    // **同一组**积分输入（stepOpts：速度倍率 + 软推开，见其注释）
     for (const p of this.pending) {
-      s = stepMovement(
-        s, p.input, SIM.TICK_DT, this.opts.obstacles,
-        { ...(this.opts.radius !== undefined ? { radius: this.opts.radius } : {}),
-          ...(this.opts.height !== undefined ? { height: this.opts.height } : {}),
-          // ★★ 必须与服务器同源，否则减速期间每份快照都会把角色往回拽（见字段注释）
-          speedMultiplier: this.speedMultiplier },
-      ).state;
+      s = stepMovement(s, p.input, SIM.TICK_DT, this.opts.obstacles, this.stepOpts(s.position)).state;
     }
     this.predicted = s;
 

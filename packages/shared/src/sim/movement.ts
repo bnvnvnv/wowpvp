@@ -239,11 +239,22 @@ export const stepMovement = (
   input: MovementInput,
   dt: number,
   obstacles: readonly Aabb[],
-  opts: { radius?: number; height?: number; speedMultiplier?: number } = {},
+  opts: {
+    radius?: number; height?: number; speedMultiplier?: number;
+    /**
+     * 13.5 / 验收 #43：来自其他角色的**软推开**分离速度（`separationVelocity()`）。
+     * ★ 只参与本步的位移积分，**不写进 `velocity`** —— 推开是外力位移不是动量，
+     *   混进速度会让「被推了一下」在松手后继续滑行。
+     * ★ 走步骤 5 的 `moveAndSlide`，所以推不进墙、推不出合法区 —— 与玩家
+     *   自己的移动受同一套碰撞约束，不需要单独的钳制路径。
+     */
+    separation?: Vec3;
+  } = {},
 ): StepResult => {
   const radius = opts.radius ?? GEOMETRY.HITBOX_RADIUS;
   const height = opts.height ?? GEOMETRY.HITBOX_HEIGHT;
   const speedMul = opts.speedMultiplier ?? 1;
+  const sep = opts.separation ?? { x: 0, y: 0, z: 0 };
 
   const s: MovementState = {
     ...prev,
@@ -317,7 +328,8 @@ export const stepMovement = (
   // ── 5. 水平位移：滑墙 + 跨越低障碍 ────────────────────────
   const startX = s.position.x;
   const startZ = s.position.z;
-  const delta = vec3(s.velocity.x * dt, 0, s.velocity.z * dt);
+  // ★ 分离速度只进位移不进 velocity（见 opts.separation 注释）
+  const delta = vec3((s.velocity.x + sep.x) * dt, 0, (s.velocity.z + sep.z) * dt);
 
   if (delta.x !== 0 || delta.z !== 0) {
     const slid = moveAndSlide(s.position, delta, radius, height, obstacles);
