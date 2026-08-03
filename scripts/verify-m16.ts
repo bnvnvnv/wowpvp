@@ -102,7 +102,9 @@ const startMatch = async (port: number, room: string, preset: ArenaPreset) => {
   const r = await red.waitFor('MatchStart');
   const b = await blue.waitFor('MatchStart');
   await red.waitFor('Snapshot');
-  return { red, blue, redId: r.you, blueId: b.you };
+  // ★ 令牌是开局时发的（见 ServerRoom.tokens 的注释）—— 从消息里取，
+  //   而不是去翻服务器内部状态：重连用的就是客户端手上的这一份
+  return { red, blue, redId: r.you, blueId: b.you, redToken: r.reconnectToken };
 };
 
 const snapsOf = (c: Client) =>
@@ -379,6 +381,75 @@ console.log('\n── 16.x / 16.4：战后统计与七项最佳玩家（此前�
     `蓝方收到 ${blue.all('MatchStats').length} 条`);
 
   red.close(); blue.close();
+}
+
+// ── 18–21：16b 人机补位与掉线接管 ──────────────────────────────
+console.log('\n── 16b / 偏差 #14：人机补位与掉线接管 ──');
+{
+  const { red, blue, redId, redToken } = await startMatch(PORT, 'bots', ArenaPreset.Classic);
+  const match = server.rooms.matchOf('bots')!;
+  const loop = server.rooms.loopOf('bots')!;
+
+  for (let i = 0; i < 400 && !match.arena?.outcome; i++) loop.advance(); // 过 18 秒准备阶段
+
+  const redEntity = match.world.entities.get(redId)!;
+  const before = { ...redEntity.position };
+
+  /**
+   * ★★ 断线**瞬间**接管（偏差 #14），不是超时才接管。
+   *   判据是「角色开始自己动」——而且动的方式必须是**经过完整协议栈**的：
+   *   `BotDriver` 发的是真的 `Input` JSON，走 codec + 阶段鉴权 + 排队。
+   */
+  red.close();
+  await sleep(300);
+  for (let i = 0; i < 120; i++) loop.advance();   // 6 秒
+
+  const moved = Math.hypot(
+    redEntity.position.x - before.x, redEntity.position.z - before.z,
+  );
+  check('18', '★★ 断线瞬间由人机接管：角色真的自己动起来了',
+    moved > 1,
+    `断线后位移 ${moved.toFixed(2)} 米（此前的规则是「站在原地被打」）`);
+
+  check('18b', '★ 人机走的是**真人那条输入通道**（假 socket + 真 Session + 真 codec）',
+    match.world.entities.get(redId)!.alive,
+    `实体仍在世界里、由 tickWorld 驱动 —— 没有任何一行直接改过 world`);
+
+  /**
+   * ★ 11.5 的「超时按淘汰处理」不再发生（偏差 #14）——
+   *   宽限期已放到长于任何一局，`takeExpired()` 永远返回空。
+   */
+  for (let i = 0; i < 200; i++) loop.advance();
+  check('19', '★★ 不再有「超时淘汰」——人可以整局内随时回来',
+    !blue.all('PeerEliminated').some((m) => m.reason === 'timeout'),
+    `收到的淘汰消息：${blue.all('PeerEliminated').map((m) => m.reason).join(',') || '（没有）'}`);
+
+  // 重连交还
+  const back = await Client.connect(PORT);
+  back.send({ t: 'Reconnect', token: redToken });
+  const restart = await back.waitFor('MatchStart', 4000).catch(() => undefined);
+  check('20', '★★ 重连交还：人回来后拿回自己的角色',
+    restart !== undefined && restart.you === redId,
+    restart ? `重连后 you=${restart.you}（原实体 ${redId}）` : '（重连失败）');
+
+  if (restart) {
+    /**
+     * ★ 交还之后人机必须**彻底下台**：两条会话同时为同一个实体投输入的话，
+     *   `collectInputs()` 取「最后一条」，人的操作会被人机盖掉 ——
+     *   而那种 bug 的表现是「我的角色偶尔不听使唤」，极难查。
+     */
+    const posBefore = { ...match.world.entities.get(redId)!.position };
+    for (let i = 0; i < 100; i++) loop.advance();   // 5 秒，人不发任何输入
+    const drift = Math.hypot(
+      match.world.entities.get(redId)!.position.x - posBefore.x,
+      match.world.entities.get(redId)!.position.z - posBefore.z,
+    );
+    check('20b', '★★ 交还后人机彻底下台 —— 玩家不发输入时角色就该站住',
+      drift < 0.5,
+      `人不发输入的 5 秒里位移 ${drift.toFixed(2)} 米`);
+  }
+
+  blue.close(); back.close();
 }
 
 // ── 14：房间设置的权限 ─────────────────────────────────────────

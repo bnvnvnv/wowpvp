@@ -102,6 +102,16 @@ export interface MatchLoopDeps {
    */
   onEliminate: (playerId: string, reason: 'timeout' | 'left') => void;
   onEnd: (winner: TeamId | 'draw') => void;
+  /**
+   * 每 tick 开始前的钩子。人机（`BotDriver`）在这里产出这一 tick 的意图。
+   *
+   * ★★ **必须在 `collectInputs()` 之前**：人机发的是真的 `Input` 消息，
+   *   要进入本 tick 的队列就得赶在消费之前。放到 tick 之后的话，
+   *   每条意图都要等下一 tick 才生效 —— 人机会慢半拍，而且是抖动的半拍。
+   * ★ 它**只允许发消息**，不该碰 world。红线（人机走与真人相同的通道）
+   *   靠 `BotDriver` 那一侧的结构保证，见那个文件的文件头。
+   */
+  onPreTick?: () => void;
 }
 
 export class MatchLoop {
@@ -173,6 +183,8 @@ export class MatchLoop {
     this.tick++;
     const outbound: ServerMessage[] = [];
 
+    // ★ 人机在这里发出本 tick 的 Input/CastRequest（走完整协议栈，见 BotDriver）
+    this.deps.onPreTick?.();
     this.applyCommands();
     this.syncSwings();
     const inputs = this.collectInputs();

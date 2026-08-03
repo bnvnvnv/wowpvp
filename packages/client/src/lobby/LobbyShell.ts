@@ -649,6 +649,9 @@ export class LobbyShell {
         preset: this.preset,
         roundsToWin: 1,
         allowUnbalanced: false,
+        // ★ 这是给 `compositionHints()` 用的**只读**影子房间，不是真配置 ——
+        //   人机补位不影响阵容提示（3.2 的提示只看真人名单）
+        fillWithBots: false,
       },
       players: this.players.map((p) => ({
         id: p.id,

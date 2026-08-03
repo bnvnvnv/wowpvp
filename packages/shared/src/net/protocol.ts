@@ -106,6 +106,8 @@ export type ClientMessage =
    *   第 10 章的全部规则在真实对局里一次都不会发生。
    */
   | { t: 'SetRoomPreset'; preset: ArenaPreset }
+  /** docs/14 §16b 人机补位开关。**只有房主、只在开赛前**，默认关 */
+  | { t: 'SetFillWithBots'; enabled: boolean }
   /** 11.5 主动退出。★ 立即按淘汰处理，不能通过退出规避死亡统计 */
   | { t: 'LeaveMatch' }
   /** 17.3 重连：带上服务器给的令牌 */
@@ -156,7 +158,7 @@ export type ClientMessageKind = ClientMessage['t'];
  */
 export const ALL_CLIENT_MESSAGE_KINDS: readonly ClientMessageKind[] = [
   'JoinRoom', 'SelectTeam', 'SelectClass', 'SetReady', 'SetRoomPreset',
-  'LeaveMatch', 'Reconnect',
+  'SetFillWithBots', 'LeaveMatch', 'Reconnect',
   'Input', 'SetTarget', 'TabTarget', 'CastRequest', 'CancelCast', 'UseTrinket',
   'InteractStart', 'InteractCancel', 'SwapWeapon', 'SwapArmor', 'UseConsumable',
   'OpenArmory', 'ChooseArsenal',

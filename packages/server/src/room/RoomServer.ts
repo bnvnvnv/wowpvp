@@ -30,8 +30,11 @@ import {
   markDisconnected,
   markReconnected,
   resetForRematch,
+  ALL_CLASSES,
+  botSeatsNeeded,
   selectClass,
   selectSlot,
+  setFillWithBots,
   setPreset,
   setReady,
   startMatch,
@@ -49,6 +52,7 @@ import {
 import { randomUUID } from 'node:crypto';
 
 import { MatchLoop, type MatchCommand } from '../MatchLoop.js';
+import { BotDriver, BotSocket, type BotSeat } from '../BotDriver.js';
 import {
   createReconnectRegistry,
   graceRemaining,
@@ -69,6 +73,8 @@ const DEFAULT_CONFIG = {
   preset: ArenaPreset.Classic,
   roundsToWin: 1,
   allowUnbalanced: false,
+  // ★ 默认关 —— 打开会改变开局时世界里有几个实体，见 RoomConfig.fillWithBots 的注释
+  fillWithBots: false,
 };
 
 interface ServerRoom {
@@ -87,7 +93,23 @@ interface ServerRoom {
    */
   tokens: Map<string, string>;
   tokenByPlayer: Map<string, string>;
+  /**
+   * 人机驱动（docs/14 §16b）。开局时建，随房间生命周期走。
+   * ★ 它只在**战斗阶段**有事做 —— 房间阶段没有实体可驱动。
+   */
+  bots?: BotDriver;
+  /** 被人机接管的席位对应的（假）会话，按 playerId 索引 */
+  botSessions: Map<string, Session>;
 }
+
+/**
+ * 掉线后令牌的有效期，秒。已知偏差 #14：「整局内一直有效」。
+ *
+ * ★ 取 24 小时而不是 `Infinity`（JSON 过不去）也不是 90 秒（那是被推翻的
+ *   旧语义）。判据只有一条：**长于任何一局可能的时长** —— 一局竞技场
+ *   常规 6 分钟、夺旗封顶也在半小时量级。
+ */
+const TAKEOVER_GRACE_SECONDS = 24 * 60 * 60;
 
 let nextPlayerSeq = 1;
 
@@ -131,9 +153,26 @@ export class RoomServer {
       const now = sr.match?.world.time ?? 0;
       // ★ 用开局时已经发给他的那个令牌登记，两边才是同一个字符串
       const token = sr.tokenByPlayer.get(session.playerId);
-      const entry = registerDisconnect(sr.reconnects, session.playerId, now,
-        token ? { tokenFactory: () => token } : {});
+      /**
+       * ★★ **已知偏差 #14：宽限期改成「整局有效」。**
+       *
+       *   拍板的语义是「断线瞬间人机接管、重连即交还、整局内令牌一直有效」，
+       *   于是 11.5 的「超时按淘汰处理」不再发生 —— 而表达「不再超时」的
+       *   最小改动就是把宽限期放到长于任何一局，让 `takeExpired()` 永远返回空。
+       *
+       *   ★ 刻意**不删** `settleExpiredReconnects()` 那条链路：它是 11.5
+       *     「不能通过退出规避死亡统计」的执行点，主动退出（`LeaveMatch`）
+       *     仍然要走它。删掉等于把两条不同的规则一起拿掉。
+       *   ★ 也刻意不用 `Infinity`：它过不了 JSON（会变成 null），
+       *     而 `PeerDisconnected.graceRemaining` 是要发出去的。
+       */
+      const entry = registerDisconnect(sr.reconnects, session.playerId, now, {
+        graceSeconds: TAKEOVER_GRACE_SECONDS,
+        ...(token ? { tokenFactory: () => token } : {}),
+      });
       markDisconnected(sr.room, session.playerId);
+      // ★ 已知偏差 #14：断线**瞬间**由人机接管（不是超时才接管）
+      this.takeOverByBot(sr, session.playerId);
       this.broadcast(sr, {
         t: 'PeerDisconnected',
         playerId: session.playerId,
@@ -166,6 +205,8 @@ export class RoomServer {
       // ★ 房主校验在 sim 的 `setPreset()` 里，不在这里 —— 与其他房间变更同源
       case 'SetRoomPreset': return this.onRoomMutation(
         session, (sr) => setPreset(sr.room, session.playerId, msg.preset), 'SetRoomPreset');
+      case 'SetFillWithBots': return this.onRoomMutation(
+        session, (sr) => setFillWithBots(sr.room, session.playerId, msg.enabled), 'SetFillWithBots');
       case 'LeaveMatch': return this.onLeave(session);
       case 'CastRequest': return this.onCastRequest(session, msg);
       case 'CancelCast': return this.enqueue(session, { t: 'CancelCast' });
@@ -291,6 +332,7 @@ export class RoomServer {
       reconnects: createReconnectRegistry(),
       tokens: new Map(),
       tokenByPlayer: new Map(),
+      botSessions: new Map(),
     };
     this.rooms.set(roomId, sr);
     return sr;
@@ -343,17 +385,40 @@ export class RoomServer {
       return;
     }
 
+    /**
+     * docs/14 §16b 人机补位。**必须在 `startMatch()` 之前** ——
+     * `createMatch()` 是照着 `room.players` 生实体的，之后再加就没有身体了。
+     *
+     * ★ 人机是**真正的房间成员**（走 `joinRoom` / `selectSlot` /
+     *   `selectClass` / `setReady` 这四个真人也走的函数），不是一个旁挂的
+     *   数组。于是阵营人数上限、职业合法性、`canStart()` 全部照常约束它们，
+     *   而不需要在这些规则里各加一个「如果是人机则…」的分支。
+     */
+    const botIds = this.fillBotSeats(sr);
+
     const started = startMatch(sr.room);
     if (!started.ok) return; // canStart 刚说可以，这里再失败只可能是并发，忽略
 
     const match = createMatch(sr.room, map);
     sr.match = match;
+    /**
+     * 人机驱动。★ 投递走 `handleRaw()` —— 也就是**真人那条一模一样的入口**
+     * （解析 + 范围校验 + 阶段鉴权 + 排队）。见 BotDriver 的文件头。
+     */
+    sr.bots = new BotDriver(
+      () => sr.match,
+      (playerId, raw) => sr.botSessions.get(playerId)?.handleRaw(raw),
+    );
     sr.loop = new MatchLoop(match, {
       sessions: () => sr.sessions,
       reconnects: sr.reconnects,
       onEliminate: (playerId, reason) => this.eliminate(sr, playerId, reason),
       onEnd: (winner) => this.endMatch(sr, winner),
+      onPreTick: () => sr.bots?.tick(),
     });
+
+    // 补位的人机现在有身体了，接管它们（与掉线接管走同一条路径）
+    for (const playerId of botIds) this.takeOverByBot(sr, playerId, 'fill');
 
     for (const s of sr.sessions) {
       const entityId = match.entityOf.get(s.playerId);
@@ -439,7 +504,74 @@ export class RoomServer {
       e.health = 0;
     }
     markDisconnected(sr.room, playerId);
+    // 淘汰之后人机也该下台 —— 让 AI 继续操作一具尸体没有意义
+    this.handBackFromBot(sr, playerId);
     this.broadcast(sr, { t: 'PeerEliminated', playerId, reason });
+  }
+
+  /**
+   * 按房间设置补上人机席位，返回它们的 playerId。
+   *
+   * ★ 职业**轮着选**而不是随机：确定性是这个仓库的底线之一
+   *   （回放、`pnpm balance` 复现都依赖它）。随机选职业会让同一个房间
+   *   两次开局打出不同的对局。
+   */
+  private fillBotSeats(sr: ServerRoom): string[] {
+    const ids: string[] = [];
+    let n = 0;
+    for (const { slot, count } of botSeatsNeeded(sr.room)) {
+      for (let i = 0; i < count; i++) {
+        const playerId = `bot${nextPlayerSeq++}`;
+        const cls = ALL_CLASSES[n % ALL_CLASSES.length]!;
+        n++;
+        joinRoom(sr.room, playerId, `人机${n}`);
+        selectSlot(sr.room, playerId, slot);
+        selectClass(sr.room, playerId, cls.id);
+        setReady(sr.room, playerId, true);
+        ids.push(playerId);
+      }
+    }
+    return ids;
+  }
+
+  // ── 人机接管（docs/14 §16b，docs/10 已知偏差 #14）────────────────
+
+  /**
+   * 让人机接管一个席位。
+   *
+   * ★★ 接管的方式是**给这个 playerId 建一条（假）会话** —— 不是给 MatchLoop
+   *   开一条旁路。于是它在 `collectInputs()` 眼里与真人**完全同构**：
+   *   同一个 `entityOf.get(s.playerId)`、同一个输入队列、同一套 codec。
+   *   「人机能做真人做不到的事」因此在结构上写不出来。
+   *
+   * ★ 幂等：同一个 playerId 重复接管只会有一条会话（掉线→重连→再掉线）。
+   */
+  private takeOverByBot(sr: ServerRoom, playerId: string, reason: BotSeat['reason'] = 'disconnect'): void {
+    if (!sr.bots || sr.botSessions.has(playerId)) return;
+
+    const session = new Session(new BotSocket(), playerId, (s, msg) => this.handle(s, msg));
+    session.roomId = sr.room.id;
+    session.phase = SessionPhase.Match;
+    sr.sessions.add(session);
+    sr.botSessions.set(playerId, session);
+    sr.bots.add({ playerId, reason });
+  }
+
+  /**
+   * 人回来了（或这个席位不再需要人机）：人机下台。
+   *
+   * ★ 顺序要紧：先从 `sessions` 里摘掉假会话，再登记给驱动 —— 反过来的话
+   *   两条会话会在同一个 tick 里为**同一个实体**各投一份输入，
+   *   而 `collectInputs()` 取的是「最后一条」，于是人的操作会被人机盖掉。
+   */
+  private handBackFromBot(sr: ServerRoom, playerId: string): void {
+    const botSession = sr.botSessions.get(playerId);
+    if (botSession) {
+      sr.sessions.delete(botSession);
+      sr.botSessions.delete(playerId);
+      botSession.clearInputs();
+    }
+    sr.bots?.remove(playerId);
   }
 
   // ── 重连 ──────────────────────────────────────────────────────
@@ -459,6 +591,8 @@ export class RoomServer {
     sr.sessions.add(session);
     this.all.add(session);
     markReconnected(sr.room, r.playerId);
+    // ★ 已知偏差 #14 的后半句：**重连即交还**。人先回来，人机就下台
+    this.handBackFromBot(sr, r.playerId);
 
     const entityId = sr.match.entityOf.get(r.playerId);
     if (entityId !== undefined) {

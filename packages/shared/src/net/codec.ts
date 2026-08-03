@@ -174,6 +174,12 @@ export const parseClientMessage = (raw: string): ParseResult => {
       return { ok: true, msg: { t, ready } };
     }
 
+    case 'SetFillWithBots': {
+      const enabled = v['enabled'];
+      if (typeof enabled !== 'boolean') return bad('enabled 必须是布尔值');
+      return { ok: true, msg: { t, enabled } };
+    }
+
     case 'SetRoomPreset': {
       const preset = v['preset'];
       if (!(ALL_ARENA_PRESETS as readonly unknown[]).includes(preset)) return bad('preset 无效');

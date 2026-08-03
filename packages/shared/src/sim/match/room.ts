@@ -41,6 +41,16 @@ export interface RoomConfig {
   roundsToWin: number;
   /** 3.2 自定义房间可开启人数不平衡，但**必须明确标记为非标准规则** */
   allowUnbalanced: boolean;
+  /**
+   * 人数不足时用人机补满（docs/14 §16b）。
+   *
+   * ★★ **默认关**，而且这不是保守起见 —— 打开它会改变**开局时世界里有几个
+   *   实体**，而 M1–M15 的两百多项验收全部建立在「场上就这么几个人」
+   *   这个初始条件上（`verify:m10` 数实体、`verify:m13` 断言名单、
+   *   `verify:m16` 按职业找掉落物…）。默认开等于用「更好玩」换掉整张回归网。
+   *   ★ 与试验场「实战模式默认关」是同一条教训，PROGRESS 里记着为什么。
+   */
+  fillWithBots: boolean;
 }
 
 export interface Room {
@@ -131,6 +141,36 @@ export const setPreset = (
   if (room.hostId !== playerId) return { ok: false, reason: '只有房主能更改规则预设' };
   room.config.preset = preset;
   return { ok: true };
+};
+
+/**
+ * docs/14 §16b：开关「人数不足用人机补满」。房主专属，开赛前。
+ * ★ 与 `setPreset` 同一条线：只有房主、只在开赛前，校验写在 sim 里。
+ */
+export const setFillWithBots = (
+  room: Room,
+  playerId: string,
+  enabled: boolean,
+): SelectResult => {
+  if (room.started) return { ok: false, reason: '比赛已开始，不能更改人机补位' };
+  if (room.hostId !== playerId) return { ok: false, reason: '只有房主能更改人机补位' };
+  room.config.fillWithBots = enabled;
+  return { ok: true };
+};
+
+/**
+ * 人机要补几个：每队缺多少补多少（3.1 的队伍容量由模式决定）。
+ *
+ * ★ 返回**名单**而不是直接建人机 —— 与 `takeExpired()` 只产出待淘汰名单
+ *   同一个手法：这个模块拿不到 World，也就编不出「顺手给人机一点优势」
+ *   那类代码。真正的接管发生在服务器。
+ */
+export const botSeatsNeeded = (room: Room): { slot: Slot; count: number }[] => {
+  if (!room.config.fillWithBots) return [];
+  const size = teamSizeOf(room.config.mode);
+  return ([Slot.Red, Slot.Blue] as const)
+    .map((slot) => ({ slot, count: Math.max(0, size - playersOn(room, slot).length) }))
+    .filter((x) => x.count > 0);
 };
 
 export const setReady = (room: Room, playerId: string, ready: boolean): SelectResult => {
