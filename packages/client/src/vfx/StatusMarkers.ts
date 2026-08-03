@@ -25,6 +25,10 @@ import {
   type ControlKind,
 } from './status.js';
 
+// ★ three 的 examples 包，本项目第一次用它。只取一个纯几何合并函数，
+//   不引入任何运行时子系统（loader/controls 之类）。
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+
 const H = GEOMETRY.HITBOX_HEIGHT;
 const R = GEOMETRY.HITBOX_RADIUS;
 
@@ -39,8 +43,50 @@ const SHIELD_FALLBACK_COLOR = 0xffd98a;
 const makeControlGeometry = (shape: string): THREE.BufferGeometry => {
   switch (shape) {
     case 'chains':
-      // 定身：脚下一圈锁链环
+      // 定身（旧形状，保留给可能的其他控制复用）：脚下一圈锁链环
       return new THREE.TorusGeometry(R * 1.3, 0.05, 6, 20);
+    case 'iceShards': {
+      /**
+       * 定身：脚下**炸起一圈棱柱** + 一块贴地底座。
+       *
+       * ★★ 换掉 `chains` 的原因很具体：那是 `TorusGeometry(R*1.3, **0.05**, ...)`，
+       *   管径只有 5 厘米 —— 规则、接线、可见性全都是对的，
+       *   但玩家在正常镜头距离下**根本看不见**，实测反馈就是「没有」。
+       *   这类「做了但看不见」比没做更难查，因为所有断言都是绿的。
+       *
+       * ★ 用四棱锥（radialSegments=4）而不是圆锥：棱柱有明确的棱面高光，
+       *   读作「结晶」；圆锥读作「一个尖」。低多边形也更合 Q 版基调。
+       * ★ 合并成一个几何体（不是 Group）：`makeControlGeometry` 的契约是
+       *   返回单个 BufferGeometry，调用方按它建一个 Mesh 并统一做缩放/运动。
+       */
+      const parts: THREE.BufferGeometry[] = [];
+      // 贴地底座：一层薄冰
+      const base = new THREE.CylinderGeometry(R * 1.35, R * 1.5, 0.08, 12);
+      base.translate(0, 0.04, 0);
+      parts.push(base);
+      // 一圈斜插的棱柱，高矮交替，读作「炸起来的碎冰」
+      const SHARDS = 7;
+      for (let i = 0; i < SHARDS; i++) {
+        const tall = i % 2 === 0;
+        const h = tall ? 0.62 : 0.4;
+        const shard = new THREE.ConeGeometry(tall ? 0.13 : 0.1, h, 4);
+        const ang = (i / SHARDS) * Math.PI * 2;
+        // 向外倾斜，像从地里挤出来的
+        shard.rotateX(0.32);
+        shard.rotateY(-ang);
+        shard.translate(Math.cos(ang) * R * 1.15, h * 0.5, Math.sin(ang) * R * 1.15);
+        parts.push(shard);
+      }
+      const merged = mergeGeometries(parts);
+      for (const p of parts) p.dispose();
+      /**
+       * ★ 调用方对 feet 锚点会统一 `rotation.x = -π/2`（把「贴地圆环」摆平）。
+       *   而本几何体是**按世界朝向**建的（Y 轴向上），所以先预旋 +π/2 抵消，
+       *   否则冰棱会全部倒下去躺在地上。
+       */
+      merged.rotateX(Math.PI / 2);
+      return merged;
+    }
     case 'stars':
       // 昏迷：头顶几颗星，用一个八面体代表
       return new THREE.OctahedronGeometry(0.14, 0);
@@ -151,7 +197,7 @@ export class StatusMarkers {
    * @param cameraDistance 镜头距离，用于 14.3 的远近调整
    */
   update(
-    active: ReadonlySet<ControlKind>,
+    active: ReadonlyMap<ControlKind, number | undefined>,
     quality: QualityTier,
     cameraDistance: number,
     dt: number,
@@ -165,6 +211,18 @@ export class StatusMarkers {
       mesh.visible = on;
       if (!on) continue;
       mesh.scale.setScalar(scale);
+      /**
+       * ★ 按**施加它的技能的学派**染色（冰系定身冰蓝、自然系翠绿）。
+       *   与 `setShield(…, color?)` 完全同构：查不到就退回 `CONTROL_VISUALS`
+       *   里的中性常量 —— 编一个颜色比不画更糟。
+       * ★★ 无障碍安全：17.2 的「不能只靠颜色」由 `distinguishingChannels`
+       *   （锚点/形状/字形/运动四通道）保证，而**颜色本来就不在那四条里**，
+       *   所以加学派色是纯增量，不会削弱任何区分度。
+       */
+      const tint = active.get(kind);
+      (mesh.material as THREE.MeshBasicMaterial).color.set(
+        tint ?? CONTROL_VISUALS[kind].color,
+      );
       applyMotion(mesh, CONTROL_VISUALS[kind].motion, elapsed, anchorY(CONTROL_VISUALS[kind].anchor));
     }
 

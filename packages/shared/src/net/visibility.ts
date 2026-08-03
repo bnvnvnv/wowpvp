@@ -20,6 +20,7 @@
 import { RANGE } from '../constants/combat.js';
 import type { Vec3 } from '../math/vec3.js';
 import type { ArmorId, ClassId, EntityId, TeamId, WeaponId } from '../types/ids.js';
+import type { School } from '../types/enums.js';
 import { isFriendly, isHiddenFromViewer, type CombatEntity } from '../sim/entity.js';
 import { aurasOf, type AuraStore } from '../sim/aura.js';
 import { enemyLoadoutView, type Loadout, type SwapStore } from '../sim/loadout.js';
@@ -121,6 +122,17 @@ export interface AuraSnapshot {
    */
   absorbRemaining?: number;
   absorbInitial?: number;
+  /**
+   * 施加这个光环的技能学派。**只对控制类光环投影**（有 `drCategory` 的那些）。
+   *
+   * ★ 为什么需要它：控制光环的 id 被统一改写成 `control.<kind>`，
+   *   表现层无法像护盾那样从 id 反查回技能 —— 而 14.3 要求
+   *   「定身附着脚部」这类标记能读出是什么定住了你（冰系是冰棱、自然系是藤蔓）。
+   * ★ 不泄露任何东西：它是**已经可见**的实体身上、**已经可见**的控制状态
+   *   （`flags.rooted` 等本来就在快照里）的一个属性描述，
+   *   不含来源 id、不含技能 id、不透露任何不可见实体的存在。
+   */
+  school?: School;
 }
 
 /**
@@ -422,6 +434,10 @@ const snapshotEntity = (
       // ★ 非吸收光环一个字节都不带（八职业 90 技能里只有 4 个盾）
       ...(a.absorbRemaining > 0
         ? { absorbRemaining: a.absorbRemaining, absorbInitial: a.absorbInitial }
+        : {}),
+      // ★ 同理：只有**控制类**光环带学派（其余一个字节都不带）
+      ...(a.def.drCategory !== undefined && a.def.school !== undefined
+        ? { school: a.def.school }
         : {}),
     })),
     carryingFlag: e.flags.carryingFlag,

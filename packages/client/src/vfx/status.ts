@@ -24,7 +24,7 @@ export interface ControlVisual {
   label: string;
   anchor: Anchor;
   /** 几何形状键，渲染层据此选网格 */
-  shape: 'ring' | 'chains' | 'stars' | 'crossedBar' | 'wave';
+  shape: 'ring' | 'chains' | 'stars' | 'crossedBar' | 'wave' | 'iceShards';
   /** 17.2：不能只靠颜色 —— 每种控制还有一个字形标记 */
   glyph: string;
   /** 运动方式，避免两种控制静止时长得像 */
@@ -39,12 +39,21 @@ export interface ControlVisual {
  *    至少要有两个不同，否则 `status.test.ts` 会红。
  */
 export const CONTROL_VISUALS = {
-  /** 定身：附着**脚部**（14.3 原文）*/
+  /**
+   * 定身：附着**脚部**（14.3 原文）。
+   *
+   * ★ 形状从 `chains`（一个管径 5 厘米的细锁链环，正常镜头距离下几乎看不见）
+   *   换成 `iceShards`（脚下炸起的一圈棱柱 + 底座）。用户实测原话是
+   *   「地上有冰块冻住角色的脚，也没有」—— 其实是有的，只是太细看不见，
+   *   而且通用锁链读不出「被什么定住」。
+   * ★ 颜色是**兜底**：正常路径由施加它的技能的学派染色（冰系冰蓝、自然系翠绿），
+   *   见 `StatusMarkers.update()` 的 tint 参数。
+   */
   rooted: {
     label: '定身',
     anchor: 'feet',
-    shape: 'chains',
-    glyph: '⛓',
+    shape: 'iceShards',
+    glyph: '❄',
     motion: 'pulse',
     color: 0x6a8caf,
   },

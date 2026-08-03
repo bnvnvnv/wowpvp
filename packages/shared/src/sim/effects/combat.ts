@@ -388,6 +388,9 @@ export const applyControl = (
     clearableByTrinket: spec.clearable,
     flags: { ...spec.flags },
     ...(breakDamage !== undefined ? { breakOnDamage: { threshold: breakDamage } } : {}),
+    // ★ 纯表现：让「是什么冻住了你」能被读出来（见 AuraDef.school）。
+    //   规则层不读它 —— 上面的 ccDurationTakenFor 用的是同一个局部变量。
+    ...(school !== undefined ? { school } : {}),
     description: `${spec.name} ${duration.toFixed(1)} 秒`,
   };
 

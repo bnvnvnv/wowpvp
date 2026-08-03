@@ -16,6 +16,9 @@
  */
 
 import { chromium } from 'playwright';
+import { readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * ★ M12：默认带 `?art=off`。
@@ -148,7 +151,18 @@ console.log('\n── 验收 #48：低画质下关键信息仍可见（14.4）�
   await hold('KeyQ', 1600);
   await page.waitForTimeout(600);
 
-  const CONTROL_GLYPHS = ['⛓', '✷', '⊘', '〰', '⚔'];
+  /**
+   * 五种控制的字形。
+   * ★ **从 `vfx/status.ts` 源码里读**，不写死字面量：定身的字形从 ⛓ 改成 ❄
+   *   （配合冰刺形状）时，写死的列表会让这条断言假失败 ——
+   *   报出来是「低画质下控制状态不可见」，而真相只是脚本不认识新字形。
+   *   与 `verify-m12` 解析 `VFX_TEXTURE_FILES` 是同一手法。
+   */
+  const statusSrc = readFileSync(
+    join(resolve(dirname(fileURLToPath(import.meta.url)), '..'),
+      'packages/client/src/vfx/status.ts'), 'utf8');
+  const CONTROL_GLYPHS = [...statusSrc.matchAll(/glyph:\s*'([^']+)'/g)].map((m) => m[1]);
+  if (CONTROL_GLYPHS.length < 5) throw new Error('没能从 status.ts 解析出五种控制字形');
   const partyControlGlyphs = async () => {
     const t = await text('#party-frame');
     return CONTROL_GLYPHS.filter((g) => t.includes(g));

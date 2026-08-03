@@ -71,7 +71,7 @@ import { SpellVfx, type CastView, type SpellVfxStatus } from '../vfx/SpellVfx.js
 import { StatusMarkers } from '../vfx/StatusMarkers.js';
 import { TargetRing } from '../vfx/TargetRing.js';
 import { strongestShield, type ControlKind } from '../vfx/status.js';
-import { visualForAuraId } from '../vfx/schools.js';
+import { visualForAuraId, visualForSchool } from '../vfx/schools.js';
 import {
   DEFAULT_ACCESSIBILITY,
   loadAccessibility,
@@ -1114,12 +1114,23 @@ export class NetworkScene {
       view.group.add(m.group);
       this.statusMarkers.set(snap.id as number, m);
     }
-    const active = new Set<ControlKind>();
-    if (snap.flags.feared) active.add('feared');
-    else if (snap.flags.stunned) active.add('stunned');
-    if (snap.flags.rooted) active.add('rooted');
-    if (snap.flags.silenced) active.add('silenced');
-    if (snap.flags.disarmed) active.add('disarmed');
+    /**
+     * 控制标记 + **施加者的学派色**。
+     * ★ 与试验场同一条判据：学派从快照的 `AuraSnapshot.school` 读
+     *   （控制光环的 id 是 `control.<kind>`，反查不回技能，所以协议带了这一个字段）。
+     *   两条路都退回 `CONTROL_VISUALS` 的中性常量 —— 不会出现
+     *   「单机是冰蓝的、联机是灰的」这种漂移。
+     */
+    const schoolOf = (kind: string): number | undefined => {
+      const a = snap.auras.find((x) => x.auraId === `control.${kind}`);
+      return a?.school ? visualForSchool(a.school).primary : undefined;
+    };
+    const active = new Map<ControlKind, number | undefined>();
+    if (snap.flags.feared) active.set('feared', schoolOf('fear'));
+    else if (snap.flags.stunned) active.set('stunned', schoolOf('stun'));
+    if (snap.flags.rooted) active.set('rooted', schoolOf('root'));
+    if (snap.flags.silenced) active.set('silenced', schoolOf('silence'));
+    if (snap.flags.disarmed) active.set('disarmed', schoolOf('disarm'));
     m.update(active, this.quality.current, this.cam.distance, SIM.TICK_DT, this.elapsed);
 
     const shield = strongestShield(snap.auras);

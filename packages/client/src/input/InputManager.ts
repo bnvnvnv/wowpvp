@@ -34,6 +34,9 @@ export const Action = {
   Skill6: 'skill6',
   Skill7: 'skill7',
   Skill8: 'skill8',
+  /** ★ 第 9 格是**追加**的：1–8 的绑定与含义完全不变，
+   *   verify-m2/m3/m4 全部按数字键打特定技能，加在末尾是唯一不动它们的改法 */
+  Skill9: 'skill9',
   /** 调试：切换碰撞体与判定可视化 */
   ToggleDebug: 'toggleDebug',
   /** 17.1 三档画质循环。★ 验收 #48 要逐档人工检查，需要一个能随时切的键 */
@@ -77,6 +80,7 @@ export const DEFAULT_BINDINGS: Readonly<Record<Action, string>> = {
   [Action.Skill6]: 'Digit6',
   [Action.Skill7]: 'Digit7',
   [Action.Skill8]: 'Digit8',
+  [Action.Skill9]: 'Digit9',
   [Action.ToggleDebug]: 'F1',
   [Action.CycleQuality]: 'F2',
   [Action.FlagInteract]: 'KeyG',

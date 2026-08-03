@@ -85,6 +85,26 @@ const HIT_ACCENT: Partial<Record<AttributeVisual['particle'], AccentTexture>> = 
   beam: 'sparkle',   // 神圣：星屑
 };
 
+/**
+ * 地面区域的**风暴盘**贴图（八属性各一张）。
+ *
+ * ★★ 它承担的是「这一片有天气」的**持续**表达。粒子那条路已经顶死细流池预算
+ *   （`vfxPlans.test.ts:246` 钉着 `ceil(life/cadence)*clusters ≤ 6`，雪正好 = 6），
+ *   而且粒子是**间歇**的 —— 区域只活 4 秒，雪一生只发 6 轮，
+ *   前后各有约 1.8 秒的空窗。贴图盘零池占用、零断言约束，且区域在它就在。
+ * ★ 全部复用已登记的 25 张，不新增素材。
+ */
+const STORM_TEXTURE: Record<AttributeVisual['particle'], AccentTexture> = {
+  snowflake: 'cloud',   // 冰：细碎浓云 = 风雪
+  ember: 'puff',        // 火：翻滚火云
+  beam: 'glow',         // 神圣：一片光晕
+  smoke: 'cloud',       // 暗影：浓烟
+  droplet: 'scorch',    // 毒素：地面腐蚀斑
+  leaf: 'puff',         // 自然：花粉/叶絮
+  rune: 'sparkle',      // 奥术：符文星屑
+  spark: 'scorch',      // 物理：焦土
+};
+
 /** 免疫/闪避这类「无属性」反馈用的中性白 */
 const NEUTRAL: AttributeVisual = {
   primary: 0xffffff,
@@ -446,6 +466,9 @@ export class SpellVfx {
    * 刀光轮换游标。★ 轮流而不是随机：随机会连续抽到同一张，
    * 而要解决的恰恰是「连着两下长得一样」。见 `SLASH_ACCENTS`。
    */
+  /** 地面风暴盘的自转钟，秒。见 `syncAreaTint` */
+  private stormClock = 0;
+
   private slashCursor = 0;
   private nextSlash(): AccentTexture {
     const a = SLASH_ACCENTS[this.slashCursor % SLASH_ACCENTS.length]!;
@@ -1356,6 +1379,8 @@ export class SpellVfx {
   ): void {
     const showFill = isVisible('groundFill', quality);
     const density = decorativeDensity(quality);
+    // 风暴盘的自转钟。★ 用渲染 dt 累加（顿帧时跟着一起冻，与粒子同一个时钟）
+    this.stormClock += dt;
     // 只有离相机最近的几片冒粒子；其余照画边界环与染色盘（边界是 essential）
     const emitters = this.nearestIds(
       areas.map((a) => ({ id: a.id, position: a.center })), cameraPosition, MAX_FILL_AREAS,
@@ -1370,10 +1395,33 @@ export class SpellVfx {
       const entry = this.ensureRing(key, a.center, a.radius, av.primary);
       const plan = groundFillPlanFor(av.particle, a.radius, density);
 
-      // 地面染色盘：让区域读作「这里有东西」，而不只是一圈线
-      this.syncAreaTint(entry, a, av.primary, showFill ? plan.tintOpacity : 0);
+      /**
+       * 地面风暴盘：让区域读作「这里有一片天气」，而不只是一圈线。
+       * ★ 它是**装饰层**（跟着 `showFill` 一起被低画质砍掉），
+       *   而边界环是关键信息（14.3「边界即判定」），任何画质都画 ——
+       *   两者的门禁必须分开，砍错一个就违反 14.4。
+       */
+      this.syncAreaTint(
+        entry, a, av.primary,
+        showFill ? plan.tintOpacity : 0,
+        STORM_TEXTURE[av.particle],
+        this.stormClock * 0.35,
+      );
 
       if (!showFill || plan.clusters <= 0 || !emitters.has(a.id)) continue;
+      /**
+       * ★★ **起量**：区域刚出现时立刻发一轮，不等第一个 cadence。
+       *
+       *   这修的是「暴风雪啥都没有」的结构性成因：区域只活 4 秒，
+       *   而 cadence 是 0.6 秒 —— 老实现要等 0.6 秒才发第一簇，
+       *   再加上雪 life 1.8 秒才算「铺满」，等它真正稠起来区域已经过半。
+       *   起量之后，玩家按下技能看到的第一帧就有雪。
+       *
+       * ★ 它是**一次性**的，不改 cadence/life，所以稳态槽位占用完全不变 ——
+       *   `vfxPlans.test.ts:246` 的预算断言不受影响。
+       */
+      if (entry.fillTimer === undefined) entry.fillTimer = plan.cadence;
+
       /**
        * ★ 每片区域**自带计时器**（此前是一个全局 fillTimer）：
        *   多片区域同时在场时，全局计时器会让它们同一帧齐发 ——
@@ -1421,14 +1469,34 @@ export class SpellVfx {
    */
   private syncAreaTint(
     entry: RingEntry, area: GroundAreaView, color: number, opacity: number,
+    textureKey: AccentTexture, spin: number,
   ): void {
     if (opacity <= 0) {
       if (entry.tint) entry.tint.visible = false;
       return;
     }
     if (!entry.tint) {
+      /**
+       * ★★ 「风暴盘」而不是纯色圆盘。
+       *
+       *   用户实测「暴风雪啥都没有」的**结构性**成因不是密度：地面区域只活 4 秒，
+       *   而每次 emit 的雪 life 1.8 秒、cadence 0.6 秒 —— 一生只发约 6 轮，
+       *   前 1.8 秒在起量、后 1.8 秒在区域消失后还在飘，真正「有雪」的窗口
+       *   只有中间约 2 秒。而粒子那条路**已经顶死池预算**
+       *   （`ceil(1.8/0.6)×2 = 6`，`vfxPlans.test.ts:246` 钉着），加不动了。
+       *
+       *   所以密度改走**非粒子通道**：一张平铺贴图 + 每帧转 UV。
+       *   它零池占用、零断言约束，而且是**持续**的 —— 区域在，风暴就在，
+       *   不存在「起量/收尾」的空窗。
+       */
+      const tex = this.accentTex.get(textureKey) ?? null;
+      if (tex) {
+        tex.wrapS = THREE.RepeatWrapping;
+        tex.wrapT = THREE.RepeatWrapping;
+      }
       const mat = new THREE.MeshBasicMaterial({
         color,
+        map: tex,
         transparent: true,
         opacity,
         side: THREE.DoubleSide,
@@ -1448,6 +1516,12 @@ export class SpellVfx {
     entry.tint.mat.opacity = opacity;
     entry.tint.mesh.scale.setScalar(area.radius);
     entry.tint.mesh.position.set(area.center.x, area.center.y + 0.02, area.center.z);
+    /**
+     * ★ 绕自身法线**缓转**（贴地平面绕 Z 转就是绕世界 Y 转）。
+     *   静止的贴图读作「地上有块脏东西」，转起来才读作「一片风暴在这儿盘旋」。
+     *   转速故意慢（0.35 rad/s）—— 快了会读成「一个转盘」而不是天气。
+     */
+    entry.tint.mesh.rotation.z = spin;
   }
 
   // ── 发射工具 ──────────────────────────────────────────────────

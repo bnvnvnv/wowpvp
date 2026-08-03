@@ -64,10 +64,17 @@ import { CombatHud as Hud } from '../hud/CombatHud.js';
 import type { MinimapBlip } from '../hud/ModeHud.js';
 import { FlagMarkers } from '../vfx/FlagMarkers.js';
 import type { ControlKind } from '../vfx/status.js';
-import { visualForAuraId } from '../vfx/schools.js';
+import { visualForAuraId, visualForSchool } from '../vfx/schools.js';
 
 /** 技能栏槽位数，与 CombatDirector 的 PLAYER_SKILL_IDS 长度一致 */
-const SKILL_SLOT_COUNT = 8;
+/**
+ * 技能栏槽位数，与 `CombatDirector` 的 `PLAYER_SKILL_IDS` 长度一致。
+ * ★ 8 → 9：加了「霜甲护盾」让玩家能看见**自己的**护盾四态
+ *   （此前 8 格里没有任何吸收技能，`shieldOf(player)` 恒为 null ——
+ *   14.3 的四态玩家只能在假人身上看到，看不到自己的）。
+ *   前 8 格的顺序与按键**完全没动**，所有按数字键的 verify 脚本不受影响。
+ */
+const SKILL_SLOT_COUNT = 9;
 
 export interface DebugInfo {
   fps: number;
@@ -709,14 +716,22 @@ export class TestbedScene {
       const m = this.statusMarkers.get(e.id as number);
       if (!m) continue;
 
-      const active = new Set<ControlKind>();
+      /**
+       * 值是**施加这个控制的技能的学派色**（查不到则 undefined → 退回中性常量）。
+       * ★ 冰系定身是冰蓝的冰棱、自然系是翠绿的藤蔓 —— 玩家能读出「被什么定住」。
+       */
+      const active = new Map<ControlKind, number | undefined>();
+      const tint = (kind: string): number | undefined => {
+        const school = this.combat.controlSchoolOf(e.id, kind);
+        return school ? visualForSchool(school).primary : undefined;
+      };
       // 7.3：昏迷/恐惧/变形都置 stunned，但恐惧还额外置 feared ——
       // 14.3 要求两者视觉不同，所以恐惧时只显示恐惧，不叠一个昏迷标记
-      if (e.flags.feared) active.add('feared');
-      else if (e.flags.stunned) active.add('stunned');
-      if (e.flags.rooted) active.add('rooted');
-      if (e.flags.silenced) active.add('silenced');
-      if (e.flags.disarmed) active.add('disarmed');
+      if (e.flags.feared) active.set('feared', tint('fear'));
+      else if (e.flags.stunned) active.set('stunned', tint('stun'));
+      if (e.flags.rooted) active.set('rooted', tint('root'));
+      if (e.flags.silenced) active.set('silenced', tint('silence'));
+      if (e.flags.disarmed) active.set('disarmed', tint('disarm'));
 
       m.update(active, this.quality.current, dist, dt, this.elapsed);
 

@@ -108,6 +108,15 @@ const PLAYER_SKILL_IDS = [
   'mage.blizzard',
   'mage.meteor',
   'mage.ice_block',
+  /**
+   * ★ 第 9 格是**追加**的（8 → 9）。加它是为了补一个可达性缺口：
+   *   此前 8 格里**没有任何吸收技能**，`shieldOf(player)` 恒为 null ——
+   *   14.3 的护盾四态玩家只能在假人身上看到，永远看不见**自己的**盾。
+   *   与「牧师假人给战士套盾」是同一个洞的另一半。
+   * ★ 加在**末尾**：前 8 格的顺序与数字键完全不变，
+   *   verify-m2/m3/m4 都按数字键打特定技能，这是唯一不动它们的改法。
+   */
+  'mage.ice_barrier',
 ] as const;
 
 export interface CombatLogEntry {
@@ -191,14 +200,6 @@ export class CombatDirector {
   private warriorPummelAt: number | null = null;
   /** 战士假人的反应时间，秒 */
   private static readonly PUMMEL_REACTION = 0.45;
-  /** 牧师假人下一次给战士套盾的时间 */
-  private priestShieldAt = 0;
-  /**
-   * 牧师套盾的周期，秒。取护心屏障自己的冷却（12 秒）。
-   * ★ 不能靠真冷却拦：假人每次施法前 `cooldowns.clear()`，
-   *   真冷却在这条路径上拦不住任何东西。
-   */
-  private static readonly PRIEST_SHIELD_PERIOD = 12;
 
   constructor(
     obstacles: readonly Aabb[],
@@ -527,9 +528,6 @@ export class CombatDirector {
         continue;
       }
 
-      // 牧师：每 12 秒先给战士套一层盾（见 tryPriestShield 的注释）
-      if ((e.classId as string) === 'priest' && this.tryPriestShield(e)) continue;
-
       // 牧师/法师：反复读条，给你练打断
       const skillId = (e.classId as string) === 'priest' ? 'priest.flash_heal' : 'mage.frostbolt';
       const s = getSkill(asSkillId(skillId));
@@ -549,46 +547,24 @@ export class CombatDirector {
     }
   }
 
-  /**
-   * 牧师假人给**战士假人**套一层「护心屏障」。返回是否真的发出了这次施法。
+  /*
+   * ⚠️ 这里曾经有一个 `tryPriestShield()`：牧师假人每 12 秒给战士套一层护心屏障。
    *
-   * ★★ 为什么需要这段：14.3 的护盾四态在试验场**从来没有出现过**。
-   *   玩家的 8 个技能槽里没有吸收技能（`PLAYER_SKILL_IDS`），
-   *   牧师此前只会自疗 —— 全场没有任何实体能获得吸收光环，
-   *   于是 `setShield()` 永远收到 undefined，四态里连「激活」都没画过一次。
-   *   规则层的吸收结算一直是对的（`sim/aura.ts` 有单测），
-   *   缺的是让它在**141 项验收的载体**里可达。这正是本项目那条老教训
-   *   （「只有测试调过的规则在真实对局里不存在」）的又一例。
+   * 加它是为了补「14.3 护盾四态在试验场根本不可达」这个洞 —— 当时玩家的 8 个
+   * 技能槽里没有任何吸收技能，`setShield()` 永远收到 undefined，四态一态都没画过。
    *
-   * ★ 选战士而不是牧师自己：战士就站在玩家正前方 2.6 米，是玩家本来就在打的
-   *   目标 —— 承伤闪光、衰减变薄、破裂碎片全程在视野正中，
-   *   顺带多一层「先打穿盾再爆发」的博弈。套给远处的牧师则什么都看不见。
+   * **删掉它的原因（两条，第二条是教训）：**
+   *   1. 玩家技能栏加了第 9 格「霜甲护盾」之后，玩家能在**自己身上**看到完整四态，
+   *      这段就成了冗余。
+   *   2. ★★ 它让试验场**最常用的那个打击目标永远带着盾**（12 秒周期里有 6 秒），
+   *      直接打掉了 `verify:m4` 的 M4a「直接伤害技能扣减目标生命」——
+   *      火焰冲击 225 全被吸收，血量一点没掉。
+   *      而我当时的回归只跑了 m2/m8/m10/m12/m13/m15，**没跑 m3/m4**，
+   *      所以这条回归是带着缺陷被推上 main 的。
    *
-   * ★ 瞬发（护心屏障 `CastKind.Instant`）不占读条时间：套完只把下一次施法推迟
-   *   1 秒就恢复自疗节拍 —— verify-m2 靠牧师**持续读条**练打断，
-   *   不能因为插了个盾就让它闲下来。
+   * 教训：给「演示用的假人行为」加任何常驻效果之前，先想清楚它会不会污染
+   * 141 项验收赖以成立的**初始条件**。假人是舞台道具，不是玩家。
    */
-  private tryPriestShield(priestDummy: CombatEntity): boolean {
-    if (this.world.time < this.priestShieldAt) return false;
-
-    const target = listEntities(this.world).find(
-      (x) => x.alive && x.id !== this.player.id && (x.classId as string) === 'warrior',
-    );
-    if (!target) return false;
-
-    const shield = getSkill(asSkillId('priest.power_word_shield'));
-    if (!shield) return false;
-
-    for (const [r, max] of priestDummy.maxResources) priestDummy.resources.set(r, max);
-    priestDummy.cooldowns.clear();
-    priestDummy.gcdUntil = 0;
-    // ★ 与玩家、与另外两个假人走同一个入口（见 requestCast 的注释）
-    this.requestCast(priestDummy, shield, { targetId: target.id });
-
-    this.priestShieldAt = this.world.time + CombatDirector.PRIEST_SHIELD_PERIOD;
-    this.dummyNextCast.set(priestDummy.id as number, this.world.time + 1);
-    return true;
-  }
 
   /**
    * 战士假人的打断行为，演示 7.2 + 7.5 的完整博弈：
@@ -929,6 +905,22 @@ export class CombatDirector {
         absorbInitial: a.absorbInitial,
       })),
     );
+  }
+
+  /**
+   * 某个控制光环是**什么学派**施加的（`control.root` / `control.stun` …）。
+   *
+   * ★ 为什么要有这个方法：控制光环的 id 被统一改写成 `control.<kind>`
+   *   （`sim/effects/combat.ts`），所以表现层**无法**像护盾那样用
+   *   `visualForAuraId()` 从 id 反查回技能。学派现在存在 `AuraDef.school` 上
+   *   （施加时本来就算出来了，用于抗控系数），这里把它取出来。
+   * ★ 查不到返回 undefined，调用方退回中性色 —— 编一个颜色比不画更糟。
+   */
+  controlSchoolOf(id: EntityId, kind: string): School | undefined {
+    for (const a of aurasOf(this.auras, id)) {
+      if (a.def.id === `control.${kind}`) return a.def.school;
+    }
+    return undefined;
   }
 
   /** 15.3：玩家自己的装备栏视图 */

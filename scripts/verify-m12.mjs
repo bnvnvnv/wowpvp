@@ -299,12 +299,16 @@ const { page, errors } = await open(BASE);
         + `[${heights.map((h) => h.toFixed(3)).join(', ')}]，最大偏差 ${maxDev.toFixed(4)} m`
       : '没有已挂载的模型可测');
 
-  // 真实图标确实被浏览器解码了（不是 404 后的裂图）
+  /**
+   * 真实图标确实被浏览器解码了（不是 404 后的裂图）。
+   * ★ 不写死格数：技能栏从 8 格加到 9 格（补了「霜甲护盾」，见 PLAYER_SKILL_IDS）。
+   *   真正的不变量是「**每一格**都是真实图标且都解码成功」，与格数无关。
+   */
   const icons = await page.$$eval('#skill-bar .sk-img',
     (els) => ({ total: els.length, loaded: els.filter((e) => e.naturalWidth > 0).length }));
-  check('#12c', '技能栏用的是真实图标且全部解码成功',
-    icons.total === 8 && icons.loaded === 8,
-    `技能栏 8 格中 ${icons.total} 格为真实图标，其中 ${icons.loaded} 格解码成功`);
+  check('#12c', '技能栏每一格都是真实图标且全部解码成功',
+    icons.total > 0 && icons.loaded === icons.total,
+    `技能栏 ${icons.total} 格为真实图标，其中 ${icons.loaded} 格解码成功`);
 
   check('#12d', '开启美术后无运行时错误', errors.length === 0,
     errors.length === 0 ? '无' : errors.slice(0, 3).join(' | '));
@@ -330,23 +334,32 @@ const { page, errors } = await open(BASE);
    *   「壳真的画出来了」与「承伤通道真的被调用了」。
    * ★ 顺序在暂停假人**之前** —— 盾是牧师放的，先把它停了就没盾可验。
    */
+  /**
+   * ★ 验的是**玩家自己的**护盾（第 9 格「霜甲护盾」）。
+   *
+   *   早先这两条验的是「牧师假人给战士套的盾」—— 那个假人行为已被删除，
+   *   因为它让试验场最常用的打击目标永远带盾，打掉了 `verify:m4` 的 M4a。
+   *   改成玩家自己的盾之后**更好**：玩家本来就该能看见自己的四态，
+   *   而且不再依赖任何假人的定时行为，断言更稳。
+   */
   await page.mouse.move(640, 360);
-  const onWarrior = await tabUntil(page, '战士');
-  const shellUp = await pollArt(page, (s) => (s.shields?.visible ?? 0) >= 1, 15000);
-  check('#14g', '★★ 护盾壳真的画出来了（14.3 四态之「激活」）',
+  await pressSkill(page, 'mage.ice_barrier');
+  const shellUp = await pollArt(page, (s) => (s.shields?.visible ?? 0) >= 1, 4000);
+  check('#14g', '★★ 玩家自己的护盾壳真的画出来了（14.3 四态之「激活」）',
     shellUp.hit && shellUp.st.shields.states.includes('active'),
     shellUp.hit ? `${shellUp.st.shields.visible} 个护盾壳在场，态=[${shellUp.st.shields.states.join(', ')}]`
-      : '15 秒内没有任何护盾壳出现（牧师假人应每 12 秒给战士套一层）');
+      : '按下霜甲护盾后 4 秒内没有出现护盾壳');
 
-  // 一发瞬发的火焰冲击打在带盾的战士身上 —— 承伤闪光该被触发。
-  // ★ 用瞬发而不是霜矢：读条会被战士的拳击打断，那是它的本职工作
-  await pressSkill(page, 'mage.fire_blast');
-  const absorbed = await pollArt(page, (s) => (s.feel?.shieldAbsorbs ?? 0) >= 1, 3000);
+  /**
+   * 承伤闪光：站着让法师假人的霜矢打到自己身上（它每隔几秒就来一发）。
+   * ★ 不需要自己出手 —— 吸收发生在**挨打**的一侧。
+   */
+  // ★ 窗口 9 秒：霜甲护盾本身只有 8 秒，等更久没有意义
+  const absorbed = await pollArt(page, (s) => (s.feel?.shieldAbsorbs ?? 0) >= 1, 9000);
   check('#14h', '★★ 护盾「承伤」通道真的被调用（flashAbsorb 首次有断言盯着）',
     absorbed.hit,
-    absorbed.hit ? `shieldAbsorbs=${absorbed.st.feel.shieldAbsorbs}（硬目标是战士=${onWarrior}）`
-      : `打了一发但 shieldAbsorbs 仍为 ${absorbed.st?.feel?.shieldAbsorbs}`
-        + `（硬目标是战士=${onWarrior}）`);
+    absorbed.hit ? `shieldAbsorbs=${absorbed.st.feel.shieldAbsorbs}`
+      : `12 秒内 shieldAbsorbs 仍为 ${absorbed.st?.feel?.shieldAbsorbs}（法师假人应打到你）`);
 
   /**
    * ── 暂停三个假人，再验施法者与地面表现 ────────────────────────
@@ -365,7 +378,13 @@ const { page, errors } = await open(BASE);
     const paused = globalThis.__scene.combat.pausedDummyClasses;
     for (const c of ['warrior', 'priest', 'mage']) paused.add(c);
   });
-  await page.waitForTimeout(3500); // 等已经挂上的学派锁定自然过期
+  /**
+   * 等已经挂上的学派锁定自然过期。
+   * ★ 5 秒不是保险起见：战士的拳击锁寒冰 3 秒，而上面验护盾承伤时**故意**
+   *   站着挨了几发，很可能刚吃过一次打断。锁没过就按霜矢 → 施法直接失败、
+   *   `activeWindups` 恒为 0，报出来像「蓄力法阵没画」，其实是压根没开始读条。
+   */
+  await page.waitForTimeout(5000);
 
   /**
    * 14.1「预备」：读条**期间全程**有蓄力表现，不是起手闪一下。
@@ -373,16 +392,24 @@ const { page, errors } = await open(BASE);
    *   （活 0.5 秒），而霜矢读 1.4 秒 —— 后面近一秒施法者身上什么都没有。
    *   所以判据是**两次相隔 0.8 秒的采样都还在**，而不是「出现过」。
    */
+  // ★ 霜矢是直接目标技能，必须先有硬目标 —— 否则只会记一条「需要目标」，
+  //   而 activeWindups=0 看起来像「蓄力法阵没画」（这条就这么假失败过一次）
+  await tabUntil(page, '战士');
   await pressSkill(page, 'mage.frostbolt');
   const windup = await pollArt(page, (s) => (s.vfx?.activeWindups ?? 0) >= 1, 1200);
   await page.waitForTimeout(800);
   const stillUp = await artStatus(page);
+  // ★ 失败时带上战斗日志：`activeWindups=0` 的真实原因通常是「施法压根没开始」
+  //   （学派锁定 / 缺蓝 / 死亡），而那只有日志里看得出来
+  const windupLog = await page.evaluate(
+    () => (globalThis.__scene?.combat?.log ?? []).slice(0, 3).map((l) => l.text));
   check('#14e', '★ 读条期间**全程**有蓄力法阵（14.1 预备，不是起手一帧）',
     windup.hit && (stillUp?.vfx?.activeWindups ?? 0) >= 1,
     windup.hit
       ? `起手 activeWindups=${windup.st.vfx.activeWindups}，`
         + `0.8 秒后仍为 ${stillUp?.vfx?.activeWindups}`
-      : `1.2 秒内没轮询到蓄力法阵（activeWindups=${windup.st?.vfx?.activeWindups}）`);
+      : `1.2 秒内没轮询到蓄力法阵（activeWindups=${windup.st?.vfx?.activeWindups}）`
+        + `｜日志：${windupLog.join(' / ')}`);
   await page.waitForTimeout(1800); // 等这一发读完，别和下一条抢 GCD
 
   /**
@@ -486,10 +513,12 @@ console.log('\n── §5 回落路径：素材可选，游戏照常可玩 ─�
     st?.art === false && st.charactersWithModel === 0 && st.envLoaded === false,
     `art=${st?.art}，挂载模型 ${st?.charactersWithModel} 个，环境贴图=${st?.envLoaded}`);
 
-  const svgIcons = await p2.$$eval('#skill-bar .sk-icon',
-    (els) => els.filter((e) => e.tagName.toLowerCase() === 'svg').length);
-  check('#12f', '★ 关闭美术后技能图标回落程序化 SVG（信息不减一分）',
-    svgIcons === 8, `技能栏 8 格中 ${svgIcons} 格为程序化 SVG`);
+  // ★ 同样不写死格数：验的是「每一格都回落成 SVG」，不是「恰好 8 格」
+  const svg = await p2.$$eval('#skill-bar .sk-icon',
+    (els) => ({ total: els.length, svg: els.filter((e) => e.tagName.toLowerCase() === 'svg').length }));
+  check('#12f', '★ 关闭美术后技能图标每一格都回落程序化 SVG（信息不减一分）',
+    svg.total > 0 && svg.svg === svg.total,
+    `技能栏 ${svg.total} 格中 ${svg.svg} 格为程序化 SVG`);
 
   check('#12g', '关闭美术后无运行时错误', e2.length === 0,
     e2.length === 0 ? '无' : e2.slice(0, 3).join(' | '));

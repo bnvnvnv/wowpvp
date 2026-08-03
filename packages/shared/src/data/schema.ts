@@ -170,6 +170,17 @@ export interface AuraDef {
   dispelType: DispelType;
   /** 属于哪条控制递减链（8.2）。不填表示不参与递减 */
   drCategory?: DrCategory;
+  /**
+   * 施加这个光环的技能属于哪个学派。**纯表现用**，规则层不读它。
+   *
+   * ★ 存在的理由：控制光环的 id 被统一改写成 `control.<kind>`
+   *   （见 `sim/effects/combat.ts`），所以表现层**无法**从 id 反查回技能与学派 ——
+   *   而 14.3 要求「定身附着脚部」这类标记能读出是什么冻住了你
+   *   （冰系定身该是冰蓝的冰棱，不是通用锁链）。
+   *   学派在施加时本来就算出来了（用于抗控系数），这里只是把它存下来。
+   * ★ 查不到时不填（光环周期跳、投射物二段效果等），表现层回落到中性色。
+   */
+  school?: School;
   /** 「战斗意志」能否解除（8.3：不能解除持续伤害、普通减速、沉默、降治疗、战斗抑制）*/
   clearableByTrinket?: boolean;
   modifiers?: AuraModifiers;

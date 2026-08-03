@@ -55,7 +55,8 @@ console.log('\n── 规格书 5.4 / 验收 #7：六类瞄准可区分 ──')
 {
   const slots = await slotTexts();
   check('#7a', '技能栏同时提供直接目标、自身中心、地面、自身四类瞄准',
-    slots.length === 8 && slots.some((s) => s.includes('霜矢'))
+    // ★ 不写死格数（8 → 9，补了「霜甲护盾」）—— 验的是四类瞄准都在，不是格数
+    slots.length >= 8 && slots.some((s) => s.includes('霜矢'))
       && slots.some((s) => s.includes('霜爆新星')) && slots.some((s) => s.includes('冰霜风暴'))
       && slots.some((s) => s.includes('化形术')) && slots.some((s) => s.includes('冰封庇护')),
     slots.map((s) => s.split(' ')[1]).join(' / '));
