@@ -67,6 +67,18 @@ export interface HitFeedbackDeps {
     targetId: EntityId; amount: number; school: School; immune: boolean;
     avoided?: 'dodge' | 'parry' | 'block' | undefined; tier: ImpactTier;
   }) => void;
+  /**
+   * 14.3 护盾的**承伤 / 破裂**两态。
+   *
+   * ★★ `flashAbsorb()` / `flashBroken()` 自 M8 定义至今**全仓库零调用点** ——
+   *   四态里的两态从来没有渲染过，连试验场都没接（而试验场明明有事件）。
+   *   接在这里而不是各场景自己接：命中编排本来就唯一入口，
+   *   吸收量就在 `HitEvent.absorbed` 里。
+   * ★ 不受 art 门禁：`StatusMarkers` 在 `?art=off` 下照常构造。
+   */
+  shieldMarkerOf?: (id: EntityId) => {
+    flashAbsorb(): void; flashBroken(): void;
+  } | undefined;
   addTrauma: (t: number) => void;
   hitStop: { trigger(seconds: number): void };
   audio: {
@@ -91,6 +103,13 @@ export class HitFeedback {
   critsSeen = 0;
   /** 诊断只读：创伤峰值（clamp 前的原始请求值取 max）*/
   traumaPeak = 0;
+  /**
+   * 诊断只读：护盾承伤 / 破裂各触发过几次。
+   * ★ 存在的理由很具体：`flashAbsorb`/`flashBroken` 定义至今零调用点，
+   *   没有任何断言发现过。现在验收脚本盯着这两个数。
+   */
+  shieldAbsorbsSeen = 0;
+  shieldBreaksSeen = 0;
 
   constructor(private readonly deps: HitFeedbackDeps) {}
 
@@ -150,6 +169,17 @@ export class HitFeedback {
         else view.flashHit();
         if (tier !== 'light' && tier !== 'normal') view.playHitReact?.();
       }
+    }
+
+    /**
+     * ── 4b. 护盾承伤（14.3 四态之一）─────────────────────────
+     * ★ 「承伤」与「强度衰减」是两件事：前者是**这一瞬间挡下了一次**（闪一下，
+     *   事件），后者是**剩余量在变少**（持续的厚薄变化，状态，由 setShield 画）。
+     *   只做后者的话，盾挡下伤害时玩家什么反馈都没有 —— 那正是此前的状态。
+     */
+    if (ev.absorbed > 0) {
+      d.shieldMarkerOf?.(ev.targetId)?.flashAbsorb();
+      this.shieldAbsorbsSeen += 1;
     }
 
     // ── 5. 音效分层（基础层 + 按档叠加，层与层不同名，见 AudioManager）─
@@ -214,6 +244,19 @@ export class HitFeedback {
 
     // ── 8. 屏闪：只有自己挨打（别人挨打闪我的屏幕是错误的主语）───
     if (onSelf && ev.amount > 0) d.flashScreen();
+  }
+
+  /**
+   * 护盾**破裂**（14.3 四态之一，比承伤更强更长的反馈）。
+   *
+   * ★ 与承伤分开成一个方法而不是塞进 onHit：破盾在两个场景里的来源都不是
+   *   伤害消息本身 —— 试验场是 sim 的 `shieldBroken` 事件、联网是
+   *   `AuraRemoved{reason:'shieldBroken'}`。硬塞进 onHit 会逼两边去猜
+   *   「这一发是不是打穿了」，而那个判断规则层已经做过了。
+   */
+  onShieldBroken(ev: { targetId: EntityId }): void {
+    this.deps.shieldMarkerOf?.(ev.targetId)?.flashBroken();
+    this.shieldBreaksSeen += 1;
   }
 
   /** 治疗反馈：暴击治疗放大浮字（沿用 fn-heal 的绿色，不新增 CSS 类）*/

@@ -12,7 +12,8 @@ import { fizzlePlanFor, windupPlanFor } from './castVfx.js';
 import {
   MAX_FILL_AREAS, groundFillPlanFor, verticalTravel, waveEase, wavePlanFor,
 } from './groundVfx.js';
-import { ATTRIBUTE_VISUALS } from './schools.js';
+import { ATTRIBUTE_VISUALS, visualForAuraId } from './schools.js';
+import { strongestShield } from './status.js';
 import { QualityTier } from '../render/quality.js';
 
 /** 冰霜风暴：0.8 秒读条 + 4 秒引导，从 t=0 起手 */
@@ -266,6 +267,52 @@ describe('verticalTravel —— 参数错在单测里就红', () => {
   it('零重力不产生位移；阻力越大位移越小', () => {
     expect(verticalTravel(0, 1, 1)).toBeCloseTo(0, 6);
     expect(Math.abs(verticalTravel(-3, 5, 1))).toBeLessThan(Math.abs(verticalTravel(-3, 0.2, 1)));
+  });
+});
+
+describe('strongestShield —— 试验场与联网共用的唯一判据', () => {
+  it('取剩余量最大的那一面盾', () => {
+    const best = strongestShield([
+      { auraId: 'a', absorbRemaining: 100, absorbInitial: 400 },
+      { auraId: 'b', absorbRemaining: 250, absorbInitial: 250 },
+    ]);
+    expect(best?.auraId).toBe('b');
+    expect(best?.remaining).toBe(250);
+  });
+
+  it('★ 多个盾不求和 —— 四态是按「这一面还剩几成」定义的', () => {
+    const best = strongestShield([
+      { auraId: 'a', absorbRemaining: 100, absorbInitial: 400 },
+      { auraId: 'b', absorbRemaining: 250, absorbInitial: 250 },
+    ]);
+    expect(best?.remaining).not.toBe(350);
+  });
+
+  it('非吸收光环（没有 absorbRemaining）被跳过，空表返回 undefined', () => {
+    expect(strongestShield([{ auraId: 'chill' }])).toBeUndefined();
+    expect(strongestShield([{ auraId: 'x', absorbRemaining: 0 }])).toBeUndefined();
+    expect(strongestShield([])).toBeUndefined();
+  });
+
+  it('initial 缺失时退到 remaining —— 不会算出 >100% 的剩余比例', () => {
+    const best = strongestShield([{ auraId: 'a', absorbRemaining: 120 }]);
+    expect(best?.initial).toBe(120);
+  });
+});
+
+describe('visualForAuraId —— 护盾终于不再一律金色', () => {
+  it('★ 冰盾是冰蓝、护心屏障是圣金（光环 id 就是技能 id）', () => {
+    expect(visualForAuraId('mage.ice_barrier')).toBe(ATTRIBUTE_VISUALS.frost);
+    expect(visualForAuraId('priest.power_word_shield')).toBe(ATTRIBUTE_VISUALS.holy);
+  });
+
+  it('三段式光环 id 取前两段查回技能', () => {
+    expect(visualForAuraId('mage.blizzard.chill')).toBe(ATTRIBUTE_VISUALS.frost);
+  });
+
+  it('★ 查不回技能的系统光环返回 undefined —— 编一个颜色比不画更糟', () => {
+    expect(visualForAuraId('control.root.x')).toBeUndefined();
+    expect(visualForAuraId('nonsense')).toBeUndefined();
   });
 });
 

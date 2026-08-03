@@ -34,6 +34,7 @@
 
 import * as THREE from 'three';
 import {
+  GEOMETRY,
   School,
   Targeting,
   asSkillId,
@@ -53,6 +54,7 @@ import {
 } from './particleTextures.js';
 import {
   ATTRIBUTE_VISUALS,
+  visualForAuraId,
   visualForSchool,
   visualOf,
   type AttributeVisual,
@@ -192,7 +194,7 @@ export type SpellVfxEvent =
       tier?: ImpactTier }
   | { t: 'heal'; targetId: EntityId; amount: number }
   | { t: 'auraApplied'; targetId: EntityId; auraId: string }
-  | { t: 'shieldBroken'; targetId: EntityId }
+  | { t: 'shieldBroken'; targetId: EntityId; auraId?: string }
   | { t: 'death'; targetId: EntityId };
 
 // ── 打击分档 → 爆发参数（纯函数，vfx.test.ts 不用 WebGL 就能测）────
@@ -734,7 +736,23 @@ export class SpellVfx {
       }
       case 'shieldBroken': {
         const at = posOf(ev.targetId);
-        if (at) this.emitBurst(at, ATTRIBUTE_VISUALS.holy, { count: 16, speed: 3.6, size: 0.6, life: 0.45 });
+        if (!at) return;
+        /**
+         * 破盾 = 一层壳碎掉。★ 三处改动兑现 14.3 的「破裂」：
+         *   · 颜色跟**这面盾的学派**（此前一律圣金，冰盾碎了也是金的）
+         *   · 碎片从**壳体半径**上炸开，而不是从躯干中心（那是「他挨打了」的位置）
+         *   · 加一圈扩张 glow —— 让「壳没了」这件事在余光里也读得到
+         */
+        const av = (ev.auraId ? visualForAuraId(ev.auraId) : undefined) ?? ATTRIBUTE_VISUALS.holy;
+        const shellR = GEOMETRY.HITBOX_RADIUS * 1.9;
+        this.emitBurst(at, av, {
+          count: 22, speed: 5.2, size: 0.5, life: 0.5, drag: 1.2, originRadius: shellR,
+        });
+        this.emitAccent(at, 'debris', av.secondary, 0.8);
+        this.flashes.emit({
+          origin: at, texture: this.accentTex.get('glow') ?? null,
+          color: av.primary, size: 1.4, life: 0.3, grow: 2.6,
+        });
         break;
       }
       case 'death': {

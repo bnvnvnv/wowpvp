@@ -64,6 +64,7 @@ import { CombatHud as Hud } from '../hud/CombatHud.js';
 import type { MinimapBlip } from '../hud/ModeHud.js';
 import { FlagMarkers } from '../vfx/FlagMarkers.js';
 import type { ControlKind } from '../vfx/status.js';
+import { visualForAuraId } from '../vfx/schools.js';
 
 /** 技能栏槽位数，与 CombatDirector 的 PLAYER_SKILL_IDS 长度一致 */
 const SKILL_SLOT_COUNT = 8;
@@ -249,6 +250,8 @@ export class TestbedScene {
           { t: 'damage', ...e },
           (id) => this.bodyPosOf(id),
         ),
+      // 14.3 护盾承伤/破裂。★ 不受 art 门禁 —— StatusMarkers 在 ?art=off 下照常在
+      shieldMarkerOf: (id) => this.statusMarkers.get(id as number),
       addTrauma: (t) => this.cam.addTrauma(t),
       hitStop: this.hitStop,
       audio,
@@ -276,6 +279,8 @@ export class TestbedScene {
       ) {
         this.spellVfx?.onCombatEvent(ev, (id) => this.bodyPosOf(id));
       }
+      // 14.3 护盾破裂（四态之一）。★ flashBroken 自定义以来第一次真的被调用
+      if (ev.t === 'shieldBroken') this.feedback.onShieldBroken({ targetId: ev.targetId });
       if (ev.t === 'death') {
         const at = audioDeps.positionOf(ev.targetId);
         this.feedback.onDeath({
@@ -404,7 +409,13 @@ export class TestbedScene {
     /** 地图装饰摆设自检：登记数/加载数/当前可见性 */
     decor: import('../render/DecorRenderer.js').DecorStatus | undefined;
     /** 打击感自检（诊断只读，diag-feel.mjs 消费）*/
-    feel: { critsSeen: number; traumaPeak: number; trauma: number; hitStopFrozen: boolean };
+    feel: {
+      critsSeen: number; traumaPeak: number; trauma: number; hitStopFrozen: boolean;
+      /** 14.3 护盾承伤/破裂各触发过几次 —— 这两条通道曾经定义了但零调用 */
+      shieldAbsorbs: number; shieldBreaks: number;
+    };
+    /** 14.3 护盾四态自检：当前几个人有壳、分别处于哪一态 */
+    shields: { visible: number; states: string[] };
   } {
     const views = [this.view, ...this.dummyViews.values()];
     const withModel = views.filter((v) => v.hasModel);
@@ -424,6 +435,14 @@ export class TestbedScene {
         traumaPeak: this.feedback.traumaPeak,
         trauma: this.cam.trauma,
         hitStopFrozen: this.hitStop.frozen,
+        shieldAbsorbs: this.feedback.shieldAbsorbsSeen,
+        shieldBreaks: this.feedback.shieldBreaksSeen,
+      },
+      shields: {
+        visible: [...this.statusMarkers.values()].filter((m) => m.shieldVisible).length,
+        states: [...this.statusMarkers.values()]
+          .map((m) => m.shieldState)
+          .filter((s): s is NonNullable<typeof s> => s !== null),
       },
     };
   }
@@ -690,7 +709,11 @@ export class TestbedScene {
       m.update(active, this.quality.current, dist, dt, this.elapsed);
 
       const shield = this.combat.shieldOf(e.id);
-      m.setShield(shield?.remaining, shield?.initial ?? 1, dist);
+      // 盾的学派色（冰盾冰蓝、护心屏障圣金）—— 此前壳体一律金色
+      m.setShield(
+        shield?.remaining, shield?.initial ?? 1, dist,
+        shield ? visualForAuraId(shield.auraId)?.primary : undefined,
+      );
     }
   }
 

@@ -18,7 +18,7 @@
  *    已登记为 docs/10 的 Q12。
  */
 
-import { School, type SkillDef } from '@wowpvp/shared';
+import { School, asSkillId, getSkill, type SkillDef } from '@wowpvp/shared';
 
 /** 14.2 的八项视觉属性 */
 export const VisualAttribute = {
@@ -149,6 +149,21 @@ export const isPoisonSkill = (skill: SkillDef): boolean =>
 
 export const visualOf = (skill: SkillDef): AttributeVisual =>
   ATTRIBUTE_VISUALS[visualAttributeOf(skill)];
+
+/**
+ * 光环 id 的属性视觉。
+ *
+ * 约定：光环 id 是 `<class>.<skill>` 或 `<class>.<skill>.<名>`，取前两段查回技能。
+ * ★ 护盾光环的 id **就是技能 id**（`mage.ice_barrier` / `priest.power_word_shield`），
+ *   所以冰盾是冰蓝、护心屏障是圣金 —— 此前护盾壳写死一个金色，
+ *   八职业的盾长得一模一样。
+ * ★ 查不回技能的（`control.*` 这类系统光环）返回 undefined，由调用方决定
+ *   退到什么 —— 编一个颜色比不画更糟。
+ */
+export const visualForAuraId = (auraId: string): AttributeVisual | undefined => {
+  const skill = getSkill(asSkillId(auraId.split('.').slice(0, 2).join('.')));
+  return skill ? visualOf(skill) : undefined;
+};
 
 /**
  * 只按**伤害学派**取视觉属性（不含毒素判定）。

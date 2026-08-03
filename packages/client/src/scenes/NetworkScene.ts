@@ -70,7 +70,8 @@ import { GroundIndicator, screenToGround } from '../targeting/GroundIndicator.js
 import { SpellVfx, type CastView, type SpellVfxStatus } from '../vfx/SpellVfx.js';
 import { StatusMarkers } from '../vfx/StatusMarkers.js';
 import { TargetRing } from '../vfx/TargetRing.js';
-import type { ControlKind } from '../vfx/status.js';
+import { strongestShield, type ControlKind } from '../vfx/status.js';
+import { visualForAuraId } from '../vfx/schools.js';
 import {
   DEFAULT_ACCESSIBILITY,
   loadAccessibility,
@@ -133,6 +134,11 @@ export interface NetStatus {
    * 现在 `verify:m13` 盯着 `casting.self`。
    */
   casting: { self: boolean; total: number };
+  /**
+   * 14.3 护盾四态自检。★ 联网侧此前**一份数据都没有**（协议不带吸收量），
+   * 现在 M16d 补上了 —— 这两个数就是「补上了没有」的可执行证据。
+   */
+  shields: { visible: number; absorbs: number; breaks: number };
 }
 
 export class NetworkScene {
@@ -265,6 +271,8 @@ export class NetworkScene {
       flashScreen: () => this.hud.flashScreen(),
       vfxDamage: (e) =>
         this.spellVfx?.onCombatEvent({ t: 'damage', ...e }, (id) => this.bodyOf(id)),
+      // 14.3 护盾承伤/破裂（与试验场同一编排入口）
+      shieldMarkerOf: (id) => this.statusMarkers.get(id as number),
       addTrauma: (t) => this.cam.addTrauma(t),
       hitStop: this.hitStop,
       audio,
@@ -370,6 +378,11 @@ export class NetworkScene {
       casting: {
         self: this.view.playerCast !== undefined,
         total: this.view.activeCasts().length,
+      },
+      shields: {
+        visible: [...this.statusMarkers.values()].filter((m) => m.shieldVisible).length,
+        absorbs: this.feedback.shieldAbsorbsSeen,
+        breaks: this.feedback.shieldBreaksSeen,
       },
     };
   }
@@ -592,9 +605,11 @@ export class NetworkScene {
       case 'AuraRemoved':
         if (msg.reason === 'shieldBroken') {
           this.spellVfx?.onCombatEvent(
-            { t: 'shieldBroken', targetId: msg.targetId },
+            { t: 'shieldBroken', targetId: msg.targetId, auraId: msg.auraId },
             (id) => this.bodyOf(id),
           );
+          // 14.3 护盾破裂（四态之一）—— 与试验场的 sim 事件走同一个编排入口
+          this.feedback.onShieldBroken({ targetId: msg.targetId });
         }
         break;
 
@@ -1077,10 +1092,11 @@ export class NetworkScene {
   }
 
   /**
-   * 14.3：控制状态标记（定身/昏迷/沉默/恐惧/缴械），数据来自快照的 DisplayFlags。
-   * ★ 与试验场同一个 StatusMarkers 类、同一套「恐惧优先于昏迷」的区分逻辑。
-   * ⚠️ 护盾四态（setShield）联网侧**还没有数据** —— 快照的 AuraSnapshot 不带
-   *   吸收量。这里如实不画，不编一个「大概还有盾」的表现；补数据属于协议扩展。
+   * 14.3：控制状态标记（定身/昏迷/沉默/恐惧/缴械）+ 护盾四态。
+   * ★ 与试验场同一个 StatusMarkers 类、同一套「恐惧优先于昏迷」的区分逻辑，
+   *   护盾也走同一个 `strongestShield()` 判据 —— 两条路不会各写一遍。
+   * ★ 护盾数据来自快照新增的 `absorbRemaining/absorbInitial`（M16d 协议债，
+   *   此前这里只能如实不画）。
    */
   private updateMarkersFor(snap: EntitySnapshot, view: CharacterView): void {
     let m = this.statusMarkers.get(snap.id as number);
@@ -1096,6 +1112,12 @@ export class NetworkScene {
     if (snap.flags.silenced) active.add('silenced');
     if (snap.flags.disarmed) active.add('disarmed');
     m.update(active, this.quality.current, this.cam.distance, SIM.TICK_DT, this.elapsed);
+
+    const shield = strongestShield(snap.auras);
+    m.setShield(
+      shield?.remaining, shield?.initial ?? 1, this.cam.distance,
+      shield ? visualForAuraId(shield.auraId)?.primary : undefined,
+    );
   }
 
   /**

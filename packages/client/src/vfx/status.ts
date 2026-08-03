@@ -141,6 +141,38 @@ export const shieldStateFor = (remaining: number, initial: number): ShieldState 
   return remaining / Math.max(initial, 1e-6) < 0.3 ? ShieldState.Decaying : ShieldState.Active;
 };
 
+/** 一串光环里最强的吸收盾所需的最小形状 */
+export interface ShieldAuraLike {
+  auraId: string;
+  absorbRemaining?: number;
+  absorbInitial?: number;
+}
+
+/**
+ * 一串光环里**最强**的吸收盾。
+ *
+ * ★★ 判据只有这一处实现：试验场（`CombatDirector.shieldOf` 从 sim 光环表读）
+ *   与联网（`updateMarkersFor` 从快照 `AuraSnapshot` 读）共用它 ——
+ *   两条路各写一遍「哪个盾算数」迟早会漂，而玩家只会发现
+ *   「同一局里单机和联机的护盾表现不一样」。
+ *
+ * ★ 多个盾**不求和**：14.3 的四态是按「这一个盾还剩几成」定义的，
+ *   把两个盾加起来会让「快破了」在错误的时刻亮起。取最强的那个，
+ *   与 sim 的吸收消耗顺序无关（表现层不该猜规则层先扣哪个）。
+ */
+export const strongestShield = <T extends ShieldAuraLike>(
+  auras: readonly T[],
+): { auraId: string; remaining: number; initial: number } | undefined => {
+  let best: { auraId: string; remaining: number; initial: number } | undefined;
+  for (const a of auras) {
+    const remaining = a.absorbRemaining ?? 0;
+    if (remaining <= 0) continue;
+    if (best && best.remaining >= remaining) continue;
+    best = { auraId: a.auraId, remaining, initial: Math.max(remaining, a.absorbInitial ?? remaining) };
+  }
+  return best;
+};
+
 // ── 14.3 第五条：第一人称不能遮满屏幕（验收 #49）───────────────
 
 /** 14.3 点名的三类「近身会糊脸」的特效 */

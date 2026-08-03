@@ -79,6 +79,8 @@ import {
   type EntityId,
 } from '@wowpvp/shared';
 
+import { strongestShield } from '../vfx/status.js';
+
 /** 位移类型的中文名，供战斗日志显示 */
 const DISPLACE_TEXT: Record<string, string> = {
   charge: '冲锋位移', chargeToAlly: '援护位移', pull: '拉拽',
@@ -189,6 +191,14 @@ export class CombatDirector {
   private warriorPummelAt: number | null = null;
   /** 战士假人的反应时间，秒 */
   private static readonly PUMMEL_REACTION = 0.45;
+  /** 牧师假人下一次给战士套盾的时间 */
+  private priestShieldAt = 0;
+  /**
+   * 牧师套盾的周期，秒。取护心屏障自己的冷却（12 秒）。
+   * ★ 不能靠真冷却拦：假人每次施法前 `cooldowns.clear()`，
+   *   真冷却在这条路径上拦不住任何东西。
+   */
+  private static readonly PRIEST_SHIELD_PERIOD = 12;
 
   constructor(
     obstacles: readonly Aabb[],
@@ -517,6 +527,9 @@ export class CombatDirector {
         continue;
       }
 
+      // 牧师：每 12 秒先给战士套一层盾（见 tryPriestShield 的注释）
+      if ((e.classId as string) === 'priest' && this.tryPriestShield(e)) continue;
+
       // 牧师/法师：反复读条，给你练打断
       const skillId = (e.classId as string) === 'priest' ? 'priest.flash_heal' : 'mage.frostbolt';
       const s = getSkill(asSkillId(skillId));
@@ -534,6 +547,47 @@ export class CombatDirector {
       });
       this.dummyNextCast.set(e.id as number, this.world.time + s.cast.time + 2.5);
     }
+  }
+
+  /**
+   * 牧师假人给**战士假人**套一层「护心屏障」。返回是否真的发出了这次施法。
+   *
+   * ★★ 为什么需要这段：14.3 的护盾四态在试验场**从来没有出现过**。
+   *   玩家的 8 个技能槽里没有吸收技能（`PLAYER_SKILL_IDS`），
+   *   牧师此前只会自疗 —— 全场没有任何实体能获得吸收光环，
+   *   于是 `setShield()` 永远收到 undefined，四态里连「激活」都没画过一次。
+   *   规则层的吸收结算一直是对的（`sim/aura.ts` 有单测），
+   *   缺的是让它在**141 项验收的载体**里可达。这正是本项目那条老教训
+   *   （「只有测试调过的规则在真实对局里不存在」）的又一例。
+   *
+   * ★ 选战士而不是牧师自己：战士就站在玩家正前方 2.6 米，是玩家本来就在打的
+   *   目标 —— 承伤闪光、衰减变薄、破裂碎片全程在视野正中，
+   *   顺带多一层「先打穿盾再爆发」的博弈。套给远处的牧师则什么都看不见。
+   *
+   * ★ 瞬发（护心屏障 `CastKind.Instant`）不占读条时间：套完只把下一次施法推迟
+   *   1 秒就恢复自疗节拍 —— verify-m2 靠牧师**持续读条**练打断，
+   *   不能因为插了个盾就让它闲下来。
+   */
+  private tryPriestShield(priestDummy: CombatEntity): boolean {
+    if (this.world.time < this.priestShieldAt) return false;
+
+    const target = listEntities(this.world).find(
+      (x) => x.alive && x.id !== this.player.id && (x.classId as string) === 'warrior',
+    );
+    if (!target) return false;
+
+    const shield = getSkill(asSkillId('priest.power_word_shield'));
+    if (!shield) return false;
+
+    for (const [r, max] of priestDummy.maxResources) priestDummy.resources.set(r, max);
+    priestDummy.cooldowns.clear();
+    priestDummy.gcdUntil = 0;
+    // ★ 与玩家、与另外两个假人走同一个入口（见 requestCast 的注释）
+    this.requestCast(priestDummy, shield, { targetId: target.id });
+
+    this.priestShieldAt = this.world.time + CombatDirector.PRIEST_SHIELD_PERIOD;
+    this.dummyNextCast.set(priestDummy.id as number, this.world.time + 1);
+    return true;
   }
 
   /**
@@ -862,18 +916,19 @@ export class CombatDirector {
   /**
    * 某个实体身上最强的吸收护盾。14.3 的护盾四态靠它驱动。
    *
-   * 取「剩余量最大」的那一个 —— 同时有多个护盾时，玩家关心的是
-   * 「还能扛多少」，而不是某一个具体法术的剩余。
+   * ★ 判据走 `strongestShield()` —— 与联网侧（从 `AuraSnapshot` 读）
+   *   **同一处实现**。两条路各写一遍「哪个盾算数」迟早会漂，
+   *   而玩家只会发现「同一局里单机和联机的护盾表现不一样」。
+   * ★ 返回 `auraId` 是为了让调用方查回学派色（冰盾冰蓝、护心屏障圣金）。
    */
-  shieldOf(id: EntityId): { remaining: number; initial: number } | undefined {
-    let best: { remaining: number; initial: number } | undefined;
-    for (const a of aurasOf(this.auras, id)) {
-      if (a.absorbRemaining <= 0) continue;
-      if (!best || a.absorbRemaining > best.remaining) {
-        best = { remaining: a.absorbRemaining, initial: a.absorbInitial };
-      }
-    }
-    return best;
+  shieldOf(id: EntityId): { auraId: string; remaining: number; initial: number } | undefined {
+    return strongestShield(
+      aurasOf(this.auras, id).map((a) => ({
+        auraId: a.def.id,
+        absorbRemaining: a.absorbRemaining,
+        absorbInitial: a.absorbInitial,
+      })),
+    );
   }
 
   /** 15.3：玩家自己的装备栏视图 */

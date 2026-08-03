@@ -28,6 +28,13 @@ import {
 const H = GEOMETRY.HITBOX_HEIGHT;
 const R = GEOMETRY.HITBOX_RADIUS;
 
+/**
+ * 查不到学派时的中性护盾色。
+ * ★ 这不是「默认颜色」而是**兜底** —— 正常路径由调用方传盾的学派色
+ *   （冰盾冰蓝、护心屏障圣金）。此前这个值是唯一的颜色。
+ */
+const SHIELD_FALLBACK_COLOR = 0xffd98a;
+
 /** 按 CONTROL_VISUALS 的 shape 键造几何体 */
 const makeControlGeometry = (shape: string): THREE.BufferGeometry => {
   switch (shape) {
@@ -64,11 +71,28 @@ export class StatusMarkers {
   readonly group = new THREE.Group();
 
   private readonly control = new Map<ControlKind, THREE.Mesh>();
-  private readonly shield: THREE.Mesh;
-  private readonly shieldMat: THREE.MeshBasicMaterial;
+  /**
+   * 护盾**双层壳**。
+   *
+   * ★★ 外层用 `BackSide` + 加法混合 —— 这就是不写 shader 的边缘光：
+   *   只画球的背面时，屏幕上最亮的那一圈恰好是轮廓（菲涅尔的廉价近似）。
+   *   单层实心球在 Q 版明亮场景里读作「角色被套了个塑料袋」，
+   *   有了轮廓亮边才读作「有一层护罩」。
+   *
+   * ★ 硬约束：**纯程序化，不许引贴图** —— `StatusMarkers` 在 `?art=off` 下
+   *   照常构造，而 `verify:m12 #12e` 断言那条路径零外部素材加载。
+   */
+  private readonly shell: THREE.Group;
+  private readonly shieldInner: THREE.Mesh;
+  private readonly shieldOuter: THREE.Mesh;
+  private readonly shieldInnerMat: THREE.MeshBasicMaterial;
+  private readonly shieldOuterMat: THREE.MeshBasicMaterial;
   /** 承伤/破裂这类一次性反馈的剩余秒数 */
   private burstRemaining = 0;
   private burstState: ShieldState | null = null;
+  /** 壳体自转角（内外反向）与最近一帧的持续态，供 update() 推进 */
+  private shellSpin = 0;
+  private shownState: ShieldState | null = null;
 
   constructor() {
     for (const [kind, v] of Object.entries(CONTROL_VISUALS) as [ControlKind, typeof CONTROL_VISUALS[ControlKind]][]) {
@@ -85,17 +109,38 @@ export class StatusMarkers {
       this.control.set(kind, mesh);
     }
 
-    this.shieldMat = new THREE.MeshBasicMaterial({
-      color: 0xffd98a,
+    this.shell = new THREE.Group();
+    this.shell.position.y = H * 0.5;
+    this.shell.visible = false;
+
+    // 内层：淡淡的实心填充，告诉玩家「这里面有个人被罩着」
+    this.shieldInnerMat = new THREE.MeshBasicMaterial({
+      color: SHIELD_FALLBACK_COLOR,
       transparent: true,
       opacity: 0,
       depthWrite: false,
-      side: THREE.DoubleSide,
+      side: THREE.FrontSide,
     });
-    this.shield = new THREE.Mesh(new THREE.SphereGeometry(R * 1.9, 16, 12), this.shieldMat);
-    this.shield.position.y = H * 0.5;
-    this.shield.visible = false;
-    this.group.add(this.shield);
+    this.shieldInner = new THREE.Mesh(
+      new THREE.SphereGeometry(R * 1.85, 20, 14), this.shieldInnerMat,
+    );
+    this.shell.add(this.shieldInner);
+
+    // 外层：只画背面 + 加法混合 = 轮廓亮边（见字段注释）
+    this.shieldOuterMat = new THREE.MeshBasicMaterial({
+      color: SHIELD_FALLBACK_COLOR,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.BackSide,
+      blending: THREE.AdditiveBlending,
+    });
+    this.shieldOuter = new THREE.Mesh(
+      new THREE.SphereGeometry(R * 2.02, 20, 14), this.shieldOuterMat,
+    );
+    this.shell.add(this.shieldOuter);
+
+    this.group.add(this.shell);
   }
 
   /**
@@ -125,6 +170,17 @@ export class StatusMarkers {
 
     if (this.burstRemaining > 0) this.burstRemaining -= dt;
     if (this.burstRemaining <= 0) this.burstState = null;
+
+    /**
+     * 壳体内外**反向**缓转。★ 两层反转是「这是个在运转的护罩」最短的表达 ——
+     * 静止的球读作贴图，转起来才读作力场。衰减态转速减半（快没劲了）。
+     */
+    if (this.shell.visible) {
+      const slow = this.shownState === ShieldState.Decaying ? 0.5 : 1;
+      this.shellSpin += dt * slow;
+      this.shieldInner.rotation.y = this.shellSpin * 0.35;
+      this.shieldOuter.rotation.y = -this.shellSpin * 0.22;
+    }
   }
 
   /**
@@ -132,19 +188,57 @@ export class StatusMarkers {
    *
    * ★ 14.3 要求四种反馈，其中「承伤」和「破裂」是事件，
    *   由 `flashAbsorb()` / `flashBroken()` 触发，不走这里。
+   *
+   * @param color 盾的学派色（由调用方从 auraId 解析）。★ 缺省退到中性金 ——
+   *   此前这里写死金色，八职业的盾长得一模一样，冰盾也是金的。
    */
-  setShield(remaining: number | undefined, initial: number, cameraDistance: number): void {
+  setShield(
+    remaining: number | undefined, initial: number, cameraDistance: number, color?: number,
+  ): void {
     if (remaining === undefined || (remaining <= 0 && this.burstState !== ShieldState.Broken)) {
-      this.shield.visible = false;
+      this.shell.visible = false;
+      this.shownState = null;
       return;
     }
     const state = this.burstState ?? shieldStateFor(remaining, initial);
     const v = SHIELD_VISUALS[state];
-    this.shield.visible = true;
+    this.shell.visible = true;
+    this.shownState = state;
+
+    const tint = color ?? SHIELD_FALLBACK_COLOR;
+    this.shieldInnerMat.color.set(tint);
+    this.shieldOuterMat.color.set(tint);
+
     // ★ 验收 #49：第一人称下把护盾压到 0.25 以下，但**不关掉**
-    this.shieldMat.opacity = closeUpOpacity('shield', v.opacity, cameraDistance);
-    // 衰减态把壳收薄一点，让「快破了」在余光里也能看出来
-    this.shield.scale.setScalar(state === ShieldState.Decaying ? 0.88 : 1);
+    const base = closeUpOpacity('shield', v.opacity, cameraDistance);
+    // 内层薄、外层亮 —— 亮的是轮廓，实心部分不能糊住角色
+    this.shieldInnerMat.opacity = base * 0.5;
+    this.shieldOuterMat.opacity = base * 0.95;
+
+    /**
+     * 四态的 `motion` 此前**只影响不透明度**（数据里定义了四种运动，
+     * 渲染层一种都没做）。现在真的落地：
+     *   steady   慢转
+     *   flash    一瞬间胀大提亮（承伤）
+     *   thin     收薄 + 转速减半（快破了）
+     *   shatter  快速胀开（破裂）
+     */
+    const scale =
+      v.motion === 'thin' ? 0.88
+        : v.motion === 'flash' ? 1.12
+          : v.motion === 'shatter' ? 1.35
+            : 1;
+    this.shell.scale.setScalar(scale);
+  }
+
+  /** 当前是否在画护盾壳（自检用）*/
+  get shieldVisible(): boolean {
+    return this.shell.visible;
+  }
+
+  /** 当前护盾处于四态里的哪一态（自检用）*/
+  get shieldState(): ShieldState | null {
+    return this.shell.visible ? this.shownState : null;
   }
 
   /** 14.3：护盾**承伤**——一次闪光。与「衰减」是两回事 */
@@ -164,8 +258,10 @@ export class StatusMarkers {
       m.geometry.dispose();
       (m.material as THREE.Material).dispose();
     }
-    this.shield.geometry.dispose();
-    this.shieldMat.dispose();
+    this.shieldInner.geometry.dispose();
+    this.shieldOuter.geometry.dispose();
+    this.shieldInnerMat.dispose();
+    this.shieldOuterMat.dispose();
   }
 }
 
