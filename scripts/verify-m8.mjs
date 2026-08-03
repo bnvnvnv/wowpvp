@@ -273,16 +273,28 @@ console.log('\n── 验收 #48：低画质下关键信息仍可见（14.4）�
   //   → 目标框上出现「⛓ 定身」。整个链条在**最低画质**下完成。
   await page.keyboard.press('Tab');
   await page.waitForTimeout(400);
-  await page.keyboard.press('Digit5');
-  await page.waitForTimeout(300);
 
+  /**
+   * ★ **循环重按**，不是按一次就干等：上一段 #40b 刚放过冰封庇护
+   *   （4 秒 `stunned` 自锁），走回出生点的耗时又不再固定（按位置收尾）——
+   *   自锁未结束时这一下新星**静默失败**，按一次的版本就白等 8 秒。
+   *   与本段开头的注释同一件事：「技能可能在冷却、玩家可能正被控，脚本就白等」。
+   *   失败的施法不消耗递减，所以重按不会把定身推进免疫窗口。
+   */
   let lowGlyphs = [];
-  const deadline = Date.now() + 8000;
-  while (Date.now() < deadline) {
-    const tf = await text('#target-frame');
-    lowGlyphs = CONTROL_GLYPHS.filter((g) => tf.includes(g));
-    if (lowGlyphs.length > 0) break;
-    await page.waitForTimeout(200);
+  {
+    const deadline = Date.now() + 12000;
+    let nextNova = 0;
+    while (Date.now() < deadline) {
+      if (Date.now() >= nextNova) {
+        await page.keyboard.press('Digit5');
+        nextNova = Date.now() + 2000;
+      }
+      const tf = await text('#target-frame');
+      lowGlyphs = CONTROL_GLYPHS.filter((g) => tf.includes(g));
+      if (lowGlyphs.length > 0) break;
+      await page.waitForTimeout(200);
+    }
   }
 
   const fpsLow = await fps();

@@ -327,9 +327,14 @@ const skills: SkillDef[] = [
     counters:
       '持旗时会先掉旗再生效，等于把旗白送出去（8.4 / 12.3 / 验收 #40）；3 秒宽限期一过，3 米内依然可能被发现，照明弹类揭露区域可以直接把人拽出来；只解除减速和定身，昏迷、恐惧、沉默和降低治疗照旧（对照 8.3 解控清单）；已经飞在路上的锁定投射物仍会结算（6.6）；90 秒冷却，交掉后整局基本不会再有第二次；竞技场决胜阶段潜行受限（8.5）。',
     effects: [
-      // 解除全部减速与定身：定身在 schema 里是 { kind: 'root' } 而非具名光环，
-      // removeAura/dispel 都点不到，且不应在职业数据里硬编码别的职业光环 id，故走自定义处理器
-      { kind: 'custom', handler: 'rogue.clearSlowAndRoot' },
+      /**
+       * ★ 解除全部减速与定身 —— `impairs: 'movement'` 按「光环做了什么」选，
+       *   正是「不硬编码别的职业光环 id」的那个表达。此前这里是
+       *   `{ kind: 'custom', handler: 'rogue.clearSlowAndRoot' }`（只记事件、
+       *   无实际效果）：定身是 `applyControl` 统一标 magic 的匿名光环，
+       *   老的按类别驱散点不到它，语义筛选进 schema 后 custom 逃生舱可以退役。
+       */
+      { kind: 'dispel', impairs: 'movement', count: 'all', from: 'ally' },
       { kind: 'enterStealth', graceSeconds: 3 },
       { kind: 'applyAura', target: 'self', aura: stealthAura() },
     ],

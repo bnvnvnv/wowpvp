@@ -524,7 +524,7 @@ registerEffect('dispel', (ctx, e, targets) => {
     // 因为一个 targetFilter: Any 的技能会同时挂两条 dispel 效果（牧师·驱散魔法）
     if ((e.from === 'enemy') !== hostile) continue;
     const removed = dispelAuras(
-      ctx.auras, t.id, e.types, e.count,
+      ctx.auras, t.id, { types: e.types, impairs: e.impairs }, e.count,
       hostile ? 'buff' : 'debuff',
       e.canRemoveImmunity,
     );

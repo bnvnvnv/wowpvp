@@ -190,9 +190,14 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 60 },
     counters: '只处理移动限制：昏迷、恐惧、变形、沉默一概不解（对照 8.3 战斗意志的解除清单）；免疫窗口只有 3 秒，等它过期再上减速定身即可；本体是魔法增益，敌方驱散魔法可以直接摘掉（8.4）；对已经被击退/拉拽的位移无效。',
     effects: [
-      // 8.4 驱散只移除技能说明允许的类别：这里只清移动限制（减速 / 定身）。
-      // schema 的 dispel.count 没有「全部」的表达，先用一个足够大的数表示全清。
-      { kind: 'dispel', types: [DispelType.Movement], count: 99, from: 'ally' },
+      /**
+       * ★★ 按语义清「减速 + 定身」，不按驱散类别。
+       *   `types: [Movement]` 的旧写法**什么都清不掉**：定身是 `applyControl`
+       *   统一标的 magic，霜矢减速是 magic，毒刃减速是 poison —— 全仓库
+       *   标 movement 的只有断筋/震荡射击/冰霜锁链三家。技能说明写的是
+       *   「解除减速和定身」，`impairs: 'movement'` 表达的就是这句话。
+       */
+      { kind: 'dispel', impairs: 'movement', count: 'all', from: 'ally' },
       {
         kind: 'applyAura',
         target: 'target',

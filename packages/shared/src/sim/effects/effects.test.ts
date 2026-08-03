@@ -400,6 +400,82 @@ describe('8.4 驱散（验收 #23）', () => {
     );
     expect(aurasOf(auras, ally.id)).toHaveLength(0);
   });
+
+  /**
+   * ★★ `impairs` 语义筛选 —— 「解除减速和定身」类技能（自由庇佑、遁形、逃脱）
+   *   按驱散**类别**永远选不全：定身是 `applyControl` 统一标 magic 的匿名光环，
+   *   霜矢减速是 magic、毒刃减速是 poison，标 movement 的只有断筋等三家。
+   *   所以自由庇佑此前**什么都清不掉** —— 数据在、驱散在、单测也绿
+   *   （测试给的 slowAura 恰好标了 movement），就是与真实光环对不上。
+   */
+  describe("impairs 语义筛选（自由庇佑「解除减速和定身」）", () => {
+    /** 给友方挂：magic 减速（霜矢链）、poison 减速（毒刃链）、定身、昏迷 */
+    const rigAlly = (): CombatEntity => {
+      const ally = spawn(priest, RED, 1, 0);
+      const apply = (aura: AuraDef) => resolveEffects(
+        { world, auras, dr, projectiles, ground: groundStore, source: caster, skillId: 's' },
+        [{ kind: 'applyAura', target: 'target', aura }], [ally],
+      );
+      apply({
+        id: 'test.chill', name: '冰寒', kind: 'debuff', duration: 6,
+        dispelType: DispelType.Magic, modifiers: { moveSpeed: 0.7 }, description: '减速 30%',
+      });
+      apply({
+        id: 'test.poisonSlow', name: '毒伤', kind: 'debuff', duration: 6,
+        dispelType: DispelType.Poison, modifiers: { moveSpeed: 0.5 }, description: '减速 50%',
+      });
+      // 定身与昏迷走真实的 applyControl 路径（匿名 control.* 光环，dispelType=magic）
+      resolveEffects(
+        { world, auras, dr, projectiles, ground: groundStore, source: caster, skillId: 's' },
+        [{ kind: 'root', duration: 4 }, { kind: 'stun', duration: 2 }], [ally],
+      );
+      ally.flags = deriveStatusFlags(auras, ally);
+      return ally;
+    };
+
+    it("★★ impairs: 'movement' 清掉全部减速与定身，昏迷保留（对照 8.3 解控清单）", () => {
+      const ally = rigAlly();
+      expect(aurasOf(auras, ally.id)).toHaveLength(4);
+
+      resolveEffects(
+        { world, auras, dr, projectiles, ground: groundStore, source: caster, skillId: 'freedom' },
+        [{ kind: 'dispel', impairs: 'movement', count: 'all', from: 'ally' }], [ally],
+      );
+      ally.flags = deriveStatusFlags(auras, ally);
+      const left = aurasOf(auras, ally.id).map((a) => a.def.id);
+      expect(left).toEqual(['control.stun']);
+      expect(ally.flags.rooted).toBe(false);
+      expect(ally.flags.stunned).toBe(true);
+    });
+
+    it("★ impairs: 'slow' 只清减速，定身保留（后撤跃的 clearsSlow）", () => {
+      const ally = rigAlly();
+      resolveEffects(
+        { world, auras, dr, projectiles, ground: groundStore, source: caster, skillId: 'leap' },
+        [{ kind: 'dispel', impairs: 'slow', count: 'all', from: 'ally' }], [ally],
+      );
+      ally.flags = deriveStatusFlags(auras, ally);
+      const left = aurasOf(auras, ally.id).map((a) => a.def.id).sort();
+      expect(left).toEqual(['control.root', 'control.stun']);
+      expect(ally.flags.rooted).toBe(true);
+    });
+
+    it('★ dispelType: None 的减速对语义筛选同样不可驱散（潜行自减速不是驱散后门）', () => {
+      const ally = spawn(priest, RED, 1, 0);
+      resolveEffects(
+        { world, auras, dr, projectiles, ground: groundStore, source: caster, skillId: 's' },
+        [{ kind: 'applyAura', target: 'target', aura: {
+          id: 'test.noneSlow', name: '不可驱散减速', kind: 'debuff', duration: 6,
+          dispelType: DispelType.None, modifiers: { moveSpeed: 0.8 }, description: '',
+        } }], [ally],
+      );
+      resolveEffects(
+        { world, auras, dr, projectiles, ground: groundStore, source: caster, skillId: 'freedom' },
+        [{ kind: 'dispel', impairs: 'movement', count: 'all', from: 'ally' }], [ally],
+      );
+      expect(aurasOf(auras, ally.id)).toHaveLength(1);
+    });
+  });
 });
 
 describe('8.4 / 17.1 效果叠加规则（验收 #23）', () => {

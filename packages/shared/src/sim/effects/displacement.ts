@@ -82,7 +82,13 @@ registerEffect('leapBackward', (ctx, e) => {
   const back = yawToDir(ctx.source.yaw + Math.PI);
   moveTo(ctx, ctx.source, addScaled(ctx.source.position, back, e.distance), 'leapBackward');
   if (e.clearsSlow) {
-    ctx.resolve([{ kind: 'dispel', types: ['movement'], count: 'all', from: 'ally' }], [ctx.source]);
+    /**
+     * ★ `clearsSlow` 的语义是「只清减速」—— 用 `impairs: 'slow'`，不能用
+     *   `impairs: 'movement'`（那会连定身一起清，后撤跃变成免费解定身），
+     *   也不能用旧的 `types: ['movement']`（按类别选不到 magic/poison 减速，
+     *   而且被定身时人根本跳不出去，「清掉定身」在这里语义不通）。
+     */
+    ctx.resolve([{ kind: 'dispel', impairs: 'slow', count: 'all', from: 'ally' }], [ctx.source]);
   }
 });
 

@@ -162,13 +162,29 @@ export const clearByTrinket = (store: AuraStore, id: EntityId): AuraRemoval[] =>
 };
 
 /**
+ * 驱散的选择口径（schema `dispel` 效果的镜像，见 `EffectDef` 注释）：
+ *   · `types` —— 按驱散**类别**（8.4 经典口径）
+ *   · `impairs` —— 按光环**实际做了什么**：'slow' = 带减速修正，
+ *     'movement' = 减速 ∪ 定身。「解除减速和定身」类技能按类别永远选不全 ——
+ *     减速的 dispelType 天生分散在 movement/magic/poison 三种里。
+ */
+export interface DispelSelector {
+  types?: readonly DispelType[];
+  impairs?: 'slow' | 'movement';
+}
+
+/** 这个光环会减速吗？衰减型减速（冰霜锁链）的 moveSpeed 写的就是初始值，同样命中 */
+const isSlowAura = (def: AuraInstance['def']): boolean =>
+  (def.modifiers?.moveSpeed ?? 1) < 1;
+
+/**
  * 8.4 驱散：只移除技能说明允许的类别。
  * `canRemoveImmunity` 对应群体驱散「可解除部分完全免疫」。
  */
 export const dispel = (
   store: AuraStore,
   id: EntityId,
-  types: readonly DispelType[],
+  selector: DispelSelector,
   count: number | 'all',
   kind: 'buff' | 'debuff',
   canRemoveImmunity = false,
@@ -178,7 +194,14 @@ export const dispel = (
 
   const eligible = list.filter((a) => {
     if (a.def.kind !== kind) return false;
-    if (!types.includes(a.def.dispelType)) return false;
+    // ★ 「不可驱散」对两种口径都成立 —— 语义筛选不是绕过 None 的后门
+    if (a.def.dispelType === DispelType.None) return false;
+    if (selector.types && !selector.types.includes(a.def.dispelType)) return false;
+    if (selector.impairs) {
+      const impairing = isSlowAura(a.def)
+        || (selector.impairs === 'movement' && a.def.flags?.rooted === true);
+      if (!impairing) return false;
+    }
     if (a.def.flags?.immuneAll && !canRemoveImmunity) return false;
     return true;
   });

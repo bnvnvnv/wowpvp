@@ -261,8 +261,22 @@ export type EffectDef =
   // —— 打断与驱散 ——
   /** 7.2 专用打断。lockSeconds 只在被打断的是魔法时生效 */
   | { kind: 'interrupt'; schoolLockSeconds: number }
-  /** count 可填 'all'：自由祝福要清掉目标身上**所有**移动限制，写 count: 99 是坏味道 */
-  | { kind: 'dispel'; types: DispelType[]; count: number | 'all'; from: 'ally' | 'enemy'; /** 10.x 可解除部分完全免疫（群体驱散）*/ canRemoveImmunity?: boolean }
+  /**
+   * count 可填 'all'：自由祝福要清掉目标身上**所有**移动限制，写 count: 99 是坏味道。
+   *
+   * `types` 与 `impairs` **二选一**：
+   *   · `types` —— 按驱散**类别**选（8.4 的经典口径：驱散魔法、消毒药剂…）
+   *   · `impairs` —— 按光环**实际做了什么**选：'slow' = 带减速修正
+   *     （`modifiers.moveSpeed < 1`），'movement' = 减速 ∪ 定身（`flags.rooted`）。
+   *
+   * ★★ 为什么需要第二种：减速的 dispelType 天生五花八门 —— 断筋是 movement、
+   *   霜矢是 magic、毒刃是 poison，定身还是 applyControl 统一标的 magic。
+   *   「解除减速和定身」类技能（自由庇佑、逃脱、消失）按类别选**永远选不全**，
+   *   而把霜矢改标 movement 又会让驱散魔法反而摘不掉它 —— 单一 dispelType
+   *   表达不了「既是魔法又是移动限制」。语义筛选直接对齐技能说明的措辞。
+   * ★ `dispelType: None`（不可驱散）对两种口径都**依然不可驱散**。
+   */
+  | { kind: 'dispel'; types?: DispelType[]; count: number | 'all'; from: 'ally' | 'enemy'; /** 10.x 可解除部分完全免疫（群体驱散）*/ canRemoveImmunity?: boolean; impairs?: 'slow' | 'movement' }
 
   // —— 位移 ——
   /** 冲向敌方目标（冲锋）。必须停在合法位置 */

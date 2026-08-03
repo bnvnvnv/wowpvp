@@ -407,6 +407,47 @@ m7 23/23 · m8 12/12 · m9 35/35 · m10 14/14
 
 ---
 
+## 技术债清偿：驱散语义筛选（2026-08-03）
+
+上一轮登记的「自由祝福驱散缺口」。根因不是哪一个技能配错，而是**表达缺失**：
+「解除减速和定身」类技能按驱散**类别**永远选不全 —— 减速的 dispelType
+天生五花八门（断筋 movement、霜矢 magic、毒刃 poison），定身还是
+`applyControl()` 统一标 magic 的**匿名** `control.root` 光环。
+于是自由庇佑的 `dispel types:[Movement]` **什么都清不掉**，而单测全绿 ——
+测试给的 slowAura 恰好标了 movement。把霜矢改标 movement 也不行：
+驱散魔法会反而摘不掉它，单一 dispelType 表达不了「既是魔法又是移动限制」。
+
+### 修法：`dispel` 效果加 `impairs: 'slow' | 'movement'` 语义筛选
+
+按光环**实际做了什么**选（'slow' = `modifiers.moveSpeed < 1`，
+'movement' = 减速 ∪ `flags.rooted`），与技能说明的措辞直接对齐。
+`dispelType: None`（不可驱散）对两种口径**都依然不可驱散**——语义筛选
+不是绕过 None 的后门（潜行自带的 15% 自减速不会被友方驱散意外摘掉）。
+
+三个受害者一并迁上去：
+
+| 技能 | 旧表达 | 新表达 |
+|---|---|---|
+| 圣骑士·自由庇佑 | `types:[Movement], count:99`（清不掉任何东西）| `impairs:'movement', count:'all'` |
+| 猎人·后撤跃 `clearsSlow` | `types:['movement']` | `impairs:'slow'`（**只清减速** —— 被定身时人跳不出去，清定身语义不通）|
+| 盗贼·遁形 | `{kind:'custom', handler:'rogue.clearSlowAndRoot'}`（⛔ 只记事件无效果）| `impairs:'movement'` —— **custom 逃生舱 3 → 2 处**，路线图判据「降到 3 处以下」这次是真达成 |
+
+★ 刻意**没有**改 `control.root` 的 dispelType（上一轮预想的修法）：
+root 保持 magic 意味着牧师的驱散魔法依然能给队友解定身 —— 改成 movement
+会静默拿走这条既有玩法，那是设计变更不是修 bug。
+
+### 顺带：verify-m8 #48b 的时序竞态
+
+#40b 刚放过冰封庇护（4 秒 `stunned` 自锁），#48b 的霜爆新星在自锁未结束时
+**静默失败**，按一次就干等的脚本于是 ~50% 概率白等。改成循环重按
+（失败的施法不消耗递减，重按不会把定身推进免疫窗口）。12/12 ×4。
+
+**验证**：typecheck ✓ · **1050 单测**（+3：语义筛选清得掉 magic/poison 减速与
+定身、只清减速不动定身、None 依然不可驱散）· `pnpm balance` 基线与上轮
+逐位不变（决斗 AI 不用这三个技能）· m2 14/14 · m4 7/7 · m7 23/23 · m8 12/12 ×4
+
+---
+
 ## 特效改造三期：Q 版夸张化（2026-08-03）
 
 用户实测二期后提出：「既然是 Q 版的，技能特效就可以做得夸张一些、酷炫一些，
@@ -1533,13 +1574,15 @@ M4 实现了效果系统但**没有做这次迁移** —— `custom` 处理器�
 | `paladin.dropFlagOnTarget` | 圣骑士·保护祝福 | → `{ kind: 'dropFlag', target: 'target' }`（v1.1 已加） | 高 | ✅ M11 已迁 |
 | `rogue.requireOutOfCombat` | 盗贼·潜行 | `requires: [{outOfCombat}]` | 高 | ✅ M11 已迁 |
 | `rogue.requireRecentParry` | 盗贼·反击刺 | `requires: [{recentlyParried}]` | 高 | ✅ M11 已迁 |
-| `rogue.clearSlowAndRoot` | 盗贼·消失 | ~~`dispel types:[Movement]`~~ | 高 | ⛔ 方案有误，见下 |
+| `rogue.clearSlowAndRoot` | 盗贼·消失 | ~~`dispel types:[Movement]`~~ → `dispel impairs:'movement'`（语义筛选） | 高 | ✅ 技术债清偿批已迁 |
 | `druid.prowl` | 德鲁伊·猎豹形态 | 不适用（语义不符）| 高 | ✅ 已删除，降级为未实现 |
 | `hunter.sustainAutoShot` | 猎人·自动射击 | **被 7.6 普攻系统取代** | 低 | ✅ 已删除 |
 | `priest.leapOfFaithLandingGuard` | 牧师·信仰飞跃 | 保留 —— 落点合法性校验属于 sim 层，但可考虑抽成通用的 `landingGuard` | 中 | 保留 |
 | `druid.wild_charge` | 德鲁伊·野性冲锋 | 保留 —— 一个键按形态分三种位移，确实无法数据化 | 低 | 保留 |
 
-**当前：11 → 3 处。★ 路线图判据「custom 降到 3 处以下」达成。**
+**当前：11 → 2 处。★ 路线图判据「custom 降到 3 处以下」达成。**
+（第 3 处 `rogue.clearSlowAndRoot` 由技术债清偿批的 `dispel impairs` 语义筛选迁走，
+剩下的 2 处都是「保留」的显式决定，不是欠账。）
 
 ★ M11 第二批：`rogue.requireOutOfCombat` 迁到 `requires`（前提是先让
 `validateCast()` **真的读** `SkillDef.requires` —— 它此前是零读取方的死 schema，
@@ -1565,9 +1608,12 @@ M4 实现了效果系统但**没有做这次迁移** —— `custom` 处理器�
 - `outOfCombat` 没有数据源：`CombatEntity` 上没有 `inCombat` / `lastDamageAt`。
 - `recentlyParried`：**招架从未被掷判过**。`combat.ts` 里没有任何闪避/招架判定，
   `parry` 只是个聚合数字。没有招架事件，就谈不上「最近招架过」。
-- `rogue.clearSlowAndRoot` 的方案**有误**：定身被 `applyControl()` 标成
+- ~~`rogue.clearSlowAndRoot` 的方案**有误**：定身被 `applyControl()` 标成
   `dispelType: 'magic'` 而非 `'movement'`，movement 型驱散点不到它。
-  ⚠️ 同一个 bug 已经随 `leapBackward.clearsSlow` 发出去了。
+  ⚠️ 同一个 bug 已经随 `leapBackward.clearsSlow` 发出去了。~~
+  ✅ **技术债清偿批已解决**：`dispel` 效果加了 `impairs: 'slow' | 'movement'`
+  语义筛选（按「光环做了什么」选，不按驱散类别），消失/自由庇佑/后撤跃三处
+  全部迁上去，见「技术债清偿：驱散语义筛选」。
 - `druid.prowl` 语义不符：`requires` 是**施法时**的门禁，而 prowl 需要的是
   形态期间的**持续监视**（脱战即获得潜行）。
 

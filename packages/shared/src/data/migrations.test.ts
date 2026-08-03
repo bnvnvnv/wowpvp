@@ -219,9 +219,12 @@ describe('★ 迁移完整性', () => {
       'applyMoveSpeedFloor',
       'paladin.judgementVulnerability',
       'paladin.dropFlagOnTarget',
+      // 技术债清偿批：dispel 的 impairs 语义筛选进 schema 后迁走（行为测试在
+      // effects.test.ts 的「impairs 语义筛选」组 —— 定身/魔法减速/毒减速全覆盖）
+      'rogue.clearSlowAndRoot',
     ];
     const leftovers: string[] = [];
-    for (const cls of [deathknight, paladin]) {
+    for (const cls of [deathknight, paladin, rogue]) {
       for (const skill of cls.skills) {
         const scan = (effects: readonly EffectDef[]): void => {
           for (const e of effects) {
