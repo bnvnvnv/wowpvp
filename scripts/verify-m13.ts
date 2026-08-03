@@ -165,6 +165,28 @@ try {
     check('5', '★★ A 用键盘打 B 一次，双方客户端都收到 Damage 消息',
       (aDmg.damageSeen as number) >= 1 && (bDmg.damageSeen as number) >= 1,
       `A damageSeen=${aDmg.damageSeen}，B damageSeen=${bDmg.damageSeen}`);
+
+    /**
+     * ★★ 联网施法注册表的守卫。
+     *
+     * `SnapshotCombatView.playerCast` 自 M10 起就是个**声明了却没有人赋值**的
+     * 死字段：自己的施法条、姓名板施法条、目标框施法条、施法姿态动画
+     * 四条通道一起是死的，而 915 个单测与 14 项 m10 验收一条都没发现 ——
+     * 它们验的是「快照解析对不对」，洞在「有没有人把事件写进去」。
+     *
+     * 修好之后必须留一条断言看着它，否则下次重构照样会悄悄死掉。
+     * 这里按一个**读条**技能（霜矢 1.4 秒），瞬发技能不会进施法状态。
+     */
+    const castSlot = mage.skills.findIndex((s) => (s.id as string) === 'mage.frostbolt');
+    if (castSlot < 0 || castSlot > 7) throw new Error('法师技能表里找不到 1–8 槽内的霜矢');
+    await sleep(1700); // 等火焰冲击的 GCD 过去
+    await pageA.keyboard.press(`Digit${castSlot + 1}`);
+    const casting = await waitStatus(
+      pageA, 'A 进入施法状态', 'st.net && st.net.casting.self === true', 4000,
+    );
+    const netCast = (casting.net as { casting?: { self: boolean; total: number } } | null)?.casting;
+    check('10', '★★ 联网侧自己的施法状态真的被写进注册表（playerCast 不再是死字段）',
+      netCast?.self === true, `casting=${JSON.stringify(netCast)}`);
   }
 
   // ── 5：收掉这局 → MatchEnd → 双方回房间 → 再开一局 ──────────

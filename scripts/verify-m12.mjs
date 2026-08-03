@@ -114,10 +114,10 @@ console.log('\n── §2 技能图标：90 个技能全覆盖，无断链 ─�
 }
 
 // ═══ §2.5 八属性粒子贴图（14.2）════════════════════════════════
-console.log('\n── §2.5 14.2 八属性粒子特效：16 张贴图全部在库且被引用 ──');
+console.log('\n── §2.5 14.2 八属性粒子特效：登记的贴图全部在库且被引用 ──');
 {
   const src = readFileSync(join(REPO, 'packages/client/src/vfx/particleTextures.ts'), 'utf8');
-  // 从 VFX_TEXTURE_FILES 数组里抽出登记的 16 个文件名
+  // 从 VFX_TEXTURE_FILES 数组里抽出登记的文件名
   const arr = src.match(/VFX_TEXTURE_FILES\s*=\s*\[([\s\S]*?)\]/);
   const registered = arr ? [...arr[1].matchAll(/'([a-z0-9_]+)'/g)].map((m) => m[1]) : [];
 
@@ -127,10 +127,11 @@ console.log('\n── §2.5 14.2 八属性粒子特效：16 张贴图全部在�
     ? readdirSync(vfxDir).filter((f) => f.endsWith('.png')).map((f) => f.replace(/\.png$/, ''))
     : [];
 
+  // ★ 不写死张数：三期从 16 扩到 22，钉「登记 ↔ 磁盘一一对应」才是不变量
   const missing = registered.filter((n) => !onDisk.includes(n));
   check('#14a', '★ 登记的每张 vfx 贴图都在 assets/art/vfx/ 里（无断链）',
-    registered.length === 16 && missing.length === 0,
-    `登记 ${registered.length} 张（应为 16），断链 ${missing.length}`
+    registered.length > 0 && missing.length === 0,
+    `登记 ${registered.length} 张，断链 ${missing.length}`
       + (missing.length ? `：${missing.join(', ')}` : ''));
 
   // 磁盘上没有一张是「在库却没登记 → 素材在手却没用」
@@ -181,6 +182,95 @@ const open = async (url, settleMs = 14000) => {
 
 const artStatus = (page) => page.evaluate(() => globalThis.__scene?.artStatus);
 
+/**
+ * 按**技能 id** 找到技能栏下标再按数字键。
+ * ★ 不写死槽位：`PLAYER_SKILL_IDS` 调过一次顺序，写死下标会静默地验错技能。
+ */
+const pressSkill = async (page, skillId) => {
+  const slot = await page.evaluate(
+    (id) => globalThis.__scene?.combat?.skills?.findIndex((s) => s.id === id) ?? -1,
+    skillId,
+  );
+  if (slot < 0) return false;
+  await page.keyboard.press(`Digit${slot + 1}`);
+  return true;
+};
+
+/**
+ * 反复按 Tab 直到硬目标是指定的假人。
+ * ★ Tab 是**循环**选择不是「选中它」—— 多按一次就换人了。
+ *   （这条注释是拿一次假失败换来的：验护盾承伤时多按了一个 Tab，
+ *   火焰冲击打到了没有盾的牧师身上。）
+ */
+const tabUntil = async (page, namePart, tries = 6) => {
+  for (let i = 0; i < tries; i++) {
+    const ok = await page.evaluate((n) => {
+      const s = globalThis.__scene;
+      const t = s.combat.player.targets?.hard;
+      const u = s.combat.visibleUnits().find((e) => e.id === t);
+      return !!u && u.name.includes(n);
+    }, namePart);
+    if (ok) return true;
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(250);
+  }
+  return false;
+};
+
+/**
+ * 等某个技能转好冷却再按。
+ * ★ 霜爆新星 18 秒冷却，而本脚本要按它两次（高画质一次、低画质一次）——
+ *   不等就会静默地验到一次「没放出来」，而失败原因看起来像是特效没画。
+ *   宁可脚本慢十几秒，也不要一条会骗人的断言。
+ */
+const waitSkillReady = async (page, skillId, timeoutMs = 22000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const ready = await page.evaluate((id) => {
+      const s = globalThis.__scene;
+      return (s.combat.player.cooldowns.get(id) ?? 0) <= s.combat.world.time;
+    }, skillId);
+    if (ready) return true;
+    await page.waitForTimeout(500);
+  }
+  return false;
+};
+
+/**
+ * 在**页面内**用 rAF 连续采样一段时间，返回这段窗口里几个计数的峰值。
+ *
+ * ★★ 为什么不能从外面轮询（这条是拿一次假失败换来的）：地面波只活 0.35 秒，
+ *   而每次 `page.evaluate` 往返约 250ms —— 外部轮询会随机漏掉整个波，
+ *   报出来的现象是「groundWaves 一直是 0」，看起来像特效没画，
+ *   实际上战斗日志里明明白白写着「霜爆新星 命中 1 个目标」。
+ *   用法：**先挂监视器、再按键**，采样全程在页面内完成。
+ */
+const watchPeaks = (page, ms = 2500) =>
+  page.evaluate(async (dur) => {
+    const until = performance.now() + dur;
+    const peak = { waves: 0, windups: 0, streams: 0 };
+    while (performance.now() < until) {
+      await new Promise((r) => requestAnimationFrame(r));
+      const a = globalThis.__scene?.artStatus;
+      peak.waves = Math.max(peak.waves, a?.vfx?.groundWaves ?? 0);
+      peak.windups = Math.max(peak.windups, a?.vfx?.activeWindups ?? 0);
+      peak.streams = Math.max(peak.streams, a?.vfx?.streamBursts ?? 0);
+    }
+    return peak;
+  }, ms);
+
+/** 在 timeoutMs 内轮询 artStatus，直到 pred 成立。返回命中与最后一次快照 */
+const pollArt = async (page, pred, timeoutMs = 2500) => {
+  const deadline = Date.now() + timeoutMs;
+  let last;
+  while (Date.now() < deadline) {
+    last = await artStatus(page);
+    if (last && pred(last)) return { hit: true, st: last };
+    await page.waitForTimeout(80);
+  }
+  return { hit: false, st: last };
+};
+
 // ═══ §3 验收 #10 重验：模型大小不改变碰撞体 ═══════════════════
 console.log('\n── §3 验收 #10 重验：真实模型不改变碰撞体（docs/13 点名）──');
 const { page, errors } = await open(BASE);
@@ -220,15 +310,98 @@ const { page, errors } = await open(BASE);
     errors.length === 0 ? '无' : errors.slice(0, 3).join(' | '));
 
   /**
-   * 14.2：八属性特效子系统在运行时真的把 16 张贴图都解码了、八属性全覆盖。
+   * 14.2：八属性特效子系统在运行时真的把登记的贴图都解码了、八属性全覆盖。
    * ★ 这是「素材在手却没用」被真正补齐的运行时证据 —— 静态检查证明文件在库，
    *   这里证明它们被浏览器加载进了粒子系统。
    */
-  check('#14d', '★★ 八属性粒子特效运行时加载全部 16 张贴图、覆盖 8 属性',
-    st?.vfx?.texturesLoaded === 16 && st?.vfx?.attributesCovered === 8,
+  check('#14d', '★★ 八属性粒子特效运行时把登记的贴图全部解码、覆盖 8 属性',
+    st?.vfx?.texturesLoaded === st?.vfx?.texturesTotal
+      && (st?.vfx?.texturesLoaded ?? 0) > 0 && st?.vfx?.attributesCovered === 8,
     st?.vfx
       ? `贴图 ${st.vfx.texturesLoaded}/${st.vfx.texturesTotal} 解码，覆盖 ${st.vfx.attributesCovered} 属性`
       : '读不到 __scene.artStatus.vfx');
+
+  /**
+   * ── 14.3 护盾四态 ────────────────────────────────────────────
+   * ★★ 这两条盯的是本项目反复出现的那个家族：`flashAbsorb()` / `flashBroken()`
+   *   自 M8 定义起**全仓库零调用点**，而试验场里根本没有任何实体能获得
+   *   吸收光环 —— 四态一态都没画过，却没有任何断言发现得了。
+   *   现在牧师假人每 12 秒给战士套一层盾（可达性），这里盯住
+   *   「壳真的画出来了」与「承伤通道真的被调用了」。
+   * ★ 顺序在暂停假人**之前** —— 盾是牧师放的，先把它停了就没盾可验。
+   */
+  await page.mouse.move(640, 360);
+  const onWarrior = await tabUntil(page, '战士');
+  const shellUp = await pollArt(page, (s) => (s.shields?.visible ?? 0) >= 1, 15000);
+  check('#14g', '★★ 护盾壳真的画出来了（14.3 四态之「激活」）',
+    shellUp.hit && shellUp.st.shields.states.includes('active'),
+    shellUp.hit ? `${shellUp.st.shields.visible} 个护盾壳在场，态=[${shellUp.st.shields.states.join(', ')}]`
+      : '15 秒内没有任何护盾壳出现（牧师假人应每 12 秒给战士套一层）');
+
+  // 一发瞬发的火焰冲击打在带盾的战士身上 —— 承伤闪光该被触发。
+  // ★ 用瞬发而不是霜矢：读条会被战士的拳击打断，那是它的本职工作
+  await pressSkill(page, 'mage.fire_blast');
+  const absorbed = await pollArt(page, (s) => (s.feel?.shieldAbsorbs ?? 0) >= 1, 3000);
+  check('#14h', '★★ 护盾「承伤」通道真的被调用（flashAbsorb 首次有断言盯着）',
+    absorbed.hit,
+    absorbed.hit ? `shieldAbsorbs=${absorbed.st.feel.shieldAbsorbs}（硬目标是战士=${onWarrior}）`
+      : `打了一发但 shieldAbsorbs 仍为 ${absorbed.st?.feel?.shieldAbsorbs}`
+        + `（硬目标是战士=${onWarrior}）`);
+
+  /**
+   * ── 暂停三个假人，再验施法者与地面表现 ────────────────────────
+   *
+   * ★★ 为什么必须暂停（拿两条假失败换来的）：
+   *   1. 战士假人会拳击打断玩家的霜矢，**并锁住寒冰学派 3 秒** ——
+   *      于是紧接着的霜爆新星（冰系）报「无法释放：学派锁定」。
+   *      这不是 bug，正是 7.2 + 7.5 的反制链在按设计工作，
+   *      是本脚本的操作序列在和试验场的演示脚本抢同一个玩家。
+   *   2. `activeWindups` 是**全场**施法者的计数，牧师与法师假人一直在读条 ——
+   *      不停掉它们，「读条期间有法阵」这条断言恒真，等于没验。
+   *
+   * `pausedDummyClasses` 是 M15 教学就在用的既有机制，不是为验收开的后门。
+   */
+  await page.evaluate(() => {
+    const paused = globalThis.__scene.combat.pausedDummyClasses;
+    for (const c of ['warrior', 'priest', 'mage']) paused.add(c);
+  });
+  await page.waitForTimeout(3500); // 等已经挂上的学派锁定自然过期
+
+  /**
+   * 14.1「预备」：读条**期间全程**有蓄力表现，不是起手闪一下。
+   * ★ 这条盯的是一个具体的历史缺陷：`onCast('started')` 只喷一次 6 粒粒子
+   *   （活 0.5 秒），而霜矢读 1.4 秒 —— 后面近一秒施法者身上什么都没有。
+   *   所以判据是**两次相隔 0.8 秒的采样都还在**，而不是「出现过」。
+   */
+  await pressSkill(page, 'mage.frostbolt');
+  const windup = await pollArt(page, (s) => (s.vfx?.activeWindups ?? 0) >= 1, 1200);
+  await page.waitForTimeout(800);
+  const stillUp = await artStatus(page);
+  check('#14e', '★ 读条期间**全程**有蓄力法阵（14.1 预备，不是起手一帧）',
+    windup.hit && (stillUp?.vfx?.activeWindups ?? 0) >= 1,
+    windup.hit
+      ? `起手 activeWindups=${windup.st.vfx.activeWindups}，`
+        + `0.8 秒后仍为 ${stillUp?.vfx?.activeWindups}`
+      : `1.2 秒内没轮询到蓄力法阵（activeWindups=${windup.st?.vfx?.activeWindups}）`);
+  await page.waitForTimeout(1800); // 等这一发读完，别和下一条抢 GCD
+
+  /**
+   * 14.3：瞬发范围技能要画出**真实判定半径**的地面波。
+   * ★ 霜爆新星是纯定身技能（无伤害、无弹体），此前只有每目标 12 粒小爆，
+   *   地上一点痕迹都没有 —— 用户实测原话「就闪了一下」。
+   */
+  await waitSkillReady(page, 'mage.frost_nova');
+  const waveWatch = watchPeaks(page, 2500); // ★ 先挂监视器再按键，见 watchPeaks
+  await pressSkill(page, 'mage.frost_nova');
+  const wave = await waveWatch;
+  // ★ 失败时把战斗日志一起打出来：这条断言失败过一次，而真正的原因
+  //   （先是「无法释放：学派锁定」，后是采样漏掉）光看计数都查不出来
+  const tail = await page.evaluate(
+    () => (globalThis.__scene?.combat?.log ?? []).slice(0, 4).map((l) => l.text));
+  check('#14f', '★ 瞬发范围技能画出贴地扩张波（边界即判定半径，14.3）',
+    wave.waves >= 1,
+    wave.waves >= 1 ? `释放后 groundWaves 峰值 ${wave.waves}`
+      : `2.5 秒窗口内 groundWaves 峰值仍为 0｜日志：${tail.join(' / ')}`);
 
   // 地图装饰摆设（MapDef.decor）真的摆上了 —— 不是登记了数据没人画（附录A#7）
   check('#15a', '★ 地图装饰摆设已加载（sim 不读它，docs/06 §8.2 红线不变）',
@@ -274,6 +447,33 @@ console.log('\n── §4 验收 #48 重验：最低画质下关键信息仍在�
   check('#48c', '最低画质下 HUD 四区 + 装备栏全部仍在',
     present.every(([, v]) => v),
     present.map(([z, v]) => `${z}${v ? '✓' : '✗'}`).join(' '));
+
+  /**
+   * ★★ 本轮新增元素有没有偷偷违反 14.4，在这里变成可执行断言。
+   *
+   * 14.4 允许减装饰、**不允许**减关键信息。本轮加的三样东西各有归属：
+   *   · 蓄力法阵   = 关键（「这个人在施法」，7.5 的博弈线索）→ 任何画质都画
+   *   · 地面波     = 关键（画的就是这次 AOE 的真实判定半径）  → 任何画质都画
+   *   · 细流粒子   = 装饰（拖尾/地面填充/聚能）              → 最低画质应全空
+   * 三条同时成立才算数：只验前两条会漏掉「装饰没被砍」，
+   * 只验第三条会漏掉「把关键信息一起砍了」。
+   */
+  await page.mouse.move(640, 360);
+  await page.keyboard.press('Tab');
+  await page.waitForTimeout(300);
+  const lowWindupWatch = watchPeaks(page, 2200);
+  await pressSkill(page, 'mage.frostbolt');
+  const lowWindup = await lowWindupWatch;
+  await page.waitForTimeout(1500);
+  await waitSkillReady(page, 'mage.frost_nova');
+  const lowWaveWatch = watchPeaks(page, 2500);
+  await pressSkill(page, 'mage.frost_nova');
+  const lowWave = await lowWaveWatch;
+  check('#48d', '★★ 最低画质：法阵与地面波仍在，被减掉的只有装饰细流',
+    lowWindup.windups >= 1 && lowWave.waves >= 1
+    && lowWindup.streams === 0 && lowWave.streams === 0,
+    `法阵峰值 ${lowWindup.windups}（细流 ${lowWindup.streams}）`
+    + ` · 地面波峰值 ${lowWave.waves}（细流 ${lowWave.streams}）`);
 }
 await page.close();
 
