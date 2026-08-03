@@ -47,6 +47,7 @@ import { BurstPool, FlashPool, type Vec3Like } from './ParticleBurst.js';
 import {
   ACCENT_TEXTURES,
   PARTICLE_TEXTURE,
+  SLASH_ACCENTS,
   VFX_TEXTURE_FILES,
   accentTexture,
   particleTextureFor,
@@ -62,6 +63,7 @@ import {
 import { QualityTier, decorativeDensity, isVisible } from '../render/quality.js';
 import { MOTION, boltOrientation, trailPlanFor } from './boltVfx.js';
 import { fizzlePlanFor, windupPlanFor } from './castVfx.js';
+import { vfxScaleOf } from './skillWeight.js';
 import { MAX_FILL_AREAS, groundFillPlanFor, wavePlanFor, waveEase } from './groundVfx.js';
 import type { ImpactTier } from '../feedback/impactTier.js';
 
@@ -227,7 +229,12 @@ export interface BurstPlan {
   whiteCore: boolean;
 }
 
-/** 命中爆发的参数计划。★ 总缩放钳在 2.1 → count 上限 38 < MAX_PARTICLES 48 */
+/**
+ * 命中爆发的参数计划。
+ * ★ 总缩放仍钳在 2.1；系数 18 → 23 让 count 上限从 38 抬到 **48**，
+ *   正好吃满 `MAX_PARTICLES`（`vfx.test.ts` 钉的就是 ≤48）——
+ *   这 10 粒是**断言允许范围内白送的**，不需要动任何测试。
+ */
 export const burstPlanFor = (
   tier: ImpactTier,
   amount: number,
@@ -237,7 +244,7 @@ export const burstPlanFor = (
   const heavyPlus = tier === 'heavy' || tier === 'crit' || tier === 'critHeavy' || tier === 'kill';
   return {
     scale,
-    count: Math.min(48, Math.round(18 * scale)),
+    count: Math.min(48, Math.round(23 * scale)),
     speed: 4.6 * scale,
     size: 0.72 * scale,
     // ★ 旧实现 life 是常量 0.55 —— 重击应该「留」得久一点
@@ -400,9 +407,19 @@ export class SpellVfx {
   readonly group = new THREE.Group();
   /**
    * **事件型**爆发：命中、释放 pop、死亡、破盾、规避。
-   * ★ 短促、要立刻被看见 —— 48 粒 × 32 格，一发 8 目标 AOE 占 16 格。
+   * ★ 短促、要立刻被看见 —— 48 粒 × 40 格，一发 8 目标 AOE 占 16 格。
+   *
+   * ★★ 32 → 40 不是「顺手加大」，是**修一个当前就在漏的洞**：
+   *   一发 8 目标 AOE = 8 主爆发 + 8 碎屑 = 16 格，活约 0.6 秒。
+   *   0.6 秒内来两发（12v12 里毫不罕见）正好打满 32 格，第三发开始
+   *   按「回收最旧」把**第一发还活着的粒子**掐掉 —— 玩家看到的是
+   *   「命中爆发闪一下就没了」。这与拖尾把自己刷没了是同一种病，
+   *   只是这次源头是事件池自己。三期又给重击加了环/爆点/云三层，
+   *   不扩容会漏得更快。
+   * ★ 代价可忽略：每格约 2.9KB，8 格 ≈ 23KB，且构造时一次性分配
+   *   （稳态零 GC 的前提不变）；空闲格 `visible=false`，不进渲染。
    */
-  private readonly pool = new BurstPool(32);
+  private readonly pool = new BurstPool(40);
   /**
    * **持续型**细流：弹体拖尾、地面区域填充、施法蓄力。
    * ★★ 与事件池分开是**结构性修复**不是优化：细流每隔几十毫秒就要占一格，
@@ -416,10 +433,25 @@ export class SpellVfx {
   private readonly streams = new BurstPool(48, 32);
   /**
    * 刀光、免疫白闪与冲击波环（要随机旋转/展开，Points 做不了）。
-   * 16 而不是 12：冲击波是新消费者，重击一发要占两个槽（刀光 + 环）——
-   * verify:m12 读 activeFlashes 观察是否长期打满。
+   * ★ 16 → 24：三期给重击加了 `ring` + `scorch` 两层、暴击加了 `star` 一层，
+   *   一记物理暴击重击现在最多占 5 格（刀光 + 环 + 爆点 + 白核 + 星芒）。
+   *   16 格在两个人同时重击时就会开始挤掉别人的刀光。
+   * ⚠️ 注意：此处旧注释写着「verify:m12 读 activeFlashes 观察是否长期打满」，
+   *   但 verify-m12 里 grep 不到 activeFlashes —— **那个检查从来不存在**。
+   *   已如实改掉这句，不留一条骗人的注释（真要补见 PROGRESS 已知不足）。
    */
-  private readonly flashes = new FlashPool(16);
+  private readonly flashes = new FlashPool(24);
+
+  /**
+   * 刀光轮换游标。★ 轮流而不是随机：随机会连续抽到同一张，
+   * 而要解决的恰恰是「连着两下长得一样」。见 `SLASH_ACCENTS`。
+   */
+  private slashCursor = 0;
+  private nextSlash(): AccentTexture {
+    const a = SLASH_ACCENTS[this.slashCursor % SLASH_ACCENTS.length]!;
+    this.slashCursor += 1;
+    return a;
+  }
 
   /** 已解码的贴图（异步填充；未就绪时取到 null 走程序化兜底）*/
   private readonly particleTex = new Map<AttributeVisual['particle'], THREE.Texture | null>();
@@ -547,9 +579,35 @@ export class SpellVfx {
     // 释放接管：蓄力到此结束（引导技能的 resolved 在引导**结束**才到，见协议注释）
     if (caster.id !== undefined) this.removeWindup(caster.id);
 
-    // Q 版基调：释放要「砰」地一下 —— 大、密、亮
-    this.emitBurst(hand, av, { count: 16, speed: 3.0, size: 0.72, life: 0.55 });
-    this.emitAccent(hand, 'glow', av.secondary, 1.4);
+    /**
+     * Q 版基调：释放要「砰」地一下 —— 大、密、亮。
+     *
+     * ★★ 分量在这里第一次起作用（`vfxScaleOf` 0.85~1.5）：
+     *   陨星（0.88 分量）与秘法箭（0.09）不该炸出一样大的场面。
+     *   **全都夸张 = 全都不夸张** —— 对比才是夸张的前提，
+     *   所以小技能是被**收着**的（下限 0.85），不是被削弱。
+     */
+    const ws = vfxScaleOf(skill);
+    this.emitBurst(hand, av, {
+      count: Math.round(16 * ws), speed: 3.0 * ws, size: 0.72 * ws, life: 0.55,
+    });
+    this.emitAccent(hand, 'glow', av.secondary, 1.4 * ws);
+    /**
+     * 大招额外一记**定向爆闪** + 广告牌环。
+     * ★ 门槛 1.25 ≈ 分量 0.62，实测落在「60 秒以上冷却」那一档
+     *   （陨星/凛冬领域/神圣壁障…），正是玩家心里的大招名单。
+     * ★★ 环用 `FlashPool` 的**面向镜头广告牌**，不是 `spawnWave` 的贴地环 ——
+     *   贴地环的终点半径恒等于 `shape.radius`（14.3「边界即判定」），
+     *   给一个没有 AOE 的大招画贴地环，玩家会读成「这里刚发生了范围结算」，
+     *   那是**编造判定信息**，比不画更糟。广告牌环不可能被误读成地面边界。
+     */
+    if (ws >= 1.25) {
+      this.emitAccent(hand, 'muzzle', av.primary, 1.5 * ws);
+      this.flashes.emit({
+        origin: hand, texture: this.accentTex.get('ring') ?? null,
+        color: av.secondary, size: 1.1 * ws, life: 0.34, grow: 4.4,
+      });
+    }
 
     /**
      * ★★ 自身中心的圆形范围技能 → 贴地扩张冲击波。
@@ -675,16 +733,30 @@ export class SpellVfx {
           size: plan.size,
           life: plan.life,
         });
-        // 重击冲击波：现成的 glow 贴图 + FlashPool 的 grow 展开，零新资源
+        /**
+         * 重击冲击波。★ 贴图从 `glow` 换成 `ring`（真空心环）——
+         *   地面波那一轮的提交信息自己吐槽过：叫「冲击波」的东西其实是
+         *   **面向镜头的广告牌光斑**，从上往下看只是一团光，读不出「炸开一圈」。
+         *   现在它真的是一个环，且 grow 随打击分档放大。
+         */
         if (plan.shockwave) {
           this.flashes.emit({
-            origin: at, texture: this.accentTex.get('glow') ?? null,
-            color: av.secondary, size: 1.2 * plan.scale, life: 0.26, grow: 3.8,
+            origin: at, texture: this.accentTex.get('ring') ?? null,
+            color: av.secondary, size: 1.0 * plan.scale, life: 0.3,
+            grow: 2.6 + 1.7 * plan.scale,
+          });
+          // 灼痕核心：环之外再压一层放射爆点，给「这一下很沉」一个实心中心
+          this.flashes.emit({
+            origin: at, texture: this.accentTex.get('scorch') ?? null,
+            color: av.primary, size: 1.5 * plan.scale, life: 0.22, grow: 1.9,
           });
         }
         // 碎屑层（impactDebris 装饰角色 —— M8 定义至今第一次被消费）
         if (plan.debris) {
           this.emitAccent(at, 'debris', av.secondary, 0.6 * plan.scale);
+          // 体积感：Q 版重击该有一团「炸开的云」，不只是四散的点
+          this.emitAccent(at, av.particle === 'smoke' ? 'cloud' : 'puff',
+            av.secondary, 0.9 * plan.scale);
         }
         // 暴击白核：白不属于任何学派，八学派下都读作「暴击」
         if (plan.whiteCore) {
@@ -692,11 +764,22 @@ export class SpellVfx {
             origin: at, texture: this.accentTex.get('flash') ?? null,
             color: 0xffffff, size: 2.4 * plan.scale, life: 0.18,
           });
+          /**
+           * ★ 星芒是**形状通道**上的第二条暴击信号。
+           *   颜色通道已经被「白只留给暴击」占死，但色盲玩家与低饱和屏幕上
+           *   颜色最不可靠（17.2）—— 加一个只在暴击出现的形状，
+           *   与浮字的 `!` 后缀是同一条思路。
+           */
+          this.flashes.emit({
+            origin: at, texture: this.accentTex.get('star') ?? null,
+            color: 0xffffff, size: 2.0 * plan.scale, life: 0.26, grow: 2.2,
+            rotation: Math.random() * Math.PI,
+          });
         }
         // 第二通道点缀（14.2）：物理 = 刀光 + 迸溅火星；火/奥/圣见 HIT_ACCENT
         if (ev.school === School.Physical) {
           this.flashes.emit({
-            origin: at, texture: this.accentTex.get('slash') ?? null,
+            origin: at, texture: this.accentTex.get(this.nextSlash()) ?? null,
             color: 0xfff3e0, size: 2.2 * plan.scale, life: 0.24,
             rotation: (Math.random() - 0.5) * 2.6,
           });
@@ -937,10 +1020,17 @@ export class SpellVfx {
       const entry = this.ensureWindup(c.id, av);
       entry.lastProgress = plan.progress;
 
+      /**
+       * ★ 分量放大蓄力：大招的法阵更大、转得更快。
+       *   这同时是 7.5 假读条博弈的**可读性收益** —— 对手一眼看出
+       *   「他在读的是个大的」，才谈得上要不要把打断交出去。
+       */
+      const ws = skill ? vfxScaleOf(skill) : 1;
+
       // 法阵贴在脚下，跟着人走（施法期间也可能被击退/位移）
-      entry.spin += plan.circleSpin * dt;
+      entry.spin += plan.circleSpin * dt * (0.8 + 0.4 * ws);
       entry.group.position.set(c.position.x, c.position.y + 0.06, c.position.z);
-      entry.group.scale.setScalar(2.2 * plan.circleScale);
+      entry.group.scale.setScalar(2.2 * plan.circleScale * ws);
       entry.ring.rotation.z = entry.spin;
       if (entry.runes) entry.runes.rotation.z = -entry.spin * 0.6;
       // 第一人称压透明度，与粒子的 closeFade 同一条规矩（14.3 / 验收 #49）
@@ -971,9 +1061,15 @@ export class SpellVfx {
         { x: hand.x + Math.cos(ang) * r, y: hand.y + (Math.random() - 0.5) * 0.5, z: hand.z + Math.sin(ang) * r },
         av,
         {
-          count: plan.count,
+          /**
+           * ★★ 分量只乘在**低画质早退之后**（上方 `plan.count <= 0` 那条 continue）。
+           *   顺序反过来的话，`0 * ws` 仍是 0 但 `cadence` 判断会先跑，
+           *   更要命的是任何「至少发一粒」的兜底都会让低画质冒出粒子，
+           *   直接打破 14.4 与 `verify:m12 #48d` 的 `streamBursts === 0`。
+           */
+          count: Math.round(plan.count * ws),
           speed: 0.35,
-          size: plan.size,
+          size: plan.size * ws,
           life: plan.life,
           gravity: 0.6,
           drag: 3.4,

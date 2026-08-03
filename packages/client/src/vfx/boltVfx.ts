@@ -26,13 +26,13 @@ import type { AttributeVisual } from './schools.js';
  *   单测断言两者**同号**，方向再也写不反。
  */
 export const MOTION: Record<AttributeVisual['particle'], { gravity: number; swirl: number }> = {
-  ember: { gravity: 2.2, swirl: 0.2 },      // 火：热浪上升
-  beam: { gravity: 2.6, swirl: 0 },         // 神圣：光柱上冲
-  smoke: { gravity: 0.7, swirl: 0.4 },      // 暗影：烟雾缓升
-  snowflake: { gravity: -1.2, swirl: 0.6 }, // 寒冰：雪花飘落
-  rune: { gravity: 0.4, swirl: 2.6 },       // 奥术：符文旋绕
-  leaf: { gravity: -0.4, swirl: 2.0 },      // 自然：叶片打旋
-  spark: { gravity: -3.2, swirl: 0 },       // 物理：火花迸落
+  ember: { gravity: 2.2, swirl: 0.5 },      // 火：热浪上升
+  beam: { gravity: 2.6, swirl: 0 },         // 神圣：光柱上冲（直上，不旋）
+  smoke: { gravity: 0.7, swirl: 0.9 },      // 暗影：烟雾缓升打卷
+  snowflake: { gravity: -1.2, swirl: 1.2 }, // 寒冰：雪花打旋飘落
+  rune: { gravity: 0.4, swirl: 3.4 },       // 奥术：符文旋绕
+  leaf: { gravity: -0.4, swirl: 2.8 },      // 自然：叶片打旋
+  spark: { gravity: -3.2, swirl: 0 },       // 物理：火花直迸（不旋才有「崩」感）
   droplet: { gravity: -4.2, swirl: 0 },     // 毒素：液滴下坠
 };
 
@@ -93,8 +93,14 @@ export const trailPlanFor = (
      * ★ density=0.5 时节拍翻倍（并发格子数减半，负载也减半）。
      */
     cadence: d > 0 ? 0.07 / Math.min(1, d) : 0,
-    count: d > 0 ? Math.max(3, Math.round(7 * d)) : 0,
-    size: 0.44,
+    /**
+     * ★ 三期加密：7 → 11。**只能动 count，不能动 cadence/life** ——
+     *   后两者是上面那条 `ceil(life/cadence) ≤ 6` 预算不等式的两端，
+     *   已经顶死（0.42/0.07 = 6）。count 只受细流池单格 32 粒约束，
+     *   11 还有三倍余量，所以这是加密度**唯一**不撞预算的旋钮。
+     */
+    count: d > 0 ? Math.max(4, Math.round(11 * d)) : 0,
+    size: 0.54,
     life: 0.42,
     // 拖尾要「拖」得住：阻力小一点，粒子才留在飞过的路径上
     drag: 1.5,
