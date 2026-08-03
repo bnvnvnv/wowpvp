@@ -38,6 +38,7 @@ import { ArenaPreset } from '@wowpvp/shared';
 import { audio } from '../audio/AudioManager.js';
 import { skillIconHtml } from '../hud/skillIcon.js';
 import { Connection } from '../net/Connection.js';
+import { renderMatchSummary, type MatchSummaryData } from '../hud/MatchSummary.js';
 import { NetworkScene } from '../scenes/NetworkScene.js';
 import { clampUiScale, loadAccessibility } from '../settings/accessibility.js';
 import { artEnabled } from '../settings/artMode.js';
@@ -94,6 +95,8 @@ export class LobbyShell {
   private preset: ArenaPreset = ArenaPreset.Classic;
   /** 房主 id。只有他能改规则预设（服务器校验，这里只决定按钮亮不亮）*/
   private hostId: string | undefined;
+  /** 16a 战后统计。★ 每局开始时清空 —— 否则第二局会显示上一局的数据 */
+  private summary: MatchSummaryData | undefined;
   /** 点了建房/加房但连接还没通（或 JoinRoom 还没被答复）*/
   private pendingJoin: { code: string; creating: boolean } | undefined;
 
@@ -255,6 +258,9 @@ export class LobbyShell {
       <div class="lb-end" data-page="end" hidden>
         <div class="lb-panel lb-end-panel">
           <h2 id="lb-end-title"></h2>
+          <!-- 16a 结算面板：16.x 统计与 16.4 七项最佳玩家。
+               ★ 内容由 renderMatchSummary() 生成 —— 它是纯函数，可单测 -->
+          <div id="lb-summary"></div>
           <button class="lb-btn lb-primary" data-action="rematch">回到房间</button>
         </div>
       </div>
@@ -331,6 +337,15 @@ export class LobbyShell {
         this.render();
         break;
       }
+
+      /**
+       * 16a：战后统计。★ 存下来等结算页渲染 —— `MatchStats` 在 `MatchEnd`
+       * **之前**到达（服务器刻意的顺序，见 MatchLoop.broadcastStats），
+       * 所以这里只能先存；`MatchEnd` 那一支切页时才画得出来。
+       */
+      case 'MatchStats':
+        this.summary = { rows: msg.rows, awards: msg.awards };
+        break;
 
       case 'Damage':
         this.damageSeen++; // verify:m13 的判据计数（复用 m10「双方都收到 Damage」）
@@ -472,6 +487,8 @@ export class LobbyShell {
   private onMatchStart(msg: Extract<ServerMessage, { t: 'MatchStart' }>): void {
     this.matchStarts++;
     this.destroyMatch(); // 观战/边缘态下可能还挂着上一场
+    // ★ 清掉上一局的统计 —— 不清的话第二局结束时会短暂显示上一局的表
+    this.summary = undefined;
 
     const root = document.createElement('div');
     root.id = 'match-root';
@@ -529,6 +546,12 @@ export class LobbyShell {
     if (this.page === 'end') {
       (this.root.querySelector('#lb-end-title') as HTMLElement).textContent =
         `对局结束 —— ${this.endText}`;
+      /**
+       * 16a 结算面板。★ 没收到统计时**如实留空**，不画一张全 0 的表 ——
+       * 全 0 的表看起来像「这局你什么都没做」，而真相是「数据没送到」。
+       */
+      (this.root.querySelector('#lb-summary') as HTMLElement).innerHTML =
+        this.summary ? renderMatchSummary(this.summary) : '';
     }
   }
 

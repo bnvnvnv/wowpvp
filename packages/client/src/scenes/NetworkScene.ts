@@ -36,8 +36,10 @@ import {
   usesNoTarget,
   type AllyEquipmentSnapshot,
   type ArmorySnapshot,
+  type AwardView,
   type CombatEntity,
   type DropSnapshot,
+  type MatchStatsRow,
   type EntityId,
   type GroundAreaSnapshot,
   type MapDef,
@@ -51,6 +53,7 @@ import {
 
 import { ArsenalView, type Interactable } from '../arsenal/ArsenalView.js';
 import { ArsenalHud, type InteractPrompt } from '../hud/ArsenalHud.js';
+import { KillFeed } from '../hud/KillFeed.js';
 import { CameraController } from '../camera/CameraController.js';
 import { AnimationController } from '../entity/AnimationController.js';
 import { CharacterView } from '../entity/CharacterView.js';
@@ -209,6 +212,8 @@ export class NetworkScene {
    */
   private readonly arsenalView = new ArsenalView();
   private arsenalHud!: ArsenalHud;
+  /** 16a 击杀播报 + 死亡回顾 */
+  private killFeed!: KillFeed;
   private lastDrops: readonly DropSnapshot[] = [];
   private lastArmories: readonly ArmorySnapshot[] = [];
   /** 正在拾取（收到 PickupResult 或自己移动时结束）*/
@@ -287,6 +292,21 @@ export class NetworkScene {
     this.arsenalHud = new ArsenalHud(canvas.parentElement ?? document.body);
     this.arsenalHud.onChoose = (armoryId, choice) =>
       this.conn.send({ t: 'ChooseArsenal', armoryId, choice });
+    // 16a 击杀播报与死亡回顾。★ 名字从快照查 —— 本类不持有任何战斗状态
+    this.killFeed = new KillFeed(canvas.parentElement ?? document.body);
+    this.killFeed.nameOf = (id) =>
+      this.lastEntities.find((e) => (e.id as number) === id)?.name;
+    /**
+     * 连杀升调：同一个音效按连杀数提速 —— 「升调」用 `rate` 而不是换音效，
+     * 因为素材里**没有**一组连杀音（盘里只有 ui_arena_loss，连 win 都没有）。
+     * ★ 不编一个不存在的资源 id：那会变成一次静默的加载失败。
+     */
+    this.killFeed.onStreak = (_name, streak) =>
+      audio.play('ui_masterwork', {
+        group: 'ui',
+        volume: Math.min(1, 0.45 + streak * 0.1),
+        rate: Math.min(1.6, 1 + (streak - 2) * 0.12),
+      });
     /**
      * 17.2：联网场景此前**从不加载**持久化的可访问性设置（只有试验场加载）——
      * 色盲模式/关伤害数字在联网对局里每次都回到默认。打击感改造顺手补上：
@@ -573,6 +593,20 @@ export class NetworkScene {
           targetMaxHealth: this.lastEntities.find((e) => e.id === msg.targetId)?.maxHealth,
         });
         this.view.push(`${this.nameOf(msg.sourceId)} → ${this.nameOf(msg.targetId)} ${msg.amount} 点伤害`, 'ok');
+        /**
+         * 16a 死亡回顾的原料。★ 只记打到**自己**身上的 —— 12v12 里全场
+         * 伤害流会把这个数组变成内存黑洞，而回顾要回答的只有「我怎么死的」。
+         * ⚠️ 协议里没有技能名（`Damage` 只带学派），所以这里用学派兜底 ——
+         *    不编一个技能名出来。要真名得给协议加 skillId，那是另一笔债。
+         */
+        if (msg.targetId === this.selfId) {
+          this.killFeed.noteIncoming(this.serverTime, {
+            sourceId: msg.sourceId,
+            amount: msg.amount,
+            crit: msg.crit === true,
+            skillName: SCHOOL_NAMES[msg.school] ?? '伤害',
+          });
+        }
         break;
       }
       case 'Heal': {
@@ -601,6 +635,14 @@ export class NetworkScene {
           distance: this.audioDistance(msg.entityId).distance,
         });
         this.view.push(`${this.nameOf(msg.entityId)} 被击杀`, 'interrupt');
+        // 16a 击杀播报 + 连杀。★ killerId 可空是协议的事实（验收 #5），如实写「阵亡」
+        this.killFeed.pushKill(
+          this.serverTime, msg.killerId,
+          msg.killerId === undefined ? undefined : this.nameOf(msg.killerId),
+          msg.entityId, this.nameOf(msg.entityId),
+        );
+        // 16a 死亡回顾：只在**自己**死的时候摊开
+        if (msg.entityId === this.selfId) this.killFeed.showRecap(this.serverTime);
         break;
       }
       case 'CastFailed':
@@ -685,6 +727,11 @@ export class NetworkScene {
         }
         break;
 
+      /** 16a 战后统计。★ 场景只负责转交给上层（大厅的结算页在渲染它）*/
+      case 'MatchStats':
+        this.onMatchStats?.(msg.rows, msg.awards);
+        break;
+
       case 'MatchEnd': {
         /**
          * M13：对局结束就停手 —— 服务器紧接着会把 session 放回 Room 阶段，
@@ -699,6 +746,7 @@ export class NetworkScene {
             : `对局结束：${msg.winner === TEAM_RED ? '红方' : '蓝方'}获胜`,
           'interrupt',
         );
+        this.celebrate(msg.winner);
         break;
       }
 
@@ -844,6 +892,35 @@ export class NetworkScene {
     if (input.pressed.has(Action.UseConsumable1)) this.conn.send({ t: 'UseConsumable', slot: 0 });
     if (input.pressed.has(Action.UseConsumable2)) this.conn.send({ t: 'UseConsumable', slot: 1 });
   }
+
+  /**
+   * 16a 胜利庆祝：赢方集体 Cheer + 胜负音。
+   *
+   * ★ 模型自带的 `Cheer` 片段**至今零调用方** —— 零素材成本的一项。
+   * ★ 平局两边都不庆祝：那不是胜利。如实不播比「都播一下」诚实。
+   */
+  private celebrate(winner: TeamId | 'draw'): void {
+    this.killFeed.hide();
+    if (winner === 'draw') {
+      audio.play('ui_arena_loss', { group: 'ui', volume: 0.6 });
+      return;
+    }
+    /**
+     * ★ 盘里**有** `ui_arena_loss`，**没有** `ui_arena_win` ——
+     *   胜利用 `ui_achievement` 顶上，而不是写一个不存在的 `ui_arena_win`
+     *   （那会是一次静默的加载失败：没有声音，也没有报错）。
+     */
+    const won = this.selfTeam === winner;
+    audio.play(won ? 'ui_achievement' : 'ui_arena_loss', { group: 'ui', volume: 0.7 });
+
+    for (const e of this.lastEntities) {
+      if (e.team !== winner || !e.alive) continue;
+      this.views.get(e.id as number)?.playCheer();
+    }
+  }
+
+  /** 16a：战后统计转交给上层（大厅结算页）。由 LobbyShell 注入 */
+  onMatchStats: ((rows: readonly MatchStatsRow[], awards: readonly AwardView[]) => void) | undefined;
 
   /** 自己的装备快照（10.6 完整视图 —— 只有自己和队友有） */
   private selfEquipment(): AllyEquipmentSnapshot | undefined {
@@ -1098,6 +1175,7 @@ export class NetworkScene {
     });
 
     this.updateArsenal();
+    this.killFeed.render(this.serverTime);
 
     this.renderer.render(this.scene, this.cam.camera);
     // ★ 与试验场同一个调用 —— 只是喂的 CombatView 实现不同
@@ -1373,4 +1451,22 @@ const promptFor = (near: Interactable): InteractPrompt => {
     ...(d.pickable ? {} : { hint: `${d.ownerClassName}专用 —— 你拿不走` }),
     enabled: d.pickable,
   };
+};
+
+/**
+ * 学派的中文名。
+ *
+ * ★ 死亡回顾用它兜底：协议的 `Damage` 只带 `school`，**不带技能 id**，
+ *   所以联网侧回顾不出「被寒冰箭打了」只能写「冰霜 240」。
+ *   要显示真名得给协议加一个 skillId —— 那是一笔独立的债，
+ *   这里如实用学派，不编一个技能名出来。
+ */
+const SCHOOL_NAMES: Readonly<Record<string, string>> = {
+  physical: '物理',
+  arcane: '奥术',
+  fire: '火焰',
+  frost: '冰霜',
+  nature: '自然',
+  shadow: '暗影',
+  holy: '神圣',
 };

@@ -39,7 +39,9 @@ import {
   isVisibleTo,
   listEntities,
   openArmory,
+  pickAwards,
   setHardTarget,
+  statsRows,
   stopSwing,
   tabTarget,
   tickDepsOf,
@@ -707,8 +709,44 @@ export class MatchLoop {
     if (!outcome) return;
     this.ended = true;
     this.stop();
+    this.broadcastStats();
     const winner = outcome.winner ?? 'draw';
     this.deps.onEnd(winner);
+  }
+
+  /**
+   * 16.x 战后统计 + 16.4 七项最佳玩家。
+   *
+   * ★★ **在此之前 `sim/stats.ts` 算好的东西没有任何出口。** 统计跑了整整
+   *   一局，`pickAwards()` 在网络层零调用方，然后随房间一起被丢掉 ——
+   *   联网玩家看到的只有一行「红方获胜」。
+   *
+   * ★ 在 `onEnd` **之前**发：`onEnd` 会把房间放回 Room 阶段并广播 RoomState，
+   *   客户端那时已经切走了战斗场景。顺序反了统计就会发给一个不再看它的页面。
+   * ★ 对局已经结束，所以不做任何裁剪 —— 这时没有什么还需要瞒着谁
+   *   （潜行者也已经不在场上了）。这是它能带完整名单的唯一依据。
+   */
+  private broadcastStats(): void {
+    const roster = [...this.match.stats.players.values()];
+    if (roster.length === 0) return;
+
+    const nameOf = (id: EntityId | undefined): string | undefined =>
+      id === undefined ? undefined : this.match.stats.players.get(id)?.name;
+
+    const msg: ServerMessage = {
+      t: 'MatchStats',
+      // ★ 投影走 sim 的 `statsRows()` —— 服务器不自己挑字段（见那个函数的注释）
+      rows: statsRows(this.match.stats),
+      awards: pickAwards(roster).map((a) => ({
+        award: a.award,
+        name: a.name,
+        ...(a.winner ? { winnerId: a.winner.entityId, winnerName: nameOf(a.winner.entityId) } : {}),
+        ...(a.parts
+          ? { parts: a.parts.map((p) => ({ dimension: p.dimension, share: p.normalized * p.weight })) }
+          : {}),
+      })),
+    };
+    for (const s of this.deps.sessions()) s.send(msg);
   }
 
   // ── 小工具 ────────────────────────────────────────────────────

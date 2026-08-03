@@ -188,6 +188,41 @@ export const FORBIDDEN_CLIENT_FIELDS: readonly string[] = [
 //  服务器 → 客户端
 // ════════════════════════════════════════════════════════════════
 
+/**
+ * 结算面板的一行。16.1 的通用统计取「玩家看得懂、能据此改进」的那几项。
+ *
+ * ★ **不是把 `PlayerStats` 整个序列化**。那里面有 `keySkillUses: Map`、
+ *   `weaponDamage: Map` 这类不能直接过 JSON 的结构，也有一堆只对配平
+ *   有意义的中间量 —— 战后面板要的是「我这局打得怎么样」，
+ *   把 40 个字段甩给玩家等于什么都没说（与 15.3 装备对比「只输出差异」同源）。
+ */
+export interface MatchStatsRow {
+  entityId: EntityId;
+  name: string;
+  team: TeamId;
+  classId: ClassId;
+  kills: number;
+  deaths: number;
+  assists: number;
+  damageDone: number;
+  healingDone: number;
+  damageTaken: number;
+  absorbProvided: number;
+  interruptsLanded: number;
+  /** 偏差 #7 的暴击次数。16a 的结算面板要展示它 */
+  crits: number;
+}
+
+/** 16.4 的一项最佳玩家。`winnerId` 为空表示本局无人在该维度有贡献 */
+export interface AwardView {
+  award: string;
+  name: string;
+  winnerId?: EntityId;
+  winnerName?: string;
+  /** 仅综合奖有：评分由哪些维度构成，供面板解释「为什么是他」*/
+  parts?: readonly { dimension: string; share: number }[];
+}
+
 export interface RoomPlayerView {
   id: string;
   name: string;
@@ -299,6 +334,17 @@ export type ServerMessage =
   | { t: 'FlagEvent'; flagTeam: TeamId; state: FlagState; carrierId?: EntityId; position?: Vec3 }
   | { t: 'RoundEnd'; winner: TeamId | 'draw'; round: number }
   | { t: 'MatchEnd'; winner: TeamId | 'draw' }
+  /**
+   * 16.x 战后统计与 16.4 的七项最佳玩家。
+   *
+   * ★★ **在此之前 `sim/stats.ts` 算好的东西没有任何出口** —— 全仓库
+   *   grep 不到 `pickAwards` 的网络层调用方，联网局的 `MatchEnd` 只有
+   *   一行「红方获胜」。统计跑了整整一局，然后随房间一起被丢掉。
+   *
+   * ★ 在**对局结束后**下发，所以不存在泄露问题：这时候没有什么还需要瞒着谁
+   *   （潜行者也已经不在场上了）。这是它能带完整名单的唯一依据。
+   */
+  | { t: 'MatchStats'; rows: readonly MatchStatsRow[]; awards: readonly AwardView[] }
 
   // ── 反馈与错误 ──
   /**
@@ -320,6 +366,6 @@ export const ALL_SERVER_MESSAGE_KINDS: readonly ServerMessageKind[] = [
   'Welcome', 'RoomState', 'MatchStart', 'Snapshot',
   'CastStarted', 'CastResolved', 'CastInterrupted', 'CastFailed', 'Damage', 'Heal',
   'AuraApplied', 'AuraRemoved', 'Death', 'ArsenalOffer', 'PickupResult',
-  'FlagEvent', 'RoundEnd', 'MatchEnd',
+  'FlagEvent', 'RoundEnd', 'MatchEnd', 'MatchStats',
   'Rejected', 'PeerDisconnected', 'PeerReconnected', 'PeerEliminated',
 ];

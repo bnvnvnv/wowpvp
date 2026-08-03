@@ -376,6 +376,49 @@
       .ap-opt-cost { color: #d8a07e; margin-top: 2px; }
       .ap-foot { font-size: 10px; color: #6f7a90; margin-top: 8px; text-align: center; }
 
+      /* ── 16a 击杀播报与死亡回顾（docs/14 §16a）───────────────────── */
+      #kill-feed { position: absolute; right: 14px; top: 90px; width: 260px;
+                   text-align: right; pointer-events: none; font-size: 12px; }
+      .kf-item { background: rgba(20,23,30,.72); border-radius: 5px;
+                 padding: 3px 8px; margin-bottom: 3px; color: #e6ecf7; }
+      .kf-item i { color: #8b95a8; font-style: normal; font-size: 11px; }
+      .kf-streak { color: #ffcf6f; font-size: 11px; }
+      /* 死亡回顾：居中偏上 —— 死亡镜头此时正在看自己的尸体 */
+      #death-recap { position: absolute; left: 50%; top: 120px; transform: translateX(-50%);
+                     width: 320px; background: rgba(16,19,25,.92);
+                     border: 1px solid #3a4152; border-radius: 8px; padding: 10px 12px;
+                     pointer-events: none; font-size: 12px; }
+      .dr-title { font-size: 11px; color: #8b95a8; margin-bottom: 6px; text-align: center; }
+      .dr-empty { color: #6f7a90; text-align: center; }
+      .dr-row { display: flex; gap: 8px; align-items: baseline; padding: 2px 0;
+                border-top: 1px solid #262b36; }
+      .dr-row.dr-crit .dr-amt { color: #ffd45e; font-weight: 900; }
+      .dr-t { color: #6f7a90; font-size: 10px; width: 38px; }
+      .dr-src { color: #e6a0a0; flex: 1; }
+      .dr-skill { color: #9fb4d0; font-size: 11px; }
+      .dr-amt { color: #e6ecf7; width: 52px; text-align: right; }
+
+      /* ── 16a 结算面板（16.1 统计 + 16.4 七项最佳玩家）───────────── */
+      #lb-summary { margin: 10px 0 14px; }
+      .ms-awards { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+                   margin-bottom: 12px; }
+      .ms-award { background: rgba(30,34,44,.9); border: 1px solid #2c313d;
+                  border-radius: 7px; padding: 6px 10px; min-width: 120px; }
+      /* ★ 综合奖单独强调：16.4 要求它不能只按伤害评，所以它值得被看见 */
+      .ms-award-top { border-color: #d0a85a; background: rgba(70,58,32,.55); }
+      .ms-award-name { font-size: 10px; color: #8b95a8; }
+      .ms-award-who { font-size: 13px; font-weight: 700; color: #e6ecf7; }
+      .ms-award-why { font-size: 10px; color: #9ad48f; margin-top: 2px; }
+      .ms-empty { color: #6f7a90; font-size: 12px; text-align: center; }
+      .ms-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .ms-table th { font-size: 10px; color: #6f7a90; font-weight: 400;
+                     padding: 3px 5px; border-bottom: 1px solid #2c313d; }
+      .ms-table td { padding: 3px 5px; text-align: right; color: #c9d1e0; }
+      .ms-table td.ms-name { text-align: left; }
+      .ms-table tr.ms-red td.ms-name { color: #ff9d92; }
+      .ms-table tr.ms-blue td.ms-name { color: #92bcff; }
+      .ms-table tr.ms-self { background: rgba(74,111,143,.18); }
+
       /* ── M13 大厅（docs/14 §M13）──────────────────────────────────
          与 HUD 同一套技术栈：纯 DOM、同一色板、同一个 --ui-scale 缩放
          （由 LobbyShell 从 accessibility 读出写在 #lobby 上）。

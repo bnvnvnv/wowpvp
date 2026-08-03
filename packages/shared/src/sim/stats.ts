@@ -112,6 +112,17 @@ export interface GeneralStats {
   keySkillUses: Map<SkillId, number>;
   /** 7.5 成功假读条：骗掉了对方一次打断 */
   fakeCastsBaited: number;
+  /**
+   * 本局打出的暴击次数（伤害与治疗都算）。
+   *
+   * ★ 16.x 没有要求这一项 —— 它跟着**已知偏差 #7**（暴击是规格书之外的
+   *   玩法新增）一起进来。当时刻意没加统计，理由是「16.x 无暴击统计要求」；
+   *   现在补，是因为 16a 的结算面板要展示它，而**一个玩家看得见的机制
+   *   却在战后统计里查无此项**本身就是缺口。
+   * ★ 口径：按**掷出暴击的那一方**记（与 `damageDone` 同一侧），
+   *   周期跳（DoT/HoT/地面 tick）与 8.5 压迫伤害本来就不暴击，自然不计。
+   */
+  crits: number;
 }
 
 const createGeneralStats = (): GeneralStats => ({
@@ -132,6 +143,7 @@ const createGeneralStats = (): GeneralStats => ({
   skillsLanded: 0,
   keySkillUses: new Map(),
   fakeCastsBaited: 0,
+  crits: 0,
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -159,11 +171,12 @@ export interface ArenaStats {
   /**
    * 增益期间击杀。
    *
-   * ⚠️ **目前恒为 0，这是一个已知缺口而不是「统计为零」**：
-   *   消耗品能被拾取（`DropKind = 'consumable'`），但 sim 里没有任何地方
-   *   **使用**它们产生增益 —— 所以「增益期间」这个状态从不存在。
-   *   `recordItemBuff()` 已经留好入口，消耗品接上使用路径后这一项自然有值。
-   *   见 docs/PROGRESS.md 技术债一节。
+   * ✅ **已知偏差 #2 已关闭**（M11-6 补 sim 使用路径 + M16 补可达性）。
+   *   它曾经**结构上恒为 0** 而不是「统计出来是 0」：消耗品能被拾取，
+   *   但 sim 里没有任何地方**使用**它们产生增益，「增益期间」这个状态
+   *   从不存在。后来 sim 通了，可达性又卡了一轮 —— 服务器不刷货、
+   *   快照不带掉落物、客户端不发消息、房间默认经典竞技场。
+   *   现在整条链有断言钉着：`verify:m16` #11 → #11b → #13。
    */
   killsDuringBuff: number;
   /** 因争夺补给发生的击杀：击杀发生在拾取/争夺之后的窗口内 */
@@ -322,6 +335,8 @@ export const ingestCombatEvents = (
         const dst = of(store, ev.targetId);
         if (src) {
           src.general.damageDone += ev.amount;
+          // 偏差 #7 的暴击计数，按掷出暴击的一方记（见 GeneralStats.crits）
+          if (ev.crit) src.general.crits += 1;
           // 16.2「各武器使用时长与伤害」的伤害一半
           const w = world.entities.get(ev.sourceId)?.weaponId;
           if (w !== undefined) bump(src.arena.weaponDamage as Map<string, number>, w, ev.amount);
@@ -353,6 +368,7 @@ export const ingestCombatEvents = (
         const src = of(store, ev.sourceId);
         if (!src) break;
         src.general.healingDone += ev.amount;
+        if (ev.crit) src.general.crits += 1;
         // 16.3「为旗手治疗」。★ 只算**己方**旗手 —— 治敌方旗手不是贡献
         const target = world.entities.get(ev.targetId);
         if (target?.flags.carryingFlag && target.team === src.team) {
@@ -923,3 +939,60 @@ export const pickAwards = (roster: readonly PlayerStats[]): AwardResult[] => {
 
   return out;
 };
+
+// ════════════════════════════════════════════════════════════════
+//  16.x 战后面板的投影
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * 一行结算数据。字段与协议的 `MatchStatsRow` 一一对应。
+ *
+ * ★★ **投影写在 sim 里，不写在服务器里。** 理由与 `enemyLoadoutView()`
+ *   同源：让「战后面板显示什么」只有一处定义。服务器自己挑字段的话，
+ *   将来加一项统计就要在两个地方各加一次，而漏掉的那次不会报错 ——
+ *   只会让新统计**在面板上静默缺席**。
+ *
+ * ★ 刻意**不含** `keySkillUses` / `weaponDamage` 这类 Map：
+ *   它们过不了 JSON，而且是给配平看的中间量不是给玩家看的结果。
+ */
+export interface StatsRow {
+  entityId: EntityId;
+  name: string;
+  team: TeamId;
+  classId: ClassId;
+  kills: number;
+  deaths: number;
+  assists: number;
+  damageDone: number;
+  healingDone: number;
+  damageTaken: number;
+  absorbProvided: number;
+  interruptsLanded: number;
+  crits: number;
+}
+
+/**
+ * 把一局的统计折成结算面板要的行。
+ *
+ * ★ 数字**取整**：16.1 要的是「玩家看得懂」，伤害显示成 1234.567 只是噪音。
+ *   取整发生在投影层而不是累加层 —— 累加层保持浮点，否则每一跳都会丢精度。
+ * ★ 排序按伤害降序**只是默认顺序**，面板可以自己再排。
+ */
+export const statsRows = (store: StatsStore): StatsRow[] =>
+  [...store.players.values()]
+    .map((s) => ({
+      entityId: s.entityId,
+      name: s.name,
+      team: s.team,
+      classId: s.classId,
+      kills: s.general.kills,
+      deaths: s.general.deaths,
+      assists: s.general.assists,
+      damageDone: Math.round(s.general.damageDone),
+      healingDone: Math.round(s.general.healingDone),
+      damageTaken: Math.round(s.general.damageTaken),
+      absorbProvided: Math.round(s.general.absorbProvided),
+      interruptsLanded: s.general.interruptsLanded,
+      crits: s.general.crits,
+    }))
+    .sort((a, b) => b.damageDone - a.damageDone);

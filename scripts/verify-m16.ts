@@ -288,6 +288,99 @@ console.log('\n── 10.1–10.7：武装竞技场（此前整条链路在联�
   red.close(); blue.close();
 }
 
+// ── 15–17：16a 战后统计真的送到了客户端 ────────────────────────
+console.log('\n── 16.x / 16.4：战后统计与七项最佳玩家（此前算完就被丢掉）──');
+{
+  const { red, blue, redId, blueId } = await startMatch(PORT, 'stats', ArenaPreset.Classic);
+  const match = server.rooms.matchOf('stats')!;
+
+  /**
+   * 造一个有内容的结局：红方打死蓝方。
+   * ★ 直接改血量而不是打满一整局 —— 这里验的是「统计有没有出口」，
+   *   统计口径本身由 `stats.test.ts` 的单测钉着。
+   *   ⚠️ 但**伤害必须真的走一遍结算**，否则统计里就是一片 0，
+   *   那样这条断言会因为「什么都没发生」而平凡通过。
+   */
+  const blueEntity = match.world.entities.get(blueId)!;
+  blueEntity.health = 40;
+  await sleep(120);
+
+  const redEntity = match.world.entities.get(redId)!;
+  redEntity.position = { ...blueEntity.position, x: blueEntity.position.x + 1 };
+  match.movement.get(redId)!.position = { ...redEntity.position };
+
+  /**
+   * ★★ **手动单步推进，不等墙上时间** —— 与 verify-m10 #12 同一个手法。
+   *
+   *   `ARENA.PREP_SECONDS = 18`：准备阶段就有 18 秒，在那期间打死人
+   *   **不会**结束对局。第一版靠真实时间打，于是蓝方死了却收不到
+   *   `MatchEnd`/`MatchStats`，报出来像「统计没下发」——
+   *   而真相是这局根本还没进战斗阶段。定步长循环让快进是安全的：
+   *   每一步都和真实运行完全一样，只是不等时钟。
+   */
+  const loop = server.rooms.loopOf('stats')!;
+  for (let i = 0; i < 400 && !match.arena?.outcome; i++) loop.advance();
+
+  /**
+   * ★ 伤害要**真的走一遍结算**，否则统计里是一片 0，
+   *   而那会让下面几条因为「什么都没发生」而平凡通过。
+   *   靠 7.6 普通攻击打：战士开局 0 怒气（怒气来源就是挥击本身），
+   *   技能全被「资源不足」挡掉。选中敌方硬目标即开火（偏差 #9）。
+   */
+  red.send({ t: 'SetTarget', slot: 'hard', entityId: blueId });
+  for (let i = 0; i < 4; i++) loop.advance();          // 让 SetTarget 落地
+  match.world.entities.get(blueId)!.health = 40;
+  for (let i = 0; i < 600 && match.world.entities.get(blueId)!.alive; i++) loop.advance();
+  for (let i = 0; i < 60 && !match.arena?.outcome; i++) loop.advance(); // 过结算窗口
+
+  /**
+   * ★★ 前置条件的判据是**客户端收到的 `Death` 消息**，不是事后读 `entity.alive`。
+   *
+   *   死亡、回合结算、复活可以发生在**同一个 tick 里**（settleDeaths →
+   *   回合判定 → 复活重置），于是从外面**永远观察不到** `alive === false`
+   *   这个中间态 —— 前两版分别写成「循环后读 alive」和「循环中记一个标志」，
+   *   都报「蓝方存活=true」，看起来像没打死，而统计里明明写着「击杀=1」。
+   *   消息流是外部可观测的事实，中间态不是。
+   */
+  /**
+   * ★ 用 `waitFor` 而不是 `sleep(200)`：上面同步跑了一千多个 tick，
+   *   每个 tick 都往 socket 里塞了两份快照，于是 Damage/Death 排在
+   *   一千多帧后面还没送到 —— 固定睡 200ms 会读到一个空的消息列表，
+   *   报「收到 Death 消息 0 条」，看起来像服务器没发。**队列没冲完不等于没发生。**
+   */
+  await red.waitFor('Death', 8000).catch(() => undefined);
+  check('15a', '★ 前置：蓝方真的被打死了（否则下面几条会因为「什么都没发生」而平凡通过）',
+    red.all('Death').some((d) => d.entityId === blueId),
+    `收到 Death 消息 ${red.all('Death').length} 条`);
+
+  const stats = await red.waitFor('MatchStats', 5000).catch(() => undefined);
+  check('15', '★★ 对局结束后真的下发了战后统计（此前 pickAwards 在网络层零调用方）',
+    stats !== undefined && stats.rows.length === 2,
+    stats ? `${stats.rows.length} 行、${stats.awards.length} 个奖项` : '（一条 MatchStats 都没收到）');
+
+  if (stats) {
+    const redRow = stats.rows.find((r) => r.entityId === redId);
+    check('15b', '★ 统计里有真实数字，不是一张全 0 的表',
+      (redRow?.damageDone ?? 0) > 0,
+      `红方伤害=${redRow?.damageDone}、击杀=${redRow?.kills}、暴击=${redRow?.crits}`);
+
+    check('16', '★ 16.4 的七项最佳玩家都在（含无人获奖的项）',
+      stats.awards.length === 7,
+      stats.awards.map((a) => `${a.name}:${a.winnerName ?? '—'}`).join('，'));
+
+    const overall = stats.awards.find((a) => a.award === 'bestOverall');
+    check('16b', '★★ 综合奖带着「由哪些维度构成」—— 16.4 第二条要看得见',
+      overall !== undefined && (overall.winnerId === undefined || (overall.parts?.length ?? 0) > 0),
+      `综合奖=${overall?.winnerName ?? '（无）'}、维度 ${overall?.parts?.length ?? 0} 项`);
+  }
+
+  check('17', '★ 双方都收到统计（不是只发给赢家）',
+    blue.all('MatchStats').length > 0,
+    `蓝方收到 ${blue.all('MatchStats').length} 条`);
+
+  red.close(); blue.close();
+}
+
 // ── 14：房间设置的权限 ─────────────────────────────────────────
 console.log('\n── 3.1：规则预设只有房主改得动 ──');
 {

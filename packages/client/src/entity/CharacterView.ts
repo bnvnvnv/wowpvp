@@ -506,9 +506,41 @@ export class CharacterView {
     this.hitboxHelper.visible = v;
   }
 
+  /**
+   * 胜利庆祝（docs/14 §16a）。模型自带的 `Cheer` 片段**至今从未被播放过** ——
+   * 22 个片段的清单里躺着一个零调用方的动作，零素材成本。
+   *
+   * ★★ **它会接管动画通道直到场景销毁**（`celebrating` 让 `applyClip` 短路）。
+   *   这在别处会是个 bug，在这里是对的：对局已经结束，不再有快照进来，
+   *   状态机没有任何新状态要表达。不短路的话，下一帧的 Idle 会把庆祝盖掉。
+   * ★ 素材缺片段时安静跳过 —— 与 `playMeleeSwing` 同一条兜底规矩。
+   */
+  playCheer(): void {
+    if (!this.mixer || !this.model || this.celebrating) return;
+    const clip = THREE.AnimationClip.findByName(
+      this.model.clips as THREE.AnimationClip[], 'Cheer',
+    );
+    if (!clip) return;
+
+    this.celebrating = true;
+    // 受击/挥砍的一次性覆盖此刻可能还挂着监听器 —— 先清掉，免得它把庆祝切走
+    this.hitReactOff?.();
+
+    const cheer = this.mixer.clipAction(clip);
+    const prev = this.actions.get(this.currentClip);
+    cheer.reset();
+    cheer.setLoop(THREE.LoopRepeat, Infinity);
+    if (prev && prev !== cheer) prev.fadeOut(0.2);
+    cheer.fadeIn(0.2);
+    cheer.play();
+  }
+  private celebrating = false;
+
   // ── 内部：把（状态 × 施法）合成到一个动画片段 ────────────────
   private applyClip(): void {
     if (!this.mixer || !this.model) return;
+    // ★ 庆祝期间不再跟随状态机（见 playCheer 的注释）
+    if (this.celebrating) return;
     const spec = CLIP[this.state];
     const name =
       this.casting && this.state === AnimState.Idle ? CASTING_CLIP : spec.name;
