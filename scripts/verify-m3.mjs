@@ -128,6 +128,23 @@ console.log('\n── 规格书 6.4 / 验收 #8：非法落点不能确认 ─�
 
   // 走到中央高墙（z ≈ -15，宽 24 米）**南侧贴墙**，此时墙北的落点必然无视线
   await page.waitForTimeout(1000);
+  /**
+   * ⚠★★ **先侧移让开战士假人，再往前走。**
+   *
+   *   假人·战士钉在出生点正前方 2.6 米（拳击 3 米够得到，7.5 的假读条
+   *   博弈靠它）。软推开落地（角色不再互相重叠）之后，一路按 W 会在
+   *   z≈24.2 被它顶住 —— 实测走了 1.7 米就停下，永远到不了中央高墙，
+   *   于是 #8c/#8d/#8e 三条全部「构造不出非法落点」。
+   *
+   *   ★ 这不是产品的问题：**走不过别人的身体是对的**。是这支脚本
+   *     写在软推开之前，默认了「前方一路畅通」。
+   *   ★ 往**左**让：右侧 x≈2.6 有拱门的实体门柱（arch_post_l）。
+   *     中央高墙横跨 x ∈ [-12, 12]，让开 4 米后仍然正对着它。
+   */
+  await page.keyboard.down('KeyQ');
+  await page.waitForTimeout(600);
+  await page.keyboard.up('KeyQ');
+  await page.waitForTimeout(200);
   await page.keyboard.down('KeyW');
   await page.waitForTimeout(5200); // 从 z=26 走到墙前
   await page.keyboard.up('KeyW');

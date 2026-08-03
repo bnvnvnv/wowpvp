@@ -35,7 +35,7 @@ pnpm install
 pnpm dev:server          # 权威服务器，默认 ws://localhost:8080
 pnpm dev:client          # 客户端，默认 http://localhost:5173
 
-pnpm test                # 单元测试（1101 条：几何、命中、施法状态机、统计、快照裁剪…）
+pnpm test                # 单元测试（1109 条：几何、命中、施法状态机、统计、快照裁剪…）
 pnpm typecheck           # 全量类型检查，★ 含测试文件本身（见下）
 
 # 阶段验收脚本（每个里程碑一支，对应 docs/10 的验收标准）

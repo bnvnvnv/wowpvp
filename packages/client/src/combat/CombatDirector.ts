@@ -82,6 +82,7 @@ import {
 } from '@wowpvp/shared';
 
 import { strongestShield } from '../vfx/status.js';
+import { VERIFY_DUMMIES, type DummySpot } from './dummyLayouts.js';
 
 /** 位移类型的中文名，供战斗日志显示 */
 const DISPLACE_TEXT: Record<string, string> = {
@@ -231,6 +232,12 @@ export class CombatDirector {
     playerSpawn: Vec3,
     /** 地图外边界。5.5：地面技能落点不能超出地图 */
     private readonly mapBounds?: Aabb,
+    /**
+     * 假人布置。**默认是验收那一套** —— 两百多项验收的初始条件靠它，
+     * 所以默认路径的行为与参数化之前逐字相同。
+     * 教学传自己的那一套（见 `dummyLayouts.ts` 的文件头：两边的约束天生冲突）。
+     */
+    layout: readonly DummySpot[] = VERIFY_DUMMIES,
   ) {
     this.world = createWorld(obstacles);
 
@@ -239,17 +246,25 @@ export class CombatDirector {
       createEntity(allocEntityId(this.world), mage, RED, playerSpawn, { name: '你（法师）' }),
     );
 
-    // 三个假人，各自演示反制链的一环：
-    //   战士 —— 用拳击打断**你的**读条，让你体会被打断和假读条博弈
-    //   牧师 —— 反复读条治疗，给你练打断和学派锁定
-    //   法师 —— 读条法术，同时也是唯一会对你造成伤害的假人
-    //
-    // ★ 战士刻意放在出生点正前方 2.6 米：拳击是 3 米近战技能，
-    //   放远了它永远够不到你，7.5 的假读条博弈就演示不出来。
-    //   想避开它（例如验证控制递减）只需往后走几米。
-    this.spawnDummy(warrior, { x: playerSpawn.x, y: playerSpawn.y, z: playerSpawn.z - 2.6 }, '假人·战士');
-    this.spawnDummy(priest, { x: playerSpawn.x + 6, y: playerSpawn.y, z: playerSpawn.z - 18 }, '假人·牧师');
-    this.spawnDummy(mage, { x: playerSpawn.x, y: playerSpawn.y, z: playerSpawn.z - 26 }, '假人·法师');
+    /**
+     * 三个假人，各自演示反制链的一环（**行为**在下面的自驱脚本里，
+     * **位置**来自传进来的布置 —— 见 `dummyLayouts.ts` 为什么要分开）：
+     *   战士 —— 用拳击打断**你的**读条，让你体会被打断和假读条博弈
+     *   牧师 —— 反复读条治疗，给你练打断和学派锁定
+     *   法师 —— 读条法术，同时也是唯一会对你造成伤害的假人
+     */
+    const CLASS_OF = { warrior, priest, mage } as const;
+    for (const spot of layout) {
+      this.spawnDummy(
+        CLASS_OF[spot.classId],
+        {
+          x: playerSpawn.x + spot.offset.x,
+          y: playerSpawn.y + spot.offset.y,
+          z: playerSpawn.z + spot.offset.z,
+        },
+        spot.name,
+      );
+    }
 
     this.skills = PLAYER_SKILL_IDS.map((id) => {
       const s = getSkill(asSkillId(id));
