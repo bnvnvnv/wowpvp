@@ -21,6 +21,7 @@ import { School, type EntityId } from '@wowpvp/shared';
 import type { AccessibilitySettings } from '../settings/accessibility.js';
 import type { FloaterKind } from '../hud/FloatingNumbers.js';
 import { impactTierOf, type ImpactTier } from './impactTier.js';
+import { visualForSchool } from '../vfx/schools.js';
 import { NEARBY_DEATH_RANGE, SHAKE } from '../camera/CameraShake.js';
 import { HIT_STOP } from '../render/HitStop.js';
 
@@ -42,9 +43,24 @@ export interface HitEvent {
 
 /** 目标模型的最小接口。playHitReact 可缺席（胶囊兜底/旧模型）*/
 export interface TargetViewLike {
-  flashHit(strength?: number, seconds?: number): void;
+  flashHit(strength?: number, seconds?: number, color?: number): void;
   playHitReact?(): void;
 }
+
+/**
+ * 这一击该把受击者闪成什么颜色。
+ *
+ * ★★ **白只留给暴击**。这不是配色偏好，是通道分配：白不属于 14.2 的任何一个
+ *   学派，把它占死在暴击上，「这一下是暴击」与「这一下是什么属性」就成了
+ *   两条互不干扰的通道 —— 与暴击已有的白核爆发是同一句话的两个说法。
+ *   若普通命中也闪白，暴击就只剩「更亮一点」这一个区分，
+ *   而亮度恰恰是最容易被明亮场景吃掉的那一维。
+ *
+ * ★ 用户实测反馈「承受者不够酷炫」的直接根因：此前受击方**只有**一种白闪，
+ *   八属性视觉语言只活在粒子上，挨火球和挨冰箭在模型上一模一样。
+ */
+export const flashColorFor = (school: School, crit: boolean): number =>
+  (crit ? 0xffffff : visualForSchool(school).primary);
 
 export interface HitFeedbackDeps {
   selfId: () => EntityId | undefined;
@@ -164,9 +180,12 @@ export class HitFeedback {
     if (!ev.immune && !ev.avoided && (ev.amount > 0 || ev.absorbed > 0)) {
       const view = d.viewOf(ev.targetId);
       if (view) {
-        if (ev.crit) view.flashHit(1.4, 0.2);
-        else if (tier === 'heavy' || tier === 'kill') view.flashHit(1.1, 0.16);
-        else view.flashHit();
+        // 学派色（暴击走白，见 flashColorFor）—— 14.2 的八属性语言此前
+        // 只活在粒子上，受击方无论挨什么都闪同一种白
+        const color = flashColorFor(ev.school, ev.crit);
+        if (ev.crit) view.flashHit(1.4, 0.2, color);
+        else if (tier === 'heavy' || tier === 'kill') view.flashHit(1.1, 0.16, color);
+        else view.flashHit(0.85, 0.12, color);
         if (tier !== 'light' && tier !== 'normal') view.playHitReact?.();
       }
     }

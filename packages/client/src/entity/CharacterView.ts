@@ -275,17 +275,25 @@ export class CharacterView {
   }
 
   /**
-   * 受击反馈：白闪。14.1 命中反馈的模型侧通道。
+   * 受击反馈：闪光。14.1 命中反馈的模型侧通道。
    * 打击感分档：普通 (0.85, 0.12)、重击 (1.1, 0.16)、暴击 (1.4, 0.2) ——
    * 由 HitFeedback 决定，这里只执行。
+   *
+   * @param color 这一击的学派色（由 `flashColorFor()` 给）。
+   *   ★ 用户实测反馈「承受者不够酷炫」的根因就在这里：此前无论挨的是火球
+   *     还是冰箭，模型都只会闪同一种白 —— 八属性视觉语言（14.2）在
+   *     **受击方**这条通道上完全没有兑现，只活在粒子上。
+   *   ★ 缺省仍是白：白不属于任何学派，留给暴击（见 `flashColorFor`）。
    */
-  flashHit(strength = 0.85, seconds = 0.12): void {
+  flashHit(strength = 0.85, seconds = 0.12, color = 0xffffff): void {
     this.flashStrength = strength;
     this.flashDuration = seconds;
     this.flashLeft = seconds;
+    this.flashColor.setHex(color);
   }
   private flashStrength = 0.85;
   private flashDuration = 0.12;
+  private readonly flashColor = new THREE.Color(0xffffff);
 
   /**
    * 受击踉跄：一次性覆盖动作（打击感改造，只在重击及以上触发）。
@@ -445,11 +453,17 @@ export class CharacterView {
       this.flashLeft = Math.max(0, this.flashLeft - dt);
       const k = this.flashLeft / this.flashDuration; // 最后一步 k=0，恰好把 emissive 归零
       if (this.flashMats.length > 0) {
-        for (const m of this.flashMats) m.emissive.setScalar(k * this.flashStrength);
+        // ★ copy + multiplyScalar 而不是 setScalar：k=0 时三通道同样归零，
+        //   所以「闪完恢复原样」这条不变量没有变，只是中间过程带上了学派色
+        for (const m of this.flashMats) {
+          m.emissive.copy(this.flashColor).multiplyScalar(k * this.flashStrength);
+        }
       } else {
         // ★ 胶囊兜底（模型未加载 / ?art=off）：Lambert 也有 emissive ——
         //   这条路径此前完全没有受击反馈，14.1 在 ?art=off 下少了一条通道
-        this.bodyMat.emissive.setScalar(k * Math.min(1, this.flashStrength) * 0.6);
+        this.bodyMat.emissive
+          .copy(this.flashColor)
+          .multiplyScalar(k * Math.min(1, this.flashStrength) * 0.6);
       }
     }
   }

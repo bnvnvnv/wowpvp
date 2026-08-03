@@ -8,7 +8,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { School, asEntityId } from '@wowpvp/shared';
 import { DEFAULT_ACCESSIBILITY, type AccessibilitySettings } from '../settings/accessibility.js';
-import { HitFeedback, type HitEvent } from './HitFeedback.js';
+import { HitFeedback, flashColorFor, type HitEvent } from './HitFeedback.js';
+import { ATTRIBUTE_VISUALS } from '../vfx/schools.js';
 
 const SELF = asEntityId(1);
 const ENEMY = asEntityId(2);
@@ -133,5 +134,47 @@ describe('分档驱动的表现', () => {
     const after = (deps.audio.playVariant as ReturnType<typeof vi.fn>).mock.calls
       .filter((c) => c[0] === 'crit');
     expect(after.length).toBe(2);
+  });
+});
+
+describe('flashColorFor —— 受击闪光的学派色（承受者不再只会闪白）', () => {
+  it('普通命中闪的是这一发的学派色', () => {
+    expect(flashColorFor(School.Fire, false)).toBe(ATTRIBUTE_VISUALS.fire.primary);
+    expect(flashColorFor(School.Frost, false)).toBe(ATTRIBUTE_VISUALS.frost.primary);
+    expect(flashColorFor(School.Shadow, false)).toBe(ATTRIBUTE_VISUALS.shadow.primary);
+  });
+
+  it('★★ 白只留给暴击 —— 且没有任何学派的主色是纯白', () => {
+    expect(flashColorFor(School.Fire, true)).toBe(0xffffff);
+    expect(flashColorFor(School.Frost, true)).toBe(0xffffff);
+    for (const v of Object.values(ATTRIBUTE_VISUALS)) {
+      expect(v.primary).not.toBe(0xffffff);
+    }
+  });
+
+  it('八个学派各有颜色，没有一个漏成 undefined', () => {
+    for (const school of Object.values(School)) {
+      expect(typeof flashColorFor(school, false)).toBe('number');
+    }
+  });
+});
+
+describe('受击闪光接线 —— 分档参数之外还要带上颜色', () => {
+  it('普通/重击/暴击三档都把颜色传给 flashHit', () => {
+    const { view, feedback } = makeDeps();
+    feedback.onHit(hit({ school: School.Frost }));
+    expect(view.flashHit).toHaveBeenLastCalledWith(
+      0.85, 0.12, ATTRIBUTE_VISUALS.frost.primary,
+    );
+    feedback.onHit(hit({ school: School.Frost, crit: true }));
+    expect(view.flashHit).toHaveBeenLastCalledWith(1.4, 0.2, 0xffffff);
+  });
+
+  it('★ 只被吸收（amount=0、absorbed>0）也要闪 —— 盾挡下的一发不是「没打中」', () => {
+    const { view, feedback } = makeDeps();
+    feedback.onHit(hit({ amount: 0, absorbed: 120, school: School.Holy }));
+    expect(view.flashHit).toHaveBeenCalledWith(
+      0.85, 0.12, ATTRIBUTE_VISUALS.holy.primary,
+    );
   });
 });
