@@ -16,9 +16,12 @@ import type { EntityId } from '../types/ids.js';
 import { createStatusFlags, type CombatEntity, type StatusFlags } from './entity.js';
 import {
   aggregateModifiers,
+  effectiveMoveSpeed,
   equipmentModifiersOf,
   type EffectiveModifiers,
 } from './modifiers.js';
+import { MOVE } from '../constants/combat.js';
+import { clampCarrierSpeedBonus } from './match/flag.js';
 
 export interface AuraInstance {
   def: AuraDef;
@@ -368,6 +371,37 @@ export const effectiveModifiersOf = (
     for (let i = 1; i < a.stacks; i++) mods.push(withDecay(a, now));
   }
   return aggregateModifiers(mods, equipmentModifiersOf(entity.weaponId, entity.armorId));
+};
+
+/**
+ * 实体**当前的移动速度倍率**。喂给 `stepMovement(..., { speedMultiplier })`。
+ *
+ * ★★ **这个函数存在的唯一理由是「只能有一处」。**
+ *   移动速度要在三条路径上算出**逐位相同**的结果：
+ *     · 服务器权威（`tickWorld` 第 2 步）
+ *     · 客户端预测（`Predictor` 的 sample 与 reconcile 重放）
+ *     · 单机试验场（`TestbedScene.simulate`）
+ *   任何一处自己拼一遍聚合逻辑，偏差都会退化成**持续橡皮筋** ——
+ *   而那是最难查的一类 bug：画面在抖，但没有任何断言会红。
+ *
+ * ★★ 它修的是一个**从未生效过**的机制：`tickWorld` 此前调 `stepMovement`
+ *   **不传 `speedMultiplier`**，而 `effectiveMoveSpeed()` 全仓库只有定义那一行
+ *   （连测试都是绕过它直接读 `.moveSpeed`）。于是断筋、冰霜锁链、群奔咆哮、
+ *   猎豹形态、死亡脚步的速度下限、以及 12.3 的旗手加速上限，
+ *   **一条都没有影响过实际移动**。数据在、聚合在、单测也绿 —— 就是没人调用。
+ *
+ * ★ 12.3 的旗手上限一并接上（`clampCarrierSpeedBonus` 同样是死代码）：
+ *   加成部分才受 10% 封顶，减速部分不受影响 —— 否则「带旗被减速」会被
+ *   这条上限意外地救回来。
+ */
+export const moveSpeedMultiplierOf = (
+  store: AuraStore,
+  entity: CombatEntity,
+  now: number,
+): number => {
+  const raw = effectiveMoveSpeed(effectiveModifiersOf(store, entity, now), MOVE.MIN_SPEED_FACTOR);
+  if (raw <= 1) return raw; // 减速：旗手上限不适用
+  return 1 + clampCarrierSpeedBonus(raw - 1, entity.flags.carryingFlag);
 };
 
 /**

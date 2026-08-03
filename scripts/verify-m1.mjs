@@ -147,6 +147,43 @@ const hold = async (key, ms = 120) => {
   await page.keyboard.up(key);
 };
 
+/**
+ * 把测速环境「压干净」：静音全部假人 → 等在飞的弹体全部落地 →
+ * 清掉玩家身上的光环 → 确认真的干净了才返回。
+ *
+ * ★★ 只「静音 + 清一次」是不够的：静音只拦得住**下一次施法**，
+ *   法师假人的霜矢若已在空中，会在清完之后落地并重新挂上 30% 减速
+ *   （3 秒）—— 8.1 于是量到 4.9 m/s，而且**时好时坏**，
+ *   取决于静音那一刻有没有弹体恰好在飞。
+ *
+ * ★★ 而且**光等弹体还是不够**：静音拦的是「开始新读条」，
+ *   已经在读条中的霜矢会照常读完并发弹（探针实测：quiesce 确认
+ *   projectiles=0 之后 1.4 秒内 chill 又挂回来了）。
+ *   所以「干净」的完整定义是三条同时成立：
+ *     没有假人在读条 · 没有弹体在飞 · 玩家身上一层光环都不剩。
+ *   假人静音后不会再进入读条，此后环境才真正保持干净。
+ */
+const quiescePlayerSpeed = async () => {
+  await page.evaluate(() => {
+    const s = globalThis.__scene;
+    for (const c of ['warrior', 'priest', 'mage']) s.combat.pausedDummyClasses.add(c);
+  });
+  for (let i = 0; i < 40; i++) {
+    const clean = await page.evaluate(() => {
+      const s = globalThis.__scene;
+      for (const id of s.combat.store.keys()) {
+        if (id !== s.combat.player.id) return false; // 假人还在读条
+      }
+      if (s.combat.projectiles.items.length > 0) return false;
+      s.combat.clearPlayerAuras();
+      return (s.combat.auras.get(s.combat.player.id) ?? []).length === 0;
+    });
+    if (clean) return;
+    await page.waitForTimeout(150);
+  }
+  throw new Error('quiescePlayerSpeed：6 秒内没能把环境压干净（假人读条/弹体/光环仍在）');
+};
+
 /** 走 `meters` 米需要按住多久（毫秒），含起步加速的粗略补偿 */
 const msFor = (meters, backward) => {
   const speed = BASE_SPEED * (backward ? BACKWARD_FACTOR : 1);
@@ -211,6 +248,19 @@ console.log('\n── 规格书 4.2 / 验收 #2：左键环绕不改朝向，右
 
 console.log('\n── 规格书 8.1：基础速度 ──');
 {
+  /**
+   * ★★ 先把假人静音并清掉自己身上的光环，再量**基础**速度。
+   *
+   *   这一步是补上的：在「减速光环接进 tickWorld」之前，法师假人的霜矢
+   *   给玩家挂的 `mage.frostbolt.chill`（moveSpeed 0.7）**对移动毫无影响**，
+   *   所以量到的一直是干净的 7 m/s。减速真正生效之后，这里量到 4.99 m/s
+   *   （= 7 × 0.7）—— 断言红了，但游戏是对的：**被减速时就该走得慢**。
+   *
+   *   8.1 要验的是「基础速度 7 m/s」，那就必须在无减速的条件下量。
+   *   复用 M15 教学同款的 `pausedDummyClasses`，不新开后门。
+   */
+  await quiescePlayerSpeed();
+
   await page.keyboard.down('KeyW');
   await page.waitForTimeout(1400);
   const fwd = await read();
@@ -347,6 +397,16 @@ console.log('\n── 规格书 13.5 / 验收 #45：跳跃不增速、无二段�
   );
 
   await page.waitForTimeout(900);
+  /**
+   * ★ 与 8.1 同理：量跳跃物理前先把身上的减速清掉。
+   *   #45b 验的是「空中画圈不能累积速度」，判据是「空中最高 ≤ 起跳前 × 1.05」——
+   *   带着 30% 减速起跳时，起跳前只有 4.9 m/s，而空中修正会朝**未缩放**的
+   *   BASE_SPEED 加速（`movement.ts` 的 airAccel 不乘 speedMul），
+   *   于是空中反而冲到 6.97，看起来像 bunny-hop 防护失效 —— 其实是
+   *   「地面被减速、空中没被减速」这个边界，与本条要验的东西无关。
+   */
+  await quiescePlayerSpeed();
+
   // 先跑到全速再起跳，然后在空中反复改变方向尝试累积速度
   await page.keyboard.down('KeyW');
   await page.waitForTimeout(1400);

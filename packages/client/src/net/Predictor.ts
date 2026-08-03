@@ -76,6 +76,14 @@ export class Predictor {
   /** 已发出、服务器还没确认的指令。第 4 步按 ackSeq 裁剪 */
   private pending: Pending[] = [];
   private seq = 0;
+  /**
+   * 当前移动速度倍率，由服务器快照下发（见 `SelfMovementSnapshot.speedMultiplier`）。
+   * ★ 预测与权威必须用**同一个**值：客户端按满速预测、服务器按减速结算的话，
+   *   每份快照都会产生约 `(1-mul) × 7 × pending窗口` 的偏差 —— 50% 减速 + 150ms
+   *   RTT 约 0.5 米，正好落在 `IGNORE_BELOW(0.02)` 与 `SNAP_ABOVE(3)` 之间的
+   *   平滑档，于是**持续**被往回拽（橡皮筋），而且不会让任何断言变红。
+   */
+  private speedMultiplier = 1;
   /** 预测出来的权威态（不含平滑偏移）*/
   private predicted: MovementState;
   /**
@@ -149,6 +157,14 @@ export class Predictor {
      * ★ 服务器没给 selfMovement 时**沿用本地速度**：那多半是老快照或
      *   非移动驱动的实体，沿用比清零好（清零会让角色一顿）。
      */
+    /**
+     * ★★ 速度倍率从权威状态更新。
+     *   它不是 `MovementState` 的一部分（不参与积分，是积分的**输入**），
+     *   所以单独存一份，供 `sample()` 与下面的重放共用。
+     *   服务器没给时沿用上一次 —— 与速度沿用同理，比突然跳回 1 好。
+     */
+    if (auth.movement) this.speedMultiplier = auth.movement.speedMultiplier;
+
     let s: MovementState = {
       ...this.predicted,
       position: vec3(auth.position.x, auth.position.y, auth.position.z),
@@ -168,7 +184,9 @@ export class Predictor {
       s = stepMovement(
         s, p.input, SIM.TICK_DT, this.opts.obstacles,
         { ...(this.opts.radius !== undefined ? { radius: this.opts.radius } : {}),
-          ...(this.opts.height !== undefined ? { height: this.opts.height } : {}) },
+          ...(this.opts.height !== undefined ? { height: this.opts.height } : {}),
+          // ★★ 必须与服务器同源，否则减速期间每份快照都会把角色往回拽（见字段注释）
+          speedMultiplier: this.speedMultiplier },
       ).state;
     }
     this.predicted = s;

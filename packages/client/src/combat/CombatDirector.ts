@@ -298,6 +298,16 @@ export class CombatDirector {
   }
   info(t: string) { this.push(t, 'info'); }
 
+  /**
+   * 清掉玩家身上的全部光环。**只给验收脚本用**（8.1 要量的是「基础速度」，
+   * 而法师假人的霜矢会挂一层 30% 减速 —— 减速接进 tickWorld 之后它是真的会生效的）。
+   * ★ 不是游戏规则，玩家没有任何途径触发它。
+   */
+  clearPlayerAuras(): void {
+    clearAuras(this.auras, this.player.id);
+    this.player.flags = deriveStatusFlags(this.auras, this.player);
+  }
+
   // ── 每 tick ─────────────────────────────────────────────────
 
   update(dt: number, playerPosition: Vec3, playerYaw: number): void {

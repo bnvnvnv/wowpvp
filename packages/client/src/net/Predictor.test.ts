@@ -79,6 +79,7 @@ describe('第 4–6 步：对账与重放', () => {
       grounded: p.state.grounded,
       airSpeedCap: p.state.airSpeedCap,
       fallStartY: p.state.fallStartY,
+      speedMultiplier: 1,
     };
     p.sample(forward);
     p.sample(forward);

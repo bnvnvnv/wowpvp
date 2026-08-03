@@ -14,10 +14,10 @@ import { ctfMap } from '../data/maps/index.js';
 import { box } from '../data/maps/schema.js';
 import { dirToYaw, sub, vec3 } from '../math/vec3.js';
 import { ARENA } from '../constants/combat.js';
-import { ArenaPreset, CastFailure, GameMode, School } from '../types/enums.js';
+import { ArenaPreset, CastFailure, DispelType, GameMode, School } from '../types/enums.js';
 import { asSkillId, asWeaponId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
 import { usesNoTarget } from './aiming.js';
-import { createAuraStore, type AuraStore } from './aura.js';
+import { applyAura, createAuraStore, type AuraStore } from './aura.js';
 import { beginCast, createCastingStore, validateCast, type CastingStore } from './casting.js';
 import { createDrStore, type DrStore } from './dr.js';
 import { createArsenalStore, createPickupStore, type ArsenalStore, type PickupStore } from './arsenal.js';
@@ -138,6 +138,54 @@ describe('tickWorld 基本推进', () => {
     inputs.set(player.id, { forward: 1, strafe: 0, jump: false, yaw: 0 });
     tickWorld(deps(), DT);
     expect(player.position.z).toBeLessThan(0); // yaw=0 面向 −Z
+  });
+
+  /**
+   * ★★ 这一层正是那个 bug 逃逸的地方。
+   *
+   *   `tickWorld` 调 `stepMovement` 时**没有传 `speedMultiplier`**，
+   *   于是断筋、冰霜锁链、群奔咆哮、猎豹形态、死亡脚步的速度下限、
+   *   12.3 的旗手加速上限**一条都没有影响过实际移动** ——
+   *   而 `movement.test.ts` 只测积分数学、`effects.test.ts` 只测聚合取值，
+   *   两边都绿，中间那根线断了却没有任何断言站在断点上。
+   *
+   *   所以这条测试**不测聚合、不测积分**，只测一件事：
+   *   上了减速之后，同一段时间走得更近。
+   */
+  it('★★ 减速光环真的让人走得更慢（此前 tickWorld 从不传 speedMultiplier）', () => {
+    const runFor = (slow: boolean): number => {
+      // ★ 必须有地板：悬空时走的是空中修正（AIR_CONTROL）而不是地面目标速度，
+      //   减速咬不住 —— balance-report 的文件头记过同一个坑
+      const w = createWorld([ground]);
+      const e = addEntity(w, createEntity(allocEntityId(w), mage, TEAM_RED, vec3(0, 0, 0)));
+      const auras = createAuraStore();
+      if (slow) {
+        applyAura(auras, e, {
+          id: 'test.slow', name: '测试减速', kind: 'debuff', duration: 99,
+          dispelType: DispelType.Magic, modifiers: { moveSpeed: 0.5 },
+          description: '移动速度降低 50%',
+        }, e.id, w.time);
+      }
+      const mv = new Map<EntityId, MovementState>([[e.id, createMovementState(vec3(0, 0, 0))]]);
+      const inp = new Map<EntityId, MovementInput>(
+        [[e.id, { forward: 1, strafe: 0, jump: false, yaw: 0 }]],
+      );
+      for (let i = 0; i < 20; i++) {
+        tickWorld({
+          world: w, auras, dr: createDrStore(), ground: createGroundStore(),
+          projectiles: createProjectileStore(), casting: createCastingStore(),
+          loadouts: createLoadoutStore(), swaps: createSwapStore(),
+          pickups: createPickupStore(), arsenal: createArsenalStore(ArenaPreset.Classic),
+          movement: mv, inputs: inp, castRequests: new Map(), getSkill,
+        }, DT);
+      }
+      return Math.abs(e.position.z);
+    };
+
+    const normal = runFor(false);
+    const slowed = runFor(true);
+    expect(normal).toBeGreaterThan(0.5); // 先确认基准真的走了
+    expect(slowed).toBeLessThan(normal * 0.75);
   });
 
   it('死人不参与移动', () => {

@@ -22,7 +22,7 @@ import type { Vec3 } from '../math/vec3.js';
 import type { ArmorId, ClassId, EntityId, TeamId, WeaponId } from '../types/ids.js';
 import type { School } from '../types/enums.js';
 import { isFriendly, isHiddenFromViewer, type CombatEntity } from '../sim/entity.js';
-import { aurasOf, type AuraStore } from '../sim/aura.js';
+import { aurasOf, moveSpeedMultiplierOf, type AuraStore } from '../sim/aura.js';
 import { enemyLoadoutView, type Loadout, type SwapStore } from '../sim/loadout.js';
 import type { CtfState } from '../sim/match/flag.js';
 import type { MovementState } from '../sim/movement.js';
@@ -144,6 +144,20 @@ export interface SelfMovementSnapshot {
   grounded: boolean;
   airSpeedCap: number;
   fallStartY: number;
+  /**
+   * 当前移动速度倍率（减速/加速光环 + 装备 + 12.3 旗手上限的聚合结果）。
+   *
+   * ★★ **必须下发，不能让客户端自己算。** 客户端手里只有快照，而
+   *   `AuraSnapshot` 不带 modifiers，仓库里也没有 `auraId → AuraDef` 的注册表
+   *   （AuraDef 匿名嵌在技能 effects 里，控制光环的 id 还被改写成 `control.<kind>`）。
+   *   要客户端重算就得复制 11 个光环源 + 2 个护甲源 + 8.4 的聚合语义 + 两道下限，
+   *   任何一点偏差都会退化成**持续橡皮筋**：预测按满速走、服务器按减速走，
+   *   每份快照都把角色往回拽一次，而这类 bug 不会让任何断言变红。
+   *
+   * ★ 它与服务器 `tickWorld` 用的是**同一个** `moveSpeedMultiplierOf()`。
+   * ★ 只发给自己（`isSelf` 分支），不新增任何可见性面。
+   */
+  speedMultiplier: number;
 }
 
 /**
@@ -469,6 +483,8 @@ const snapshotEntity = (
         grounded: m.grounded,
         airSpeedCap: m.airSpeedCap,
         fallStartY: m.fallStartY,
+        // ★ 与 tickWorld 第 2 步**同一个函数** —— 两边同源才谈得上预测收敛
+        speedMultiplier: moveSpeedMultiplierOf(deps.auras, e, deps.world.time),
       };
     }
   }

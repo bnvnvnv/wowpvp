@@ -47,7 +47,9 @@ import type { MapDef } from '../data/maps/schema.js';
 import type { EntityId, SkillId } from '../types/ids.js';
 import type { Vec3 } from '../math/vec3.js';
 import { gainResource, type CombatEntity } from './entity.js';
-import { deriveStatusFlags, tickAuras, type AuraStore } from './aura.js';
+import {
+  deriveStatusFlags, moveSpeedMultiplierOf, tickAuras, type AuraStore,
+} from './aura.js';
 import { beginCast, tickCasting, type CastEvents, type CastState, type CastingStore } from './casting.js';
 import { resolveCastTargets } from './castResolve.js';
 import type { DrStore } from './dr.js';
@@ -347,7 +349,19 @@ export const tickWorld = (
     if (!e || !e.alive) continue;
     const input = deps.inputs.get(id);
     if (!input) continue;
-    const r = stepMovement(state, input, dt, obstacles, { radius: e.radius, height: e.height });
+    /**
+     * ★★ `speedMultiplier` 此前**没有传** —— 于是断筋、冰霜锁链、群奔咆哮、
+     *   猎豹形态、死亡脚步的速度下限、12.3 的旗手加速上限，
+     *   **一条都没有影响过实际移动**。数据在、聚合在、单测也绿，就是没人调用。
+     * ★ 这里读的是**上一 tick 末**的光环状态（movement 是第 2 步、光环推进在第 4 步）。
+     *   与 `deriveStatusFlags` 在第 7 步同理：本 tick 新挂的减速下一 tick 才生效，
+     *   差一个 50ms 的 tick，可接受且确定性。
+     */
+    const r = stepMovement(state, input, dt, obstacles, {
+      radius: e.radius,
+      height: e.height,
+      speedMultiplier: moveSpeedMultiplierOf(deps.auras, e, deps.world.time),
+    });
     deps.movement.set(id, r.state);
     e.position = r.state.position;
     e.yaw = r.state.yaw;

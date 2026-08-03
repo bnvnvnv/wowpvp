@@ -67,6 +67,24 @@ const fps = async () => {
 await page.goto(URL, { waitUntil: 'networkidle' });
 await page.waitForTimeout(3000);
 
+/**
+ * ★★ 把假人静音：本脚本有多处**按住方向键走固定时长**的走位（走到旗帜、
+ *   走进交互半径），这类脚本隐含假设「玩家以基础速度移动」。
+ *
+ *   在「减速光环接进 tickWorld」之前，法师假人的霜矢挂的 30% 减速
+ *   **对移动毫无影响**，所以那个假设一直成立。减速真正生效之后，
+ *   同样的按键时长只能走到七成距离 —— #40a 于是报「距离太远」。
+ *   这不是回归，是那条规则终于生效了。
+ *
+ * ★ 复用 M15 教学同款的 `pausedDummyClasses`，不新开后门。
+ */
+await page.evaluate(() => {
+  const s = globalThis.__scene;
+  for (const c of ['warrior', 'priest', 'mage']) s.combat.pausedDummyClasses.add(c);
+  s.combat.clearPlayerAuras();
+});
+await page.waitForTimeout(400);
+
 console.log('\n── 规格书 15.1：通用 HUD 四区 ──');
 {
   const zones = {
@@ -119,16 +137,66 @@ console.log('\n── 验收 #35：战场装备栏与换装反馈（15.3）─�
 
 console.log('\n── 验收 #40 / 12.3：带旗使用无敌技能先掉旗（M7 规则的客户端接线）──');
 {
-  // 侧移到蓝旗旁边（出生点右侧 11 米）
-  await hold('KeyE', 1600);
-  await page.waitForTimeout(300);
-  await page.keyboard.press('KeyG');
-  await page.waitForTimeout(1600);
-  const carried = await text('#mode-hud');
+  /**
+   * 侧移到蓝旗旁边（出生点右侧约 11 米）。
+   *
+   * ★★ **按位移判定，不按时长**。原本是 `hold('KeyE', 1600)` —— 1.6 秒 × 7 m/s
+   *   恰好 11.2 米，把「玩家一定以基础速度移动」这个假设**烧进了一个魔法数字**。
+   *   减速接进 tickWorld 之后，任何一层减速都会让它走不到，报出来是
+   *   「距离太远」，看起来像拔旗坏了。
+   *   现在按实际横向位移收尾：走到了就停，走不到就超时 —— 与移动速度无关。
+   */
+  /**
+   * ★ 走位前**就地**再清一次减速并重新静音假人。
+   *   脚本开头清过一次，但这中间隔着换装等好几节，法师假人的霜矢
+   *   （30% 减速，3 秒）足以在这期间再挂上来 —— 减速接进 tickWorld 之后
+   *   它是真的会让人走得慢的，而下面这段走位要靠位移收尾。
+   */
+  await page.evaluate(() => {
+    const s = globalThis.__scene;
+    for (const c of ['warrior', 'priest', 'mage']) s.combat.pausedDummyClasses.add(c);
+    s.combat.clearPlayerAuras();
+  });
+  await page.waitForTimeout(200);
+
+  /**
+   * ★★ **小步走 + 每步试一次拔旗，成功即停。**
+   *
+   *   前两版都栽在「把距离或时长写死」上：
+   *     · 原版 `hold('KeyE', 1600)` —— 1.6 秒 × 7 m/s 的假设。减速一生效就走不到
+   *     · 我的第一版改成「走满 11 米」—— 反而**冲过头**：1600ms 带加速爬坡
+   *       实际只走了九米多，旗其实比 11 米近，走满 11 米就超出了交互半径
+   *       （实测停在 x=12.41，照样报「距离太远」）
+   *
+   *   现在不猜距离、也不猜速度：每步走一小段 → 停稳 → 按一次 G，
+   *   拔到了就退出。被减速就多走几步而已。
+   * ★ 每步之后要等滑行停下：12.1 的拔旗是 0.8 秒引导，**会被移动打断**。
+   */
+  let carried = '';
+  for (let step = 0; step < 24; step++) {
+    await hold('KeyE', 200);
+    await page.waitForTimeout(260);
+    await page.keyboard.press('KeyG');
+    await page.waitForTimeout(950);
+    carried = await text('#mode-hud');
+    if (carried.includes('被携带')) break;
+  }
+  // ★ 失败时把「当时到底什么状态」一起打出来 —— 这条断言反复时好时坏，
+  //   而 `距离太远` 只说明够不着，说不清是没走到、还是被减速、还是滑行中
+  const diag = await page.evaluate(() => {
+    const s = globalThis.__scene;
+    const p = s.combat.player;
+    return {
+      x: +s.move.position.x.toFixed(2), z: +s.move.position.z.toFixed(2),
+      v: +Math.hypot(s.move.velocity.x, s.move.velocity.z).toFixed(2),
+      auras: [...s.combat.auras.values?.() ?? []].length,
+      names: (s.combat.log ?? []).slice(0, 2).map((l) => l.text),
+    };
+  });
 
   check('#40a', '★ 真实按键能完成拔旗，HUD 显示旗手姓名',
     carried.includes('被携带') && carried.includes('旗手'),
-    carried.replace(/\n/g, ' | '));
+    `${carried.replace(/\n/g, ' | ')}｜位置(${diag.x}, ${diag.z}) 速度${diag.v} 日志:${diag.names.join('/')}`);
 
   // 槽 8 = 冰封庇护（完全无敌，dropsFlagOnUse）
   await page.keyboard.press('Digit8');
@@ -145,10 +213,26 @@ console.log('\n── 验收 #48：低画质下关键信息仍可见（14.4）�
   //   技能可能在冷却、玩家可能正被控，脚本就白等）。
   //   战士假人会持续用猛击控住玩家，所以等**玩家自己**身上出现控制字形。
   //   这条路既可靠，又正好同时验证了队伍框的控制显示（15.1 左侧第四项）。
-  // ★ 必须**精确**回到出生点：战士假人在正前方 2.6 米，猛击距离只有 3 米。
-  //   上一段为了拔旗侧移了 1600ms，这里就要侧移回 1600ms ——
-  //   多走 300ms 就到 3.34 米，刚好出圈，然后 25 秒都等不到一次控制。
-  await hold('KeyQ', 1600);
+  /**
+   * ★ 必须**精确**回到出生点：战士假人在正前方 2.6 米，猛击距离只有 3 米，
+   *   多走 0.7 米就出圈，然后 25 秒都等不到一次控制。
+   *
+   * ★★ **按位置回，不按时长回。** 原本是 `hold('KeyQ', 1600)` —— 与上一段
+   *   拔旗的 1600ms 镜像对称，两段都把「玩家以基础速度移动」烧进了魔法数字。
+   *   减速接进 tickWorld 之后这个对称立刻塌掉：去程慢了走不到旗，
+   *   回程慢了停在半路够不着战士，于是 #40 与 #48b 一起变成时好时坏。
+   *   出生点 x=0，直接走到 x≈0 为止，与速度无关。
+   */
+  await page.keyboard.down('KeyQ');
+  {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      await page.waitForTimeout(100);
+      const x = await page.evaluate(() => globalThis.__scene.move.position.x);
+      if (Math.abs(x) < 0.35) break;
+    }
+  }
+  await page.keyboard.up('KeyQ');
   await page.waitForTimeout(600);
 
   /**

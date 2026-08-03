@@ -15,6 +15,7 @@ import {
   createMovementState,
   distance2D,
   stepMovement,
+  moveSpeedMultiplierOf,
   testbed,
   TESTBED_SPAWN,
   type Aabb,
@@ -963,6 +964,19 @@ export class TestbedScene {
       },
       dt,
       this.obstacles,
+      {
+        /**
+         * ★★ 与服务器 `tickWorld` 用**同一个** `moveSpeedMultiplierOf()`。
+         *   试验场自己驱动玩家移动（它要同时算镜头与渲染插值），
+         *   所以这条路径必须自己把系数算出来 —— 漏了的话单机与联网会分叉：
+         *   同一个减速在联机里生效、在试验场里不生效。
+         * ★ 这里能拿到真 `AuraStore` 与真 `CombatEntity`，所以是完整口径
+         *   （含装备与 12.3 旗手上限），不是近似。
+         */
+        speedMultiplier: moveSpeedMultiplierOf(
+          this.combat.auras, this.combat.player, this.combat.now,
+        ),
+      },
     );
     this.move = result.state;
     this.lastLandingHeight = result.landing?.fallHeight;
