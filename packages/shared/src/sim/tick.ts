@@ -44,7 +44,7 @@
 import type { Aabb } from '../math/geometry.js';
 import type { SkillDef } from '../data/schema.js';
 import type { MapDef } from '../data/maps/schema.js';
-import type { EntityId, SkillId } from '../types/ids.js';
+import type { ClassId, EntityId, SkillId } from '../types/ids.js';
 import type { Vec3 } from '../math/vec3.js';
 import { gainResource, type CombatEntity } from './entity.js';
 import {
@@ -56,7 +56,10 @@ import type { DrStore } from './dr.js';
 import { settleDeaths, type DeathSettlement } from './death.js';
 import { resolveEffects, type CombatEvent } from './effects/index.js';
 import { tickGround, type GroundStore } from './groundArea.js';
-import { tickPickups, type ArsenalStore, type PickupStore, type PickupTickEvent } from './arsenal.js';
+import {
+  tickArsenal, tickPickups,
+  type ArsenalStore, type GroundDrop, type PickupStore, type PickupTickEvent,
+} from './arsenal.js';
 import { takeConsumable, tickSwaps, type LoadoutStore, type SwapStore, type SwapTickEvent } from './loadout.js';
 import { tickArena, type ArenaEvents, type ArenaState } from './match/arena.js';
 import { tickFlags, type CtfDeps, type CtfState, type FlagEvent } from './match/flag.js';
@@ -220,6 +223,8 @@ export interface TickResult {
   swings: SwingResult[];
   /** 本 tick 被使用的消耗品（10.1）*/
   consumables: { entityId: EntityId; consumableId: ConsumableId }[];
+  /** 本 tick 军械点刷出的实体掉落（10.4）。空数组 = 这一 tick 没有补给刷新 */
+  drops: GroundDrop[];
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -242,7 +247,7 @@ export const tickWorld = (
 ): TickResult => {
   const result: TickResult = {
     events: [], swaps: [], pickups: [], flags: [], respawns: [], deaths: [], consumables: [],
-    swings: [],
+    swings: [], drops: [],
   };
   const obstacles = deps.obstacles ?? deps.world.obstacles;
 
@@ -458,6 +463,27 @@ export const tickWorld = (
     sinks.onPickup?.(ev);
   }
 
+  // ── 8b. 军械点刷新（10.4）────────────────────────────────────
+  /**
+   * ★★ 在此之前**没有这一步**：`setupArmories()` 与 `spawnDropsFromRoster()`
+   *   在真实对局里一次都没被调用过，于是整个 M6 的「抢装备」只活在单测里
+   *   （PROGRESS 记的是「客户端接线未做」，实际连服务器都没在刷货）。
+   *
+   * ★ 放在拾取**之后**：本 tick 的拾取先按当前地面状态结算完，补给点再刷新。
+   *   反过来的话，正在被拾取的那件东西可能在同一 tick 里被新一轮清掉 ——
+   *   玩家会看到进度条走满却什么都没拿到。
+   *   （即便如此仍有一个边角：跨 tick 的拾取撞上刷新会收到 `'taken'`。
+   *   语义略偏「被别人抢走了」，但 10.5 要求的「明确失败反馈」是满足的。）
+   *
+   * ★ 职业池从**世界**推导，不从房间名单 —— 10.4 要的是「当前房间实际存在
+   *   的职业池」，而世界里的实体就是那份事实（观战者不在世界里，天然不算）。
+   */
+  if (deps.arsenal.enabled) {
+    const roster = rosterClassesOf(deps.world);
+    const spawned = tickArsenal(deps.arsenal, roster, deps.world.time);
+    if (spawned.length > 0) result.drops.push(...spawned);
+  }
+
   // ── 9. 统计折叠（必须在 matchRules 之前 —— 见文件头）─────
   if (deps.stats) {
     ingestCombatEvents(deps.stats, deps.world, result.events, deps.world.time);
@@ -514,4 +540,23 @@ export const tickWorld = (
   }
 
   return result;
+};
+
+/**
+ * 10.4「当前房间实际存在的职业池」。
+ *
+ * ★ 从**世界**推导而不是从房间名单：观战者不在世界里（`setup.ts` 的
+ *   `spawnPlayer` 直接跳过他们），所以「刷出一件观战者职业的装备」
+ *   在这里写不出来。
+ * ★ **包含已死亡的玩家**：竞技场里死人会在下一回合回来，按他的职业刷货是对的；
+ *   排除他等于「队友一死，你就再也捡不到自己的装备」。
+ * ★ 宠物不算 —— 10.2：宠物不能拾取、占用或阻挡道具。
+ */
+const rosterClassesOf = (world: World): ClassId[] => {
+  const seen = new Set<ClassId>();
+  for (const e of listEntities(world)) {
+    if (e.isPet) continue;
+    seen.add(e.classId);
+  }
+  return [...seen];
 };

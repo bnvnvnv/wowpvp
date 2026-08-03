@@ -23,11 +23,16 @@ import type { ArmorId, ClassId, EntityId, TeamId, WeaponId } from '../types/ids.
 import type { School } from '../types/enums.js';
 import { isFriendly, isHiddenFromViewer, type CombatEntity } from '../sim/entity.js';
 import { aurasOf, moveSpeedMultiplierOf, type AuraStore } from '../sim/aura.js';
-import { enemyLoadoutView, type Loadout, type SwapStore } from '../sim/loadout.js';
+import {
+  availableArmors, availableWeapons, enemyLoadoutView,
+  type Loadout, type LoadoutView, type SwapKind, type SwapStore,
+} from '../sim/loadout.js';
+import { getArmor, getWeapon } from '../data/index.js';
 import type { CtfState } from '../sim/match/flag.js';
 import type { MovementState } from '../sim/movement.js';
 import type { GroundStore } from '../sim/groundArea.js';
 import type { ProjectileStore } from '../sim/projectile.js';
+import { dropViewFor, type ArsenalStore, type DropKind } from '../sim/arsenal.js';
 import { listEntities, type World } from '../sim/world.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -99,8 +104,22 @@ export interface AllyEquipmentSnapshot {
   currentArmorId: ArmorId;
   spareWeaponIds: readonly WeaponId[];
   spareArmorIds: readonly ArmorId[];
+  /**
+   * `availableWeapons()` 的结果（默认 + 备用），供 15.3 的装备栏列表直接用。
+   *
+   * ★★ **不能让 UI 自己拼 `[current, ...spares]`。** `LoadoutView.allWeapons`
+   *   的注释已经把这个坑写清楚了：换到备用武器后 spares 里**仍然**含着它，
+   *   拼出来会把当前武器列两遍，同时默认武器凭空消失 —— 而 10.6 要求
+   *   默认装备永远在列表里。试验场靠 `availableWeapons()` 避开它，
+   *   联网侧不下发的话就会在**另一条路径上**重新踩一遍。
+   */
+  allWeaponIds: readonly WeaponId[];
+  allArmorIds: readonly ArmorId[];
   consumableIds: readonly string[];
   swapping: boolean;
+  /** 15.3 换装进度条需要的两样。★ 只在换装中才有，与 `swapping` 同源 */
+  swapKind?: SwapKind;
+  swapEndsAt?: number;
 }
 
 export interface AuraSnapshot {
@@ -247,6 +266,33 @@ export interface EntitySnapshot {
 }
 
 /**
+ * 把自己的装备快照还原成 15.3 装备栏要的 `LoadoutView`。
+ *
+ * ★★ **存在的意义是让联网侧与试验场共用同一个 `LoadoutPanel`。**
+ *   不提供它的话，联网侧要么没有装备栏（15.3 在联网局里不成立），
+ *   要么照着快照另写一个渲染器 —— 而「同一个界面两份实现」在本仓库
+ *   已经出过一次事（`updateMarkersFor` 与试验场的护盾判据分叉）。
+ *
+ * ★ `getWeapon` / `getArmor` 是纯查表，客户端有同一份数据包，
+ *   所以这里还原出来的 def 与服务器手里的是同一个对象内容。
+ */
+export const loadoutViewFromSnapshot = (
+  eq: AllyEquipmentSnapshot,
+  now: number,
+): LoadoutView => ({
+  currentWeapon: getWeapon(eq.currentWeaponId),
+  currentArmor: getArmor(eq.currentArmorId),
+  spareWeapons: eq.spareWeaponIds.map(getWeapon),
+  spareArmors: eq.spareArmorIds.map(getArmor),
+  allWeapons: eq.allWeaponIds.map(getWeapon),
+  allArmors: eq.allArmorIds.map(getArmor),
+  swapProgress:
+    eq.swapKind !== undefined && eq.swapEndsAt !== undefined
+      ? { kind: eq.swapKind, remaining: Math.max(0, eq.swapEndsAt - now) }
+      : null,
+});
+
+/**
  * 8.5 决胜阶段的粗略位置标记。
  *
  * ★★ **这个类型故意没有 `id` 字段。**
@@ -311,6 +357,51 @@ export interface GroundAreaSnapshot {
   expiresAt: number;
 }
 
+/**
+ * 地面掉落物快照。10.2：「不符合职业的玩家**能看到**掉落物和所属职业，
+ * 但交互时提示『职业不匹配』，物品不会消失。」
+ *
+ * ★★ **刻意没有任何实体 id** —— 与 `ProjectileSnapshot` / `SuddenDeathBlip`
+ *   同一个手法。掉落物不属于任何人，画它只需要位置、是什么、归谁的职业。
+ *
+ * ★★ `pickable` 是**按接收者**算的，而且算它的是 sim 的 `dropViewFor()`，
+ *   不是网络层自己判一遍。10.2 的可拾取判据（职业归属、槽位上限、宠物、
+ *   已拥有）只有 `checkPickup()` 一处实现 —— 客户端因此**无法**算出一个
+ *   与服务器不同的答案，和 M3 的 `GroundIndicator` 不做几何计算是同一条规矩。
+ *   （不这么做的典型后果：图标是亮的，按下去却提示「职业不匹配」。）
+ */
+export interface DropSnapshot {
+  id: number;
+  kind: DropKind;
+  position: Vec3;
+  /** 10.2「看得到所属职业」。消耗品没有归属，显示「通用」 */
+  ownerClassName: string;
+  itemName: string;
+  /** 对**这个**接收者是否可拾取 */
+  pickable: boolean;
+}
+
+/**
+ * 军械点快照。10.4：「固定、可预测的补给点和倒计时」+「刷新前 5 秒显示
+ * 小地图图标、地面光柱、文字和音效」。
+ *
+ * ★★ **刻意不发 `openedBy`。** 那是一个实体 id，而客户端只需要知道
+ *   「这一轮还开不开得了」。发出去就白送一个泄露面：军械箱是全场公开的
+ *   物件，任何人都看得见它的状态，于是「谁开的」会把一个可能不可见的
+ *   实体的存在标在地图上 —— 与 `ProjectileSnapshot` 不带 sourceId 同理。
+ *
+ * ★ 预告窗口（5 秒）由客户端用 `availableAt - now` 自己算：
+ *   服务器发**事实**（下一轮什么时候到），不发**表现判断**（该不该闪）。
+ */
+export interface ArmorySnapshot {
+  id: number;
+  position: Vec3;
+  /** 下一次可用的时刻，服务器时间 */
+  availableAt: number;
+  /** 这一轮已被人打开（不说是谁）。10.4 的先到者独占 */
+  opened: boolean;
+}
+
 export interface MatchSnapshot {
   /** 8.5 战斗抑制当前值 */
   dampening: number;
@@ -337,6 +428,10 @@ export interface Snapshot {
   projectiles: readonly ProjectileSnapshot[];
   /** 14.3 地面区域边界。只含 areas，永不含 traps（见类型注释）*/
   grounds: readonly GroundAreaSnapshot[];
+  /** 10.2 地面掉落物。`pickable` 按接收者算（见类型注释）*/
+  drops: readonly DropSnapshot[];
+  /** 10.4 军械点与它的倒计时 */
+  armories: readonly ArmorySnapshot[];
   match: MatchSnapshot;
 }
 
@@ -364,6 +459,12 @@ export interface SnapshotDeps {
   projectiles?: ProjectileStore;
   /** 地面区域（14.3 边界可见）。★ 只会读 `areas`，`traps` 结构上不进快照 */
   ground?: GroundStore;
+  /**
+   * 临时武装（10.2 掉落物 / 10.4 军械点）。
+   * 可选：经典竞技场、夺旗与纯规则测试不传就是两个空数组
+   * （`store.enabled` 为假时它本来也是空的 —— 验收 #28）。
+   */
+  arsenal?: ArsenalStore;
 }
 
 /**
@@ -400,6 +501,35 @@ export const buildSnapshot = (deps: SnapshotDeps, viewer: CombatEntity): Snapsho
     radius: a.radius, expiresAt: a.expiresAt,
   }));
 
+  /**
+   * 10.2 掉落物 / 10.4 军械点。
+   *
+   * ★ 掉落物**逐接收者**算可拾取性，所以它在 viewer 分支里而不是像
+   *   projectiles 那样对所有人相同 —— 但它同样不带任何实体 id，
+   *   泄露面为零（见 `DropSnapshot` 的类型注释）。
+   * ★ `pickable` 走 sim 的 `dropViewFor()`，网络层不自己判一遍。
+   */
+  const viewerLoadout = deps.loadouts.get(viewer.id);
+  const drops: DropSnapshot[] = (deps.arsenal?.drops ?? []).map((d) => {
+    const view = viewerLoadout ? dropViewFor(d, viewer, viewerLoadout) : undefined;
+    return {
+      id: d.id,
+      kind: d.kind,
+      position: { ...d.position },
+      ownerClassName: view?.ownerClassName ?? '通用',
+      itemName: view?.itemName ?? '未知物品',
+      // ★ 没有装备栏（观战者的跟随视角等）一律不可拾取 —— 保守的那一边
+      pickable: view?.pickableByViewer ?? false,
+    };
+  });
+  const armories: ArmorySnapshot[] = (deps.arsenal?.armories ?? []).map((a) => ({
+    id: a.id,
+    position: { ...a.position },
+    availableAt: a.availableAt,
+    // ★ 只发布尔值，不发 openedBy（见 ArmorySnapshot 的类型注释）
+    opened: a.openedBy !== undefined,
+  }));
+
   const match: MatchSnapshot = {
     dampening: deps.dampening,
     suddenDeath: deps.suddenDeath,
@@ -417,7 +547,7 @@ export const buildSnapshot = (deps: SnapshotDeps, viewer: CombatEntity): Snapsho
     match.score = { ...deps.ctf.score };
   }
 
-  return { tick: deps.tick, you: viewer.id, entities, projectiles, grounds, match };
+  return { tick: deps.tick, you: viewer.id, entities, projectiles, grounds, drops, armories, match };
 };
 
 const snapshotEntity = (
@@ -494,13 +624,18 @@ const snapshotEntity = (
 
 const allyEquipment = (e: CombatEntity, deps: SnapshotDeps): AllyEquipmentSnapshot => {
   const l = deps.loadouts.get(e.id);
+  const swap = deps.swaps.get(e.id);
   return {
     currentWeaponId: e.weaponId,
     currentArmorId: e.armorId,
     spareWeaponIds: l ? [...l.spareWeapons] : [],
     spareArmorIds: l ? [...l.spareArmors] : [],
+    // ★ 走 sim 的 `availableWeapons()`，不在这里手拼（见类型注释）
+    allWeaponIds: l ? [...availableWeapons(l)] : [],
+    allArmorIds: l ? [...availableArmors(l)] : [],
     consumableIds: l ? l.consumables.map(String) : [],
-    swapping: deps.swaps.has(e.id),
+    swapping: swap !== undefined,
+    ...(swap ? { swapKind: swap.kind, swapEndsAt: swap.endsAt } : {}),
   };
 };
 

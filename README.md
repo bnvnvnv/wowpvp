@@ -35,7 +35,7 @@ pnpm install
 pnpm dev:server          # 权威服务器，默认 ws://localhost:8080
 pnpm dev:client          # 客户端，默认 http://localhost:5173
 
-pnpm test                # 单元测试（822 条：几何、命中、施法状态机、统计、快照裁剪…）
+pnpm test                # 单元测试（1081 条：几何、命中、施法状态机、统计、快照裁剪…）
 pnpm typecheck           # 全量类型检查，★ 含测试文件本身（见下）
 
 # 阶段验收脚本（每个里程碑一支，对应 docs/10 的验收标准）
@@ -46,6 +46,7 @@ pnpm verify:m8           # 表现层：HUD 四区、逐档画质、带旗开无�
 pnpm verify:m9           # 统计与安全边界：潜行不进快照、战后统计、七项最佳玩家
 pnpm verify:m10          # 联网：起真服务器 + 两个真 ws 客户端，逐条试着作弊
 pnpm verify:m12          # 美术与音效：素材登记、模型不改碰撞体、低画质不藏关键信息
+pnpm verify:m16          # 临时武装：军械箱三选一、职业锁定、拾取、消耗品（起真服务器 + 两个真 ws 客户端）
 ```
 
 **★ 一条容易踩的分工**：`verify:m1`–`m10` 默认带 `?art=off` 跑

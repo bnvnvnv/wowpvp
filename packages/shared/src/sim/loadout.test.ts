@@ -35,15 +35,20 @@ import {
   type SwapStore,
 } from './loadout.js';
 import {
+  ARMORY_DROP_RING_RADIUS,
   armoryLayoutFor,
   armoryOptionsFor,
   beginPickup,
+  chooseFromArmory,
+  clearArsenal,
   createArsenalStore,
   createPickupStore,
   dropViewFor,
+  openArmory,
   setupArmories,
   spawnDropsFromRoster,
   telegraphedArmories,
+  tickArsenal,
   tickPickups,
   type ArsenalStore,
   type PickupStore,
@@ -558,5 +563,194 @@ describe('10.5 拾取', () => {
     expect(view.ownerClassName).toBe('战士');   // 看得到归属
     expect(view.itemName.length).toBeGreaterThan(0);
     expect(view.pickableByViewer).toBe(false);  // 但拿不走
+  });
+});
+
+/**
+ * 10.4 军械箱的开箱与领取。
+ *
+ * ★★ 这一组盯的是本仓库最常犯的那类错：**规则写好了、单测也绿，
+ *   但真实对局里没有任何路径能触发它。** `armoryOptionsFor()` 从 M6 起
+ *   就存在并被上面那条测试覆盖着，却**零调用方** —— 没有「打开箱子」
+ *   这个动作，那三个选项永远不会到达任何一个玩家手里。
+ */
+describe('10.4 开箱与三选一（此前 armoryOptionsFor 是零调用方的死函数）', () => {
+  let store: ArsenalStore;
+
+  beforeEach(() => {
+    store = createArsenalStore(ArenaPreset.Armed);
+    setupArmories(store, GameMode.Arena2v2, 0, 20, 60);
+  });
+
+  const armory = () => store.armories[0]!;
+
+  it('★ 到点、站近了就能打开，拿到自己职业的三个横向选择', () => {
+    const r = openArmory(w, store, armory().id, 25);
+    expect(r.ok, r.ok ? '' : r.reason).toBe(true);
+    if (!r.ok) return;
+    expect(r.options.map((o) => o.choice)).toEqual([
+      ArsenalChoice.Offense, ArsenalChoice.Mobility, ArsenalChoice.Defense,
+    ]);
+  });
+
+  it('★ 没到刷新时刻打不开', () => {
+    const r = openArmory(w, store, armory().id, 10);
+    expect(r.ok).toBe(false);
+  });
+
+  it('★ 10.5：超出 2.2 米交互距离打不开', () => {
+    w.position = vec3(RANGE.INTERACT + 0.5, 0, 0);
+    expect(openArmory(w, store, armory().id, 25).ok).toBe(false);
+    w.position = vec3(RANGE.INTERACT - 0.2, 0, 0);
+    expect(openArmory(w, store, armory().id, 25).ok).toBe(true);
+  });
+
+  it('★★ 先到者独占这一轮 —— 第二个人开同一个箱子会被拒', () => {
+    const other = spawn(warrior, 1, 0);
+    expect(openArmory(w, store, armory().id, 25).ok).toBe(true);
+    const second = openArmory(other, store, armory().id, 25);
+    expect(second.ok, '第二个人也开出了选项 —— 10.4 的争夺就不存在了').toBe(false);
+  });
+
+  it('★ 打开即把倒计时推到下一轮（10.4「固定、可预测」）', () => {
+    openArmory(w, store, armory().id, 25);
+    expect(armory().availableAt).toBe(25 + 60);
+  });
+
+  it('★ 领取把装备真的放进装备栏', () => {
+    const opened = openArmory(w, store, armory().id, 25);
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+
+    const before = availableWeapons(wLoadout).length;
+    const r = chooseFromArmory(w, wLoadout, store, armory().id, ArsenalChoice.Offense);
+    expect(r.ok, r.ok ? '' : r.reason).toBe(true);
+    if (!r.ok) return;
+
+    // 进攻选项给的是武器或护甲（取决于职业池），至少有一样进了栏
+    const gotWeapon = availableWeapons(wLoadout).length > before;
+    const gotArmor = wLoadout.spareArmors.length > 0;
+    expect(gotWeapon || gotArmor, '领取成功却什么都没进装备栏').toBe(true);
+  });
+
+  it('★★ 同一轮只能领一次', () => {
+    openArmory(w, store, armory().id, 25);
+    expect(chooseFromArmory(w, wLoadout, store, armory().id, ArsenalChoice.Offense).ok).toBe(true);
+    const again = chooseFromArmory(w, wLoadout, store, armory().id, ArsenalChoice.Defense);
+    expect(again.ok, '同一个箱子领了两次 —— 三选一变成了三选三').toBe(false);
+  });
+
+  it('★★ 不是你打开的箱子，你领不走', () => {
+    const other = spawn(warrior, 1, 0);
+    const otherLoadout = createLoadout(other.classId);
+    openArmory(w, store, armory().id, 25);
+    const r = chooseFromArmory(other, otherLoadout, store, armory().id, ArsenalChoice.Offense);
+    expect(r.ok, '别人打开的箱子被摘了桃子').toBe(false);
+  });
+
+  it('★ 验收 #28：经典竞技场连开箱路径都不存在', () => {
+    const classic = createArsenalStore(ArenaPreset.Classic);
+    setupArmories(classic, GameMode.Arena2v2, 0, 20, 60);
+    expect(classic.armories, '经典竞技场生成了军械点').toHaveLength(0);
+    // 就算有人伪造一个 id 也开不出来
+    expect(openArmory(w, classic, 1, 25).ok).toBe(false);
+  });
+
+  it('★ 10.2：宠物不能使用军械箱', () => {
+    const pet = spawn(warrior, 0.5, 0);
+    pet.isPet = true;
+    expect(openArmory(pet, store, armory().id, 25).ok).toBe(false);
+  });
+
+  it('★ 死亡或被昏迷时开不了箱', () => {
+    w.flags.stunned = true;
+    expect(openArmory(w, store, armory().id, 25).ok).toBe(false);
+    w.flags.stunned = false;
+    w.alive = false;
+    expect(openArmory(w, store, armory().id, 25).ok).toBe(false);
+  });
+
+  it('★ 10.10：回合重置后军械点回到未被打开、未被领取的状态', () => {
+    openArmory(w, store, armory().id, 25);
+    chooseFromArmory(w, wLoadout, store, armory().id, ArsenalChoice.Offense);
+    clearArsenal(store, createPickupStore());
+    expect(armory().openedBy).toBeUndefined();
+    expect(armory().claimed, 'claimed 没被清 —— 下一回合永远领不到东西').toBeUndefined();
+  });
+});
+
+/**
+ * 10.4 补给点刷新。
+ *
+ * ★★ 这一组的存在理由与上一组相同：`spawnDropsFromRoster()` 也是
+ *   **真实对局里零调用方**的函数 —— 地上从来不会出现任何一件掉落物。
+ */
+describe('10.4 补给点刷新（tickArsenal —— 此前地上永远是空的）', () => {
+  let store: ArsenalStore;
+
+  beforeEach(() => {
+    store = createArsenalStore(ArenaPreset.Armed);
+    setupArmories(store, GameMode.Arena2v2, 0, 20, 60);
+  });
+
+  it('★ 到点刷货，且**一轮只刷一次**', () => {
+    expect(tickArsenal(store, [warrior.id], 10), '没到点就刷了').toHaveLength(0);
+
+    const first = tickArsenal(store, [warrior.id], 20);
+    expect(first.length).toBeGreaterThan(0);
+
+    const again = tickArsenal(store, [warrior.id], 20.05);
+    expect(again, '同一轮刷了第二次 —— 地上会以每 tick 的速度堆满').toHaveLength(0);
+  });
+
+  it('★★ 掉落沿圆环摆开，不叠在同一个坐标上', () => {
+    const drops = tickArsenal(store, [warrior.id, mage.id], 20);
+    expect(drops.length).toBeGreaterThan(1);
+
+    const keys = new Set(drops.map((d) => `${d.position.x.toFixed(3)},${d.position.z.toFixed(3)}`));
+    expect(
+      keys.size,
+      '多件掉落重合在同一个点 —— 玩家没法选择捡哪一件',
+    ).toBe(drops.length);
+
+    // 都在交互距离之内：站在箱子上就够得到自己脚边的货
+    for (const d of drops) {
+      const r = Math.hypot(d.position.x - 0, d.position.z - 0);
+      expect(r).toBeCloseTo(ARMORY_DROP_RING_RADIUS, 5);
+      expect(r).toBeLessThan(RANGE.INTERACT);
+    }
+  });
+
+  it('★ 新一轮清掉上一轮没被捡走的残货（10.4「补给点」，见 Q15）', () => {
+    const first = tickArsenal(store, [warrior.id], 20);
+    expect(store.drops).toHaveLength(first.length);
+
+    // 打开 → 倒计时推到 25+60=85；到点后才是新一轮
+    openArmory(w, store, store.armories[0]!.id, 25);
+    expect(tickArsenal(store, [warrior.id], 84), '还没到点就刷了新一轮').toHaveLength(0);
+    const second = tickArsenal(store, [warrior.id], 85);
+
+    expect(second.length).toBeGreaterThan(0);
+    expect(
+      store.drops.length,
+      '两轮的货堆在一起 —— 5v5 打满一局地上会有两百多件',
+    ).toBe(second.length);
+  });
+
+  it('★★ 新一轮把开箱状态复位（否则箱子被开一次就永久哑火）', () => {
+    tickArsenal(store, [warrior.id], 20);
+    openArmory(w, store, store.armories[0]!.id, 25);
+    expect(store.armories[0]!.openedBy).toBeDefined();
+
+    tickArsenal(store, [warrior.id], 85);
+    expect(store.armories[0]!.openedBy).toBeUndefined();
+    expect(openArmory(w, store, store.armories[0]!.id, 85).ok).toBe(true);
+  });
+
+  it('★ 验收 #28：经典竞技场一件货都不刷', () => {
+    const classic = createArsenalStore(ArenaPreset.Classic);
+    setupArmories(classic, GameMode.Arena2v2, 0, 20, 60);
+    expect(tickArsenal(classic, [warrior.id], 100)).toHaveLength(0);
+    expect(classic.drops).toHaveLength(0);
   });
 });

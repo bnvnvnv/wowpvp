@@ -32,6 +32,7 @@ import {
   resetForRematch,
   selectClass,
   selectSlot,
+  setPreset,
   setReady,
   startMatch,
   SIM,
@@ -162,6 +163,9 @@ export class RoomServer {
       case 'SelectClass': return this.onRoomMutation(
         session, (sr) => selectClass(sr.room, session.playerId, msg.classId), 'SelectClass');
       case 'SetReady': return this.onSetReady(session, msg.ready);
+      // ★ 房主校验在 sim 的 `setPreset()` 里，不在这里 —— 与其他房间变更同源
+      case 'SetRoomPreset': return this.onRoomMutation(
+        session, (sr) => setPreset(sr.room, session.playerId, msg.preset), 'SetRoomPreset');
       case 'LeaveMatch': return this.onLeave(session);
       case 'CastRequest': return this.onCastRequest(session, msg);
       case 'CancelCast': return this.enqueue(session, { t: 'CancelCast' });
@@ -171,10 +175,15 @@ export class RoomServer {
         return this.enqueue(session, { t: 'Swap', kind: SwapKind.Weapon, slot: msg.slot });
       case 'SwapArmor':
         return this.enqueue(session, { t: 'Swap', kind: SwapKind.Armor, slot: msg.slot });
-      case 'InteractStart':
-        // ⚠️ 协议的 entityId 在交互里其实是「掉落物 id」，见 MatchLoop.beginInteract
-        return this.enqueue(session, { t: 'InteractStart', dropId: msg.entityId as number });
+      // ★ 协议现在自带可辨识联合，服务器不用再猜玩家想拔旗还是捡东西
+      case 'InteractStart': return this.enqueue(session, { t: 'InteractStart', target: msg.target });
       case 'InteractCancel': return this.enqueue(session, { t: 'InteractCancel' });
+      case 'OpenArmory':
+        return this.enqueue(session, { t: 'OpenArmory', armoryId: msg.armoryId });
+      case 'ChooseArsenal':
+        return this.enqueue(session, {
+          t: 'ChooseArsenal', armoryId: msg.armoryId, choice: msg.choice,
+        });
       case 'SpectateFollow': return this.onSpectateFollow(session, msg.entityId);
 
       case 'UseTrinket':
@@ -532,6 +541,7 @@ export class RoomServer {
       preset: sr.room.config.preset,
       mapId: sr.room.config.mapId,
       started: sr.room.started,
+      hostId: sr.room.hostId,
     });
   }
 

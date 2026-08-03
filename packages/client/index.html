@@ -343,6 +343,39 @@
       .lp-compare-label { font-size: 9px; color: #6f7a90; }
       .lp-diff { font-size: 10px; color: #c9d1e0; }
 
+      /* ── 军械交互（10.2 / 10.4 / 10.5）─────────────────────────────
+         ★ 提示与进度条压在准星下方、技能栏上方 —— 玩家拾取时视线就在那里。
+         ★ 不可交互时**变暗但不隐藏**：10.2「看得到掉落物和所属职业」。   */
+      #arsenal-prompt { position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%);
+                        background: rgba(20,23,30,.86); border: 1px solid #2c313d;
+                        border-radius: 6px; padding: 5px 12px; font-size: 12px;
+                        text-align: center; pointer-events: none; }
+      #arsenal-prompt.ap-disabled { opacity: .55; border-color: #4a3a3a; }
+      .ap-line { color: #e6ecf7; }
+      .ap-hint { font-size: 10px; color: #d8a07e; margin-top: 2px; }
+      #arsenal-progress { position: absolute; left: 50%; bottom: 122px; transform: translateX(-50%);
+                          width: 190px; text-align: center; pointer-events: none; }
+      .ap-prog-label { font-size: 10px; color: #b9c1d1; margin-bottom: 2px; }
+      .ap-bar { height: 7px; border-radius: 4px; background: #22262f; overflow: hidden; }
+      .ap-bar i { display: block; height: 100%; background: #6fd0ff; }
+      .ap-toast { font-size: 11px; color: #e6ecf7; background: rgba(20,23,30,.86);
+                  border: 1px solid #2c313d; border-radius: 6px; padding: 4px 10px; }
+      /* 三选一面板：10.4「只向打开者显示其职业的三个横向选择」 */
+      #arsenal-panel { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+                       background: rgba(16,19,25,.95); border: 1px solid #3a4152;
+                       border-radius: 10px; padding: 14px 16px; z-index: 20; }
+      .ap-title { font-size: 12px; letter-spacing: 1px; color: #cfd6e4; margin-bottom: 10px;
+                  text-align: center; }
+      .ap-row { display: flex; gap: 10px; }
+      .ap-opt { width: 170px; text-align: left; cursor: pointer; color: #cfd6e4;
+                background: rgba(30,34,44,.9); border: 1px solid #2c313d;
+                border-radius: 7px; padding: 8px 10px; font: inherit; font-size: 11px; }
+      .ap-opt:hover { border-color: #6fd0ff; background: rgba(45,60,78,.9); }
+      .ap-opt-name { font-weight: 700; font-size: 13px; margin-bottom: 4px; }
+      .ap-opt-adv { color: #9ad48f; }
+      .ap-opt-cost { color: #d8a07e; margin-top: 2px; }
+      .ap-foot { font-size: 10px; color: #6f7a90; margin-top: 8px; text-align: center; }
+
       /* ── M13 大厅（docs/14 §M13）──────────────────────────────────
          与 HUD 同一套技术栈：纯 DOM、同一色板、同一个 --ui-scale 缩放
          （由 LobbyShell 从 accessibility 读出写在 #lobby 上）。

@@ -41,10 +41,21 @@ export const Action = {
   ToggleDebug: 'toggleDebug',
   /** 17.1 三档画质循环。★ 验收 #48 要逐档人工检查，需要一个能随时切的键 */
   CycleQuality: 'cycleQuality',
-  /** 12.1 与旗帜交互（拔旗/归还/交旗）*/
+  /**
+   * 通用**交互键**：12.1 拔旗/归还/交旗 + 10.5 拾取掉落物 + 10.4 打开军械箱。
+   *
+   * ★ 三者共用一个键是有意的（MMO 惯例，也是 10.5「按交互键」的字面读法）——
+   *   由客户端按 2.2 米内最近的可交互物消歧，再把**明确的**目标发给服务器
+   *   （协议的 `InteractTarget` 可辨识联合）。
+   * ★ id 仍叫 `flagInteract`：它已经被写进玩家本地的自定义键位存档，
+   *   改 id 会让改过键位的人这个键静默失效。**改注释不改 id。**
+   */
   FlagInteract: 'flagInteract',
   /** 10.7 切换备用武器（15.3 战场装备栏）*/
   CycleWeapon: 'cycleWeapon',
+  /** 10.1 / 10.6：使用战场道具栏的两个增益道具 */
+  UseConsumable1: 'useConsumable1',
+  UseConsumable2: 'useConsumable2',
   /** 17.2 循环色盲模式。★ 与画质同理：验收要逐项人工比对，需要一个能随时切的键 */
   CycleColorblind: 'cycleColorblind',
   /** 17.2 循环界面缩放 */
@@ -90,6 +101,10 @@ export const DEFAULT_BINDINGS: Readonly<Record<Action, string>> = {
   [Action.CycleQuality]: 'F2',
   [Action.FlagInteract]: 'KeyG',
   [Action.CycleWeapon]: 'KeyB',
+  // ★ Z/X 挑的是「不与 4.2 按键表冲突」的两个键：技能占 1–9，
+  //   Q/E 侧移、R 饰品、B 换武器、G 交互、V 观战、K 实战、M 静音、F 焦点
+  [Action.UseConsumable1]: 'KeyZ',
+  [Action.UseConsumable2]: 'KeyX',
   [Action.CycleColorblind]: 'F3',
   [Action.CycleUiScale]: 'F4',
   [Action.SpectateNext]: 'KeyV',

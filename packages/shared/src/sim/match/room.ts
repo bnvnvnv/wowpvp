@@ -111,6 +111,28 @@ export const selectClass = (room: Room, playerId: string, classId: ClassId): Sel
   return { ok: true };
 };
 
+/**
+ * 10.1：在经典竞技场与武装竞技场之间切换。
+ *
+ * ★★ **没有这条路径的话，整个第 10 章在真实对局里是不可达的。**
+ *   房间默认 `ArenaPreset.Classic`，而验收 #28 要求经典竞技场
+ *   **不生成任何临时武装** —— 于是军械箱、掉落、换装、消耗品全部
+ *   规则正确、单测全绿、玩家永远看不到。这与 PROGRESS 记的 B4
+ *   （护盾做完了却没有任何路径能触发）是同一种缺陷。
+ *
+ * ★ 只有房主能改，且只在开赛前 —— 与 `selectSlot` 的「开赛后锁定」同一条线。
+ */
+export const setPreset = (
+  room: Room,
+  playerId: string,
+  preset: ArenaPreset,
+): SelectResult => {
+  if (room.started) return { ok: false, reason: '比赛已开始，不能更换规则预设' };
+  if (room.hostId !== playerId) return { ok: false, reason: '只有房主能更改规则预设' };
+  room.config.preset = preset;
+  return { ok: true };
+};
+
 export const setReady = (room: Room, playerId: string, ready: boolean): SelectResult => {
   const p = room.players.find((x) => x.id === playerId);
   if (!p) return { ok: false, reason: '玩家不在房间中' };

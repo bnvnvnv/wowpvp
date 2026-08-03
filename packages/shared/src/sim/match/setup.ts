@@ -28,7 +28,8 @@ import type { Vec3 } from '../../math/vec3.js';
 import { TEAM_BLUE, TEAM_RED, type EntityId, type TeamId } from '../../types/ids.js';
 import { createAuraStore, type AuraStore } from '../aura.js';
 import {
-  createArsenalStore, createPickupStore, type ArsenalStore, type PickupStore,
+  createArsenalStore, createPickupStore, setupArmories,
+  type ArsenalStore, type PickupStore,
 } from '../arsenal.js';
 import { createCastingStore, type CastingStore } from '../casting.js';
 import { createDrStore, type DrStore } from '../dr.js';
@@ -230,6 +231,18 @@ export const createMatch = (room: Room, map: MapDef): Match => {
       mode: room.config.mode,
       roundsToWin: room.config.roundsToWin,
     });
+    /**
+     * 10.4 军械点布置。
+     *
+     * ★★ **在此之前这一行不存在** —— `createArsenalStore()` 建了个空店铺，
+     *   `setupArmories()` 全仓库只有测试调过，于是武装竞技场里
+     *   **一个军械箱都不会出现**，整个 M6 在真实对局里是空的。
+     *   （`setupArmories` 自己会检查 `store.enabled`，所以经典竞技场
+     *   照旧一个都不生成 —— 验收 #28 不受影响。）
+     * ★ 夺旗不调：12.x 首版关闭临时装备，而 `armoryLayoutFor` 对夺旗模式
+     *   返回空数组 —— 两道保险。
+     */
+    setupArmories(match.arsenal, room.config.mode, world.time);
   }
 
   return match;

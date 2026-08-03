@@ -18,12 +18,15 @@
  */
 
 import type {
-  ArenaPreset, CastFailure, CastKind, FlagState, GameMode, InterruptSource, School,
+  ArenaPreset, ArsenalChoice, CastFailure, CastKind, FlagState, GameMode,
+  InterruptSource, School,
 } from '../types/enums.js';
 import type { ClassId, EntityId, MapId, SkillId, TeamId } from '../types/ids.js';
 import type { Vec3 } from '../math/vec3.js';
+import type { ArsenalOption } from '../sim/arsenal.js';
 import type {
-  EntitySnapshot, GroundAreaSnapshot, MatchSnapshot, ProjectileSnapshot,
+  ArmorySnapshot, DropSnapshot, EntitySnapshot, GroundAreaSnapshot, MatchSnapshot,
+  ProjectileSnapshot,
 } from './visibility.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -76,12 +79,33 @@ export interface InputMessage {
   jump: boolean;
 }
 
+/**
+ * 一次交互的目标。见 `ClientMessage` 里 `InteractStart` 的注释。
+ *
+ * ★ 三种交互物在**数据上就不同构**：旗帜按距离找（它不是实体，没有 id）、
+ *   掉落物与军械箱各有自己的编号空间。用联合而不是一个 number，
+ *   「把 dropId 当 armoryId 用」就成了类型错误而不是运行时的谜之失败。
+ */
+export type InteractTarget =
+  /** 12.x 拔旗/交旗。★ 没有 id —— 服务器按 2.2 米交互距离找那面旗 */
+  | { kind: 'flag' }
+  /** 10.5 拾取地面掉落物 */
+  | { kind: 'drop'; dropId: number };
+
 export type ClientMessage =
   // ── 房间阶段 ──
   | { t: 'JoinRoom'; roomId: string; name: string }
   | { t: 'SelectTeam'; team: 'red' | 'blue' | 'spectator' }
   | { t: 'SelectClass'; classId: ClassId; appearance?: string }
   | { t: 'SetReady'; ready: boolean }
+  /**
+   * 10.1 切换规则预设（经典 / 武装）。**只有房主、只在开赛前。**
+   *
+   * ★ 加这条消息的理由是可达性而不是功能：默认预设是经典竞技场，
+   *   而经典竞技场按验收 #28 不生成任何临时武装 —— 没有这个开关，
+   *   第 10 章的全部规则在真实对局里一次都不会发生。
+   */
+  | { t: 'SetRoomPreset'; preset: ArenaPreset }
   /** 11.5 主动退出。★ 立即按淘汰处理，不能通过退出规避死亡统计 */
   | { t: 'LeaveMatch' }
   /** 17.3 重连：带上服务器给的令牌 */
@@ -100,11 +124,26 @@ export type ClientMessage =
   | { t: 'UseTrinket' }
 
   // ── 交互与装备 ──
-  | { t: 'InteractStart'; entityId: EntityId }
+  /**
+   * 开始一次交互。
+   *
+   * ★★ **目标是一个可辨识联合，不是一个身兼两职的 id。**
+   *   此前这条消息只带 `entityId: EntityId`，而旗帜**不是实体**（没有 EntityId）、
+   *   掉落物用的是自己的 `dropId` —— 同一个字段实际在表达三种东西，
+   *   `MatchLoop.beginInteract` 的注释把这个坑原样记着（「没有假装它是干净的」）。
+   *   接客户端时必须消歧：玩家按同一个键，可能是拔旗、捡装备或开军械箱，
+   *   而服务器不该靠「先试旗帜再试掉落」的顺序去猜他想干什么
+   *   —— 猜错的表现是「站在旗边捡不起脚下的装备」。
+   */
+  | { t: 'InteractStart'; target: InteractTarget }
   | { t: 'InteractCancel' }
   | { t: 'SwapWeapon'; slot: number }
   | { t: 'SwapArmor'; slot: number }
   | { t: 'UseConsumable'; slot: number }
+  /** 10.4 打开中立军械箱。服务器私信回一条 `ArsenalOffer` */
+  | { t: 'OpenArmory'; armoryId: number }
+  /** 10.4 从自己打开的军械箱里领走三选一之一 */
+  | { t: 'ChooseArsenal'; armoryId: number; choice: ArsenalChoice }
 
   // ── 观战（11.4：只能跟随己方存活玩家）──
   | { t: 'SpectateFollow'; entityId: EntityId };
@@ -116,9 +155,11 @@ export type ClientMessageKind = ClientMessage['t'];
  * 强制它与 `ClientMessage` 联合同步 —— 与 `ALL_EFFECT_KINDS` 同一个手法。
  */
 export const ALL_CLIENT_MESSAGE_KINDS: readonly ClientMessageKind[] = [
-  'JoinRoom', 'SelectTeam', 'SelectClass', 'SetReady', 'LeaveMatch', 'Reconnect',
+  'JoinRoom', 'SelectTeam', 'SelectClass', 'SetReady', 'SetRoomPreset',
+  'LeaveMatch', 'Reconnect',
   'Input', 'SetTarget', 'TabTarget', 'CastRequest', 'CancelCast', 'UseTrinket',
   'InteractStart', 'InteractCancel', 'SwapWeapon', 'SwapArmor', 'UseConsumable',
+  'OpenArmory', 'ChooseArsenal',
   'SpectateFollow',
 ];
 
@@ -176,6 +217,10 @@ export interface SnapshotMessage {
   projectiles: readonly ProjectileSnapshot[];
   /** 14.3 地面区域边界（只含 areas，永不含 traps）*/
   grounds: readonly GroundAreaSnapshot[];
+  /** 10.2 地面掉落物（`pickable` 按接收者算，不带实体引用）*/
+  drops: readonly DropSnapshot[];
+  /** 10.4 军械点与倒计时（不带 openedBy）*/
+  armories: readonly ArmorySnapshot[];
   match: MatchSnapshot;
 }
 
@@ -183,7 +228,13 @@ export type ServerMessage =
   // ── 房间与对局 ──
   | { t: 'Welcome'; playerId: string; tickRate: number; interpDelay: number }
   | { t: 'RoomState'; players: readonly RoomPlayerView[]; mode: GameMode
-      preset: ArenaPreset; mapId: MapId; started: boolean }
+      preset: ArenaPreset; mapId: MapId; started: boolean
+      /**
+       * 房主。3.1 的房间设置只有他能改（当前是 10.1 的规则预设）。
+       * ★ 客户端拿它只为**显示**能不能点 —— 权限判定在服务器的 `setPreset()`，
+       *   把按钮画成可点也改不了别人的房间。
+       */
+      hostId: string }
   | { t: 'MatchStart'; mapId: MapId; you: EntityId; startsAt: number
       /** 17.3 重连令牌。★ 断线后凭它恢复，见 server/room/reconnect.ts */
       reconnectToken: string }
@@ -229,6 +280,22 @@ export type ServerMessage =
   | { t: 'AuraRemoved'; targetId: EntityId; auraId: string
       reason: 'expired' | 'dispelled' | 'broken' | 'cancelled' | 'shieldBroken' }
   | { t: 'Death'; entityId: EntityId; killerId?: EntityId }
+  /**
+   * 10.4：军械箱被打开后的三个横向选择。
+   *
+   * ★★ **这是私信，不是广播。** 原文是「只向**打开者**显示其职业的三个
+   *   横向选择」—— 广播出去等于告诉对手「他刚拿到了进攻套」，
+   *   而 10.6 明确规定敌人**看不到备用装备**。与 `CastFailed` 同一条理由。
+   */
+  | { t: 'ArsenalOffer'; armoryId: number; options: readonly ArsenalOption[] }
+  /**
+   * 10.5「多人同时拾取只允许第一个完成者成功；其他人收到**明确失败反馈**」+
+   * 10.2「交互时提示『职业不匹配』」。
+   *
+   * ★ 成功也发：拾取是一个 0.8 秒的过程，没有结果消息的话客户端只能靠
+   *   「掉落物从快照里消失了」去猜，而那在「被别人抢走」时会猜成「我拿到了」。
+   */
+  | { t: 'PickupResult'; dropId: number; ok: boolean; reason?: string }
   | { t: 'FlagEvent'; flagTeam: TeamId; state: FlagState; carrierId?: EntityId; position?: Vec3 }
   | { t: 'RoundEnd'; winner: TeamId | 'draw'; round: number }
   | { t: 'MatchEnd'; winner: TeamId | 'draw' }
@@ -252,6 +319,7 @@ export type ServerMessageKind = ServerMessage['t'];
 export const ALL_SERVER_MESSAGE_KINDS: readonly ServerMessageKind[] = [
   'Welcome', 'RoomState', 'MatchStart', 'Snapshot',
   'CastStarted', 'CastResolved', 'CastInterrupted', 'CastFailed', 'Damage', 'Heal',
-  'AuraApplied', 'AuraRemoved', 'Death', 'FlagEvent', 'RoundEnd', 'MatchEnd',
+  'AuraApplied', 'AuraRemoved', 'Death', 'ArsenalOffer', 'PickupResult',
+  'FlagEvent', 'RoundEnd', 'MatchEnd',
   'Rejected', 'PeerDisconnected', 'PeerReconnected', 'PeerEliminated',
 ];
