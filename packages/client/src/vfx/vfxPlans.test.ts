@@ -8,7 +8,9 @@
 
 import { describe, expect, it } from 'vitest';
 import { MOTION, boltOrientation, trailPlanFor } from './boltVfx.js';
-import { fizzlePlanFor, windupPlanFor } from './castVfx.js';
+import {
+  PHYSICAL_WINDUP_STYLES, WINDUP_STYLES, fizzlePlanFor, windupPlanFor, windupStyleOf,
+} from './castVfx.js';
 import {
   MAX_FILL_AREAS, groundFillPlanFor, verticalTravel, waveEase, wavePlanFor,
 } from './groundVfx.js';
@@ -333,6 +335,66 @@ describe('fizzlePlanFor', () => {
       const plan = fizzlePlanFor(p);
       expect(Number.isFinite(plan.count)).toBe(true);
       expect(plan.count).toBeGreaterThan(0);
+    }
+  });
+});
+
+/**
+ * ★★ 蓄力形态的个性化（用户实测反馈：施法过程八属性长得一模一样，
+ *   战士/盗贼/猎人的物理技能之间也没有区分）。
+ *
+ *   这组断言钉的是**语义**不是数值手感：方向即含义（圣光从天上来、
+ *   火苗往上冒）、物理不画奥术纹章、风格表不许触碰池预算的输入。
+ */
+describe('windupStyleOf —— 蓄力形态按属性/职业分化', () => {
+  it('★ 八属性形态确实拉开了（不是一张表复制八行）', () => {
+    const forms = new Set(
+      Object.values(WINDUP_STYLES).map((s) => JSON.stringify(s)),
+    );
+    expect(forms.size).toBe(8);
+  });
+
+  it('★ 方向即语义：圣光自上而下、火/毒/暗影自下而上、雪微沉', () => {
+    expect(WINDUP_STYLES.beam.origin).toBe('above');
+    expect(WINDUP_STYLES.beam.lift).toBeLessThan(0);
+    for (const k of ['ember', 'droplet', 'smoke'] as const) {
+      expect(WINDUP_STYLES[k].origin).toBe('ground');
+      expect(WINDUP_STYLES[k].lift).toBeGreaterThan(0);
+    }
+    expect(WINDUP_STYLES.snowflake.lift).toBeLessThan(0);
+  });
+
+  it('★ 物理不画奥术纹章 —— 拉弓抡刀的人脚下不该有法阵纹样', () => {
+    expect(WINDUP_STYLES.spark.motif).toBe('none');
+    for (const s of Object.values(PHYSICAL_WINDUP_STYLES)) {
+      expect(s.motif).toBe('none');
+    }
+  });
+
+  it('★★ 物理按职业细分：战士/盗贼/猎人三种蓄力互不相同，且都不同于法系', () => {
+    const w = windupStyleOf('spark', 'warrior.mortal_strike');
+    const r = windupStyleOf('spark', 'rogue.stealth');
+    const h = windupStyleOf('spark', 'hunter.aimed_shot');
+    const forms = new Set([w, r, h].map((s) => JSON.stringify(s)));
+    expect(forms.size).toBe(3);
+    // 猎人「屏息瞄准」收得最紧；盗贼的环反向转（与所有法系一眼可分）
+    expect(h.radiusScale).toBeLessThan(w.radiusScale);
+    expect(r.spinScale).toBeLessThan(0);
+  });
+
+  it('未知职业前缀 / 不传 skillId 回落到 spark 基础行（不抛不炸）', () => {
+    expect(windupStyleOf('spark', 'somepet.bite')).toEqual(WINDUP_STYLES.spark);
+    expect(windupStyleOf('spark')).toEqual(WINDUP_STYLES.spark);
+    // 非物理属性不受 skillId 影响 —— 法师的技能不会因为 id 前缀变样
+    expect(windupStyleOf('snowflake', 'mage.frostbolt')).toEqual(WINDUP_STYLES.snowflake);
+  });
+
+  it('★★ 风格表不触碰池预算的输入（cadence/life/count 只归 windupPlanFor 管）', () => {
+    const allowed = new Set([
+      'motif', 'motifScale', 'spinScale', 'origin', 'lift', 'drag', 'radiusScale',
+    ]);
+    for (const s of [...Object.values(WINDUP_STYLES), ...Object.values(PHYSICAL_WINDUP_STYLES)]) {
+      for (const key of Object.keys(s)) expect(allowed.has(key), `意外字段 ${key}`).toBe(true);
     }
   });
 });

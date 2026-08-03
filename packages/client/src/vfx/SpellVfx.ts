@@ -62,7 +62,7 @@ import {
 } from './schools.js';
 import { QualityTier, decorativeDensity, isVisible } from '../render/quality.js';
 import { MOTION, boltOrientation, trailPlanFor } from './boltVfx.js';
-import { fizzlePlanFor, windupPlanFor } from './castVfx.js';
+import { fizzlePlanFor, windupPlanFor, windupStyleOf, type WindupStyle } from './castVfx.js';
 import { vfxScaleOf } from './skillWeight.js';
 import { MAX_FILL_AREAS, groundFillPlanFor, wavePlanFor, waveEase } from './groundVfx.js';
 import type { ImpactTier } from '../feedback/impactTier.js';
@@ -366,10 +366,13 @@ interface WindupEntry {
   /** 外圈：干净的圆环轮廓，一眼读出「这是个法阵」而不是「地上有片光」 */
   ring: THREE.Mesh;
   ringMat: THREE.MeshBasicMaterial;
-  /** 内层符文（`magic_04`）。★ 与外圈**反向**转 —— 两层反转是「机关在动」的最短路径 */
+  /** 内层纹章（按属性：雪花/火球/光斑/旋叶…，奥术保留符文，物理无纹章）。
+   *  ★ 与外圈**反向**转 —— 两层反转是「机关在动」的最短路径 */
   runes?: THREE.Mesh;
   runeMat?: THREE.MeshBasicMaterial;
   visual: AttributeVisual;
+  /** 按属性分化的蓄力形态（castVfx.ts 的 WINDUP_STYLES）*/
+  style: WindupStyle;
   /** 聚能粒子的节拍计时器 */
   timer: number;
   /** 累计旋转角 */
@@ -1040,7 +1043,7 @@ export class SpellVfx {
         density,
       });
 
-      const entry = this.ensureWindup(c.id, av);
+      const entry = this.ensureWindup(c.id, av, c.skillId);
       entry.lastProgress = plan.progress;
 
       /**
@@ -1051,7 +1054,8 @@ export class SpellVfx {
       const ws = skill ? vfxScaleOf(skill) : 1;
 
       // 法阵贴在脚下，跟着人走（施法期间也可能被击退/位移）
-      entry.spin += plan.circleSpin * dt * (0.8 + 0.4 * ws);
+      // ★ spinScale 按属性：冰霜慢而稳、火焰急、物理几乎不转（castVfx.ts 风格表）
+      entry.spin += plan.circleSpin * entry.style.spinScale * dt * (0.8 + 0.4 * ws);
       entry.group.position.set(c.position.x, c.position.y + 0.06, c.position.z);
       entry.group.scale.setScalar(2.2 * plan.circleScale * ws);
       entry.ring.rotation.z = entry.spin;
@@ -1078,10 +1082,32 @@ export class SpellVfx {
        *   （speed 是标量），所以生在环上、给一个朝内的初速度。
        *   `drag` 调大让它们很快停在手上而不是穿过去。
        */
+      /**
+       * ★ 生成点与运动趋势按属性分化（castVfx.ts 的 WINDUP_STYLES）：
+       *   'hand-ring' —— 环绕手部收拢（奥术/冰霜/自然/物理，半径各异）
+       *   'ground'    —— 从脚下法阵升腾（火苗/暗影烟/毒泡，lift 为正往上冒）
+       *   'above'     —— 从头顶落下（神圣独占：方向即语义，lift 为负）
+       *   运动参数只动 gravity/drag/半径，**不碰 cadence/life/count** ——
+       *   那三个是细流池预算的输入（3 格数学），分属性改会按属性偶发地挤爆池子。
+       */
+      const style = entry.style;
       const ang = Math.random() * Math.PI * 2;
-      const r = plan.gatherRadius;
+      const r = plan.gatherRadius * style.radiusScale;
+      const spawn: Vec3Like = style.origin === 'ground'
+        ? {
+            x: c.position.x + Math.cos(ang) * (0.9 * ws),
+            y: c.position.y + 0.15,
+            z: c.position.z + Math.sin(ang) * (0.9 * ws),
+          }
+        : style.origin === 'above'
+          ? {
+              x: c.position.x + Math.cos(ang) * r,
+              y: c.position.y + c.height + 0.8,
+              z: c.position.z + Math.sin(ang) * r,
+            }
+          : { x: hand.x + Math.cos(ang) * r, y: hand.y + (Math.random() - 0.5) * 0.5, z: hand.z + Math.sin(ang) * r };
       this.emitBurst(
-        { x: hand.x + Math.cos(ang) * r, y: hand.y + (Math.random() - 0.5) * 0.5, z: hand.z + Math.sin(ang) * r },
+        spawn,
         av,
         {
           /**
@@ -1094,8 +1120,8 @@ export class SpellVfx {
           speed: 0.35,
           size: plan.size * ws,
           life: plan.life,
-          gravity: 0.6,
-          drag: 3.4,
+          gravity: style.lift,
+          drag: style.drag,
           stream: true,
         },
       );
@@ -1115,7 +1141,7 @@ export class SpellVfx {
    *   符文贴图缩在里面当纹理层；素材缺失时只剩外圈，**信息一点不丢**
    *   （与本文件其它退化路径同一条原则）。
    */
-  private ensureWindup(id: number, av: AttributeVisual): WindupEntry {
+  private ensureWindup(id: number, av: AttributeVisual, skillId?: string): WindupEntry {
     let entry = this.windups.get(id);
     if (entry) return entry;
 
@@ -1136,9 +1162,20 @@ export class SpellVfx {
     ring.renderOrder = 3;
     group.add(ring);
 
+    /**
+     * ★ 中央纹章按属性分化（用户实测反馈：施法过程八属性长得一模一样）。
+     *   'own' 直接复用该属性的主粒子贴图 —— 冰霜法阵中央是一朵大雪花、
+     *   火焰是火球、神圣是光斑、自然是旋叶，**零新增资产**；
+     *   奥术保留传统符文（它的 14.2 措辞就是「几何图形与符文」）；
+     *   物理无纹章 —— 拉弓抡刀的人脚下不该有奥术法阵，
+     *   「有人在蓄力」的告示由保留的外圈承担（14.4 关键元素，见 castVfx.ts）。
+     */
+    const style = windupStyleOf(av.particle, skillId);
     let runes: THREE.Mesh | undefined;
     let runeMat: THREE.MeshBasicMaterial | undefined;
-    const tex = this.particleTex.get('rune');
+    const tex = style.motif === 'none'
+      ? null
+      : this.particleTex.get(style.motif === 'rune' ? 'rune' : av.particle);
     if (tex) {
       runeMat = new THREE.MeshBasicMaterial({
         map: tex,
@@ -1149,7 +1186,8 @@ export class SpellVfx {
         side: THREE.DoubleSide,
         blending: THREE.AdditiveBlending,
       });
-      runes = new THREE.Mesh(new THREE.PlaneGeometry(1.55, 1.55), runeMat);
+      const side = 1.55 * style.motifScale;
+      runes = new THREE.Mesh(new THREE.PlaneGeometry(side, side), runeMat);
       runes.renderOrder = 3;
       group.add(runes);
     }
@@ -1159,7 +1197,7 @@ export class SpellVfx {
       group, ring, ringMat,
       ...(runes ? { runes } : {}),
       ...(runeMat ? { runeMat } : {}),
-      visual: av, timer: 0, spin: 0, lastProgress: 0, lastPos: { x: 0, y: 0, z: 0 },
+      visual: av, style, timer: 0, spin: 0, lastProgress: 0, lastPos: { x: 0, y: 0, z: 0 },
     };
     this.windups.set(id, entry);
     return entry;
