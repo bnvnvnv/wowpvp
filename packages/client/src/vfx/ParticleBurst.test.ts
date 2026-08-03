@@ -14,7 +14,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { BurstPool } from './ParticleBurst.js';
+import { BurstPool, popAlpha, popSize } from './ParticleBurst.js';
 
 const opts = (count: number) => ({
   origin: { x: 0, y: 0, z: 0 },
@@ -76,5 +76,67 @@ describe('BurstPool 容量', () => {
     expect(events.activeCount).toBe(1);
     events.dispose();
     streams.dispose();
+  });
+});
+
+describe('popSize / popAlpha —— Q 版的「弹」在哪条通道上', () => {
+  const SAMPLES = Array.from({ length: 201 }, (_, i) => i / 200);
+
+  it('两条曲线都从 0 起、到 0 止（粒子不会突然出现或残留）', () => {
+    expect(popSize(0)).toBeCloseTo(0, 6);
+    expect(popSize(1)).toBeCloseTo(0, 6);
+    expect(popAlpha(0)).toBeCloseTo(0, 6);
+    expect(popAlpha(1)).toBeCloseTo(0, 6);
+  });
+
+  it('★★ 尺寸曲线**冲过 1**（这一下过冲就是 Q 版的识别特征）', () => {
+    const peak = Math.max(...SAMPLES.map(popSize));
+    expect(peak).toBeGreaterThan(1);
+    // 上限：冲太狠会糊屏，且撞粒子着色器 320 像素的 clamp
+    expect(peak).toBeLessThan(1.35);
+  });
+
+  it('★★ 不透明度曲线**恒不超过 1** —— 过冲接到 alpha 上会被截成平顶', () => {
+    for (const t of SAMPLES) {
+      expect(popAlpha(t)).toBeLessThanOrEqual(1);
+      expect(popAlpha(t)).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('★ 过冲出现在前半段 —— 读作「猛地炸开再松下来」而不是「结束前又胀一下」', () => {
+    let peakAt = 0;
+    let peak = -Infinity;
+    for (const t of SAMPLES) {
+      const v = popSize(t);
+      if (v > peak) { peak = v; peakAt = t; }
+    }
+    expect(peakAt).toBeLessThan(0.5);
+  });
+
+  it('尺寸曲线全程非负（负数会让粒子翻面）', () => {
+    for (const t of SAMPLES) expect(popSize(t)).toBeGreaterThanOrEqual(0);
+  });
+
+  /**
+   * ★★ 这条是拿一次**白写**换来的：第一版把过冲写成「在 sin 上叠一项」，
+   *   而 sin(πt) 要到 t=0.5 才够到 1、过冲项却必须在前段衰减掉 ——
+   *   两个窗口不重叠，实测峰值只有 1.0095，肉眼完全看不出来。
+   *   单测当时是绿的（峰值确实 >1），所以**只钉「峰值 >1」是不够的**，
+   *   必须同时钉「起手足够快」，否则这条曲线可以悄悄退化回 sin。
+   */
+  it('★★ 起手必须极快：t=0.05 时已胀到六成以上（远快于 sin）', () => {
+    expect(popSize(0.05)).toBeGreaterThan(0.6);
+    expect(popSize(0.05)).toBeGreaterThan(Math.sin(0.05 * Math.PI) * 3);
+  });
+
+  it('★ 峰值明显早于中点 —— 是「攻」不是「胀」', () => {
+    expect(popSize(0.22)).toBeGreaterThan(popSize(0.5));
+  });
+
+  it('定义域外被钳住，不产生 NaN', () => {
+    for (const t of [-1, -0.001, 1.001, 2, 1e9]) {
+      expect(Number.isFinite(popSize(t))).toBe(true);
+      expect(Number.isFinite(popAlpha(t))).toBe(true);
+    }
   });
 });

@@ -2,7 +2,8 @@
  * M12（14.2）：卡通风格的加法粒子爆发，有界池化。
  *
  * ★★ **可爱卡通的观感全在参数里，不在贴图里：**
- *   · 粒子**先胀后消**（`pop()` 从 0 弹到 1 再回落）—— 糖果般的「Q 弹」，不是写实衰减
+ *   · 粒子**先胀后消且带回弹**（`popSize()` 冲过 1 再收回）—— 糖果般的「Q 弹」，
+ *     不是写实衰减。不透明度走另一条不带过冲的曲线（`popAlpha()`），理由见那里
  *   · **双色**：一半 `primary` 核 + 一半 `secondary` 边，高饱和
  *   · 大而圆润的软点，加法混合发光
  *   由 `SpellVfx` 按属性喂不同的贴图与运动倾向（火/圣上浮、毒/尘下坠、自然/奥术带旋）。
@@ -70,8 +71,47 @@ export interface BurstOptions {
  */
 const MAX_PARTICLES = 48;
 
-/** 先胀后消：t∈[0,1] → 0→1→0，起手略大好让 pop 立刻可见 */
-const pop = (t: number): number => Math.sin(Math.min(1, Math.max(0, t)) * Math.PI);
+/**
+ * 不透明度曲线：先亮后灭，t∈[0,1] → 0→1→0。
+ *
+ * ★★ **这条曲线不许带 overshoot。** alpha 的物理上限就是 1，冲过头会被
+ *   截断成一段平顶 —— 观感上是「亮度卡住了一会儿」，不是「弹了一下」，
+ *   反而比原来更糊。回弹只属于尺寸通道，见 `popSize`。
+ */
+export const popAlpha = (t: number): number =>
+  Math.sin(Math.min(1, Math.max(0, t)) * Math.PI);
+
+/** 尺寸曲线的过冲峰值与到达峰值的时刻 */
+const POP_PEAK = 1.2;
+const POP_ATTACK = 0.22;
+
+/**
+ * 尺寸曲线：**猛攻 + 回落**的 Q 弹，t∈[0,1] → 0 →冲到 1.2→ 一路收回 → 0。
+ *
+ * ★★ Q 版基调（docs/10 偏差 #6）的核心识别特征就是这一下**过冲**：
+ *   写实风格里粒子胀到最大就该开始衰减，而卡通里它会先冲过头再收回来 ——
+ *   这是「弹性」在二维上唯一的表达方式。
+ *
+ * ★ 为什么值得单独写一条曲线：它是**零成本**的夸张 ——
+ *   不增加任何粒子、任何 drawcall、任何贴图，纯算术，
+ *   却让全部爆发（命中/释放/死亡/破盾/拖尾/地面/蓄力）一起有了弹性。
+ *
+ * ★★ **不要用「在 sin 上叠一个过冲项」的写法**（第一版就是那么写的）：
+ *   `sin(πt)` 要到 t=0.5 才够到 1，而过冲项必须在前段就衰减掉，
+ *   两者的窗口根本不重叠 —— 实测峰值只有 **1.0095**，
+ *   肉眼完全看不出来，等于白写。这里改成显式的两段：
+ *     · 前 22%：easeOutCubic 冲到 1.2（起手极快，一眼看见「炸开」）
+ *     · 后 78%：按 (1-u)^0.9 收回到 0（比线性慢，粒子不会一闪就没）
+ */
+export const popSize = (t: number): number => {
+  const x = Math.min(1, Math.max(0, t));
+  if (x < POP_ATTACK) {
+    const p = x / POP_ATTACK;
+    return POP_PEAK * (1 - (1 - p) ** 3); // easeOutCubic
+  }
+  const u = (x - POP_ATTACK) / (1 - POP_ATTACK);
+  return POP_PEAK * (1 - u) ** 0.9;
+};
 
 /**
  * 顶点着色器：per-particle 大小 + alpha + 颜色。
@@ -301,9 +341,9 @@ class Burst {
         continue;
       }
       const t = 1 - lf / this.maxLife[i]!;
-      const p = pop(t);
-      this.sizeAttr.array[i] = this.baseSize[i]! * (0.35 + 0.65 * p);
-      this.alphaAttr.array[i] = p * this.opacity;
+      // ★ 两条曲线：尺寸带回弹（Q 弹），不透明度不带（见 popAlpha 的注释）
+      this.sizeAttr.array[i] = this.baseSize[i]! * (0.35 + 0.65 * popSize(t));
+      this.alphaAttr.array[i] = popAlpha(t) * this.opacity;
     }
     this.posAttr.needsUpdate = true;
     this.sizeAttr.needsUpdate = true;
@@ -392,7 +432,9 @@ export class FlashPool {
       }
       const t = 1 - it.life / it.maxLife;
       // 只展开不回缩：刀光读作「划过」，回缩会读作「吸回去」
-      it.mat.opacity = pop(t);
+      // ★ 这里用 popAlpha（不带回弹）：闪光的 scale 是刻意的单向展开，
+      //   给它叠过冲会变成「弹回来一下」，正是上一行注释要避免的观感
+      it.mat.opacity = popAlpha(t);
       it.sprite.scale.setScalar(it.size * (0.55 + (it.grow - 0.55) * t));
     }
   }
