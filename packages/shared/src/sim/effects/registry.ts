@@ -19,6 +19,7 @@ import type { AuraStore } from '../aura.js';
 import type { CastingStore } from '../casting.js';
 import type { DrStore } from '../dr.js';
 import type { GroundArea, Trap } from '../groundArea.js';
+import type { MovementState } from '../movement.js';
 import type { ProjectileStore } from '../projectile.js';
 
 /**
@@ -89,6 +90,19 @@ export interface EffectContext {
    * 可选是因为纯效果测试（伤害、光环）不需要构造整个施法系统。
    */
   castingStore?: CastingStore;
+  /**
+   * 移动状态表（`tickWorld` 第 2 步在推进的那一张）。位移效果需要它。
+   *
+   * ★★ 不同步移动状态的位移是**死代码**：`tickWorld` 每 tick 都用
+   *   `MovementState` 的积分结果覆盖 `entity.position`，只写后者的话
+   *   下一 tick（50ms 后）就被抹回原地 —— 冲锋/闪现/击退/拉拽全部如此，
+   *   而且**所有断言都是绿的**，因为效果测试从不跑第二个 tick。
+   *
+   * 可选是因为纯效果测试不需要构造移动系统；没有条目的实体
+   * （位置由别处驱动，如试验场玩家）也仍然只写 `entity.position`，
+   * 由驱动方消费 `displaced` 事件自行同步。
+   */
+  movement?: Map<EntityId, MovementState>;
   /** 地面区域与陷阱容器 */
   groundAreas: GroundArea[];
   traps: Trap[];

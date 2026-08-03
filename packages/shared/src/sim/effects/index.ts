@@ -12,8 +12,10 @@ import type { DrStore } from '../dr.js';
 import type { GroundStore } from '../groundArea.js';
 import type { ProjectileStore } from '../projectile.js';
 import type { CastingStore } from '../casting.js';
+import type { MovementState } from '../movement.js';
 import type { World } from '../world.js';
 import type { Vec3 } from '../../math/vec3.js';
+import type { EntityId } from '../../types/ids.js';
 
 import './combat.js';
 import './displacement.js';
@@ -45,6 +47,8 @@ export interface ResolveOptions {
   groundPoint?: Vec3;
   /** 打断效果需要。不传则打断效果静默跳过 */
   castingStore?: CastingStore;
+  /** 位移效果需要（见 EffectContext.movement）。不传则位移只写 entity.position */
+  movement?: Map<EntityId, MovementState>;
   /** 周期跳结算（DoT/HoT/地面 tick）。见 EffectContext.periodic */
   periodic?: boolean;
 }
@@ -68,6 +72,7 @@ export const resolveEffects = (
     dr: opts.dr,
     projectiles: opts.projectiles,
     castingStore: opts.castingStore,
+    movement: opts.movement,
     groundAreas: opts.ground.areas,
     traps: opts.ground.traps,
     source: opts.source,

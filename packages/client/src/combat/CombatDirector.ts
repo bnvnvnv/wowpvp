@@ -420,6 +420,13 @@ export class CombatDirector {
     // ★ 请求已被 tick 消费，清空。没被消费的（例如实体已死）也一并丢弃 ——
     //   一个 tick 之前的施法意图不该在下一个 tick 复活
     this.pendingCasts.clear();
+    /**
+     * ★ 移动意图同理，**每 tick 重新表达**。此前只 set 不 clear：
+     *   实战模式关掉（再按 K）或假人中途被静音后，最后一帧的输入会永远留在
+     *   表里，tickWorld 按它把假人一直往一个方向推 —— 「关掉实战模式，
+     *   假人还在走」就是这个漏洞的样子。
+     */
+    this.frameInputs.clear();
 
     this.updateDummies();
     this.reviveInTestbed();

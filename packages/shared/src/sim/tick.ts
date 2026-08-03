@@ -268,6 +268,8 @@ export const tickWorld = (
         world: deps.world, auras: deps.auras, dr: deps.dr,
         projectiles: deps.projectiles, ground: deps.ground,
         castingStore: deps.casting,
+        // ★ 位移效果要写它才能不被下一 tick 的移动积分抹回（见 effects/displacement.ts）
+        movement: deps.movement,
         source, skillId,
         ...(groundPoint ? { groundPoint } : {}),
         ...(opts?.periodic ? { periodic: true } : {}),

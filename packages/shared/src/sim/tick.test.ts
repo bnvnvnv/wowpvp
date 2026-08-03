@@ -196,6 +196,36 @@ describe('tickWorld 基本推进', () => {
     tickWorld(deps(), DT);
     expect(player.position).toEqual(before);
   });
+
+  /**
+   * ★★ 位移必须在下一个 tick 之后还活着 —— 此前 `teleportTo()` 是死代码。
+   *
+   *   位移效果只写 `entity.position`、不同步 `MovementState`，而第 2 步
+   *   每 tick 都用移动积分的结果覆盖 `entity.position` —— 于是对一切**有移动
+   *   条目**的实体（联网玩家、实战模式假人），冲锋/闪现/击退/拉拽都会在
+   *   50ms 后被原样抹回。`effects.test.ts` 只结算一次、从不跑第二个 tick，
+   *   所以全绿 —— 又一根「两边都对、中间断了」的线。
+   *
+   *   ★ 触发条件必须带**输入**：第 2 步对没有输入的实体直接 continue，
+   *     连 position 都不碰 —— 只闪现不推 tick 的话 bug 根本不显形。
+   *     真实对局里客户端每 tick 都发输入（哪怕全零），所以真实场景必触发。
+   */
+  it('★★ 闪现在后续 tick 不被移动积分抹回（位移同步 MovementState）', () => {
+    movement.set(player.id, createMovementState(vec3(0, 0, 0)));
+    const blink = pickCastable(player, foe, (s) => s.effects.some((e) => e.kind === 'blinkForward'));
+    tickWorld(deps({ castRequests: new Map([[player.id, { skillId: blink.id }]]) }), DT);
+
+    const landed = { ...player.position };
+    expect(Math.hypot(landed.x, landed.z), '闪现本身要先生效（8 米）').toBeGreaterThan(5);
+    // 落点即移动状态：贴地、清速度、置 teleported（13.4 动画层依据）
+    expect(movement.get(player.id)?.teleported).toBe(true);
+
+    // 站着不动（但**有**输入条目）再跑 5 个 tick —— 位移必须活下来
+    inputs.set(player.id, { forward: 0, strafe: 0, jump: false, yaw: 0 });
+    for (let i = 0; i < 5; i++) tickWorld(deps(), DT);
+    expect(player.position.x).toBeCloseTo(landed.x, 3);
+    expect(player.position.z).toBeCloseTo(landed.z, 3);
+  });
 });
 
 // ════════════════════════════════════════════════════════════════

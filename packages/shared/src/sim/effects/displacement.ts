@@ -9,6 +9,7 @@
 
 import { clampDisplacement } from '../../math/geometry.js';
 import { addScaled, normalize2D, sub, yawToDir, type Vec3 } from '../../math/vec3.js';
+import { teleportTo } from '../movement.js';
 import { spawnColliding, spawnDelayedImpact } from '../projectile.js';
 import { asSkillId } from '../../types/ids.js';
 import type { CombatEntity } from '../entity.js';
@@ -20,8 +21,28 @@ import { registerEffect, type EffectContext } from './registry.js';
  */
 const moveTo = (ctx: EffectContext, entity: CombatEntity, to: Vec3, kind: string): void => {
   const landing = clampDisplacement(entity.position, to, entity.radius, ctx.world.obstacles);
-  entity.position = landing;
-  ctx.events.push({ t: 'displaced', targetId: entity.id, to: landing, kind });
+  /**
+   * ★★ 必须同步 `MovementState`，只写 `entity.position` 是**死代码**：
+   *   `tickWorld` 第 2 步每 tick 都用移动积分的结果覆盖 `entity.position`，
+   *   于是位移在下一 tick（50ms 后）被原样抹回 —— 冲锋/闪现/击退/拉拽
+   *   对一切**有移动条目**的实体（联网玩家、实战模式假人）从未真正生效过，
+   *   且没有任何断言站在断点上（效果测试从不跑第二个 tick）。
+   *
+   * `teleportTo()` 此前同样是零调用方 —— 它才是位移落点的正确收口：
+   *   贴地、清速度、置 `teleported` 标记（13.4 动画层据此不播高速跑步）。
+   *
+   * 没有移动条目的实体（试验场玩家，位置由场景驱动）仍走旧路径，
+   * 驱动方消费 `displaced` 事件自行同步 —— 事件里的 `to` 就是权威落点。
+   */
+  const prev = ctx.movement?.get(entity.id);
+  if (prev) {
+    const next = teleportTo(prev, landing, ctx.world.obstacles, entity.radius);
+    ctx.movement!.set(entity.id, next);
+    entity.position = next.position;
+  } else {
+    entity.position = landing;
+  }
+  ctx.events.push({ t: 'displaced', targetId: entity.id, to: entity.position, kind });
 };
 
 registerEffect('chargeTo', (ctx, e, targets) => {

@@ -16,6 +16,7 @@ import {
   distance2D,
   stepMovement,
   moveSpeedMultiplierOf,
+  teleportTo,
   testbed,
   TESTBED_SPAWN,
   type Aabb,
@@ -280,6 +281,18 @@ export class TestbedScene {
       }
       playCombatEvent(audio, audioDeps, ev);
       this.showCombatFeedback(ev);
+      /**
+       * ★★ 玩家被位移（击退/拉拽/冲锋落点）必须同步到 `this.move`。
+       *   试验场里玩家的移动状态由场景驱动、**不在** tickWorld 的 movement 表里，
+       *   所以 sim 侧的位移修复（effects/displacement.ts）覆盖不到它 ——
+       *   sim 只能写 `entity.position`，而本场景每帧又用 `this.move` 把它覆盖回去。
+       *   事件里的 `to` 就是 clamp 过的权威落点；`teleportTo` 负责贴地、清速度、
+       *   置 teleported 标记（13.4：动画层据此不播高速跑步）。
+       */
+      if (ev.t === 'displaced' && ev.targetId === this.combat.player.id) {
+        this.move = teleportTo(this.move, ev.to, this.obstacles);
+        this.prevPosition = { ...this.move.position };
+      }
       // ★ SpellVfx 只吃它声明的那几类（SpellVfxEvent）—— 收窄后网络场景也能喂同一个类
       if (
         ev.t === 'heal' || ev.t === 'auraApplied' ||
