@@ -49,6 +49,8 @@ import {
   asTeamId,
   getEntity,
   listEntities,
+  createMovementState,
+  decideBotAction,
   dirToYaw,
   normalize2D,
   sub,
@@ -190,6 +192,29 @@ export class CombatDirector {
    *   默认空集，试验场的 141 项验收行为不变。
    */
   readonly pausedDummyClasses = new Set<string>();
+
+  /**
+   * **实战模式**：假人不再站桩，改由 `decideBotAction()` 驱动 —— 会追、会走位、
+   * 会按自己的站位偏好拉距离。按 K 或 `?combat` 开启。
+   *
+   * ★★ **默认必须是 false。** 试验场是 M1–M9 共 141 项验收的载体，
+   *   其中大量脚本依赖假人**站在固定位置**（verify-m2 按 26 米外的法师算距离、
+   *   verify-m3 靠固定位置算视线）。让假人默认会走，等于用「更好玩」
+   *   换掉整张回归网 —— 那是本项目反复强调的「改回归网比改游戏风险高」。
+   *
+   * ★ 开启后假人**仍然**走与真人完全相同的输入通道（`inputs` + `castRequests`
+   *   → `tickWorld`），不直接改 world。这条与 docs/14 §M16b 的红线一致，
+   *   也是这套控制器日后能接到服务器侧当人机的前提。
+   */
+  combatMode = false;
+
+  /**
+   * 假人的移动状态。★ 只在实战模式下按需建立 —— `tickWorld` 只推进
+   * `movement` 里有条目的实体，没有条目就是站着不动，不需要额外开关。
+   */
+  private readonly dummyMovement = new Map<EntityId, MovementState>();
+  /** 决策用的随机源。★ 注入而不是直接 Math.random：与 sim 的确定性口径一致 */
+  private botRng: () => number = Math.random;
   /**
    * 战士假人已经「决定」打断、将在这个时刻按下拳击。
    *
@@ -271,7 +296,7 @@ export class CombatDirector {
     this.log.unshift({ time: this.world.time, text, kind });
     if (this.log.length > 40) this.log.pop();
   }
-  private info(t: string) { this.push(t, 'info'); }
+  info(t: string) { this.push(t, 'info'); }
 
   // ── 每 tick ─────────────────────────────────────────────────
 
@@ -506,8 +531,51 @@ export class CombatDirector {
     }
   }
 
+  /**
+   * 实战模式下的假人：由 `decideBotAction()` 驱动，走**与真人相同**的
+   * `inputs` + `castRequests` 通道。
+   *
+   * ★★ 与站桩模式的关键差别不只是「会动」，而是**它不作弊**：
+   *   不清冷却、不补资源、不直接写 yaw —— 全部由 sim 按真人的同一套规则结算。
+   *   站桩模式那三行豁免（`resources.set(max)` / `cooldowns.clear()` /
+   *   `gcdUntil = 0`）是**演示靶子专用**的，日后接到服务器当人机时绝不能带过去。
+   */
+  private updateCombatBots(): void {
+    for (const e of listEntities(this.world)) {
+      if (e.id === this.player.id || !e.alive) continue;
+      if (this.pausedDummyClasses.has(e.classId as string)) continue;
+
+      // 移动状态按需建立（没有条目 = tickWorld 不推进它 = 站着不动）
+      if (!this.dummyMovement.has(e.id)) {
+        const ms = createMovementState(e.position, e.yaw);
+        this.dummyMovement.set(e.id, ms);
+        this.movementStates.set(e.id, ms);
+      }
+
+      const action = decideBotAction({
+        world: this.world,
+        casting: this.store,
+        self: e,
+        foe: this.player,
+        rng: this.botRng,
+      });
+      this.frameInputs.set(e.id, action.move);
+      if (action.cast) {
+        const s = getSkill(action.cast.skillId);
+        // ★ 走同一个入口，不另开后门（见 requestCast 的注释）
+        if (s) this.requestCast(e, s, { ...(action.cast.targetId !== undefined
+          ? { targetId: action.cast.targetId } : {}) });
+      }
+    }
+  }
+
   /** 假人行为：牧师和法师反复读条，战士见缝插针打断你 */
   private updateDummies(): void {
+    // 实战模式：整段站桩脚本让位给控制器
+    if (this.combatMode) {
+      this.updateCombatBots();
+      return;
+    }
     for (const e of listEntities(this.world)) {
       if (e.id === this.player.id || !e.alive) continue;
       // M15：教学按环静音部分假人（见 pausedDummyClasses 注释）

@@ -158,9 +158,25 @@ priest 42.9% · paladin 28.6% · druid 21.4% · warrior 0.0%
 
 ## 16b 人机补位（小体量联机游戏的保命项）
 
-- `ArenaDirector` 已能脚本 AI 打整场（现用于观战演示）——
-  把同一套 AI 接到**服务器侧**：房间人数不足可「填充人机」开局、
-  掉线超时后由人机接管（重连令牌机制已在，接管要能被顶回）
+- ⚠️ **本条原先的前提是错的，已更正。** 原文写「`ArenaDirector` 已能脚本 AI
+  打整场（现用于观战演示）」—— 核实后：那个类**没有任何 AI 决策**（无施法、
+  无移动）、**不调 `tickWorld`**（自己手写了第二份 tick 顺序，且 `tickAuras`
+  的返回值被 `void t` 丢弃 → DoT/HoT 在那里根本不结算）、**全仓库零 import**。
+  它是死代码，**已于本轮删除**。按原计划「把它那套 AI 搬到服务器」会发现
+  没有东西可搬。
+- ✅ **决策层已提取**：真正能打整场的是 `scripts/balance-report.ts` 的 `think()`
+  （168 场确定性对局实证、全程走 `inputs` + `castRequests` 公共通道、唯一会移动），
+  现已提成 `packages/shared/src/ai/botController.ts`，试验场「实战模式」（按 K）
+  已经在用。提取后 `pnpm balance` 基线逐位不变（28.6pp / 33.3–61.9%）。
+- ⬜ 剩下的是**服务器侧接管**：房间人数不足「填充人机」开局、掉线超时接管。
+  接入点已探明：`MatchLoop.collectInputs()`（:243）目前只从 `deps.sessions()`
+  取输入，bot 需要一个假 Session（`SessionSocket` 只要三个成员）走完整协议栈，
+  外加一个 pre-tick 钩子（`MatchLoopDeps` 现在没有）。
+- ⚠️⚠️ **「掉线超时由人机接管」与规格书冲突，做之前必须先拍板。**
+  `docs/00-design-spec.md:706` 与 `server/src/room/reconnect.ts:9` 都写着
+  「超时 → 按淘汰处理，标准比赛**不由机器人接管**」，而且那个模块是**靠依赖的
+  缺失**表达这条规则的（它拿不到 World/CombatEntity，只产得出「淘汰这个人」）。
+  选项：① 改规格；② 把接管限定在非标准比赛（休闲 / 填充局）。**本轮未动它。**
 - ★ 红线：人机走与真人完全相同的输入通道（发 Input 消息进 tickWorld），
   **不允许**直接改 world —— 否则回放与反作弊边界全破
 - 判据：verify 脚本单人 + 3 人机打完一整场；人机不发任何

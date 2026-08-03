@@ -51,6 +51,11 @@ export const Action = {
   CycleUiScale: 'cycleUiScale',
   /** 11.4 观战：切换到下一个己方存活队友 */
   SpectateNext: 'spectateNext',
+  /**
+   * 试验场「实战模式」开关：假人从站桩切成会追会走位的人机。
+   * ★ 默认关 —— 141 项验收依赖假人站在固定位置，见 `CombatDirector.combatMode`
+   */
+  ToggleCombatMode: 'toggleCombatMode',
   /** M12：静音总开关 */
   ToggleMute: 'toggleMute',
 } as const;
@@ -88,6 +93,7 @@ export const DEFAULT_BINDINGS: Readonly<Record<Action, string>> = {
   [Action.CycleColorblind]: 'F3',
   [Action.CycleUiScale]: 'F4',
   [Action.SpectateNext]: 'KeyV',
+  [Action.ToggleCombatMode]: 'KeyK',
   [Action.ToggleMute]: 'KeyM',
 };
 

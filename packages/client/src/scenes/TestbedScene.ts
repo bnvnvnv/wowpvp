@@ -850,6 +850,18 @@ export class TestbedScene {
     if (input.pressed.has(Action.FlagInteract)) {
       this.ctf.interact(this.combat.player, this.combat.world.time);
     }
+    /**
+     * K：实战模式开关。假人从站桩切成会追、会走位的人机。
+     * ★ 默认关，且**只影响试验场的假人行为** —— 141 项验收依赖它们站在
+     *   固定位置（verify-m2 按 26 米外的法师算距离、verify-m3 靠固定位置算视线），
+     *   所以这必须是一个显式的手动开关，而不是新的默认行为。
+     */
+    if (input.pressed.has(Action.ToggleCombatMode)) {
+      this.combat.combatMode = !this.combat.combatMode;
+      this.combat.info(this.combat.combatMode
+        ? '实战模式：假人会追击与走位（再按 K 关闭）'
+        : '实战模式已关闭：假人回到站桩');
+    }
     if (input.pressed.has(Action.CycleQuality)) {
       const tier = this.quality.cycle();
       this.quality.applyToLight(this.sun);
