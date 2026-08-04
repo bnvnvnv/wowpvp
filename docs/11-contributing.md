@@ -152,7 +152,9 @@ registerEffect('stealBuff', (ctx, effect, targets) => { … });
 确实一次性、确实无法数据化的机制（例如德鲁伊野性冲锋按形态分三种位移），
 可以用 custom handler，但**必须在代码注释里写明为什么不能数据化**。
 
-当前所有 custom handler 及其原因登记在 [PROGRESS.md](PROGRESS.md) 的「技术债」一节。
+当前保留的 custom handler 及其原因登记在
+[15-debt-registry.md](15-debt-registry.md) 的「已拍板的决定」一节
+（历史脉络在 [PROGRESS.md](PROGRESS.md) 技术债 §1）。
 如果同一类 custom 出现了三次以上，说明 schema 缺一个正式 kind —— 请提炼它。
 
 ---
@@ -234,6 +236,9 @@ pnpm docs        # 若改了职业数据，重新生成检查表
 - [ ] 所有镜头震动幅度都过 `shakeAmplitude()`，没有第二个入口（docs/07 §1.9）
 - [ ] 更新了 [PROGRESS.md](PROGRESS.md)
 - [ ] 若完成了某条验收标准，更新了 [10-acceptance-tracking.md](10-acceptance-tracking.md)
+- [ ] **新引入的欠账登记进 [15-debt-registry.md](15-debt-registry.md)**（一行一债领 ID，
+      代码注释挂 `// DEBT(ID):`；还清的改状态列）—— 占位值、保守实现、
+      「写了没接线」、协议缺字段都算。**不要只写在注释或 PROGRESS 叙事里**
 - [ ] **没有用伪代码或占位图冒充完成**（附录A#7）
 
 ## 9. 代码风格
