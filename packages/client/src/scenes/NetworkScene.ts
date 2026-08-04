@@ -30,10 +30,16 @@ import {
   Targeting,
   createMovementState,
   getSkill,
+  loadoutViewFromSnapshot,
   needsGroundPlacement,
   resolveGroundPlacement,
   usesNoTarget,
+  type AllyEquipmentSnapshot,
+  type ArmorySnapshot,
+  type AwardView,
   type CombatEntity,
+  type DropSnapshot,
+  type MatchStatsRow,
   type EntityId,
   type GroundAreaSnapshot,
   type MapDef,
@@ -45,6 +51,9 @@ import {
   type TeamId,
 } from '@wowpvp/shared';
 
+import { ArsenalView, type Interactable } from '../arsenal/ArsenalView.js';
+import { ArsenalHud, type InteractPrompt } from '../hud/ArsenalHud.js';
+import { KillFeed } from '../hud/KillFeed.js';
 import { CameraController } from '../camera/CameraController.js';
 import { AnimationController } from '../entity/AnimationController.js';
 import { CharacterView } from '../entity/CharacterView.js';
@@ -196,6 +205,19 @@ export class NetworkScene {
   /** 最近一份快照里的投射物与地面区域（14.4/14.3 关键元素）*/
   private lastProjectiles: readonly ProjectileSnapshot[] = [];
   private lastGrounds: readonly GroundAreaSnapshot[] = [];
+  /**
+   * 10.2 掉落物 / 10.4 军械点的表现与 HUD。
+   * ★★ 在此之前联网客户端**看不到也碰不到**任何临时武装 —— 整个 M6 在
+   *   真实对局里是空的（规则全对、单测全绿、没有任何路径能触发）。
+   */
+  private readonly arsenalView = new ArsenalView();
+  private arsenalHud!: ArsenalHud;
+  /** 16a 击杀播报 + 死亡回顾 */
+  private killFeed!: KillFeed;
+  private lastDrops: readonly DropSnapshot[] = [];
+  private lastArmories: readonly ArmorySnapshot[] = [];
+  /** 正在拾取（收到 PickupResult 或自己移动时结束）*/
+  private pickingUp = false;
   /** 场景经过的总时间，驱动标记动画 */
   private elapsed = 0;
 
@@ -245,6 +267,12 @@ export class NetworkScene {
     this.scene.add(this.targetRing.group);
     // 5.5 瞄准指示器（关键 UI，不受 art 门禁）
     this.scene.add(this.groundIndicator.group, this.directionIndicator.group);
+    /**
+     * 10.2 / 10.4 军械表现。★ **不受 `art` 门禁** —— 掉落物与军械箱的
+     * 光柱是玩法信息（10.4 要求它们出现），不是美术层。`?art=off` 下的
+     * 回归路径同样要能抢装备，否则 M6 的验收在那条路径上无从谈起。
+     */
+    this.scene.add(this.arsenalView.group);
     // 14.2 特效层：与试验场同一门禁、同一实现
     if (this.art) {
       this.spellVfx = new SpellVfx();
@@ -260,6 +288,25 @@ export class NetworkScene {
     this.cam = new CameraController(canvas.clientWidth / canvas.clientHeight);
     this.input = new InputManager(canvas);
     this.hud = new CombatHud(canvas.parentElement ?? document.body);
+    // 10.4 / 10.5 的交互 HUD。★ 与 CombatHud 同一个容器，继承 17.2 的界面缩放
+    this.arsenalHud = new ArsenalHud(canvas.parentElement ?? document.body);
+    this.arsenalHud.onChoose = (armoryId, choice) =>
+      this.conn.send({ t: 'ChooseArsenal', armoryId, choice });
+    // 16a 击杀播报与死亡回顾。★ 名字从快照查 —— 本类不持有任何战斗状态
+    this.killFeed = new KillFeed(canvas.parentElement ?? document.body);
+    this.killFeed.nameOf = (id) =>
+      this.lastEntities.find((e) => (e.id as number) === id)?.name;
+    /**
+     * 连杀升调：同一个音效按连杀数提速 —— 「升调」用 `rate` 而不是换音效，
+     * 因为素材里**没有**一组连杀音（盘里只有 ui_arena_loss，连 win 都没有）。
+     * ★ 不编一个不存在的资源 id：那会变成一次静默的加载失败。
+     */
+    this.killFeed.onStreak = (_name, streak) =>
+      audio.play('ui_masterwork', {
+        group: 'ui',
+        volume: Math.min(1, 0.45 + streak * 0.1),
+        rate: Math.min(1.6, 1 + (streak - 2) * 0.12),
+      });
     /**
      * 17.2：联网场景此前**从不加载**持久化的可访问性设置（只有试验场加载）——
      * 色盲模式/关伤害数字在联网对局里每次都回到默认。打击感改造顺手补上：
@@ -469,11 +516,15 @@ export class NetworkScene {
         // 14.4 投射物 / 14.3 地面区域：留给 draw 里的 spellVfx.frame 消费
         this.lastProjectiles = msg.projectiles;
         this.lastGrounds = msg.grounds;
+        // 10.2 / 10.4：军械数据留给 draw 里的 arsenalView 消费
+        this.lastDrops = msg.drops;
+        this.lastArmories = msg.armories;
         this.selfTeam = msg.entities.find((e) => e.id === msg.you)?.team ?? this.selfTeam;
         this.view.ingest(
           {
             tick: msg.tick, you: msg.you, entities: msg.entities,
-            projectiles: msg.projectiles, grounds: msg.grounds, match: msg.match,
+            projectiles: msg.projectiles, grounds: msg.grounds,
+            drops: msg.drops, armories: msg.armories, match: msg.match,
           },
           msg.time,
         );
@@ -499,6 +550,27 @@ export class NetworkScene {
       case 'Rejected':
         // ★ 拒绝要让玩家看得见，否则「按了没反应」是最难查的一类问题
         this.view.push(`${msg.what} 被拒绝：${msg.reason}`, 'fail');
+        /**
+         * 10.2「交互时提示『职业不匹配』」——**在人眼看的地方**提示。
+         * 战斗日志在屏幕角落，而玩家此刻正盯着脚下那件装备。
+         */
+        if (msg.what === 'InteractStart' || msg.what === 'OpenArmory' || msg.what === 'ChooseArsenal') {
+          this.arsenalHud.toast(msg.reason, this.serverTime);
+          this.pickingUp = false;
+        }
+        break;
+
+      /** 10.4：军械箱的三选一。★ 这是私信，只有打开者会收到 */
+      case 'ArsenalOffer':
+        this.arsenalHud.showOffer({ armoryId: msg.armoryId, options: msg.options });
+        audio.play('ui_click', { group: 'ui', volume: 0.5 });
+        break;
+
+      /** 10.5：拾取的明确成败反馈（含「被别人抢先拿走了」）*/
+      case 'PickupResult':
+        this.pickingUp = false;
+        this.arsenalHud.endPickup(msg.ok, msg.reason, this.serverTime);
+        if (msg.ok) audio.play('ui_click', { group: 'ui', volume: 0.6 });
         break;
 
       // 战斗事件 → 战斗日志。★ 与试验场同一套文案由 HUD 渲染
@@ -521,6 +593,20 @@ export class NetworkScene {
           targetMaxHealth: this.lastEntities.find((e) => e.id === msg.targetId)?.maxHealth,
         });
         this.view.push(`${this.nameOf(msg.sourceId)} → ${this.nameOf(msg.targetId)} ${msg.amount} 点伤害`, 'ok');
+        /**
+         * 16a 死亡回顾的原料。★ 只记打到**自己**身上的 —— 12v12 里全场
+         * 伤害流会把这个数组变成内存黑洞，而回顾要回答的只有「我怎么死的」。
+         * ⚠️ 协议里没有技能名（`Damage` 只带学派），所以这里用学派兜底 ——
+         *    不编一个技能名出来。要真名得给协议加 skillId，那是另一笔债。
+         */
+        if (msg.targetId === this.selfId) {
+          this.killFeed.noteIncoming(this.serverTime, {
+            sourceId: msg.sourceId,
+            amount: msg.amount,
+            crit: msg.crit === true,
+            skillName: SCHOOL_NAMES[msg.school] ?? '伤害',
+          });
+        }
         break;
       }
       case 'Heal': {
@@ -549,6 +635,14 @@ export class NetworkScene {
           distance: this.audioDistance(msg.entityId).distance,
         });
         this.view.push(`${this.nameOf(msg.entityId)} 被击杀`, 'interrupt');
+        // 16a 击杀播报 + 连杀。★ killerId 可空是协议的事实（验收 #5），如实写「阵亡」
+        this.killFeed.pushKill(
+          this.serverTime, msg.killerId,
+          msg.killerId === undefined ? undefined : this.nameOf(msg.killerId),
+          msg.entityId, this.nameOf(msg.entityId),
+        );
+        // 16a 死亡回顾：只在**自己**死的时候摊开
+        if (msg.entityId === this.selfId) this.killFeed.showRecap(this.serverTime);
         break;
       }
       case 'CastFailed':
@@ -633,6 +727,11 @@ export class NetworkScene {
         }
         break;
 
+      /** 16a 战后统计。★ 场景只负责转交给上层（大厅的结算页在渲染它）*/
+      case 'MatchStats':
+        this.onMatchStats?.(msg.rows, msg.awards);
+        break;
+
       case 'MatchEnd': {
         /**
          * M13：对局结束就停手 —— 服务器紧接着会把 session 放回 Room 阶段，
@@ -647,6 +746,7 @@ export class NetworkScene {
             : `对局结束：${msg.winner === TEAM_RED ? '红方' : '蓝方'}获胜`,
           'interrupt',
         );
+        this.celebrate(msg.winner);
         break;
       }
 
@@ -731,6 +831,115 @@ export class NetworkScene {
     if (input.pressed.has(Action.CancelCast) && ev.type !== 'cancel') {
       this.conn.send({ t: 'CancelCast' });
     }
+
+    this.applyArsenalInput(input);
+  }
+
+  /**
+   * 10.4 / 10.5 / 10.7 的按键。
+   *
+   * ★★ **交互键只有一个**（`Action.FlagInteract`，默认 G）。12.1 的拔旗与
+   *   10.5 的拾取/开箱共用它，由客户端按距离消歧后发出**明确的**目标
+   *   （`InteractTarget` 可辨识联合）。此前协议只有一个 `entityId`，
+   *   服务器只能「先试旗帜、失败了再当掉落」地猜 —— 站在旗边捡装备会猜错。
+   *
+   * ★ 夺旗图上没有军械点（12.x 首版关闭临时装备），竞技场上没有旗 ——
+   *   所以两者事实上不会同时出现在 2.2 米内。即便如此仍然显式消歧，
+   *   而不是依赖那个「碰巧不会撞车」的事实。
+   */
+  private applyArsenalInput(input: FrameInput): void {
+    // 三选一面板开着时，Esc 关掉它（不消耗读条取消 —— 那条在上面已经处理过）
+    if (this.arsenalHud.offerOpen && input.pressed.has(Action.CancelCast)) {
+      this.arsenalHud.closeOffer();
+    }
+
+    if (input.pressed.has(Action.FlagInteract)) {
+      const me = this.predictor?.position;
+      const near = me ? this.arsenalView.nearestInteractable(me) : undefined;
+      if (near?.kind === 'armory') {
+        this.conn.send({ t: 'OpenArmory', armoryId: near.armory.id });
+      } else if (near?.kind === 'drop') {
+        this.conn.send({ t: 'InteractStart', target: { kind: 'drop', dropId: near.drop.id } });
+        this.arsenalHud.beginPickup(this.serverTime);
+        this.pickingUp = true;
+      } else {
+        // 附近没有军械物 → 这一按是冲着旗帜去的（竞技场里服务器会回拒绝）
+        this.conn.send({ t: 'InteractStart', target: { kind: 'flag' } });
+      }
+    }
+
+    /**
+     * 10.5：移动会中断拾取。客户端**主动**发一条取消，而不是等服务器自己发现 ——
+     * 服务器当然也会判（`tickPickups` 的 moved 分支），但那要等下一 tick，
+     * 而玩家已经在动了。两边都判是对的：客户端为了手感，服务器为了权威。
+     */
+    if (this.pickingUp && (input.forward !== 0 || input.strafe !== 0 || input.jump)) {
+      this.conn.send({ t: 'InteractCancel' });
+      this.arsenalHud.endPickup(false, '移动中断了拾取', this.serverTime);
+      this.pickingUp = false;
+    }
+
+    // 10.7 换装：B 键在备用武器之间循环
+    if (input.pressed.has(Action.CycleWeapon)) {
+      const eq = this.selfEquipment();
+      if (eq && eq.spareWeaponIds.length > 0) {
+        const slot = this.nextWeaponSlot(eq);
+        this.conn.send({ t: 'SwapWeapon', slot });
+      }
+    }
+
+    // 10.1 使用增益道具
+    if (input.pressed.has(Action.UseConsumable1)) this.conn.send({ t: 'UseConsumable', slot: 0 });
+    if (input.pressed.has(Action.UseConsumable2)) this.conn.send({ t: 'UseConsumable', slot: 1 });
+  }
+
+  /**
+   * 16a 胜利庆祝：赢方集体 Cheer + 胜负音。
+   *
+   * ★ 模型自带的 `Cheer` 片段**至今零调用方** —— 零素材成本的一项。
+   * ★ 平局两边都不庆祝：那不是胜利。如实不播比「都播一下」诚实。
+   */
+  private celebrate(winner: TeamId | 'draw'): void {
+    this.killFeed.hide();
+    if (winner === 'draw') {
+      audio.play('ui_arena_loss', { group: 'ui', volume: 0.6 });
+      return;
+    }
+    /**
+     * ★ 盘里**有** `ui_arena_loss`，**没有** `ui_arena_win` ——
+     *   胜利用 `ui_achievement` 顶上，而不是写一个不存在的 `ui_arena_win`
+     *   （那会是一次静默的加载失败：没有声音，也没有报错）。
+     */
+    const won = this.selfTeam === winner;
+    audio.play(won ? 'ui_achievement' : 'ui_arena_loss', { group: 'ui', volume: 0.7 });
+
+    for (const e of this.lastEntities) {
+      if (e.team !== winner || !e.alive) continue;
+      this.views.get(e.id as number)?.playCheer();
+    }
+  }
+
+  /** 16a：战后统计转交给上层（大厅结算页）。由 LobbyShell 注入 */
+  onMatchStats: ((rows: readonly MatchStatsRow[], awards: readonly AwardView[]) => void) | undefined;
+
+  /** 自己的装备快照（10.6 完整视图 —— 只有自己和队友有） */
+  private selfEquipment(): AllyEquipmentSnapshot | undefined {
+    const me = this.lastEntities.find((e) => e.id === this.selfId);
+    const eq = me?.equipment;
+    // ★ 用「有没有备用装备字段」判别联合的哪一支 —— 敌人视图里根本没有它
+    return eq && 'spareWeaponIds' in eq ? eq : undefined;
+  }
+
+  /**
+   * B 键循环到的下一件备用武器的槽位。
+   *
+   * ★ 协议的 `SwapWeapon.slot` 索引的是 **`spareWeapons`**（见 `MatchLoop`
+   *   的 Swap 分支），不是 `allWeapons` —— 两者差一个默认武器，
+   *   传错的表现是「按 B 换成了另一件」而不是报错。
+   */
+  private nextWeaponSlot(eq: AllyEquipmentSnapshot): number {
+    const current = eq.spareWeaponIds.indexOf(eq.currentWeaponId);
+    return (current + 1) % eq.spareWeaponIds.length;
   }
 
   /**
@@ -965,9 +1174,31 @@ export class NetworkScene {
       grounds: this.lastGrounds,
     });
 
+    this.updateArsenal();
+    this.killFeed.render(this.serverTime);
+
     this.renderer.render(this.scene, this.cam.camera);
     // ★ 与试验场同一个调用 —— 只是喂的 CombatView 实现不同
     this.hud.update(this.view, this.cam.camera, this.canvas, dt);
+  }
+
+  /**
+   * 10.2 / 10.4 / 10.5 / 15.3 每帧刷新：3D 表现 + 交互提示 + 装备栏。
+   *
+   * ★ 装备栏走 `loadoutViewFromSnapshot()` → **与试验场同一个 `LoadoutPanel`**。
+   *   照着快照另写一个装备栏，就会重演「同一件事两份实现」那类分叉
+   *   （护盾判据曾经分叉过一次，代价是联网侧四态少画两态）。
+   */
+  private updateArsenal(): void {
+    this.arsenalView.update(this.lastDrops, this.lastArmories, this.serverTime, this.elapsed);
+
+    const me = this.predictor?.position;
+    const near = me ? this.arsenalView.nearestInteractable(me) : undefined;
+    this.arsenalHud.render(near ? promptFor(near) : undefined, this.serverTime);
+
+    const eq = this.selfEquipment();
+    if (eq) this.hud.loadout.render(loadoutViewFromSnapshot(eq, this.serverTime), this.serverTime);
+    else this.hud.loadout.hide();
   }
 
   /**
@@ -1201,3 +1432,41 @@ export class NetworkScene {
     this.scene.add(this.sun);
   }
 }
+
+/**
+ * 把「脚下最近的可交互物」翻成一句人话。
+ *
+ * ★ 10.2 要求的提示是**两层**：这是什么（能不能拿）+ 为什么拿不了。
+ *   合成一句「无法拾取」会把后者丢掉，而后者才是玩家下一步的依据
+ *   （「职业不匹配」＝换个人来抢；「道具已满」＝先用掉一个）。
+ * ★ 拿不走时提示**照常显示**，只是变暗 —— 10.2「看得到掉落物和所属职业」。
+ */
+const promptFor = (near: Interactable): InteractPrompt => {
+  if (near.kind === 'armory') {
+    return { text: '按 G 打开军械箱', enabled: true };
+  }
+  const d = near.drop;
+  return {
+    text: `按 G 拾取 ${d.itemName}`,
+    ...(d.pickable ? {} : { hint: `${d.ownerClassName}专用 —— 你拿不走` }),
+    enabled: d.pickable,
+  };
+};
+
+/**
+ * 学派的中文名。
+ *
+ * ★ 死亡回顾用它兜底：协议的 `Damage` 只带 `school`，**不带技能 id**，
+ *   所以联网侧回顾不出「被寒冰箭打了」只能写「冰霜 240」。
+ *   要显示真名得给协议加一个 skillId —— 那是一笔独立的债，
+ *   这里如实用学派，不编一个技能名出来。
+ */
+const SCHOOL_NAMES: Readonly<Record<string, string>> = {
+  physical: '物理',
+  arcane: '奥术',
+  fire: '火焰',
+  frost: '冰霜',
+  nature: '自然',
+  shadow: '暗影',
+  holy: '神圣',
+};

@@ -11,6 +11,7 @@ import { GEOMETRY, MOVE, RANGE } from '@wowpvp/shared';
 import { probeIconAssets } from './hud/skillIcon.js';
 import { artEnabled } from './settings/artMode.js';
 import { TestbedScene, type DebugInfo } from './scenes/TestbedScene.js';
+import { TESTBED_STAGE, TUTORIAL_STAGE } from './scenes/stages.js';
 
 // M12：探测素材目录是否可用。不 await —— 场景启动不等它，
 // 探测成功后下一次 HUD 重建（≤50ms）自然切到真实图标。
@@ -164,7 +165,17 @@ if (room !== null) {
   shell.mount();
 } else {
   const canvas = mountSceneDom();
-  const scene = new TestbedScene(canvas, makePaintStats(document.getElementById('stats')!));
+  /**
+   * ★ `?tutorial=on` 走**教学舞台**（自己的地图 + 自己的假人布置），
+   *   不带参数仍是验收用的试验场 —— 默认路径一个字节都没变。
+   *   为什么两台戏不能共用一个舞台，见 `scenes/stages.ts` 的文件头。
+   */
+  const tutorialMode = params.get('tutorial') === 'on';
+  const scene = new TestbedScene(
+    canvas,
+    makePaintStats(document.getElementById('stats')!),
+    tutorialMode ? TUTORIAL_STAGE : TESTBED_STAGE,
+  );
   // ★ 暴露给验收脚本读场景状态（M12 的美术自检、M9 的观战与可访问性）。
   //   与联网场景的 `__net` 是同一个用途
   (globalThis as Record<string, unknown>).__scene = scene;

@@ -121,14 +121,22 @@ const steerTo = async (
 const targetClass = async (page: Page, cls: string): Promise<void> => {
   // ★ Tab 锥是**镜头**前方 140°（5.3）。steerTo 转的是角色 —— 先 Home
   //   把镜头复位到角色背后，锥口才对着刚才走向的目标。
-  //   走位过冲时目标可能落在身后 —— 第二轮左键把镜头拖转半圈再扫一遍
-  for (let round = 0; round < 3; round++) {
+  //   走位过冲时目标可能落在身后 —— 后续几轮左键把镜头转过去再扫一遍。
+  //
+  // ⚠️ **扫描面要盖满一圈。** 原来只扫三个方向（复位 + 左右各 300px），
+  //   教学场地把三个假人挪近之后这就不够了：走位环结束时玩家的朝向
+  //   是不确定的，目标有时落在三个采样锥之外，于是这个**摆位辅助**
+  //   随机报「扫了三个镜头方向也没选中 mage」—— 看起来像教学坏了，
+  //   实际是脚本没找到目标。★ 它不是断言，是断言的前置动作，
+  //   加宽扫描面不会放松任何判据。
+  for (let round = 0; round < 6; round++) {
     if (round === 0) {
       await page.keyboard.press('Home');
     } else {
+      // 每轮再转一个身位，六轮累计转过一整圈有余
       await page.mouse.move(640, 400);
       await page.mouse.down();
-      await page.mouse.move(640 + 300 * (round === 1 ? 1 : -1), 400, { steps: 8 });
+      await page.mouse.move(640 + 320, 400, { steps: 8 });
       await page.mouse.up();
     }
     await sleep(150);
@@ -283,13 +291,20 @@ try {
     const mageDummy = await dummyByClass(page, 'mage');
     if (!mageDummy) throw new Error('找不到假人·法师');
     await steerTo(page, mageDummy, 24); // 法术反制射程 30，走到 24 米内
+    /**
+     * ★ **先选中一次，再等它读条。**
+     *   原来把 `targetClass()` 放在等待循环里，每次发现读条都重扫一遍镜头 ——
+     *   一次扫描要好几秒，15 秒预算被摆位吃掉，于是「没能在窗口内打断」
+     *   变成了偶发失败。目标选中之后是**持续**的（5.x：目标不会自己丢），
+     *   所以只需要选一次。这也更像真人的打法：先锁人，再等他起手。
+     */
+    await targetClass(page, 'mage');
     // 等它开始读条再按打断
     const end = Date.now() + 15000;
     let landed = false;
     while (Date.now() < end) {
       const casting = await evalWorld<boolean>(page, `combat.store.has(${mageDummy.id})`);
       if (casting) {
-        await targetClass(page, 'mage');
         await page.keyboard.press('Digit3');
         await sleep(400);
         const s = await status(page);

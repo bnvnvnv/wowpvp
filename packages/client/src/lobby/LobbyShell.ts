@@ -38,6 +38,7 @@ import { ArenaPreset } from '@wowpvp/shared';
 import { audio } from '../audio/AudioManager.js';
 import { skillIconHtml } from '../hud/skillIcon.js';
 import { Connection } from '../net/Connection.js';
+import { renderMatchSummary, type MatchSummaryData } from '../hud/MatchSummary.js';
 import { NetworkScene } from '../scenes/NetworkScene.js';
 import { clampUiScale, loadAccessibility } from '../settings/accessibility.js';
 import { artEnabled } from '../settings/artMode.js';
@@ -92,6 +93,10 @@ export class LobbyShell {
   private mode: GameMode | undefined;
   private mapId: MapId | undefined;
   private preset: ArenaPreset = ArenaPreset.Classic;
+  /** 房主 id。只有他能改规则预设（服务器校验，这里只决定按钮亮不亮）*/
+  private hostId: string | undefined;
+  /** 16a 战后统计。★ 每局开始时清空 —— 否则第二局会显示上一局的数据 */
+  private summary: MatchSummaryData | undefined;
   /** 点了建房/加房但连接还没通（或 JoinRoom 还没被答复）*/
   private pendingJoin: { code: string; creating: boolean } | undefined;
 
@@ -208,6 +213,21 @@ export class LobbyShell {
               <button class="lb-btn lb-small" data-action="team" data-team="spectator">观战</button>
               <button class="lb-btn lb-small" data-action="open-class" id="lb-class-btn">选择职业</button>
             </div>
+            <!--
+              10.1 规则预设。★ **没有这个开关，整个第 10 章不可达** ——
+              房间默认经典竞技场，而经典竞技场按验收 #28 不生成任何临时武装，
+              于是军械箱/掉落/换装/消耗品全都规则正确却永远不会出现在对局里。
+              服务器只接受房主的这条消息（校验在 sim 的 setPreset 里）。
+              ★ 注意这段是模板字符串里的 HTML —— 注释里不能出现反引号。
+            -->
+            <div class="lb-row">
+              <span class="lb-fine">规则：</span>
+              <button class="lb-btn lb-small" data-action="preset" data-preset="classic"
+                      id="lb-preset-classic">经典竞技场</button>
+              <button class="lb-btn lb-small" data-action="preset" data-preset="armed"
+                      id="lb-preset-armed">武装竞技场</button>
+              <span id="lb-preset-why" class="lb-fine"></span>
+            </div>
             <div class="lb-row">
               <button class="lb-btn lb-primary" data-action="ready" id="lb-ready-btn">准备</button>
               <span id="lb-ready-why" class="lb-fine"></span>
@@ -238,6 +258,9 @@ export class LobbyShell {
       <div class="lb-end" data-page="end" hidden>
         <div class="lb-panel lb-end-panel">
           <h2 id="lb-end-title"></h2>
+          <!-- 16a 结算面板：16.x 统计与 16.4 七项最佳玩家。
+               ★ 内容由 renderMatchSummary() 生成 —— 它是纯函数，可单测 -->
+          <div id="lb-summary"></div>
           <button class="lb-btn lb-primary" data-action="rematch">回到房间</button>
         </div>
       </div>
@@ -283,6 +306,7 @@ export class LobbyShell {
         this.mode = msg.mode;
         this.mapId = msg.mapId;
         this.preset = msg.preset;
+        this.hostId = msg.hostId;
         if (this.pendingJoin) {
           // JoinRoom 的成功答复就是第一条 RoomState（协议没有单独的 ack）
           this.pendingJoin = undefined;
@@ -313,6 +337,15 @@ export class LobbyShell {
         this.render();
         break;
       }
+
+      /**
+       * 16a：战后统计。★ 存下来等结算页渲染 —— `MatchStats` 在 `MatchEnd`
+       * **之前**到达（服务器刻意的顺序，见 MatchLoop.broadcastStats），
+       * 所以这里只能先存；`MatchEnd` 那一支切页时才画得出来。
+       */
+      case 'MatchStats':
+        this.summary = { rows: msg.rows, awards: msg.awards };
+        break;
 
       case 'Damage':
         this.damageSeen++; // verify:m13 的判据计数（复用 m10「双方都收到 Damage」）
@@ -372,6 +405,14 @@ export class LobbyShell {
         break;
       case 'team':
         this.conn.send({ t: 'SelectTeam', team: (btn?.dataset['team'] ?? 'spectator') as 'red' | 'blue' | 'spectator' });
+        break;
+      case 'preset':
+        // ★ 只发意图；「只有房主、只在开赛前」由服务器的 `setPreset` 校验，
+        //   被拒时会回一条 Rejected，走既有的 toast 路径
+        this.conn.send({
+          t: 'SetRoomPreset',
+          preset: btn?.dataset['preset'] === 'armed' ? ArenaPreset.Armed : ArenaPreset.Classic,
+        });
         break;
       case 'open-class':
         this.page = 'class';
@@ -446,6 +487,8 @@ export class LobbyShell {
   private onMatchStart(msg: Extract<ServerMessage, { t: 'MatchStart' }>): void {
     this.matchStarts++;
     this.destroyMatch(); // 观战/边缘态下可能还挂着上一场
+    // ★ 清掉上一局的统计 —— 不清的话第二局结束时会短暂显示上一局的表
+    this.summary = undefined;
 
     const root = document.createElement('div');
     root.id = 'match-root';
@@ -503,6 +546,12 @@ export class LobbyShell {
     if (this.page === 'end') {
       (this.root.querySelector('#lb-end-title') as HTMLElement).textContent =
         `对局结束 —— ${this.endText}`;
+      /**
+       * 16a 结算面板。★ 没收到统计时**如实留空**，不画一张全 0 的表 ——
+       * 全 0 的表看起来像「这局你什么都没做」，而真相是「数据没送到」。
+       */
+      (this.root.querySelector('#lb-summary') as HTMLElement).innerHTML =
+        this.summary ? renderMatchSummary(this.summary) : '';
     }
   }
 
@@ -539,6 +588,24 @@ export class LobbyShell {
     classBtn.textContent = self?.classId
       ? `职业：${getClass(self.classId)?.name ?? self.classId}`
       : '选择职业';
+
+    /**
+     * 10.1 规则预设。★ 非房主也**看得到**当前预设（它决定这局怎么打），
+     *   只是按钮点不动 —— 隐藏起来会让队友不知道自己在打哪一种。
+     */
+    const isHost = this.hostId !== undefined && self?.id === this.hostId;
+    for (const [id, preset] of [
+      ['#lb-preset-classic', ArenaPreset.Classic],
+      ['#lb-preset-armed', ArenaPreset.Armed],
+    ] as const) {
+      const el = this.root.querySelector(id) as HTMLButtonElement;
+      el.classList.toggle('lb-armed', this.preset === preset);
+      el.disabled = !isHost || this.roomStarted;
+    }
+    (this.root.querySelector('#lb-preset-why') as HTMLElement).textContent =
+      this.preset === ArenaPreset.Armed
+        ? '场上会刷军械箱与掉落：G 交互、B 换武器、Z/X 用道具'
+        : (isHost ? '纯职业对抗，不刷任何临时装备' : '由房主设置');
 
     const blocker = readyBlocker(self);
     const readyBtn = this.root.querySelector('#lb-ready-btn') as HTMLButtonElement;
@@ -582,6 +649,9 @@ export class LobbyShell {
         preset: this.preset,
         roundsToWin: 1,
         allowUnbalanced: false,
+        // ★ 这是给 `compositionHints()` 用的**只读**影子房间，不是真配置 ——
+        //   人机补位不影响阵容提示（3.2 的提示只看真人名单）
+        fillWithBots: false,
       },
       players: this.players.map((p) => ({
         id: p.id,

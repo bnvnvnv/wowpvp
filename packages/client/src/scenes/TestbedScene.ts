@@ -18,8 +18,6 @@ import {
   moveSpeedMultiplierOf,
   separationVelocity,
   teleportTo,
-  testbed,
-  TESTBED_SPAWN,
   type Aabb,
   type CombatEvent,
   type EntityId,
@@ -28,6 +26,7 @@ import {
 
 import { CameraController } from '../camera/CameraController.js';
 import { CombatDirector } from '../combat/CombatDirector.js';
+import { TESTBED_STAGE, type Stage } from './stages.js';
 import { TutorialDirector } from '../tutorial/TutorialDirector.js';
 import { TutorialHud } from '../tutorial/TutorialHud.js';
 import { AnimationController } from '../entity/AnimationController.js';
@@ -151,12 +150,21 @@ export class TestbedScene {
   /** 本帧的一次性鼠标事件，供瞄准状态机消费 */
   private clickFlags = { left: false, right: false };
 
+  /**
+   * 本场景演的是哪一套「舞台」：地图 + 出生点 + 假人布置。
+   *
+   * ★★ **只有数据分家，机制不分。** 渲染、HUD、输入、假人行为、
+   *   `botController` 决策全部共享 —— 复制一份就是「同一件事两份实现」。
+   *   分开的理由见 `combat/dummyLayouts.ts` 的文件头：验收要固定坐标、
+   *   教学要为教学服务，这两个约束天生冲突，而且从任何一侧都看不见对方。
+   */
+  private readonly stage: Stage;
   private move: MovementState;
-  private characterYaw = TESTBED_SPAWN.yaw;
+  private characterYaw: number;
   /** M15：新手教学（`?tutorial=on` 才有）。public —— verify:m15 经 `__scene.tutorial` 读状态 */
   readonly tutorial?: TutorialDirector;
   /** 上一帧与本帧的模拟位置，用于渲染插值 */
-  private prevPosition = { ...TESTBED_SPAWN.position };
+  private prevPosition: { x: number; y: number; z: number };
   private pendingInput: FrameInput | null = null;
   private lastLandingHeight: number | undefined;
   private debugVisible = false;
@@ -164,7 +172,12 @@ export class TestbedScene {
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly onDebug: (info: DebugInfo) => void,
+    /** 舞台。★ 默认是**验收用的试验场** —— 默认路径的行为逐字不变 */
+    stage: Stage = TESTBED_STAGE,
   ) {
+    this.stage = stage;
+    this.characterYaw = stage.spawn.yaw;
+    this.prevPosition = { ...stage.spawn.position };
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -184,8 +197,8 @@ export class TestbedScene {
     // 而「看清远处几何」正是这个试验场存在的意义
     this.scene.fog = new THREE.Fog(0x232a35, 90, 160);
 
-    this.obstacles = testbed.geometry;
-    this.mapRenderer = new MapRenderer(testbed, this.art);
+    this.obstacles = stage.map.geometry;
+    this.mapRenderer = new MapRenderer(stage.map, this.art);
     this.scene.add(this.mapRenderer.group);
     // M12：环境与地面材质。两者都是「加法」，失败即回落到 M11 的画面
     this.env = new Environment(this.renderer, this.scene);
@@ -193,8 +206,8 @@ export class TestbedScene {
       this.env.apply(this.quality.current, { preset: 'day' });
       void this.mapRenderer.applyGroundTexture('stone');
       // 地图装饰摆设（纯表现，sim 不读 —— 见 DecorRenderer 文件头）
-      if (testbed.decor) {
-        this.decorRenderer = new DecorRenderer(testbed.decor);
+      if (stage.map.decor) {
+        this.decorRenderer = new DecorRenderer(stage.map.decor);
         this.decorRenderer.applyQuality(this.quality.current);
         this.scene.add(this.decorRenderer.group);
       }
@@ -205,10 +218,12 @@ export class TestbedScene {
 
     this.cam = new CameraController(canvas.clientWidth / canvas.clientHeight);
     this.input = new InputManager(canvas);
-    this.move = createMovementState(TESTBED_SPAWN.position, TESTBED_SPAWN.yaw);
+    this.move = createMovementState(stage.spawn.position, stage.spawn.yaw);
 
-    // M2 战斗 + M3 瞄准
-    this.combat = new CombatDirector(this.obstacles, TESTBED_SPAWN.position, testbed.bounds);
+    // M2 战斗 + M3 瞄准。★ 假人布置由舞台决定（见 stage 字段的注释）
+    this.combat = new CombatDirector(
+      this.obstacles, stage.spawn.position, stage.map.bounds, stage.dummies,
+    );
     // ★ 必须用玩家的**真实实体 id**。这里曾经写死 0，而实体 id 从 1 开始分配 ——
     //   结果玩家身上的控制标记永远不会更新（一直是构造时的 visible=false）。
     //   编译通过、测试全绿，只有截图比对才看得出来

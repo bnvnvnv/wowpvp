@@ -19,7 +19,18 @@
  */
 
 import { asEntityId, asSkillId, asClassId, type EntityId } from '../types/ids.js';
+import { ArenaPreset, ArsenalChoice } from '../types/enums.js';
 import type { Vec3 } from '../math/vec3.js';
+
+/**
+ * 10.4 的三个横向选择。
+ * ★ 从枚举对象派生而不是手写数组 —— 将来加一个选择时，
+ *   忘记更新这里会变成「新选择永远被 codec 拒绝」这种静默失效。
+ */
+const ALL_ARSENAL_CHOICES: readonly ArsenalChoice[] = Object.values(ArsenalChoice);
+
+/** 10.1 的两个规则预设。同样从枚举派生，理由见上 */
+const ALL_ARENA_PRESETS: readonly ArenaPreset[] = Object.values(ArenaPreset);
 import {
   ALL_CLIENT_MESSAGE_KINDS,
   INPUT_LIMITS,
@@ -93,6 +104,17 @@ const parseEntityId = (v: unknown): EntityId | undefined => {
 };
 
 /**
+ * 掉落物 / 军械箱的编号。与实体 id 同样是从 1 开始的整数
+ * （`ArsenalStore.nextId`），但**刻意不复用 `parseEntityId`** ——
+ * 它们是三个互不相干的编号空间，共用一个解析器会诱使将来有人
+ * 把返回类型也统一成 `EntityId`，那正是本轮修掉的那个坑。
+ */
+const parseObjectId = (v: unknown): number | undefined => {
+  if (!isFiniteNumber(v) || !Number.isInteger(v) || v < 1) return undefined;
+  return v;
+};
+
+/**
  * 解析一条客户端消息。
  *
  * ⚠️ 调用方**还要**做两件本函数做不到的事：
@@ -150,6 +172,18 @@ export const parseClientMessage = (raw: string): ParseResult => {
       const ready = v['ready'];
       if (typeof ready !== 'boolean') return bad('ready 必须是布尔值');
       return { ok: true, msg: { t, ready } };
+    }
+
+    case 'SetFillWithBots': {
+      const enabled = v['enabled'];
+      if (typeof enabled !== 'boolean') return bad('enabled 必须是布尔值');
+      return { ok: true, msg: { t, enabled } };
+    }
+
+    case 'SetRoomPreset': {
+      const preset = v['preset'];
+      if (!(ALL_ARENA_PRESETS as readonly unknown[]).includes(preset)) return bad('preset 无效');
+      return { ok: true, msg: { t, preset: preset as ArenaPreset } };
     }
 
     case 'Reconnect': {
@@ -245,9 +279,36 @@ export const parseClientMessage = (raw: string): ParseResult => {
     }
 
     case 'InteractStart': {
-      const entityId = parseEntityId(v['entityId']);
-      if (entityId === undefined) return bad('entityId 无效');
-      return { ok: true, msg: { t, entityId } };
+      const target = v['target'];
+      if (!isRecord(target)) return bad('target 无效');
+      if (target['kind'] === 'flag') return { ok: true, msg: { t, target: { kind: 'flag' } } };
+      if (target['kind'] === 'drop') {
+        const dropId = parseObjectId(target['dropId']);
+        if (dropId === undefined) return bad('dropId 无效');
+        return { ok: true, msg: { t, target: { kind: 'drop', dropId } } };
+      }
+      return bad('target.kind 无效');
+    }
+
+    case 'OpenArmory': {
+      const armoryId = parseObjectId(v['armoryId']);
+      if (armoryId === undefined) return bad('armoryId 无效');
+      return { ok: true, msg: { t, armoryId } };
+    }
+
+    case 'ChooseArsenal': {
+      const armoryId = parseObjectId(v['armoryId']);
+      if (armoryId === undefined) return bad('armoryId 无效');
+      const choice = v['choice'];
+      /**
+       * ★ 白名单校验而不是「是字符串就放行」：`ArsenalChoice` 只有三个成员，
+       *   放行任意字符串会让一个手写包在 sim 里走到「选项不存在」——
+       *   能work，但那把校验推给了业务层。不受信任输入在这里验完。
+       */
+      if (!(ALL_ARSENAL_CHOICES as readonly unknown[]).includes(choice)) {
+        return bad('choice 无效');
+      }
+      return { ok: true, msg: { t, armoryId, choice: choice as ArsenalChoice } };
     }
 
     case 'SpectateFollow': {

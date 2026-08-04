@@ -5,15 +5,21 @@
 import type { GameMode } from '../../types/enums.js';
 import type { ForbiddenVolume, MapDef } from './schema.js';
 import { testbed } from './testbed.js';
+import { tutorialMap } from './tutorial.js';
 import { arena2v2, arena3v3, arena5v5 } from './arena.js';
 import { ctfMap } from './ctf.js';
 
 export * from './schema.js';
 export { testbed, TESTBED_SPAWN } from './testbed.js';
+export {
+  tutorialMap, TUTORIAL_SPAWN, tutorialObstacles,
+  TUTORIAL_CLEAR_AHEAD, TUTORIAL_CORRIDOR_HALF_WIDTH,
+} from './tutorial.js';
 export { arena2v2, arena3v3, arena5v5, ARENA_MAPS, ARENA_SPECS } from './arena.js';
 export { ctfMap, routeLength, routeSeconds, graveyardSeesFlag, CTF_MAP_METRICS } from './ctf.js';
 
-export const ALL_MAPS: readonly MapDef[] = [testbed, arena2v2, arena3v3, arena5v5, ctfMap];
+export const ALL_MAPS: readonly MapDef[] =
+  [testbed, tutorialMap, arena2v2, arena3v3, arena5v5, ctfMap];
 
 export const MAP_BY_ID: ReadonlyMap<string, MapDef> = new Map(
   ALL_MAPS.map((m) => [m.id as string, m]),

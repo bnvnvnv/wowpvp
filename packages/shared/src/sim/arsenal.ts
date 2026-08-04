@@ -61,6 +61,22 @@ export interface Armory {
   role: 'primary' | 'side' | 'tactical';
   /** 已被谁打开（打开后进入冷却）*/
   openedBy?: EntityId;
+  /**
+   * 打开者已经选完三选一。
+   *
+   * ★ 与 `openedBy` 分开而不是「选完就清 openedBy」：后者会让箱子回到
+   *   「没人开过」的状态，于是第二个人可以再开一次同一个箱子 ——
+   *   10.4 的军械点是**争夺**目标，先到者独占这一轮。
+   */
+  claimed?: boolean;
+  /**
+   * 已经刷过货的那一轮的 `availableAt`。用来保证「一轮只刷一次」。
+   *
+   * ★ 存的是**轮次的时刻**而不是布尔值：布尔值在「刷新 → 被开 → 再刷新」
+   *   之间要人工复位，漏一次就永远不再刷货；存时刻则是自然幂等的
+   *   （`lastCycleAt < availableAt` 就是「新的一轮还没刷」）。
+   */
+  lastCycleAt?: number;
 }
 
 export interface ArsenalStore {
@@ -253,6 +269,180 @@ export const spawnDropsFromRoster = (
     spawned.push(drop);
   }
 
+  return spawned;
+};
+
+// ── 10.4 军械箱的开箱与领取 ──────────────────────────────────────
+
+/**
+ * 掉落物围绕军械点摆开的半径，米。
+ *
+ * ★ 必须明显小于 `RANGE.INTERACT`（2.2 米），否则站在箱子上够不到自己脚边的货。
+ */
+export const ARMORY_DROP_RING_RADIUS = 1.4;
+
+export type ArmoryOpenResult =
+  | { ok: true; armoryId: number; options: readonly ArsenalOption[] }
+  | { ok: false; reason: string };
+
+/**
+ * 10.4：打开一个中立军械箱。
+ *
+ * ★★ **它只产出「给这个人看的三个选项」，不产出装备。**
+ *   领取是 `chooseFromArmory()` 的事 —— 拆成两步是因为 10.4 的原文是
+ *   「被打开后，**只向打开者显示**其职业的三个横向选择」：显示与领取之间
+ *   隔着一次玩家决策，合成一步就没有「横向取舍」这个玩法了。
+ *
+ * ★ 打开即独占这一轮：`openedBy` 一旦有值，第二个人开同一个箱子会被拒 ——
+ *   10.4 的军械点是**争夺**目标，先到者得。
+ *
+ * ★ 打开的同时就把 `availableAt` 推到下一轮（10.4「固定、可预测的倒计时」），
+ *   所以「开了但没选」不会把箱子永久占住：下一轮由 `tickArsenal()` 复位。
+ */
+export const openArmory = (
+  entity: CombatEntity,
+  store: ArsenalStore,
+  armoryId: number,
+  now: number,
+): ArmoryOpenResult => {
+  // 验收 #28：经典竞技场不生成任何临时武装 —— 连开箱路径都不该存在
+  if (!store.enabled) return { ok: false, reason: '本模式没有临时武装' };
+
+  const armory = store.armories.find((a) => a.id === armoryId);
+  if (!armory) return { ok: false, reason: '军械箱不存在' };
+
+  if (!entity.alive) return { ok: false, reason: '已死亡' };
+  if (entity.flags.stunned) return { ok: false, reason: '无法行动' };
+  // 10.2：宠物、召唤物和幻象不能拾取、占用或阻挡道具
+  if (entity.isPet) return { ok: false, reason: '宠物不能使用军械箱' };
+
+  if (armory.availableAt > now) return { ok: false, reason: '军械箱尚未刷新' };
+  if (armory.openedBy !== undefined) return { ok: false, reason: '已经被打开了' };
+
+  // 10.5 的 2.2 米交互距离，与地面拾取同一个常量
+  if (distance2D(entity.position, armory.position) > RANGE.INTERACT) {
+    return { ok: false, reason: '距离太远' };
+  }
+
+  armory.openedBy = entity.id;
+  armory.availableAt = now + armory.respawnInterval;
+
+  return { ok: true, armoryId: armory.id, options: armoryOptionsFor(entity.classId) };
+};
+
+export type ArmoryClaimResult =
+  | { ok: true; option: ArsenalOption }
+  | { ok: false; reason: string };
+
+/**
+ * 10.4：从自己打开的军械箱里领走三选一中的一个。
+ *
+ * ★ **只有打开者能领**（`openedBy === entity.id`）—— 否则「先到者得」形同虚设。
+ * ★ 槽位满时**拒绝并给出理由**，不静默丢弃：10.5 要求「装备栏已满时先弹出对比，
+ *   玩家选择替换对象或取消」。首版只做到「明确告诉他满了」，
+ *   「选择替换对象」的对比 UI 未做（见 PROGRESS 的已知不足）。
+ * ★ 刻意**不再校验距离**：箱子已经被他打开、这一轮已经归他，
+ *   走开两步再决定不该被判失败 —— 10.4 只把「打开」写成了争夺动作。
+ */
+export const chooseFromArmory = (
+  entity: CombatEntity,
+  loadout: Loadout,
+  store: ArsenalStore,
+  armoryId: number,
+  choice: ArsenalChoice,
+): ArmoryClaimResult => {
+  const armory = store.armories.find((a) => a.id === armoryId);
+  if (!armory) return { ok: false, reason: '军械箱不存在' };
+  if (armory.openedBy !== entity.id) return { ok: false, reason: '这不是你打开的军械箱' };
+  if (armory.claimed) return { ok: false, reason: '这一轮已经领过了' };
+  if (!entity.alive) return { ok: false, reason: '已死亡' };
+
+  const option = armoryOptionsFor(entity.classId).find((o) => o.choice === choice);
+  if (!option) return { ok: false, reason: '选项不存在' };
+
+  // 10.6 槽位上限：先验后改，避免「扣了这一轮却什么都没拿到」
+  if (option.weaponId !== undefined) {
+    const check = canPickupWeapon(entity, loadout, option.weaponId);
+    if (!check.ok) return { ok: false, reason: check.hint };
+  }
+  if (option.armorId !== undefined) {
+    const check = canPickupArmor(entity, loadout, option.armorId);
+    if (!check.ok) return { ok: false, reason: check.hint };
+  }
+
+  armory.claimed = true;
+  if (option.weaponId !== undefined) addWeapon(loadout, option.weaponId);
+  if (option.armorId !== undefined) addArmor(loadout, option.armorId);
+
+  return { ok: true, option };
+};
+
+/**
+ * 让一个军械点开始新的一轮：复位开箱状态 + 刷出这一轮的实体掉落。
+ *
+ * ★ 掉落沿一个确定性的圆环摆开，不叠在同一个点上 ——
+ *   `spawnDropsFromRoster()` 把所有掉落都放在同一个坐标（它只收一个 position），
+ *   直接用会让 7 件东西重合成一件，玩家没法选择捡哪个。
+ *   角度按**下标**算而不是随机：回放与配平复现要求确定性。
+ */
+export const spawnArmoryCycle = (
+  store: ArsenalStore,
+  rosterClassIds: readonly ClassId[],
+  armory: Armory,
+  now: number,
+): GroundDrop[] => {
+  const spawned = spawnDropsFromRoster(store, rosterClassIds, armory.position, now);
+  const count = Math.max(1, spawned.length);
+  spawned.forEach((drop, i) => {
+    const angle = (i / count) * Math.PI * 2;
+    drop.position = {
+      x: armory.position.x + Math.cos(angle) * ARMORY_DROP_RING_RADIUS,
+      y: armory.position.y,
+      z: armory.position.z + Math.sin(angle) * ARMORY_DROP_RING_RADIUS,
+    };
+  });
+  return spawned;
+};
+
+/**
+ * 推进军械点。**每一轮只刷一次货。**
+ *
+ * ★★ 在此之前，`setupArmories()` / `spawnDropsFromRoster()` 在真实对局里
+ *   **一次都没有被调用过** —— 军械箱的规则、三选一、拾取全都写好了并有单测，
+ *   但服务器从不建军械点、也从不刷货，于是整个 M6 在联网局里是空的。
+ *   这是本仓库「规则写对了、没有人调用它」家族的又一员。
+ *
+ * ★ 新一轮会**清掉这个点上一轮没被捡走的货**（按 `ARMORY_DROP_RING_RADIUS`
+ *   的邻域判定）。依据是 10.4 的「固定、可预测的**补给点**」——
+ *   补给点刷新读作「这一轮的补给替换上一轮的」，而不是层层堆积：
+ *   5v5 有 5 个点、60 秒一轮，不清的话一局下来地上会有两百多件东西。
+ *   ⚠️ 规格书没有明说这一条，登记为 docs/10 待确认问题 Q15。
+ */
+export const tickArsenal = (
+  store: ArsenalStore,
+  rosterClassIds: readonly ClassId[],
+  now: number,
+): GroundDrop[] => {
+  if (!store.enabled) return [];
+
+  const spawned: GroundDrop[] = [];
+  for (const armory of store.armories) {
+    if (armory.availableAt > now) continue;
+    // 这一轮已经刷过了（`lastCycleAt` 存的是轮次时刻，见类型注释）
+    if (armory.lastCycleAt !== undefined && armory.lastCycleAt >= armory.availableAt) continue;
+
+    armory.lastCycleAt = armory.availableAt;
+    delete armory.openedBy;
+    delete armory.claimed;
+
+    // 上一轮的残货先清掉（见函数注释）。★ 只清这个点周围的，别的点不受影响
+    const clearRadius = ARMORY_DROP_RING_RADIUS * 1.5;
+    store.drops = store.drops.filter(
+      (d) => distance2D(d.position, armory.position) > clearRadius,
+    );
+
+    spawned.push(...spawnArmoryCycle(store, rosterClassIds, armory, now));
+  }
   return spawned;
 };
 
@@ -456,6 +646,11 @@ export const dropViewFor = (
 /** 2.1 / 10.10 / 验收 #37：回合结束清空全部临时武装 */
 export const clearArsenal = (store: ArsenalStore, pickups: PickupStore): void => {
   store.drops = [];
-  for (const a of store.armories) delete a.openedBy;
+  for (const a of store.armories) {
+    delete a.openedBy;
+    // ★ `claimed` 必须一起清 —— 只清 openedBy 会让「上一回合领过」永久留下，
+    //   而 10.10 要的是「下一回合恢复默认装备」，军械点也该回到未被领取的状态
+    delete a.claimed;
+  }
   pickups.clear();
 };

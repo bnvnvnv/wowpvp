@@ -140,7 +140,7 @@ describe('11.5 超时按淘汰处理', () => {
   it('★ 比赛中退出只标记断线，玩家仍留在房间里（死亡统计需要他）', () => {
     const room = createRoom('r', 'p1', {
       mode: GameMode.Arena3v3, mapId: arena3v3.id,
-      preset: ArenaPreset.Classic, roundsToWin: 1, allowUnbalanced: true,
+      preset: ArenaPreset.Classic, roundsToWin: 1, allowUnbalanced: true, fillWithBots: false,
     });
     for (const [id, slot] of [['p1', Slot.Red], ['p2', Slot.Blue]] as const) {
       joinRoom(room, id, id);
@@ -220,7 +220,7 @@ describe('房间连接状态与重连登记表配合', () => {
   it('重连后房间层的 connected 恢复为 true', () => {
     const room = createRoom('r', 'p1', {
       mode: GameMode.Arena3v3, mapId: arena3v3.id,
-      preset: ArenaPreset.Classic, roundsToWin: 1, allowUnbalanced: true,
+      preset: ArenaPreset.Classic, roundsToWin: 1, allowUnbalanced: true, fillWithBots: false,
     });
     joinRoom(room, 'p1', 'p1');
     selectSlot(room, 'p1', Slot.Red);

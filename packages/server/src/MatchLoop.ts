@@ -33,20 +33,26 @@ import {
   buildSpectatorSnapshot,
   cancelCast,
   cancelFlagInteract,
+  chooseFromArmory,
   distance2D,
   getWeapon,
   isVisibleTo,
   listEntities,
+  openArmory,
+  pickAwards,
   setHardTarget,
+  statsRows,
   stopSwing,
   tabTarget,
   tickDepsOf,
   tickWorld,
   toggleFocus,
+  type ArsenalChoice,
   type CastIntent,
   type CombatEntity,
   type CombatEvent,
   type EntityId,
+  type InteractTarget,
   type Match,
   type MovementInput,
   type ServerMessage,
@@ -66,8 +72,10 @@ export type MatchCommand =
   | { t: 'TabTarget'; reverse: boolean }
   | { t: 'CancelCast' }
   | { t: 'Swap'; kind: SwapKind; slot: number }
-  | { t: 'InteractStart'; dropId: number }
-  | { t: 'InteractCancel' };
+  | { t: 'InteractStart'; target: InteractTarget }
+  | { t: 'InteractCancel' }
+  | { t: 'OpenArmory'; armoryId: number }
+  | { t: 'ChooseArsenal'; armoryId: number; choice: ArsenalChoice };
 
 import { takeExpired, type ReconnectRegistry } from './room/reconnect.js';
 import type { Session } from './room/Session.js';
@@ -94,6 +102,16 @@ export interface MatchLoopDeps {
    */
   onEliminate: (playerId: string, reason: 'timeout' | 'left') => void;
   onEnd: (winner: TeamId | 'draw') => void;
+  /**
+   * 每 tick 开始前的钩子。人机（`BotDriver`）在这里产出这一 tick 的意图。
+   *
+   * ★★ **必须在 `collectInputs()` 之前**：人机发的是真的 `Input` 消息，
+   *   要进入本 tick 的队列就得赶在消费之前。放到 tick 之后的话，
+   *   每条意图都要等下一 tick 才生效 —— 人机会慢半拍，而且是抖动的半拍。
+   * ★ 它**只允许发消息**，不该碰 world。红线（人机走与真人相同的通道）
+   *   靠 `BotDriver` 那一侧的结构保证，见那个文件的文件头。
+   */
+  onPreTick?: () => void;
 }
 
 export class MatchLoop {
@@ -165,6 +183,8 @@ export class MatchLoop {
     this.tick++;
     const outbound: ServerMessage[] = [];
 
+    // ★ 人机在这里发出本 tick 的 Input/CastRequest（走完整协议栈，见 BotDriver）
+    this.deps.onPreTick?.();
     this.applyCommands();
     this.syncSwings();
     const inputs = this.collectInputs();
@@ -208,6 +228,21 @@ export class MatchLoop {
           targetIds: targets.map((t) => t.id),
         }),
         onEffects: (events) => { for (const ev of events) this.pushEvent(outbound, ev); },
+        /**
+         * 10.5「多人同时拾取只允许第一个完成者成功；其他人收到**明确失败反馈**」。
+         *
+         * ★ 私信而不是广播：谁捡到了什么属于 10.6 里「敌人看不到备用装备」
+         *   的同一类信息。★ 这个 sink 此前**没有任何服务器消费者** ——
+         *   `tickPickups` 一直在产出中断/完成事件，全部落地即消失。
+         */
+        onPickup: (ev) => {
+          this.sessionOfEntity(ev.entityId)?.send({
+            t: 'PickupResult',
+            dropId: ev.dropId,
+            ok: ev.result === 'completed',
+            ...(ev.result === 'completed' ? {} : { reason: pickupFailText(ev.result) }),
+          });
+        },
       },
     );
     this.pendingCasts.clear();
@@ -348,8 +383,38 @@ export class MatchLoop {
         }
 
         case 'InteractStart':
-          this.beginInteract(e, cmd.dropId);
+          this.beginInteract(playerId, e, cmd.target);
           break;
+
+        case 'OpenArmory': {
+          const r = openArmory(e, this.match.arsenal, cmd.armoryId, this.match.world.time);
+          if (r.ok) {
+            /**
+             * ★ 10.4「**只向打开者**显示其职业的三个横向选择」——
+             *   所以是 `sessionOf` 私信，不是 `outbound` 广播。
+             */
+            this.sessionOfEntity(e.id)?.send({
+              t: 'ArsenalOffer', armoryId: r.armoryId, options: r.options,
+            });
+          } else {
+            this.sessionOfEntity(e.id)?.send({ t: 'Rejected', what: 'OpenArmory', reason: r.reason });
+          }
+          break;
+        }
+
+        case 'ChooseArsenal': {
+          const loadout = this.match.loadouts.get(e.id);
+          if (!loadout) break;
+          const r = chooseFromArmory(e, loadout, this.match.arsenal, cmd.armoryId, cmd.choice);
+          if (!r.ok) {
+            this.sessionOfEntity(e.id)?.send({
+              t: 'Rejected', what: 'ChooseArsenal', reason: r.reason,
+            });
+          }
+          // ★ 成功不用回消息：装备栏是**快照**里的 `AllyEquipmentSnapshot`，
+          //   下一份快照自然带上新装备。再发一条「你拿到了」就是第二个真相源
+          break;
+        }
 
         case 'InteractCancel': {
           this.match.pickups.delete(e.id);
@@ -398,18 +463,22 @@ export class MatchLoop {
   }
 
   /**
-   * 交互：先试旗帜（靠距离），再试军械箱掉落（靠 id）。
+   * 交互。
    *
-   * ⚠️ **协议这里有个坑**：`InteractStart` 只带一个 `entityId`，
-   *    但旗帜**不是实体**（没有 EntityId），军械箱掉落用的是自己的 `dropId`。
-   *    所以这个字段实际在身兼两职。要干净的话得给协议加一个可辨识联合
-   *    （`{kind:'flag'|'drop'}`），那是改 protocol.ts 的事 ——
-   *    **记在这里，没有假装它是干净的。**
+   * ✅ **协议此前那个坑已经填了**：`InteractStart` 现在带一个可辨识联合
+   *   （`{kind:'flag'} | {kind:'drop', dropId}`），所以服务器不再需要
+   *   「先试旗帜、失败了再当成掉落 id」地猜玩家想干什么 ——
+   *   那种猜法在「站在旗边想捡脚下的装备」时会猜错，而且错得很安静。
+   *
+   * ★ 失败**一定要回话**：10.2 要求交互不匹配时提示、10.5 要求没抢到的人
+   *   收到明确失败反馈。此前 `beginPickup()` 的返回值在这里被直接丢弃，
+   *   于是联网局里「捡不起来」和「服务器没收到」在客户端看起来一模一样。
    */
-  private beginInteract(e: CombatEntity, dropId: number): void {
+  private beginInteract(playerId: string, e: CombatEntity, target: InteractTarget): void {
     const now = this.match.world.time;
 
-    if (this.match.ctf) {
+    if (target.kind === 'flag') {
+      if (!this.match.ctf) return;
       const { state, deps } = this.match.ctf;
       for (const flag of Object.values(state.flags)) {
         if (distance2D(e.position, flag.position) > INTERACT_RANGE) continue;
@@ -417,11 +486,19 @@ export class MatchLoop {
           (p) => deps.captureZoneContains(e.team, p));
         if (r.ok) return;
       }
+      this.sessionOf(playerId)?.send({ t: 'Rejected', what: 'InteractStart', reason: '附近没有可交互的旗帜' });
+      return;
     }
 
     const loadout = this.match.loadouts.get(e.id);
-    if (loadout) {
-      beginPickup(e, loadout, this.match.arsenal, this.match.pickups, dropId, now);
+    if (!loadout) return;
+    const r = beginPickup(e, loadout, this.match.arsenal, this.match.pickups, target.dropId, now);
+    if (!r.ok) {
+      // ★ 10.2：**物品不会消失** —— `beginPickup` 的失败路径里没有删除语句，
+      //   这里也只是转达理由，不碰地面状态
+      this.sessionOf(playerId)?.send({
+        t: 'PickupResult', dropId: target.dropId, ok: false, reason: r.reason,
+      });
     }
   }
 
@@ -596,6 +673,8 @@ export class MatchLoop {
       // 14.4 投射物主体 + 14.3 地面边界（traps 结构上不进快照，见 visibility.ts）
       projectiles: m.projectiles,
       ground: m.ground,
+      // 10.2 掉落物 + 10.4 军械点。★ 经典竞技场里这两个数组恒空（验收 #28）
+      arsenal: m.arsenal,
       ...(m.ctf ? { ctf: m.ctf.state } : {}),
     };
 
@@ -628,6 +707,8 @@ export class MatchLoop {
         entities: snapshot.entities,
         projectiles: snapshot.projectiles,
         grounds: snapshot.grounds,
+        drops: snapshot.drops,
+        armories: snapshot.armories,
         match: snapshot.match,
       });
     }
@@ -640,8 +721,44 @@ export class MatchLoop {
     if (!outcome) return;
     this.ended = true;
     this.stop();
+    this.broadcastStats();
     const winner = outcome.winner ?? 'draw';
     this.deps.onEnd(winner);
+  }
+
+  /**
+   * 16.x 战后统计 + 16.4 七项最佳玩家。
+   *
+   * ★★ **在此之前 `sim/stats.ts` 算好的东西没有任何出口。** 统计跑了整整
+   *   一局，`pickAwards()` 在网络层零调用方，然后随房间一起被丢掉 ——
+   *   联网玩家看到的只有一行「红方获胜」。
+   *
+   * ★ 在 `onEnd` **之前**发：`onEnd` 会把房间放回 Room 阶段并广播 RoomState，
+   *   客户端那时已经切走了战斗场景。顺序反了统计就会发给一个不再看它的页面。
+   * ★ 对局已经结束，所以不做任何裁剪 —— 这时没有什么还需要瞒着谁
+   *   （潜行者也已经不在场上了）。这是它能带完整名单的唯一依据。
+   */
+  private broadcastStats(): void {
+    const roster = [...this.match.stats.players.values()];
+    if (roster.length === 0) return;
+
+    const nameOf = (id: EntityId | undefined): string | undefined =>
+      id === undefined ? undefined : this.match.stats.players.get(id)?.name;
+
+    const msg: ServerMessage = {
+      t: 'MatchStats',
+      // ★ 投影走 sim 的 `statsRows()` —— 服务器不自己挑字段（见那个函数的注释）
+      rows: statsRows(this.match.stats),
+      awards: pickAwards(roster).map((a) => ({
+        award: a.award,
+        name: a.name,
+        ...(a.winner ? { winnerId: a.winner.entityId, winnerName: nameOf(a.winner.entityId) } : {}),
+        ...(a.parts
+          ? { parts: a.parts.map((p) => ({ dimension: p.dimension, share: p.normalized * p.weight })) }
+          : {}),
+      })),
+    };
+    for (const s of this.deps.sessions()) s.send(msg);
   }
 
   // ── 小工具 ────────────────────────────────────────────────────
@@ -651,13 +768,32 @@ export class MatchLoop {
     return id === undefined ? undefined : this.match.world.entities.get(id);
   }
 
-  private sessionOfEntity(entityId: EntityId): Session | undefined {
-    const playerId = this.match.playerOf.get(entityId);
-    if (playerId === undefined) return undefined;
+  private sessionOf(playerId: string): Session | undefined {
     for (const s of this.deps.sessions()) if (s.playerId === playerId) return s;
     return undefined;
   }
+
+  private sessionOfEntity(entityId: EntityId): Session | undefined {
+    const playerId = this.match.playerOf.get(entityId);
+    return playerId === undefined ? undefined : this.sessionOf(playerId);
+  }
 }
+
+/**
+ * 10.5 的中断原因转成给玩家看的话。
+ * ★ `taken` 与其余四条要分得开 —— 「被别人抢走了」是玩法信息（下次要抢快点），
+ *   「你动了」是操作信息（下次站住别动）。混成一句「拾取失败」两条都丢了。
+ */
+const pickupFailText = (reason: string): string => {
+  switch (reason) {
+    case 'taken': return '被别人抢先拿走了';
+    case 'moved': return '移动中断了拾取';
+    case 'stunned': return '被控制打断了拾取';
+    case 'forcedMove': return '被强制位移打断了拾取';
+    case 'death': return '死亡中断了拾取';
+    default: return '拾取被取消';
+  }
+};
 
 /** `CombatEvent.auraRemoved.reason` 是自由字符串，协议那边是闭集 */
 const removalReason = (

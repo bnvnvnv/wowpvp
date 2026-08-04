@@ -21,8 +21,11 @@ import {
   markReconnected,
   playersOn,
   resetForRematch,
+  botSeatsNeeded,
   selectClass,
   selectSlot,
+  setFillWithBots,
+  setPreset,
   setReady,
   startMatch,
   type Room,
@@ -36,6 +39,8 @@ const config = (over: Partial<Room['config']> = {}) => ({
   preset: ArenaPreset.Classic,
   roundsToWin: 1,
   allowUnbalanced: false,
+  // ★ 默认关 —— 与 `RoomConfig.fillWithBots` 的默认一致（docs/14 §16b）
+  fillWithBots: false,
   ...over,
 });
 
@@ -313,5 +318,82 @@ describe('队伍 id 映射', () => {
     const hints = compositionHints(room);
     const teams = new Set(hints.map((h) => h.team as number));
     for (const t of teams) expect([TEAM_RED as number, TEAM_BLUE as number]).toContain(t);
+  });
+});
+
+/**
+ * 3.1 房间设置的两个开关（10.1 规则预设、docs/14 §16b 人机补位）。
+ *
+ * ★ 这两条的重点都是**权限与默认值**，不是功能：
+ *   · 权限错了 → 任何人都能改别人的房间
+ *   · 默认值错了 → 两百多项验收赖以成立的初始条件被悄悄改掉
+ */
+describe('3.1 房间设置：规则预设与人机补位', () => {
+  beforeEach(() => {
+    room = createRoom('r-cfg', 'host', config());
+    joinRoom(room, 'host', '房主');
+    joinRoom(room, 'guest', '客人');
+  });
+
+  it('★ 房主改得动规则预设，非房主改不动', () => {
+    expect(setPreset(room, 'guest', ArenaPreset.Armed).ok).toBe(false);
+    expect(room.config.preset).toBe(ArenaPreset.Classic);
+
+    expect(setPreset(room, 'host', ArenaPreset.Armed).ok).toBe(true);
+    expect(room.config.preset).toBe(ArenaPreset.Armed);
+  });
+
+  it('★ 开赛后不能再改规则预设（与选阵营同一条线）', () => {
+    room.started = true;
+    expect(setPreset(room, 'host', ArenaPreset.Armed).ok).toBe(false);
+  });
+
+  it('★★ 人机补位**默认关** —— 它会改变开局时世界里有几个实体', () => {
+    expect(room.config.fillWithBots, '默认开会打掉两百多项验收赖以成立的初始条件').toBe(false);
+    expect(botSeatsNeeded(room), '没开就不该产生任何人机席位').toHaveLength(0);
+  });
+
+  it('★ 人机补位同样是房主专属、开赛前专属', () => {
+    expect(setFillWithBots(room, 'guest', true).ok).toBe(false);
+    expect(setFillWithBots(room, 'host', true).ok).toBe(true);
+    expect(room.config.fillWithBots).toBe(true);
+
+    room.started = true;
+    expect(setFillWithBots(room, 'host', false).ok).toBe(false);
+  });
+
+  it('★★ 开启后按「每队缺多少补多少」产出席位', () => {
+    setFillWithBots(room, 'host', true);
+    // 3v3：红队 1 人、蓝队 0 人 → 红缺 2、蓝缺 3
+    selectSlot(room, 'host', Slot.Red);
+
+    const seats = botSeatsNeeded(room);
+    const red = seats.find((s) => s.slot === Slot.Red);
+    const blue = seats.find((s) => s.slot === Slot.Blue);
+    expect(red?.count).toBe(2);
+    expect(blue?.count).toBe(3);
+  });
+
+  it('★ 队伍满了就不再补（不会补出超编的人机）', () => {
+    setFillWithBots(room, 'host', true);
+    room.config.mode = GameMode.Arena2v2;
+    selectSlot(room, 'host', Slot.Red);
+    selectSlot(room, 'guest', Slot.Red);
+
+    const seats = botSeatsNeeded(room);
+    expect(seats.find((s) => s.slot === Slot.Red), '满员的队伍还在补人机').toBeUndefined();
+    expect(seats.find((s) => s.slot === Slot.Blue)?.count).toBe(2);
+  });
+
+  it('★ 观战席不参与补位判定（他们不进世界）', () => {
+    setFillWithBots(room, 'host', true);
+    room.config.mode = GameMode.Arena2v2;
+    selectSlot(room, 'host', Slot.Spectator);
+    selectSlot(room, 'guest', Slot.Spectator);
+
+    // 两队都是空的 → 各缺 2
+    for (const slot of [Slot.Red, Slot.Blue]) {
+      expect(botSeatsNeeded(room).find((s) => s.slot === slot)?.count).toBe(2);
+    }
   });
 });
