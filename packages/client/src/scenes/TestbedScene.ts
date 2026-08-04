@@ -801,6 +801,22 @@ export class TestbedScene {
       message: this.ctf.lastMessage,
     });
 
+    // 速赢清单：O 键记分板。名单走可见实体 + 自己 —— 与小地图同一条
+    // 可见性规矩（潜行者不在列表里，验收 #5）。不可见时 render 零开销。
+    this.hud.scoreboard.render({
+      modeLabel: '夺旗战场 · 试验场',
+      scoreRed: this.ctf.scoreOf(player.team),
+      scoreBlue: this.ctf.scoreOf(this.combat.visibleEntities()[0]?.team ?? player.team),
+      rows: [player, ...this.combat.visibleEntities()].map((e) => ({
+        name: e.name,
+        classId: e.classId,
+        team: e.team,
+        alive: e.alive,
+        healthPct: e.maxHealth > 0 ? e.health / e.maxHealth : 0,
+        isSelf: e.id === player.id,
+      })),
+    });
+
     // 15.1 右上：小地图。★ 传进去的列表已经过可见性过滤 ——
     // Minimap 自己拿不到世界状态，所以不可能画出未被发现的潜行者（验收 #5）
     const blips: MinimapBlip[] = [
@@ -932,6 +948,8 @@ export class TestbedScene {
     if (input.pressed.has(Action.ToggleMute)) {
       console.info(`[音频] ${audio.toggleMute() ? '已静音' : '已取消静音'}`);
     }
+    // 速赢清单：O 键记分板
+    if (input.pressed.has(Action.ToggleScoreboard)) this.hud.scoreboard.toggle();
     // ★ 首次交互解锁之后才开 BGM。放在这里而不是构造函数：AudioContext
     //   在用户交互前是 suspended 的，构造时开会得到一段无声播放的音乐
     audio.playMusic('combat_1');

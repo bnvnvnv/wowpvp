@@ -320,6 +320,28 @@
       .mh-msg { color: #ffd76a; font-size: 11px; }
       .mh-glyph { display: inline-block; width: 12px; font-weight: 700; }
 
+      /* 速赢清单：O 键记分板（对局中看比分与双方名单） */
+      #scoreboard { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+                    min-width: 420px; background: rgba(16,19,26,.94); border: 1px solid #3a4152;
+                    border-radius: 10px; padding: 12px 18px 8px; font-size: 12px;
+                    color: #b9c1d1; z-index: 30; }
+      .sb-title { text-align: center; font-size: 11px; letter-spacing: 2px; color: #6f7a90; }
+      .sb-score { display: flex; justify-content: center; gap: 14px; align-items: baseline;
+                  font-size: 26px; font-weight: 700; margin: 4px 0 8px; }
+      .sb-vs { font-size: 14px; color: #6f7a90; font-weight: 400; }
+      .sb-columns { display: flex; gap: 14px; }
+      .sb-col { flex: 1; border-top: 2px solid #2c313d; padding-top: 5px; }
+      .sb-col.red { border-top-color: #ff8a7a; }
+      .sb-col.blue { border-top-color: #7ab8ff; }
+      .sb-row { display: flex; gap: 8px; padding: 2px 4px; border-radius: 4px; }
+      .sb-row.self { background: rgba(122,184,255,.12); }
+      .sb-row.dead { color: #6f7a90; }
+      .sb-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .sb-class { color: #8d97ab; }
+      .sb-hp { width: 40px; text-align: right; }
+      .sb-empty { color: #4d5566; text-align: center; padding: 4px 0; }
+      .sb-hint { text-align: center; font-size: 10px; color: #4d5566; margin-top: 8px; }
+
       /* 15.3 战场装备栏 */
       #loadout-panel { position: absolute; right: 14px; bottom: 14px; width: 250px;
                        background: rgba(20,23,30,.9); border: 1px solid #2c313d;

@@ -9,7 +9,28 @@
  *   就自动落盘，不需要各自记得存。
  */
 
-import { DEFAULT_VOLUMES, type AudioVolumes } from '../audio/AudioManager.js';
+/**
+ * ★★ 音量类型与默认值定义在**这里**而不是 AudioManager：
+ *   AudioManager 运行时 import 本文件的 load/save，若本文件再反向 import
+ *   它的 `DEFAULT_VOLUMES`（运行时值）就是循环依赖 —— 实测整个客户端
+ *   在模块初始化时 TDZ 崩掉（`Cannot access 'DEFAULT_VOLUMES' before
+ *   initialization`），页面白屏。依赖必须单向：AudioManager → 本文件。
+ */
+
+/** 音量分组。玩家可以只关音乐留音效 */
+export interface AudioVolumes {
+  master: number;
+  sfx: number;
+  music: number;
+  ui: number;
+}
+
+export const DEFAULT_VOLUMES: AudioVolumes = {
+  master: 0.7,
+  sfx: 1,
+  music: 0.35,
+  ui: 0.8,
+};
 
 export const AUDIO_STORAGE_KEY = 'wowpvp.audio.v1';
 

@@ -69,6 +69,8 @@ export const Action = {
   ToggleCombatMode: 'toggleCombatMode',
   /** M12：静音总开关 */
   ToggleMute: 'toggleMute',
+  /** 速赢清单：对局中记分板（Tab 已被 5.3 选目标占用，用 O）*/
+  ToggleScoreboard: 'toggleScoreboard',
 } as const;
 export type Action = (typeof Action)[keyof typeof Action];
 
@@ -110,6 +112,7 @@ export const DEFAULT_BINDINGS: Readonly<Record<Action, string>> = {
   [Action.SpectateNext]: 'KeyV',
   [Action.ToggleCombatMode]: 'KeyK',
   [Action.ToggleMute]: 'KeyM',
+  [Action.ToggleScoreboard]: 'KeyO',
 };
 
 /** 角色转向速度，弧度/秒。A/D 未按右键时用它转身 */

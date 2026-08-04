@@ -20,22 +20,12 @@
  */
 
 import { School } from '@wowpvp/shared';
-import { loadAudioSettings, saveAudioSettings } from '../settings/audioSettings.js';
-
-/** 音量分组。玩家可以只关音乐留音效 */
-export interface AudioVolumes {
-  master: number;
-  sfx: number;
-  music: number;
-  ui: number;
-}
-
-export const DEFAULT_VOLUMES: AudioVolumes = {
-  master: 0.7,
-  sfx: 1,
-  music: 0.35,
-  ui: 0.8,
-};
+import {
+  DEFAULT_VOLUMES, loadAudioSettings, saveAudioSettings, type AudioVolumes,
+} from '../settings/audioSettings.js';
+// 类型与默认值的家在 audioSettings.ts（依赖必须单向，见那边的注释）。
+// 这里 re-export 维持既有导入路径不变。
+export { DEFAULT_VOLUMES, type AudioVolumes } from '../settings/audioSettings.js';
 
 type Group = keyof Omit<AudioVolumes, 'master'>;
 

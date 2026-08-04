@@ -32,6 +32,7 @@ import { skillIconHtml } from './skillIcon.js';
 import { CONTROL_VISUALS, type ControlKind } from '../vfx/status.js';
 import { Minimap } from './Minimap.js';
 import { ModeHud } from './ModeHud.js';
+import { Scoreboard } from './Scoreboard.js';
 import { PartyFrame, type PartyMemberView } from './PartyFrame.js';
 import { LoadoutPanel } from './LoadoutPanel.js';
 import { FloatingNumbers } from './FloatingNumbers.js';
@@ -84,6 +85,8 @@ export class CombatHud {
   readonly minimap: Minimap;
   readonly modeHud: ModeHud;
   readonly loadout: LoadoutPanel;
+  /** 速赢清单：O 键记分板（联网侧第一次能看比分）*/
+  readonly scoreboard: Scoreboard;
   /** M12：浮动伤害/治疗数字（14.1）*/
   readonly floaters!: FloatingNumbers;
   private readonly screenFlash!: HTMLElement;
@@ -123,6 +126,7 @@ export class CombatHud {
     this.minimap = new Minimap(this.root);
     this.modeHud = new ModeHud(this.root);
     this.loadout = new LoadoutPanel(this.root);
+    this.scoreboard = new Scoreboard(this.root);
   }
 
   /**

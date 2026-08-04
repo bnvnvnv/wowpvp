@@ -47,6 +47,8 @@ import {
   type MovementInput,
   type ProjectileSnapshot,
   type ServerMessage,
+  type Snapshot,
+  TEAM_BLUE,
   type SkillDef,
   type TeamId,
 } from '@wowpvp/shared';
@@ -205,6 +207,10 @@ export class NetworkScene {
   /** 最近一份快照里的投射物与地面区域（14.4/14.3 关键元素）*/
   private lastProjectiles: readonly ProjectileSnapshot[] = [];
   private lastGrounds: readonly GroundAreaSnapshot[] = [];
+  /** 速赢清单记分板：最近一份 match 快照（CTF 比分/旗帜在这里）*/
+  private lastMatch: Snapshot['match'] | undefined;
+  /** 竞技场回合比分。快照不带（只有 RoundEnd 事件），本地累计 */
+  private readonly roundWins = { red: 0, blue: 0 };
   /**
    * 10.2 掉落物 / 10.4 军械点的表现与 HUD。
    * ★★ 在此之前联网客户端**看不到也碰不到**任何临时武装 —— 整个 M6 在
@@ -519,6 +525,7 @@ export class NetworkScene {
         // 10.2 / 10.4：军械数据留给 draw 里的 arsenalView 消费
         this.lastDrops = msg.drops;
         this.lastArmories = msg.armories;
+        this.lastMatch = msg.match;
         this.selfTeam = msg.entities.find((e) => e.id === msg.you)?.team ?? this.selfTeam;
         this.view.ingest(
           {
@@ -732,6 +739,13 @@ export class NetworkScene {
         this.onMatchStats?.(msg.rows, msg.awards);
         break;
 
+      case 'RoundEnd': {
+        // 速赢清单记分板：竞技场回合比分只在这条消息里，本地累计
+        if (msg.winner === TEAM_RED) this.roundWins.red++;
+        else if (msg.winner !== 'draw') this.roundWins.blue++;
+        break;
+      }
+
       case 'MatchEnd': {
         /**
          * M13：对局结束就停手 —— 服务器紧接着会把 session 放回 Room 阶段，
@@ -800,6 +814,8 @@ export class NetworkScene {
     if (input.pressed.has(Action.ToggleMute)) {
       console.info(`[音频] ${audio.toggleMute() ? '已静音' : '已取消静音'}`);
     }
+    // 速赢清单：O 键记分板
+    if (input.pressed.has(Action.ToggleScoreboard)) this.hud.scoreboard.toggle();
     if (this.started) audio.playMusic('combat_1');
     // 5.3：Tab 正序、Shift+Tab 反序
     if (input.pressed.has(Action.TargetNext)) this.tabTarget(false);
@@ -1180,6 +1196,34 @@ export class NetworkScene {
     this.renderer.render(this.scene, this.cam.camera);
     // ★ 与试验场同一个调用 —— 只是喂的 CombatView 实现不同
     this.hud.update(this.view, this.cam.camera, this.canvas, dt);
+    this.renderScoreboard();
+  }
+
+  /**
+   * 速赢清单：O 键记分板 —— 联网对局第一次能看比分。
+   *
+   * ★ 比分两源：CTF 走 `Snapshot.match.score`（一直在发、此前无人消费）；
+   *   竞技场走本地累计的 `RoundEnd`（快照不带回合比分）。
+   * ★ 名单 = 快照可见实体 —— 潜行者不在快照里（验收 #5 的裁剪在服务器），
+   *   记分板结构上不可能偷看隐身者。
+   */
+  private renderScoreboard(): void {
+    if (!this.hud.scoreboard.visible) return;
+    const isCtf = this.lastMatch?.flags !== undefined;
+    const score = this.lastMatch?.score;
+    this.hud.scoreboard.render({
+      modeLabel: isCtf ? '夺旗战场' : '竞技场',
+      scoreRed: isCtf ? (score?.[String(TEAM_RED)] ?? 0) : this.roundWins.red,
+      scoreBlue: isCtf ? (score?.[String(TEAM_BLUE)] ?? 0) : this.roundWins.blue,
+      rows: this.lastEntities.map((e) => ({
+        name: e.name,
+        classId: e.classId,
+        team: e.team,
+        alive: e.alive,
+        healthPct: e.maxHealth > 0 ? e.health / e.maxHealth : 0,
+        isSelf: e.id === this.selfId,
+      })),
+    });
   }
 
   /**
