@@ -16,9 +16,8 @@
 下一站 **M17 留存钩子**（生涯记录 → 外观 → 回放，
 依赖对局人口，判据届时再定）。
 **清账批次已开工**（[16-roadmap-post-m16.md](16-roadmap-post-m16.md)，
-账本 [15-debt-registry.md](15-debt-registry.md)）：**批次一（正确性修复）全部完成** ——
-A1/A2/A3/A6/A7/A8 + 小修 A12–A15 + 性能三连 P1/P2/P5，
-十四支验收 + 1125 单测 + balance 全量回归全绿。下一站批次二（接线速赢）
+账本 [15-debt-registry.md](15-debt-registry.md)）：**批次一（正确性修复）全部完成**；
+批次二（接线速赢）进行中 —— 2.1（W1 联网队伍框）✅
 
 ---
 
@@ -197,6 +196,33 @@ typecheck ✓ · **1114 单测**（+1）· `verify:m10` 15/15 · `verify:m16` 29
 新断言（`RoomServer.test.ts`，真 socket）三条各对一个洞：
 对手收到 `Death` 且无 killerId、临时装备清空 + 回落默认武器、
 结算面板（`MatchStats`）里退出者 deaths = 1。
+
+---
+
+## 清账批次二 · W1：联网队伍框第一次被喂数据（2026-08-04）
+
+docs/16 批次二第 1 项，技术债总账 W1 清偿。
+
+**根因**：`PartyFrame` 自 M8 就构造在 `CombatHud` 里、试验场在喂，
+`NetworkScene` **零调用** —— 「联网没 HUD」补到 70% 后剩下的三块之一。
+治疗职业在联网局里看不到任何队友血量，15.1 左侧区整个缺席。
+
+**修法（投影只有一份）**：
+- 六项投影收进 `PartyFrame.ts`：`partyViewOf`（试验场，实体 Map）与
+  `partyViewFromSnapshot`（联网，快照 Record）共用**同一个** `partyMemberView`，
+  只换资源容器的读法 —— 照快照另写一遍就会重演护盾判据分叉
+- 顺带把「恐惧盖昏迷」的控制优先级收成 `controlKindsOf` 一处 ——
+  此前目标框（`controlBadges`）与队伍框各有一份（G4 重复清单在册项，
+  本轮清掉 HUD 内的两份；场景侧 3D 标记那份仍在 G4）
+- `NetworkScene.renderParty()`：名单 = 快照里与自己同队的实体（**含自己**，
+  与试验场同口径）；潜行队友本就进快照（裁剪只瞒敌人），六项自然齐全
+- `RESOURCE_TEXT` 随投影迁到 `PartyFrame.ts`（避免 CombatHud↔PartyFrame 循环依赖）
+
+**验证**：typecheck ✓ · **1128 单测**（+3：**双源一致性** —— 同一个人两条投影
+路径逐字段相等、恐惧盖昏迷、死亡映射）· `verify:m13` **11/11**（+1：
+联网队伍框有且恰好一行、名字是自己 —— 行数 0 = 没接线，行数 2 = 把敌人
+算进了队友）· **变异测试**：摘掉 `renderParty()` 调用，恰好 #11 红 ·
+m1 14/14 · m2 14/14（试验场侧投影重构的回归）
 
 ---
 

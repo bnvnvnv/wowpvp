@@ -74,7 +74,7 @@
 
 | ID | 债 | 证据 | 影响 | 状态 |
 |---|---|---|---|---|
-| W1 | **联网无队伍框**：`PartyFrame` 已构造、试验场在喂，`NetworkScene` 零调用 → 队友血量看不见，**治疗职业没法玩** | `packages/client/src/hud/PartyFrame.ts`；`CombatHud.ts`（≈:125） | 极高感知 | ⛔ |
+| W1 | **联网无队伍框**：`PartyFrame` 已构造、试验场在喂，`NetworkScene` 零调用 → 队友血量看不见，**治疗职业没法玩** | 投影收进 `PartyFrame.ts`（`partyViewOf`/`partyViewFromSnapshot` 共用一份 `partyMemberView`；控制优先级 `controlKindsOf` 顺带把目标框副本收拢）；`NetworkScene.renderParty()` 喂快照 | 极高感知 | ✅ 批次二 2.1（2026-08-04，双源一致性单测 + m13 #11 变异验证） |
 | W2 | **联网无小地图**：`Minimap` 零调用；`'supply'`/`'objective'` blip 类型无生产者（M16 已记的军械点图标属此） | `hud/Minimap.ts`（≈:31）；`hud/ModeHud.ts`（≈:175） | 战场态势不可知 | ⛔ |
 | W3 | **联网无模式 HUD**：`ModeHud.renderCtf` 全仓唯一调用点在试验场；`respawnIn`/`supplyRespawnIn`（12.6 复活波次倒计时）**从未被任何一边喂过** | `hud/Scoreboard.ts:7-11` 注释自陈；`hud/ModeHud.ts`（≈:39,56） | 比分/计时/旗帜/复活全不可见 | ⛔ |
 | W4 | **`ModeHud.renderArena()` 两个场景都零调用** → 8.5 战斗抑制百分比与「决胜阶段」**从未显示给任何玩家**；协议字段 `suddenDeathBlips` 客户端零消费 | `hud/ModeHud.ts`（≈:115-127）；`shared/src/net/visibility.ts`（≈:410） | 核心节奏机制不可见 | ⛔ |

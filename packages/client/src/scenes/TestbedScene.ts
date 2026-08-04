@@ -33,6 +33,7 @@ import { AnimationController } from '../entity/AnimationController.js';
 import { CharacterView } from '../entity/CharacterView.js';
 import { ModelLibrary } from '../entity/ModelLibrary.js';
 import { CombatHud } from '../hud/CombatHud.js';
+import { partyViewOf } from '../hud/PartyFrame.js';
 import { FAIL_TEXT } from '../combat/CombatDirector.js';
 import { Action, InputManager, type FrameInput } from '../input/InputManager.js';
 import { DecorRenderer } from '../render/DecorRenderer.js';
@@ -788,7 +789,7 @@ export class TestbedScene {
     const allies = this.combat
       .allEntities()
       .filter((e) => (e.team as number) === (player.team as number));
-    this.hud.party.render(Hud.partyViewOf(allies));
+    this.hud.party.render(partyViewOf(allies));
 
     // 15.4 夺旗 HUD
     this.hud.modeHud.renderCtf({

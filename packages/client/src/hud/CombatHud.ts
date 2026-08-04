@@ -24,7 +24,6 @@ import {
   distance2D,
   getClass,
   type CastState,
-  type CombatEntity,
 } from '@wowpvp/shared';
 import { FAIL_TEXT, SCHOOL_TEXT } from '../combat/CombatDirector.js';
 import type { CombatView, HudSkillSlot, HudUnit } from './CombatView.js';
@@ -33,7 +32,7 @@ import { CONTROL_VISUALS, type ControlKind } from '../vfx/status.js';
 import { Minimap } from './Minimap.js';
 import { ModeHud } from './ModeHud.js';
 import { Scoreboard } from './Scoreboard.js';
-import { PartyFrame, type PartyMemberView } from './PartyFrame.js';
+import { PartyFrame, RESOURCE_TEXT, controlKindsOf } from './PartyFrame.js';
 import { LoadoutPanel } from './LoadoutPanel.js';
 import { FloatingNumbers } from './FloatingNumbers.js';
 import {
@@ -192,46 +191,8 @@ export class CombatHud {
     this.flashLeft = FLASH_DURATION;
   }
 
-  /**
-   * 15.1 左侧：把实体列表转成队友视图。
-   *
-   * ★ 六项（生命、职业、资源、控制、死亡、旗手）在 `PartyMemberView` 里都是必填 ——
-   *   漏一项是编译错误。
-   */
-  static partyViewOf(members: readonly CombatEntity[]): PartyMemberView[] {
-    return members.map((e) => {
-      const cls = getClass(e.classId);
-      const primary = cls?.resources[0]?.resource;
-      const controls: ControlKind[] = [];
-      // 与 3D 场景用同一套判定：恐惧优先于昏迷（7.3 把两者都置 stunned，
-      // 但 14.3 要求它们视觉不同，所以不能同时显示）
-      if (e.flags.feared) controls.push('feared');
-      else if (e.flags.stunned) controls.push('stunned');
-      if (e.flags.rooted) controls.push('rooted');
-      if (e.flags.silenced) controls.push('silenced');
-      if (e.flags.disarmed) controls.push('disarmed');
-
-      return {
-        id: e.id as number,
-        name: e.name,
-        className: cls?.name ?? '',
-        health: e.health,
-        maxHealth: e.maxHealth,
-        ...(primary === undefined
-          ? {}
-          : {
-              resource: {
-                current: e.resources.get(primary) ?? 0,
-                max: e.maxResources.get(primary) ?? 1,
-                label: RESOURCE_TEXT[primary] ?? String(primary),
-              },
-            }),
-        controls,
-        dead: !e.alive,
-        carryingFlag: e.flags.carryingFlag,
-      };
-    });
-  }
+  // 15.1 队友投影已随 W1 收进 PartyFrame.ts（partyViewOf / partyViewFromSnapshot）——
+  // 投影与视图同文件，两个场景共用同一份实现。
 
   /**
    * 5.5：瞄准状态的文字提示。
@@ -529,18 +490,6 @@ export class CombatHud {
   }
 }
 
-/** 9. 各职业资源的中文名 */
-const RESOURCE_TEXT: Partial<Record<Resource, string>> = {
-  rage: '怒气',
-  mana: '法力',
-  holyPower: '圣能',
-  runes: '符文',
-  runicPower: '符文能量',
-  energy: '能量',
-  comboPoints: '连击点',
-  focus: '集中值',
-};
-
 const castPct = (cast: CastState, now: number): number => {
   const total = Math.max(0.01, cast.endsAt - cast.startedAt);
   return Math.min(100, ((total - Math.max(0, cast.endsAt - now)) / total) * 100);
@@ -559,18 +508,11 @@ const esc = (s: string): string =>
  * ★ 复用 `CONTROL_VISUALS` 的字形表 —— 目标框、队伍框和 3D 场景
  *   用的是**同一个字符**，玩家不需要学三套符号（17.2）。
  */
-const controlBadges = (unit: HudUnit): string => {
-  const kinds: ControlKind[] = [];
-  // 7.3 把恐惧也置为 stunned，但 14.3 要求两者视觉不同：恐惧优先
-  if (unit.flags.feared) kinds.push('feared');
-  else if (unit.flags.stunned) kinds.push('stunned');
-  if (unit.flags.rooted) kinds.push('rooted');
-  if (unit.flags.silenced) kinds.push('silenced');
-  if (unit.flags.disarmed) kinds.push('disarmed');
-  return kinds
+const controlBadges = (unit: HudUnit): string =>
+  // ★ 优先级（恐惧盖昏迷）的唯一实现在 PartyFrame.controlKindsOf —— W1 收拢
+  controlKindsOf(unit.flags)
     .map((k) => {
       const v = CONTROL_VISUALS[k];
       return `<span class="dbf" data-control="${k}">${v.glyph} ${v.label}</span>`;
     })
     .join('');
-};

@@ -72,6 +72,7 @@ import { Interpolator } from '../net/Interpolator.js';
 import { Predictor } from '../net/Predictor.js';
 import { pickTabTargetFromSnapshot } from '../net/snapshotTargeting.js';
 import { CombatHud } from '../hud/CombatHud.js';
+import { partyViewFromSnapshot } from '../hud/PartyFrame.js';
 import { SnapshotCombatView, castStateFromStarted } from '../net/SnapshotCombatView.js';
 import { audio } from '../audio/AudioManager.js';
 import { FAIL_TEXT } from '../combat/CombatDirector.js';
@@ -1196,7 +1197,29 @@ export class NetworkScene {
     this.renderer.render(this.scene, this.cam.camera);
     // ★ 与试验场同一个调用 —— 只是喂的 CombatView 实现不同
     this.hud.update(this.view, this.cam.camera, this.canvas, dt);
+    this.renderParty();
     this.renderScoreboard();
+  }
+
+  /**
+   * 15.1 左侧队伍框（技术债总账 W1）。
+   *
+   * ★★ 联网侧此前**从不喂**它 —— 组件在 CombatHud 里构造好、试验场在喂，
+   *   这边零调用：治疗职业在联网局里看不到任何队友血量，是「写完了没人
+   *   接线」家族在 HUD 上的存量。名单 = 快照里与自己同队的实体（**含自己**，
+   *   与试验场同口径）；潜行的队友本就进快照（可见性裁剪只瞒敌人），
+   *   15.1 的六项自然齐全。
+   * ★ 投影走 `PartyFrame.partyViewFromSnapshot` —— 与试验场共用同一份
+   *   成员投影，只换资源容器的读法（分叉教训见该函数注释）。
+   */
+  private renderParty(): void {
+    const self = this.lastEntities.find((e) => e.id === this.selfId);
+    if (!self) {
+      this.hud.party.hide();
+      return;
+    }
+    const allies = this.lastEntities.filter((e) => e.team === self.team);
+    this.hud.party.render(partyViewFromSnapshot(allies));
   }
 
   /**

@@ -187,6 +187,25 @@ try {
     const netCast = (casting.net as { casting?: { self: boolean; total: number } } | null)?.casting;
     check('10', '★★ 联网侧自己的施法状态真的被写进注册表（playerCast 不再是死字段）',
       netCast?.self === true, `casting=${JSON.stringify(netCast)}`);
+
+    /**
+     * ★ W1（技术债总账）：联网队伍框第一次被喂数据。
+     *   `PartyFrame` 自 M8 就构造好、试验场在喂，联网侧此前零调用 ——
+     *   治疗职业在联网局里看不到任何队友血量。1v1 里己方 = 自己一人，
+     *   断言「有且恰好一行、名字是自己的」：行数为 0 = 没接线，
+     *   行数为 2 = 把敌人也算成了队友（同样是错）。
+     */
+    const party = await pageA.evaluate(() => {
+      const rows = [...document.querySelectorAll('#party-frame .pf-member')];
+      return {
+        count: rows.length,
+        names: rows.map((r) => r.querySelector('.pf-name')?.textContent ?? ''),
+        visible: (document.querySelector('#party-frame') as HTMLElement | null)?.style.display !== 'none',
+      };
+    });
+    check('11', '★ 联网队伍框显示己方成员（W1 接线）',
+      party.visible && party.count === 1 && party.names.includes('阿红'),
+      `visible=${party.visible} rows=${party.count} names=${JSON.stringify(party.names)}`);
   }
 
   // ── 5：收掉这局 → MatchEnd → 双方回房间 → 再开一局 ──────────
