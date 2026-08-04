@@ -16,7 +16,7 @@
 下一站 **M17 留存钩子**（生涯记录 → 外观 → 回放，
 依赖对局人口，判据届时再定）。
 **清账批次已开工**（[16-roadmap-post-m16.md](16-roadmap-post-m16.md)，
-账本 [15-debt-registry.md](15-debt-registry.md)）：批次一 1.1–1.5（A1/A2/A3/A6/A7）✅
+账本 [15-debt-registry.md](15-debt-registry.md)）：批次一 1.1–1.6（A1/A2/A3/A6/A7/A8）✅
 
 ---
 
@@ -195,6 +195,24 @@ typecheck ✓ · **1114 单测**（+1）· `verify:m10` 15/15 · `verify:m16` 29
 新断言（`RoomServer.test.ts`，真 socket）三条各对一个洞：
 对手收到 `Death` 且无 killerId、临时装备清空 + 回落默认武器、
 结算面板（`MatchStats`）里退出者 deaths = 1。
+
+---
+
+## 清账批次一 · A8：阶段白名单与 setReady 守卫补漏（2026-08-04）
+
+docs/16 批次一第 6 项，技术债总账 A8 清偿。两处纵深防御各补一层：
+
+- **`MATCH_ONLY` 补 `OpenArmory`/`ChooseArsenal`** —— M16 加这两条消息时漏登记，
+  靠下游 `enqueue()` 的「比赛未进行」兜住。Session.ts 自己的注释写着选白名单
+  正是因为「忘了登记的后果是它在战斗中也能发，而那是个安全问题」——
+  这里恰好把话说中了。★ 新断言钉住的是**阶段**这一层的拒绝理由
+  （`reason` 含「阶段」），否则白名单摘掉、下游兜底照样让测试绿。
+- **`setReady()` 加 `started` 守卫** —— 它此前是唯一没有这个守卫的房间变更
+  函数，靠「观战席不需要准备」间接兜住（比赛期间留在 Room 阶段的只有观战席）。
+  兜得住不等于该裸奔，与 selectSlot/selectClass 的锁同规矩。
+
+**验证**：typecheck ✓ · **1125 单测**（+2）· **双变异**：摘白名单两条 →
+服务器侧断言红（理由退化成下游兜底）；摘 started 守卫 → room 侧断言红。
 
 ---
 

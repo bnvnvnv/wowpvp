@@ -52,10 +52,16 @@ const ROOM_ONLY: ReadonlySet<ClientMessage['t']> = new Set([
   'SelectTeam', 'SelectClass', 'SetReady',
 ]);
 
-/** 只在**战斗阶段**合法的消息 */
+/**
+ * 只在**战斗阶段**合法的消息。
+ * ⚠️ M16 加 `OpenArmory`/`ChooseArsenal` 时漏登记了两条 —— 当时靠下游
+ *   `enqueue()` 的「比赛未进行」兜住，但那正是本白名单存在的理由：
+ *   纵深防御不该只剩一层（技术债总账 A8）。
+ */
 const MATCH_ONLY: ReadonlySet<ClientMessage['t']> = new Set([
   'Input', 'SetTarget', 'TabTarget', 'CastRequest', 'CancelCast', 'UseTrinket',
   'InteractStart', 'InteractCancel', 'SwapWeapon', 'SwapArmor', 'UseConsumable',
+  'OpenArmory', 'ChooseArsenal',
   'SpectateFollow',
 ]);
 

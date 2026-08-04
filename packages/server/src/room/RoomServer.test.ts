@@ -614,6 +614,33 @@ describe('A3：两个真客户端从房间跑到快照', () => {
     }
   });
 
+  /**
+   * ★ A8（技术债总账）：军械箱两条消息补进 MATCH_ONLY 白名单。
+   *   此前靠下游 enqueue 的「比赛未进行」兜住 —— 断言必须钉住**阶段**这一层
+   *   的拒绝理由，否则测的只是下游兜底、白名单摘掉也照样绿。
+   */
+  it('★ A8：房间阶段发 OpenArmory / ChooseArsenal → 被阶段鉴权拒绝', async () => {
+    const c = await TestClient.connect(server.port);
+    await c.waitFor('Welcome');
+    c.send({ t: 'JoinRoom', roomId: 'a8', name: '性急' });
+    await c.waitFor('RoomState');
+
+    c.received.length = 0;
+    c.send({ t: 'OpenArmory', armoryId: 1 });
+    const r1 = await c.waitFor('Rejected');
+    expect(r1.what).toBe('OpenArmory');
+    expect(r1.reason, '拒绝理由应来自阶段鉴权，不是下游兜底').toContain('阶段');
+
+    c.received.length = 0;
+    c.send({ t: 'ChooseArsenal', armoryId: 1, choice: 'offense' as never });
+    const r2 = await c.waitFor('Rejected');
+    expect(r2.what).toBe('ChooseArsenal');
+    expect(r2.reason).toContain('阶段');
+
+    expect(c.open).toBe(true);
+    c.close();
+  });
+
   /** ★ 阶段鉴权：比赛开始后再发 SelectClass 是越权 */
   it('★ 战斗中发 SelectClass 被拒绝（阶段鉴权）', async () => {
     const red = await TestClient.connect(server.port);

@@ -244,6 +244,21 @@ describe('11.5 断线与退出', () => {
     leaveMatch(room, 'a');
     expect(room.players.find((p) => p.id === 'a')).toBeUndefined();
   });
+
+  /**
+   * ★ A8（技术债总账）：setReady 此前是唯一没有 started 守卫的房间变更函数，
+   *   靠「观战席不需要准备」间接兜住 —— 现在显式挡，与选阵营/选职业的锁同规矩。
+   */
+  it('★ A8：对局进行中不能更改准备状态（setReady 有自己的 started 守卫）', () => {
+    addReady('a', Slot.Red, 'mage');
+    addReady('b', Slot.Blue, 'warrior');
+    startMatch(room);
+
+    const r = setReady(room, 'a', false);
+    expect(r.ok).toBe(false);
+    // 准备标志没有被偷偷改动
+    expect(room.players.find((p) => p.id === 'a')!.ready).toBe(true);
+  });
 });
 
 describe('M13 赛后复位（docs/14 §M13：MatchEnd 后回房间可再开一局）', () => {

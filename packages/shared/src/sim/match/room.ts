@@ -176,6 +176,12 @@ export const botSeatsNeeded = (room: Room): { slot: Slot; count: number }[] => {
 export const setReady = (room: Room, playerId: string, ready: boolean): SelectResult => {
   const p = room.players.find((x) => x.id === playerId);
   if (!p) return { ok: false, reason: '玩家不在房间中' };
+  /**
+   * ★ A8（技术债总账）：它此前是唯一没有 `started` 守卫的房间变更函数 ——
+   *   靠「观战席不需要准备」间接兜住（比赛期间还留在 Room 阶段的只有观战席）。
+   *   兜得住不等于该裸奔：与 selectSlot/selectClass 的锁同规矩，显式挡。
+   */
+  if (room.started) return { ok: false, reason: '对局进行中不能更改准备状态' };
   if (p.slot === Slot.Spectator) return { ok: false, reason: '观战席不需要准备' };
   if (ready && !p.classId) return { ok: false, reason: '请先选择职业' };
   p.ready = ready;
