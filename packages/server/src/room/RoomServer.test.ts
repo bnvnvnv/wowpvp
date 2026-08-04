@@ -536,6 +536,47 @@ describe('A3：两个真客户端从房间跑到快照', () => {
   });
 
   /**
+   * ★★ A6（技术债总账）：已在房间里的连接不能兑换重连令牌。
+   *
+   *   此前 `onReconnect` 不查 `session.roomId` 直接覆写 —— 旧房间的
+   *   sessions/名单里永远留着这条会话，`dropIfEmpty()` 恒 false，
+   *   房间与名单**永久泄漏**。
+   */
+  it('★★ A6：已在房间的连接兑换别房令牌 → 被拒；离开房间后同一令牌可兑换（对照）', async () => {
+    // 房 a6a：两人开局，蓝方拿到令牌后断线（令牌进入可兑换状态）
+    const red = await TestClient.connect(server.port);
+    const blue = await TestClient.connect(server.port);
+    await readyUp(red, 'a6a', '红方', 'red', 'mage');
+    await readyUp(blue, 'a6a', '蓝方', 'blue', 'warrior');
+    await red.waitFor('MatchStart');
+    const blueStart = await blue.waitFor('MatchStart');
+    blue.socket.terminate();
+    await red.waitFor('PeerDisconnected');
+
+    // 另一条连接先加入房 a6b（session.roomId 挂上），再拿 a6a 的令牌重连
+    const drifter = await TestClient.connect(server.port);
+    drifter.send({ t: 'JoinRoom', roomId: 'a6b', name: '游子' });
+    await drifter.waitFor('RoomState');
+
+    drifter.received.length = 0;
+    drifter.send({ t: 'Reconnect', token: blueStart.reconnectToken });
+    const rejected = await drifter.waitFor('Rejected');
+    expect(rejected.what).toBe('Reconnect');
+
+    // ★ 阳性对照：离开房间（session 放干净）之后，同一令牌必须能兑换成功 ——
+    //   否则上一条可能只是「Reconnect 全都拒绝」
+    drifter.send({ t: 'LeaveMatch' });
+    await new Promise((r) => setTimeout(r, 100));
+    drifter.received.length = 0;
+    drifter.send({ t: 'Reconnect', token: blueStart.reconnectToken });
+    const rejoined = await drifter.waitFor('MatchStart');
+    expect(rejoined.you).toBe(blueStart.you); // 接管的是同一具身体（令牌即身份）
+
+    red.close();
+    drifter.close();
+  });
+
+  /**
    * ★★ A3（技术债总账）：半开连接由心跳识别，走与正常断线**同一条**接管路径。
    *
    *   半开连接（断电/拔网线/NAT 超时）不触发 'close' —— 心跳落地之前，

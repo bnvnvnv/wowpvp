@@ -577,6 +577,21 @@ export class RoomServer {
   // ── 重连 ──────────────────────────────────────────────────────
 
   private onReconnect(session: Session, token: string): void {
+    /**
+     * ★ A6（技术债总账）：兑换令牌的前提是**这条连接不属于任何房间**。
+     *
+     *   此前不检查 —— 已在 A 房的会话拿 B 房令牌重连会把 `session.roomId`
+     *   直接覆写，而 A 房的 `sessions` 与名单里还留着它：`dropIfEmpty()`
+     *   永远数得到人，A 房与其名单**永久泄漏**。
+     *
+     *   重连本来就是给「断线后的新连接」用的（客户端 Connection 重连后
+     *   第一条就发 Reconnect）；带着房间发它属于异常客户端，
+     *   诚实拒绝 —— 与 JoinRoom 的「已经在一个房间里了」同规矩。
+     */
+    if (session.roomId !== undefined) {
+      session.reject('Reconnect', '当前连接已在一个房间里');
+      return;
+    }
     const sr = [...this.rooms.values()].find((r) => r.tokens.has(token));
     if (!sr || !sr.match) { session.reject('Reconnect', '令牌无效'); return; }
 

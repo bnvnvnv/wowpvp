@@ -16,7 +16,7 @@
 下一站 **M17 留存钩子**（生涯记录 → 外观 → 回放，
 依赖对局人口，判据届时再定）。
 **清账批次已开工**（[16-roadmap-post-m16.md](16-roadmap-post-m16.md)，
-账本 [15-debt-registry.md](15-debt-registry.md)）：批次一 1.1–1.3（A1/A2/A3）✅
+账本 [15-debt-registry.md](15-debt-registry.md)）：批次一 1.1–1.4（A1/A2/A3/A6）✅
 
 ---
 
@@ -195,6 +195,27 @@ typecheck ✓ · **1114 单测**（+1）· `verify:m10` 15/15 · `verify:m16` 29
 新断言（`RoomServer.test.ts`，真 socket）三条各对一个洞：
 对手收到 `Death` 且无 killerId、临时装备清空 + 回落默认武器、
 结算面板（`MatchStats`）里退出者 deaths = 1。
+
+---
+
+## 清账批次一 · A6：跨房间重连不再泄漏房间（2026-08-04）
+
+docs/16 批次一第 4 项，技术债总账 A6 清偿。
+
+**根因**：`onReconnect` 不查会话当前状态就覆写 `session.playerId/roomId`
+（`Reconnect` 在任何阶段都放行，Session 层没有门禁）。已在 A 房的会话拿
+B 房令牌重连后，A 房的 `sessions` 与名单里永远留着它 ——
+`dropIfEmpty()` 恒 false，**A 房与其名单永久泄漏**。
+
+**修法**：入口守卫 —— 兑换令牌的前提是这条连接不属于任何房间
+（重连本就是给「断线后的新连接」用的，客户端 Connection 重连后第一条
+就发 Reconnect）；在房会话诚实拒绝，与 JoinRoom 的「已经在一个房间里了」
+同规矩。
+
+**验证**：typecheck ✓ · **1118 单测**（+1）·
+新断言含**阳性对照**：在房会话被拒；同一连接离开房间后，同一令牌兑换
+成功且接管同一具身体（令牌即身份）—— 证明不是「Reconnect 全都拒绝」·
+**变异测试**：去掉守卫，断言红。
 
 ---
 
