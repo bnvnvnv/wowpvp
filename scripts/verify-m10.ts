@@ -18,6 +18,7 @@ import {
   encodeClientMessage,
   asClassId,
   School,
+  teleportTo,
   type AuraDef,
   type ClientMessage,
   type ServerMessage,
@@ -208,7 +209,19 @@ console.log('\n── 验收 #5 / #36：裁剪发生在快照层，不是客户�
      *    **一条 Damage 都没发**而平凡成立。第一版就是那么写的。
      *    所以：站到贴脸、资源给满、走 CastRequest 放一个真技能。
      */
-    blueE.position = { ...redE.position, z: redE.position.z + 2 };
+    /**
+     * ⚠️ 白盒摆位必须写**权威移动状态**，不能只改 entity.position ——
+     *   步骤 2 每 tick 用移动状态的积分结果覆盖实体坐标。此前裸 ws 客户端
+     *   不发 Input、恰好落在「无输入不积分」的豁免窗口里才写得通；
+     *   A2 清偿（缺输入按全零积分）后该窗口不存在了，这里与 verify-m13
+     *   首跑抓到的是同一个坑（那边是浏览器客户端，每 50ms 发 Input）。
+     */
+    const blueMove = match.movement.get(blueId)!;
+    match.movement.set(
+      blueId,
+      teleportTo(blueMove, { x: redE.position.x, y: 0, z: redE.position.z + 2 }, match.map.geometry),
+    );
+    blueE.position = { ...match.movement.get(blueId)!.position };
     for (const [r, max] of redE.maxResources) redE.resources.set(r, max);
     redE.cooldowns.clear();
     redE.gcdUntil = 0;

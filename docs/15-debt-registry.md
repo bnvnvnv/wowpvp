@@ -40,7 +40,7 @@
 | ID | 债 | 证据 | 影响 | 状态 |
 |---|---|---|---|---|
 | A1 | **`LeaveMatch` 淘汰绕过死亡漏斗**：`eliminate()` 直改 `alive/health` 字段，不产生 death 事件 → `deaths` 统计不加（**违反 11.5**，且函数上方注释声称在执行 11.5）、`settleDeaths()` 不跑（10.10 临时装备不清）、无 `Death` 广播。零测试覆盖 | `packages/server/src/room/RoomServer.ts` `eliminate()`；修法见 `sim/tick.ts` 第 0 步 `forfeits` | 统计失真 + 规则静默失效 | ✅ 批次一 1.1（2026-08-04，含变异测试） |
-| A2 | **无输入实体不做物理积分**：`tickWorld` 第 2 步 `if (!input) continue` → 不积分重力、不软推开。停发 Input 即可空中悬停 + 单向卡位；正确性寄托在「客户端每 tick 都发」的自觉上 | `packages/shared/src/sim/tick.ts`（≈:357）自带注释承认 | 可被主动利用（悬空/卡位）；高丢包玩家持续微顿 | ⛔ |
+| A2 | **无输入实体不做物理积分**：`tickWorld` 第 2 步 `if (!input) continue` → 不积分重力、不软推开。停发 Input 即可空中悬停 + 单向卡位；正确性寄托在「客户端每 tick 都发」的自觉上 | `packages/shared/src/sim/tick.ts` 第 2 步（缺输入现按全零输入积分；「无 movement 条目不参与移动」边界不变） | 可被主动利用（悬空/卡位）；高丢包玩家持续微顿 | ✅ 批次一 1.2（2026-08-04，含变异测试；verify-m10 白盒摆位随之改用 teleportTo） |
 | A3 | **无心跳/空闲超时**：半开连接（断电、NAT 超时）永远不被识别为断线 → **不触发人机接管**。偏差 #14「断线瞬间接管」只对优雅关闭的连接成立 | `packages/server/src` 全包无 ping/pong/idle 检测 | 最常见的断线形态下队友是十几分钟的活靶 | ⛔ |
 | A4 | **人机决策拿全局信息**：`nearestFoe()` 遍历全部实体，不过可见性/视线 → 能感知潜行者精确坐标并据此走位。「故意断线换 AI 代打」附带信息优势 | `packages/server/src/BotDriver.ts` `nearestFoe()`（≈:186） | 偏差 #14 论证了不规避统计，未论证不规避信息面 | ⛔ |
 | A5 | **朝向无转身速率限制**：`intent.facing` 在 `validateCast` 之前被无条件采信，移动的 `characterYaw` 同 → 脚本客户端永远满足朝向门禁（spinbot）；背刺「背后 120°」的转身博弈对作弊者不成立 | `packages/shared/src/sim/tick.ts`（≈:319）；`FORBIDDEN_CLIENT_FIELDS` 不含 yaw/facing | 反作弊边界的口子 | ⛔ |

@@ -206,9 +206,9 @@ describe('tickWorld 基本推进', () => {
    *   50ms 后被原样抹回。`effects.test.ts` 只结算一次、从不跑第二个 tick，
    *   所以全绿 —— 又一根「两边都对、中间断了」的线。
    *
-   *   ★ 触发条件必须带**输入**：第 2 步对没有输入的实体直接 continue，
-   *     连 position 都不碰 —— 只闪现不推 tick 的话 bug 根本不显形。
-   *     真实对局里客户端每 tick 都发输入（哪怕全零），所以真实场景必触发。
+   *   ★ 触发条件要推移动积分：写这条测试时第 2 步对无输入实体直接 continue，
+   *     必须显式给全零输入 bug 才显形。A2 清偿后缺输入也按全零积分，
+   *     显式输入保留 —— 让这条测试不依赖 A2 的回退路径也能测到积分。
    */
   it('★★ 闪现在后续 tick 不被移动积分抹回（位移同步 MovementState）', () => {
     movement.set(player.id, createMovementState(vec3(0, 0, 0)));
@@ -217,8 +217,17 @@ describe('tickWorld 基本推进', () => {
 
     const landed = { ...player.position };
     expect(Math.hypot(landed.x, landed.z), '闪现本身要先生效（8 米）').toBeGreaterThan(5);
-    // 落点即移动状态：贴地、清速度、置 teleported（13.4 动画层依据）
-    expect(movement.get(player.id)?.teleported).toBe(true);
+    // 落点即移动状态：位置已同步（贴地、清速度由 teleportTo 负责）
+    expect(movement.get(player.id)!.position.x).toBeCloseTo(landed.x, 6);
+    expect(movement.get(player.id)!.position.z).toBeCloseTo(landed.z, 6);
+    /**
+     * ⚠️ 这里**不**断言 `teleported` 标记：它由 stepMovement 按「本 tick 位移」
+     *   重新派生，而闪现（第 1 步施法）与移动积分（第 2 步）在同一个 tick ——
+     *   对真实联网玩家（每 tick 都有输入）这个标记从来就是同 tick 被消费的，
+     *   A2 之后无输入路径与之一致。本测试的主张是**位移活过后续 tick**；
+     *   自己的 8 米跳变在预测器里走距离档（SNAP_ABOVE），不依赖这个标记，
+     *   第 5/10 步（弹体命中位移、复活传送）产生的标记则在积分之后、照常进快照。
+     */
 
     // 站着不动（但**有**输入条目）再跑 5 个 tick —— 位移必须活下来
     inputs.set(player.id, { forward: 0, strafe: 0, jump: false, yaw: 0 });
@@ -230,8 +239,8 @@ describe('tickWorld 基本推进', () => {
   /**
    * ★★ 13.5 / 验收 #43 软推开的接线断言 —— `separationVelocity` 此前零调用方，
    *   两个角色可以完全重叠站成一个点。
-   * ★ 触发条件同位移测试：必须给**全零输入**条目 —— 第 2 步对无输入实体
-   *   直接 continue。真实对局里客户端每 tick 都发输入，所以全员生效。
+   * ★ 写这条测试时第 2 步对无输入实体直接 continue，所以显式给了全零输入。
+   *   A2 清偿后缺输入也积分（见下面两条 A2 断言），显式输入保留。
    */
   it('★★ 重叠站位会被软推开（separationVelocity 接进 tickWorld）', () => {
     // 把对手挪到几乎重叠的位置（0.2 米 < 2 × 半径 0.45）
@@ -246,6 +255,44 @@ describe('tickWorld 基本推进', () => {
     const gap = Math.hypot(player.position.x - foe.position.x, player.position.z - foe.position.z);
     expect(gap, '两人应被推出重叠').toBeGreaterThanOrEqual(player.radius * 2 - 0.05);
     // 软推开不是弹飞：推开后停在贴身距离附近，不会越推越远
+    expect(gap).toBeLessThan(2);
+  });
+
+  /**
+   * ★★ A2（技术债总账）：没有输入条目 ≠ 免除物理。
+   *
+   *   此前第 2 步对无输入实体直接 `continue` —— 不积分重力、不参与软推开，
+   *   而「联网客户端每 tick 都发输入」只是自觉不是约束：**停发 Input** 的
+   *   客户端可以悬停在空中、免费卡位（别人推不动他，他还占着地方）。
+   *   下面两条各堵一个豁免窗口；变异测试：把回退改回 `continue`，两条全红。
+   */
+  it('★★ A2：空中实体停发输入仍会落地（重力不因缺输入而豁免）', () => {
+    // movement 有条目、inputs 里**没有**他 —— 这正是旧写法的豁免窗口
+    player.position = vec3(0, 5, 0);
+    movement.set(player.id, createMovementState(vec3(0, 5, 0)));
+
+    for (let i = 0; i < 60; i++) tickWorld(deps(), DT); // 3 秒，自由落体绰绰有余
+
+    expect(
+      player.position.y,
+      '没有输入的实体悬停在空中 —— 重力被缺输入豁免了',
+    ).toBeLessThan(0.1);
+    expect(movement.get(player.id)!.grounded).toBe(true);
+  });
+
+  it('★★ A2：双方都不发输入，重叠站位同样被软推开（免推开卡位被封掉）', () => {
+    foe.position = vec3(0.2, 0, 0);
+    movement.set(player.id, createMovementState(player.position));
+    movement.set(foe.id, createMovementState(foe.position));
+    // ★ 刻意不给任何 inputs 条目
+
+    for (let i = 0; i < 40; i++) tickWorld(deps(), DT);
+
+    const gap = Math.hypot(player.position.x - foe.position.x, player.position.z - foe.position.z);
+    expect(
+      gap,
+      '不发输入就推不开 —— 软推开被缺输入豁免了',
+    ).toBeGreaterThanOrEqual(player.radius * 2 - 0.05);
     expect(gap).toBeLessThan(2);
   });
 });

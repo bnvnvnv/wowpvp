@@ -384,8 +384,19 @@ export const tickWorld = (
   for (const [id, state] of deps.movement) {
     const e = getEntity(deps.world, id);
     if (!e || !e.alive) continue;
-    const input = deps.inputs.get(id);
-    if (!input) continue;
+    /**
+     * ★★ 没有输入条目 ≠ 免除物理。此前这里是 `continue` —— 整个积分跳过，
+     *   不吃重力、不被软推开，而正确性寄托在「联网客户端每 tick 都发输入
+     *   （哪怕全零）」的自觉上：停发 Input 的客户端可以悬停在空中、
+     *   单向卡位（别人推不动他，他还占着地方）。不受信任的输入不该被
+     *   这样假设。（技术债总账 A2，2026-08-04 清偿）
+     *
+     *   现在缺输入按**全零输入**积分：不走、不跳、朝向保持当前值 ——
+     *   重力、速度衰减、软推开照常。「没登记 movement 条目的实体不参与
+     *   移动」这条边界**不变**（假人与场景驱动的实体仍然靠它跳过）。
+     */
+    const input = deps.inputs.get(id)
+      ?? { forward: 0, strafe: 0, jump: false, yaw: state.yaw };
     /**
      * ★★ `speedMultiplier` 此前**没有传** —— 于是断筋、冰霜锁链、群奔咆哮、
      *   猎豹形态、死亡脚步的速度下限、12.3 的旗手加速上限，
@@ -398,8 +409,8 @@ export const tickWorld = (
      * ★★ 13.5 / 验收 #43 的软推开（`separationVelocity` 此前**零调用方**，
      *   又一条「写好了没接线」：角色可以完全重叠站成一个点）。
      *   对**所有**其他存活实体算 —— 包括没有移动条目的（站桩假人也占地方）。
-     * ★ 与移动的其它输入同规矩：只对**有输入条目**的实体积分 ——
-     *   联网客户端每 tick 都发输入（哪怕全零），所以真实对局全员生效。
+     * ★ A2 之后不再要求输入条目：有 movement 条目就积分（缺输入按全零），
+     *   「停发输入换免推开」的豁免窗口不存在了。
      */
     const others: Vec3[] = [];
     for (const o of listEntities(deps.world)) {
