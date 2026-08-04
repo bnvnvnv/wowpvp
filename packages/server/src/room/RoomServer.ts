@@ -492,17 +492,17 @@ export class RoomServer {
   }
 
   private eliminate(sr: ServerRoom, playerId: string, reason: 'timeout' | 'left'): void {
-    const entityId = sr.match?.entityOf.get(playerId);
-    const e = entityId !== undefined ? sr.match!.world.entities.get(entityId) : undefined;
     /**
      * ★ 淘汰 = 判定死亡。11.5：「主动退出立即按淘汰处理，**不能通过退出
-     *   规避死亡统计**」—— 所以这里是把他打死，而不是把他从世界里删掉。
-     *   删掉的话统计里就没有这条死亡了，那正是规则要防的事。
+     *   规避死亡统计**」—— 所以是把他打死，而不是把他从世界里删掉。
+     *
+     * ★★ 不在这里直改 `alive/health`。此前正是这么写的，而直改字段绕过了
+     *   死亡漏斗：deaths 统计一直没记上（恰好违反本注释引用的 11.5）、
+     *   settleDeaths 一直没清临时装备（10.10）、客户端一直收不到 Death ——
+     *   注释与实现相反了很久（技术债总账 A1，2026-08-04 清偿）。
+     *   现在排进下一 tick 的 forfeits，与真实死亡走同一条链。
      */
-    if (e && e.alive) {
-      e.alive = false;
-      e.health = 0;
-    }
+    sr.loop?.forfeit(playerId);
     markDisconnected(sr.room, playerId);
     // 淘汰之后人机也该下台 —— 让 AI 继续操作一具尸体没有意义
     this.handBackFromBot(sr, playerId);

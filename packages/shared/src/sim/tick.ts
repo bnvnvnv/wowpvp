@@ -18,6 +18,7 @@
  *
  * | # | 步骤 | 约束 | 出处 |
  * |---|---|---|---|
+ * | 0 | forfeits（弃权判死）| **必须在统计折叠 / matchRules / settleDeaths 之前** —— 三者都要在本 tick 看到弃权产生的死亡；放在最前还让弃权者的技能请求与移动经由 `!alive` 自然失效 | 11.5 / 技术债总账 A1 |
  * | 1 | movement | —— | docs/02 §3 |
  * | 2 | casting | **必须在 movement 之后**：7.3「主动移动停止原地施放的读条」，先算完移动才知道这一 tick 有没有位移 | `casting.ts` 头部 |
  * | 3 | auras | 周期跳产生的效果要在本 tick 结算 | docs/02 §3 |
@@ -147,6 +148,17 @@ export interface TickDeps {
    *   而 A2 的教训正是「第二个出口会静默地少做一半事」。
    */
   consumableRequests?: ReadonlyMap<EntityId, number>;
+  /**
+   * 本 tick 要弃权判死的实体（11.5「主动退出立即按淘汰处理，**不能通过
+   * 退出规避死亡统计**」；超时淘汰同路）。
+   *
+   * ★★ 弃权必须由 tick 结算，不能由调用方直改 `alive/health` ——
+   *   直改字段不产生 `death` 事件，于是三件事**静默不发生**：
+   *   统计不记这次死亡、`settleDeaths` 不清临时装备（10.10）、
+   *   服务器不广播 `Death`。与 `castRequests` 的教训同族：
+   *   第二个出口会静默地少做一半事。（技术债总账 A1，2026-08-04 清偿）
+   */
+  forfeits?: ReadonlySet<EntityId>;
   /** 地图碰撞几何。默认取 `world.obstacles` */
   obstacles?: readonly Aabb[];
 
@@ -309,6 +321,24 @@ export const tickWorld = (
       sinks.cast?.onCompleted?.(c, s, st);
     },
   };
+
+  // ── 0. 弃权判死（11.5：主动退出立即按淘汰处理）──────────────
+  /**
+   * ★★ 走与 `dealDamage()` 完全相同的死亡表达：`alive = false` + `death` 事件。
+   *   于是统计折叠（第 9 步）、胜负判定（第 10 步）、settleDeaths（第 11 步）、
+   *   调用方的 Death 广播（onEffects）全部自动跟上 —— 不需要谁记得。
+   * ★ killerId 如实缺席：弃权没有凶手，编一个会多记一次击杀、
+   *   让击杀播报冤枉一个没打过他的人（与 M16a 的「如实，不编」同则）。
+   */
+  for (const id of deps.forfeits ?? []) {
+    const e = getEntity(deps.world, id);
+    if (!e || !e.alive) continue;
+    e.alive = false;
+    e.health = 0;
+    const ev: CombatEvent = { t: 'death', targetId: id };
+    result.events.push(ev);
+    sinks.onEffects?.([ev]);
+  }
 
   // ── 1. applyInputs：技能请求（docs/02 §3 第 1 步）──────────
   for (const [id, intent] of deps.castRequests ?? []) {

@@ -141,6 +141,11 @@ export class MatchLoop {
   private pendingCommands: { playerId: string; cmd: MatchCommand }[] = [];
   /** 本 tick 的消耗品使用请求（10.1）。与技能请求同样由 tickWorld 结算 */
   private readonly pendingConsumables = new Map<EntityId, number>();
+  /**
+   * 本 tick 要弃权判死的实体（11.5）。RoomServer 的 eliminate() 排进来，
+   * 死亡与清理由 tickWorld 第 0 步的死亡漏斗统一结算（技术债总账 A1）。
+   */
+  private readonly pendingForfeits = new Set<EntityId>();
 
   constructor(
     readonly match: Match,
@@ -189,7 +194,11 @@ export class MatchLoop {
     this.syncSwings();
     const inputs = this.collectInputs();
     const result = tickWorld(
-      { ...tickDepsOf(this.match, inputs, this.pendingCasts), consumableRequests: this.pendingConsumables },
+      {
+        ...tickDepsOf(this.match, inputs, this.pendingCasts),
+        consumableRequests: this.pendingConsumables,
+        forfeits: this.pendingForfeits,
+      },
       SIM.TICK_DT,
       {
         cast: {
@@ -247,6 +256,7 @@ export class MatchLoop {
     );
     this.pendingCasts.clear();
     this.pendingConsumables.clear();
+    this.pendingForfeits.clear();
 
     for (const ev of result.flags) {
       const flag = this.match.ctf?.state.flags[ev.flagTeam as number];
@@ -323,6 +333,18 @@ export class MatchLoop {
     const entityId = this.match.entityOf.get(playerId);
     if (entityId === undefined) return;
     this.pendingConsumables.set(entityId, slot);
+  }
+
+  /**
+   * 11.5：弃权判死（主动退出 / 重连超时）。
+   * ★ 与施法、消耗品同规矩 —— 这里只排意图，死亡结算只有 tickWorld 一个出口。
+   *   直改 `alive/health` 的旧写法绕过了统计、10.10 装备清理与 Death 广播
+   *   （技术债总账 A1）。
+   */
+  forfeit(playerId: string): void {
+    const entityId = this.match.entityOf.get(playerId);
+    if (entityId === undefined) return;
+    this.pendingForfeits.add(entityId);
   }
 
   /**

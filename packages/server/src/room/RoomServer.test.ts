@@ -15,6 +15,7 @@ import { WebSocket } from 'ws';
 
 import {
   asClassId,
+  asWeaponId,
   encodeClientMessage,
   decodeServerMessage,
   type ClientMessage,
@@ -456,6 +457,54 @@ describe('A3：两个真客户端从房间跑到快照', () => {
     const back = await blue.waitFor('RoomState');
     expect(back.players.map((p) => p.name).sort()).toEqual(['红方', '蓝方回归']);
     expect(blue.received.filter((m) => m.t === 'Rejected')).toEqual([]);
+
+    red.close();
+    blue.close();
+  });
+
+  /**
+   * ★★ A1（技术债总账）：LeaveMatch 的淘汰必须走真实死亡漏斗。
+   *
+   *   此前 eliminate() 直改 `alive/health` —— 注释声称在执行 11.5
+   *   「不能通过退出规避死亡统计」，实现却恰好绕开了它：deaths 不记、
+   *   10.10 的临时装备不清、对手收不到 Death。三条断言各对着一个洞。
+   *   ★ 变异测试：把 tick 第 0 步改回「只改字段、不发事件」，三条全红。
+   */
+  it('★★ A1：LeaveMatch 走死亡漏斗 —— 对手收到 Death（无凶手）、临时装备清空、deaths 记 1', async () => {
+    const red = await TestClient.connect(server.port);
+    const blue = await TestClient.connect(server.port);
+    await readyUp(red, 'a1', '红方', 'red', 'mage');
+    await readyUp(blue, 'a1', '蓝方', 'blue', 'warrior');
+    await red.waitFor('MatchStart');
+    const blueStart = await blue.waitFor('MatchStart');
+
+    // 白盒布置：给蓝方塞一件临时武器 —— 10.10「死亡后临时装备失效」要验的对象
+    const match = server.rooms.matchOf('a1')!;
+    const loop = server.rooms.loopOf('a1')!;
+    const blueEntity = match.world.entities.get(blueStart.you)!;
+    const blueLoadout = match.loadouts.get(blueStart.you)!;
+    blueLoadout.spareWeapons.push(asWeaponId('warrior.greatsword'));
+
+    red.received.length = 0;
+    blue.send({ t: 'LeaveMatch' });
+
+    // 弃权在下一 tick 的死亡漏斗里结算，对手必须收到 Death
+    const death = await red.waitFor('Death');
+    expect(death.entityId).toBe(blueStart.you);
+    // killerId 如实缺席：弃权没有凶手 —— 编一个会让击杀播报冤枉人（M16a 同则）
+    expect(death.killerId).toBeUndefined();
+
+    // 死亡漏斗的状态收尾真的发生了（settleDeaths 一条链）
+    expect(blueEntity.alive).toBe(false);
+    expect(blueLoadout.spareWeapons, '10.10：临时装备没有随死亡清空').toEqual([]);
+    expect(blueEntity.weaponId).toBe(blueLoadout.defaultWeaponId);
+
+    // 11.5：主动退出不能规避死亡统计 —— 结算面板里蓝方 deaths = 1
+    for (let i = 0; i < 500 && !match.arena?.outcome; i++) loop.advance();
+    const stats = await red.waitFor('MatchStats');
+    const blueRow = stats.rows.find((r) => r.entityId === blueStart.you);
+    expect(blueRow, '结算面板里没有退出者的行').toBeDefined();
+    expect(blueRow!.deaths, '11.5：deaths 没有记上这次淘汰').toBe(1);
 
     red.close();
     blue.close();
