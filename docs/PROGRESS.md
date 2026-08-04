@@ -16,7 +16,8 @@
 下一站 **M17 留存钩子**（生涯记录 → 外观 → 回放，
 依赖对局人口，判据届时再定）。
 **清账批次已开工**（[16-roadmap-post-m16.md](16-roadmap-post-m16.md)，
-账本 [15-debt-registry.md](15-debt-registry.md)）：批次一 1.1–1.6（A1/A2/A3/A6/A7/A8）✅
+账本 [15-debt-registry.md](15-debt-registry.md)）：批次一 1.1–1.7
+（A1/A2/A3/A6/A7/A8 + 小修 A12/A13/A14/A15）✅
 
 ---
 
@@ -195,6 +196,20 @@ typecheck ✓ · **1114 单测**（+1）· `verify:m10` 15/15 · `verify:m16` 29
 新断言（`RoomServer.test.ts`，真 socket）三条各对一个洞：
 对手收到 `Death` 且无 killerId、临时装备清空 + 回落默认武器、
 结算面板（`MatchStats`）里退出者 deaths = 1。
+
+---
+
+## 清账批次一 · 1.7 小修四连：A12/A13/A14/A15（2026-08-04）
+
+| 账 | 修法 |
+|---|---|
+| **A12** `antialias` 假绿 | 字段**从未被消费**（渲染器构造硬编码 true、QualityController 不读），而 `quality.test.ts` 还断言着它 —— 与 vitest forks 那次「统计数字在说谎」同类。**删字段删断言**，不留假绿；真按档切 MSAA 要重建 renderer，归 P9 时再加回并真消费 |
+| **A13** 切画质丢 preset | 两个场景切档都只调 `env.apply(tier)` → preset 静默回落 day。`Environment` 记住 `lastOpts`：选项是表现状态不是每次调用的参数，切档只换画质不换天。调用点零改动 |
+| **A14** 死片段名 | `SWING_CLIPS` 第 4 项 `Unarmed_Melee_Attack_Punch_A` 在任何模型里都不存在 —— 已删。按武器类型选片段是 W14 动画分层批的事，不预埋假名字 |
+| **A15** 池容量注释 | `ParticleBurst.ts` 活注释把两个池的格数张冠李戴（三期扩容后没跟上）—— 改正并注明「以 SpellVfx 构造参数为准」。★ PROGRESS 二期章节的「32 格」是**当时的真实值**，按「历史数字不回填」规矩**保留不改** |
+
+**验证**：typecheck ✓ · 1125 单测（A12 删一条假绿断言，A8 批加了两条，净数不变）·
+`verify:m12` 26/26（Environment 改动的回归载体）
 
 ---
 

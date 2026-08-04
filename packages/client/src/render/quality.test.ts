@@ -92,8 +92,13 @@ describe('★ 验收 #48：低画质不能隐藏关键信息（14.4）', () => {
     }
   });
 
-  it('★ 低画质关掉阴影与抗锯齿 —— 减的都是装饰，不是信息', () => {
+  /**
+   * ★ A12（技术债总账）：这里曾断言 `low.antialias === false` —— 但那个字段
+   *   **从未被任何代码消费**（渲染器构造硬编码 true、QualityController 不读），
+   *   绿灯是假的。与 vitest forks 那次「统计数字本身在说谎」同一类缺陷：
+   *   测试断言一个死设置，比没有测试更糟。字段已删，本断言只留真的。
+   */
+  it('★ 低画质关掉阴影 —— 减的都是装饰，不是信息', () => {
     expect(QUALITY_SETTINGS.low.shadowMapSize).toBe(0);
-    expect(QUALITY_SETTINGS.low.antialias).toBe(false);
   });
 });

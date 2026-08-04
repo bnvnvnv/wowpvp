@@ -163,14 +163,20 @@ export interface QualitySettings {
   shadowMapSize: number;
   /** 装饰粒子密度系数 */
   particleDensity: number;
-  /** 抗锯齿 */
-  antialias: boolean;
   /** 渲染分辨率倍率 */
   pixelRatioCap: number;
 }
 
+/**
+ * ⚠️ 这里**没有** `antialias` 字段 —— 它曾经在，且 low 档写着 false，
+ *   但抗锯齿是 WebGLRenderer 的**构造参数**、运行时改不了，两个场景都
+ *   硬编码 `antialias: true`，`QualityController` 也从不读它 —— 一个从未
+ *   生效的设置，还配着一条断言它的绿灯测试（「测试通过 ≠ 功能存在」）。
+ *   按 A12 删除，不留假绿；真要按档位切 MSAA 得随 P9（自动降档）重建
+ *   renderer，届时再加回来并**真的消费**它。
+ */
 export const QUALITY_SETTINGS: Record<QualityTier, QualitySettings> = {
-  low: { tier: 'low', shadowMapSize: 0, particleDensity: 0, antialias: false, pixelRatioCap: 1 },
-  medium: { tier: 'medium', shadowMapSize: 1024, particleDensity: 0.5, antialias: true, pixelRatioCap: 1.5 },
-  high: { tier: 'high', shadowMapSize: 2048, particleDensity: 1, antialias: true, pixelRatioCap: 2 },
+  low: { tier: 'low', shadowMapSize: 0, particleDensity: 0, pixelRatioCap: 1 },
+  medium: { tier: 'medium', shadowMapSize: 1024, particleDensity: 0.5, pixelRatioCap: 1.5 },
+  high: { tier: 'high', shadowMapSize: 2048, particleDensity: 1, pixelRatioCap: 2 },
 };

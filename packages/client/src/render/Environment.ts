@@ -68,10 +68,21 @@ export class Environment {
   }
 
   /**
+   * 最近一次显式传入的表现选项。
+   * ★ A13（技术债总账）：切画质时两个场景都只调 `apply(tier)` 不带 opts ——
+   *   此前这会把昼夜 preset 静默回落到 day。选项是**表现状态**不是每次调用
+   *   的参数，记住上一次的值，切档只换画质不换天。
+   */
+  private lastOpts: EnvironmentOptions = {};
+
+  /**
    * 按当前画质加载环境。切档时再调一次即可（低→高会补加载，高→低会卸载）。
    * ★ 不 await：调用方不该为了一张 2MB 的贴图卡住首帧。
+   * ★ 不带 `opts` 的调用沿用上一次的 preset/sky（见 `lastOpts`）。
    */
-  apply(tier: QualityTier, opts: EnvironmentOptions = {}): void {
+  apply(tier: QualityTier, opts?: EnvironmentOptions): void {
+    if (opts !== undefined) this.lastOpts = opts;
+    const effective = this.lastOpts;
     // 14.4「非关键光照」—— 低画质不加载 IBL，基础三盏灯照常工作
     if (!isVisible('ambientLight', tier)) {
       this.unload();
@@ -83,7 +94,7 @@ export class Environment {
      *   全部被糊掉；天空又叠了 `backgroundBlurriness`。
      *   实测差别肉眼不可见，代价却是 2MB → **8MB** 与一次明显更长的解码。
      */
-    void this.load(`/art/env/${ENV_PRESETS[opts.preset ?? 'day']}_1k.hdr`, opts.sky ?? true);
+    void this.load(`/art/env/${ENV_PRESETS[effective.preset ?? 'day']}_1k.hdr`, effective.sky ?? true);
   }
 
   private loadingUrl: string | undefined;

@@ -50,10 +50,10 @@
 | A9 | **`Death` 事件对「杀手不可见」的接收者整条丢弃** → 全队收不到死亡反馈，只能靠快照 `alive:false` 推断。偏差 #4 家族残留：`Damage` 已改「发但抹 sourceId」，`Death` 没跟 | `packages/server/src/MatchLoop.ts` `redactFor` default 分支 | 命中/死亡反馈缺失（14.1 同源） | ⛔ |
 | A10 | **近战 `inRange` 把碰撞体重叠判为超距**（原 PROGRESS 技术债 §8 迁入）：负边距 + `min=0` 检查 → 站进模型里拳击永远 OutOfRange。修时先补「重叠时可施放」单测 | `packages/shared/src/math/geometry.ts` `edgeDistance` 注释 + `inRange()` | 需主动贴脸才触发，低频 | ⛔ |
 | A11 | **死亡后客户端照常发输入、技能栏可点**（服务器静默拒绝）：`simulate` 只判 `started` 不判 `alive` | `packages/client/src/scenes/NetworkScene.ts` `simulate()`（≈:1139） | 无害但脏流量 + 死亡体验混乱（与 W5 联动） | ⛔ |
-| A12 | **`antialias` 是死设置且有假绿测试**：档位表声明、`QualityController.apply()` 不消费、两个场景渲染器硬编码 `true`，而 `quality.test.ts` 断言这个无效字段 —— 「测试通过 ≠ 功能存在」的实例 | `packages/client/src/render/quality.ts`（≈:167）、`QualityController.ts`（≈:65-71）、`quality.test.ts`（≈:97） | 低端机 low 档拿不到承诺的收益；绿灯说谎 | ⛔ |
-| A13 | **切画质丢昼夜 preset**：两处 `env.apply(tier)` 不带 preset 参数，回落 day | `packages/client/src/scenes/TestbedScene.ts`（≈:916）、`NetworkScene.ts`（≈:811） | 一行级；W15 做完后会显形 | ⛔ |
-| A14 | **`SWING_CLIPS` 含不存在的片段名** `Unarmed_Melee_Attack_Punch_A`（任何模型里都没有）；[1] 之后的条目全是死分支 | `packages/client/src/entity/CharacterView.ts`（≈:66-69） | 死数据误导后人 | ⛔ |
-| A15 | **粒子池容量注释三处过期互相矛盾**：注释写 32 格/40 格，实际事件池 40×48、细流池 48×32 | `packages/client/src/vfx/ParticleBurst.ts`（≈:459-461）、`docs/PROGRESS.md`（≈:481） | 文档说谎 | ⛔ |
+| A12 | **`antialias` 是死设置且有假绿测试**：档位表声明、`QualityController.apply()` 不消费、两个场景渲染器硬编码 `true`，而 `quality.test.ts` 断言这个无效字段 —— 「测试通过 ≠ 功能存在」的实例 | 字段与断言已删（quality.ts 留注释说明；真按档切 MSAA 随 P9 重建 renderer 时再加回并真消费） | 低端机 low 档拿不到承诺的收益；绿灯说谎 | ✅ 批次一 1.7（2026-08-04） |
+| A13 | **切画质丢昼夜 preset**：两处 `env.apply(tier)` 不带 preset 参数，回落 day | `Environment.apply` 记住 `lastOpts`，不带 opts 沿用上次（两处调用点零改动） | 一行级；W15 做完后会显形 | ✅ 批次一 1.7（2026-08-04） |
+| A14 | **`SWING_CLIPS` 含不存在的片段名** `Unarmed_Melee_Attack_Punch_A`（任何模型里都没有）；[1] 之后的条目全是死分支 | 死条目已删；按武器类型选片段归 W14 | 死数据误导后人 | ✅ 批次一 1.7（2026-08-04） |
+| A15 | **粒子池容量注释过期互相矛盾**：注释写 32 格/40 格，实际事件池 40×48、细流池 48×32 | `ParticleBurst.ts` 活注释改正并指向构造参数为准；PROGRESS 二期章节的 32 格是**当时真实值**，按「历史数字不回填」规矩保留 | 文档说谎 | ✅ 批次一 1.7（2026-08-04） |
 | A16 | **施法失败提示优先级**（原 PROGRESS 技术债 §3）：资源检查排在距离前 → 怒气 0 的战士在 30 米外收到「资源不足」。正解是**另加** `describeCastBlockers()` 全量提示，不改门禁顺序 | `packages/shared/src/sim/casting.ts` `validateCast()` 顺序 | 提示质量（15.2） | ⛔ |
 
 ## S. 安全与公网部署

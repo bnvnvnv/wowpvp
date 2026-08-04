@@ -66,7 +66,9 @@ const SWING_CLIPS = [
   '1H_Melee_Attack_Slice_Diagonal',
   '1H_Melee_Attack_Chop',
   '2H_Melee_Attack_Chop',
-  'Unarmed_Melee_Attack_Punch_A',
+  // ★ A14：原第 4 项 'Unarmed_Melee_Attack_Punch_A' 在**任何**模型里都不存在
+  //   （八个职业共用同一组 22 片段，逐一核对过）—— 死条目已删，
+  //   按武器类型选片段（双持/远程）是 W14 动画分层批的事，别在这里预埋假名字
 ];
 
 /**
