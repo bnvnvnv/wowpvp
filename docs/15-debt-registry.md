@@ -114,11 +114,11 @@
 
 | ID | 债 | 证据 | 影响 | 状态 |
 |---|---|---|---|---|
-| P1 | **`listEntities()` 每次 spread 新数组且被放进嵌套循环**：tick 软推开对每个移动实体再 spread 全体（O(n²) + 24 人 48 数组/tick）；groundArea 三层嵌套；projectile 每子步 3 次数组分配。`tick.ts` 内层调用是**循环不变量，提出去一行即消** | `shared/src/sim/world.ts:92`；`sim/tick.ts`（≈:374-377）；`sim/groundArea.ts`（≈:86,96）；`sim/projectile.ts`（≈:255,283） | 20Hz × 所有房间的基础成本 | ⛔ |
-| P2 | **人机会话拿完整快照 + 裁剪 + `JSON.stringify` 后在 socket 层丢弃** → 满人机房开销 = 满人房。`BotDriver` 注释自认欠账但低估了成本（stringify 也跑了） | `room/RoomServer.ts` `takeOverByBot`（塞进 sessions）；`MatchLoop.ts` `broadcastSnapshots`；`BotDriver.ts:50-58` | 补位与接管都走这条路 | ⛔ |
+| P1 | **`listEntities()` 每次 spread 新数组且被放进嵌套循环**：tick 软推开对每个移动实体再 spread 全体（O(n²) + 24 人 48 数组/tick）；groundArea 三层嵌套；projectile 每子步 3 次数组分配。`tick.ts` 内层调用是**循环不变量，提出去一行即消** | 三处循环内调用已 hoist（各步顶层的现取**保留** —— 第 3–5 步的效果可能生成实体） | 20Hz × 所有房间的基础成本 | ✅ 批次一 1.8（2026-08-04，balance 逐位不变） |
+| P2 | **人机会话拿完整快照 + 裁剪 + `JSON.stringify` 后在 socket 层丢弃** → 满人机房开销 = 满人房。`BotDriver` 注释自认欠账但低估了成本（stringify 也跑了） | `BotSocket.isBot` 标记 + `broadcastSnapshots` 跳过（跳的是浪费不是裁剪语义，M16b 红线原样） | 补位与接管都走这条路 | ✅ 批次一 1.8（2026-08-04，m16 29/29） |
 | P3 | **快照中与视角无关的部分逐接收者重建**：projectiles/grounds/flags/score/armories/suddenDeathBlips 每人重算；每实体 `Object.fromEntries(resources)`×2 → 24 人 ≈ 2.3 万对象/秒 | `shared/src/net/visibility.ts`（≈:489-547、:566-573） | GC 压力主源 | ⛔ |
 | P4 | `assertNoHiddenEntities` 在生产环境把 O(sessions×entities) 可见性再跑一遍（成本 ×2）。🔵 「宁可掉线不能透视」的决定**保留**，但成本应可度量，可改采样/轮转校验 | `MatchLoop.ts`（≈:697-700） | 有意但未度量 | 🔵/⛔ |
-| P5 | **广播对同一消息 stringify N 次**（RoomState/MatchEnd/统计等全量广播）。修法零风险：stringify 一次 + `sendRaw(string)` | `room/RoomServer.ts` `broadcast()`（≈:658）；`MatchLoop.ts` `broadcastStats()` | 白算 | ⛔ |
+| P5 | **广播对同一消息 stringify N 次**（RoomState/MatchEnd/统计等全量广播）。修法零风险：stringify 一次 + `sendRaw(string)` | `Session.sendRaw()` + `broadcast()`/`broadcastStats()` 共享编码 | 白算 | ✅ 批次一 1.8（2026-08-04） |
 | P6 | **全员掉线的对局照跑 20Hz 到终局**：started 分支不调 `dropIfEmpty`，且人机会话占着 `sessions` 让判空恒 false → 无人房间跑完整局（夺旗半小时量级），叠加 P2 | `room/RoomServer.ts` `disconnect()`（≈:152-180、:189） | 可被外部触发的资源占用 | ⛔ |
 | P7 | 重连令牌查找 O(rooms) 线性扫（`[...rooms.values()].find(...)`），应建 token→room 索引 | `room/RoomServer.ts`（≈:580） | 小 | ⛔ |
 | P8 | 无 instancing（全仓 0 处 `InstancedMesh`）；模型材质逐 mesh `.clone()`（为受击闪白）破坏合批 —— 可改顶点色/uniform | `entity/ModelLibrary.ts`（≈:143-145）；`arsenal/ArsenalView.ts` 等 | draw call 随掉落物线性涨 | ⛔ |

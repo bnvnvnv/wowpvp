@@ -215,6 +215,12 @@ export const tickProjectiles = (
 ): ProjectileHitEvent[] => {
   const events: ProjectileHitEvent[] = [];
   const survivors: Projectile[] = [];
+  /**
+   * ★ P1（技术债总账）：本函数只收集命中事件、不结算效果也不生成实体，
+   *   实体集在函数期间稳定 —— 列表提到顶层，弹体 × 子步的嵌套循环
+   *   不再各自 spread。`.alive`/`.position` 仍逐次现读，行为逐位不变。
+   */
+  const entities = listEntities(world);
 
   for (const p of store.items) {
     switch (p.kind) {
@@ -252,7 +258,7 @@ export const tickProjectiles = (
         const clipped = hitWall ? addScaled(from, p.direction, step * clip) : to;
 
         const shooter = world.entities.get(p.sourceId);
-        const candidates = listEntities(world).filter(
+        const candidates = entities.filter(
           (e) =>
             e.id !== p.sourceId &&
             e.alive &&
@@ -280,7 +286,7 @@ export const tickProjectiles = (
 
       case 'delayedImpact': {
         if (world.time >= p.impactAt) {
-          const targets = listEntities(world).filter(
+          const targets = entities.filter(
             (e) => e.alive && distance2D(e.position, p.center) <= p.radius + e.radius,
           );
           events.push({ projectile: p, targets, effects: p.onImpact });

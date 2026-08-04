@@ -76,6 +76,12 @@ export interface GroundTickEvent {
 export const tickGround = (world: World, store: GroundStore): GroundTickEvent[] => {
   const out: GroundTickEvent[] = [];
   const now = world.time;
+  /**
+   * ★ P1（技术债总账）：本函数只**收集**该结算的效果、不结算也不生成实体，
+   *   实体集在函数期间稳定 —— 列表提到顶层，区域 × 补跳 × 陷阱的三层循环
+   *   不再各自 spread。`.alive`/`.position` 仍逐次现读，行为逐位不变。
+   */
+  const entities = listEntities(world);
 
   // ── 地面区域 ──
   store.areas = store.areas.filter((a) => {
@@ -83,7 +89,7 @@ export const tickGround = (world: World, store: GroundStore): GroundTickEvent[] 
 
     // 9.5 照明弹：揭露范围内的潜行单位
     if (a.revealsStealth) {
-      for (const e of listEntities(world)) {
+      for (const e of entities) {
         if (e.flags.stealthed && distance2D(e.position, a.center) <= a.radius) {
           e.flags.stealthRevealed = true;
         }
@@ -93,7 +99,7 @@ export const tickGround = (world: World, store: GroundStore): GroundTickEvent[] 
     if (a.tickInterval > 0 && now >= a.nextTickAt && a.onTick.length > 0) {
       while (now >= a.nextTickAt && a.nextTickAt < a.expiresAt) {
         const source = world.entities.get(a.sourceId);
-        const targets = listEntities(world).filter(
+        const targets = entities.filter(
           (e) =>
             e.alive &&
             e.id !== a.sourceId &&
@@ -115,7 +121,7 @@ export const tickGround = (world: World, store: GroundStore): GroundTickEvent[] 
     if (now < t.armedAt) return true; // 还没布置完成
 
     const source = world.entities.get(t.sourceId);
-    const stepped = listEntities(world).find(
+    const stepped = entities.find(
       (e) =>
         e.alive &&
         e.id !== t.sourceId &&

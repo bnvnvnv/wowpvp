@@ -24,6 +24,7 @@ import {
   INTERACT_RANGE,
   SIM,
   SwapKind,
+  encodeServerMessage,
   assertNoHiddenEntities,
   beginFlagInteract,
   beginPickup,
@@ -701,6 +702,15 @@ export class MatchLoop {
     };
 
     for (const s of this.deps.sessions()) {
+      /**
+       * ★ P2（技术债总账）：人机会话跳过快照的**构建与序列化** ——
+       *   BotSocket 反正把字符串丢掉，此前每个人机每 tick 白付一次完整
+       *   裁剪 + `JSON.stringify`，满人机房开销 = 满人房。
+       *   ⚠️ 跳的是浪费，不是可见性语义（M16b 红线原样）：人机决策层
+       *   （BotDriver）读的是 world，从来不消费快照；每条真人会话的
+       *   `assertNoHiddenEntities` 照跑不误。
+       */
+      if (s.isBot) continue;
       const viewer = this.viewerOf(s.playerId);
       if (!viewer) continue;
 
@@ -780,7 +790,9 @@ export class MatchLoop {
           : {}),
       })),
     };
-    for (const s of this.deps.sessions()) s.send(msg);
+    /** ★ P5（技术债总账）：本局最大的一条消息，全员共享一次编码 */
+    const raw = encodeServerMessage(msg);
+    for (const s of this.deps.sessions()) s.sendRaw(raw);
   }
 
   // ── 小工具 ────────────────────────────────────────────────────

@@ -51,6 +51,14 @@ import type { SessionSocket } from './room/Session.js';
  *   `broadcastSnapshots` 里按 session 类型跳过，**而不是**让人机绕开裁剪。
  */
 export class BotSocket implements SessionSocket {
+  /**
+   * ★ P2（技术债总账）：让 `broadcastSnapshots` 认得出人机会话并跳过
+   *   快照的构建与序列化 —— 此前 send() 在这里丢弃字符串，但完整裁剪 +
+   *   `JSON.stringify` 已经白付过了，满人机房开销 = 满人房。
+   *   ⚠️ 跳的是**浪费**不是可见性语义（M16b 红线原样）：人机决策层读的
+   *   是 world，从来不消费快照。
+   */
+  readonly isBot = true;
   send(): void { /* 人机不看消息 */ }
   close(): void { this.isClosed = true; }
   private isClosed = false;

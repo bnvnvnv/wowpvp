@@ -70,6 +70,8 @@ export interface SessionSocket {
   send: (data: string) => void;
   close: () => void;
   readonly closed: boolean;
+  /** 人机的假 socket 标 true（BotSocket）。广播路径据此跳过白做的活（P2）*/
+  readonly isBot?: boolean;
 }
 
 export class Session {
@@ -131,6 +133,20 @@ export class Session {
   send(msg: ServerMessage): void {
     if (this.socket.closed) return;
     this.socket.send(encodeServerMessage(msg));
+  }
+
+  /** 这条会话是不是人机（BotSocket）。快照/统计广播据此跳过或共享编码 */
+  get isBot(): boolean {
+    return this.socket.isBot === true;
+  }
+
+  /**
+   * 发一条**已编码**的消息。广播路径用 —— 同一条消息对 N 个接收者
+   * 只 `JSON.stringify` 一次（技术债总账 P5），单发路径仍走 `send()`。
+   */
+  sendRaw(data: string): void {
+    if (this.socket.closed) return;
+    this.socket.send(data);
   }
 
   /** 拒绝一条消息。★ 不掉线 —— 见文件头 */

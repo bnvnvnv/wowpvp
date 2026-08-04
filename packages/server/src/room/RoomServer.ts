@@ -21,6 +21,7 @@ import {
   SwapKind,
   canStart,
   createMatch,
+  encodeServerMessage,
   entityOfPlayer,
   isVisibleTo,
   joinRoom,
@@ -671,7 +672,9 @@ export class RoomServer {
   }
 
   private broadcast(sr: ServerRoom, msg: ServerMessage): void {
-    for (const s of sr.sessions) s.send(msg);
+    /** ★ P5（技术债总账）：同一条消息对 N 个接收者只 stringify 一次 */
+    const raw = encodeServerMessage(msg);
+    for (const s of sr.sessions) s.sendRaw(raw);
   }
 
   private broadcastRoomState(sr: ServerRoom): void {

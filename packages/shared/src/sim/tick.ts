@@ -381,6 +381,14 @@ export const tickWorld = (
 
   // ── 2. movement ─────────────────────────────────────────────
   // ★ 只推进 deps.movement 里有条目的实体。没有条目 = 位置由别处驱动
+  /**
+   * ★ P1（技术债总账）：实体列表是本循环的**不变量**（movement 不增删实体），
+   *   提出来 —— 此前每个移动实体各 spread 一次全体，24 人 = 48 数组/tick。
+   *   `o.position` 仍逐次现读（前一个实体这一步挪过的位置要被后一个看到），
+   *   行为逐位不变。⚠️ 不跨步骤共享这个数组：第 3–5 步的效果可能**生成**
+   *   新实体，那几步的 listEntities 必须现取。
+   */
+  const movementEntities = listEntities(deps.world);
   for (const [id, state] of deps.movement) {
     const e = getEntity(deps.world, id);
     if (!e || !e.alive) continue;
@@ -413,7 +421,7 @@ export const tickWorld = (
      *   「停发输入换免推开」的豁免窗口不存在了。
      */
     const others: Vec3[] = [];
-    for (const o of listEntities(deps.world)) {
+    for (const o of movementEntities) {
       if (o.id !== id && o.alive) others.push(o.position);
     }
     const r = stepMovement(state, input, dt, obstacles, {
