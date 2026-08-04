@@ -249,7 +249,7 @@ priest 42.9% · paladin 28.6% · druid 21.4% · warrior 0.0%
 
 | 项 | 位置 | 备注 |
 |---|---|---|
-| 音量设置持久化 | `AudioManager` + accessibility 的存储模式 | M12 已知不足，一小时级 |
+| ~~音量设置持久化~~ ✅ | `settings/audioSettings.ts`，accessibility 同款 normalize/load/save；静音状态一并落盘 | 已完成 |
 | BGM 随战斗状态切换 | `lastCombatAt` 已有，接 `AudioManager.music` | 氛围 |
 | 地图昼夜 preset | `Environment.apply(quality, {preset})` 已支持参数 | 每张图配一个 |
 | 夺旗图铺装饰 | `MapDef.decor` 管线现成（第四轮） | 上轮明说「下一铲」 |
@@ -257,7 +257,7 @@ priest 42.9% · paladin 28.6% · druid 21.4% · warrior 0.0%
 
 ## 继承的技术债（未入上述里程碑）
 
-- custom handler 剩 3 处（技术债 §1，M11 后）
+- custom handler 剩 **2** 处（技术债 §1；技术债清偿批的 `dispel impairs` 语义筛选迁走了 `rogue.clearSlowAndRoot`，剩下两处均为「保留」的显式决定）
 - 572MB 资产的发布打包策略（docs/09 §7.2 —— 到要对外发布时必须解决）
 - `SkillId` 字符串仍是 WoW 派生（18.3 后半段；技能**名称**已于 dcc2abe 原创化，
   id 是承重的，改动是跨数据层重命名，需要单独规划）

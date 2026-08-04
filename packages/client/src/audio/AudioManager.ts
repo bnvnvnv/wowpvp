@@ -20,6 +20,7 @@
  */
 
 import { School } from '@wowpvp/shared';
+import { loadAudioSettings, saveAudioSettings } from '../settings/audioSettings.js';
 
 /** 音量分组。玩家可以只关音乐留音效 */
 export interface AudioVolumes {
@@ -112,6 +113,8 @@ export class AudioManager {
   private readonly buffers = new Map<string, Promise<AudioBuffer | null>>();
   private volumes: AudioVolumes = { ...DEFAULT_VOLUMES };
   private muted = false;
+  /** 持久化存储（attachStorage 挂上）。undefined = 不落盘，行为与从前一致 */
+  private storage: Pick<Storage, 'getItem' | 'setItem'> | undefined;
   private unlocked = false;
   private variantCursor = new Map<string, number>();
   /** 同名音效的最小间隔（秒），挡住一帧内的重复触发叠成爆音 */
@@ -128,6 +131,8 @@ export class AudioManager {
     //   等用户交互的窗口，只看 unlocked 的话这段时间里重复调用会**再挂一对**
     //   监听器，而解锁时只摘得掉其中一对
     if (this.installed || this.disposed) return;
+    // 音量与静音的持久化（速赢清单第 1 项）。install 本就只在浏览器里跑
+    try { this.attachStorage(window.localStorage); } catch { /* 隐私模式等拿不到就算了 */ }
     this.installed = true;
     const unlock = (): void => {
       window.removeEventListener('pointerdown', unlock);
@@ -140,9 +145,28 @@ export class AudioManager {
   }
   private installed = false;
 
+  /**
+   * 挂上持久化存储：立即恢复上次的音量与静音状态，此后每次变更自动落盘。
+   * ★ `install()` 会自动挂 `window.localStorage`；参数化是给测试留的口
+   *   （与 `accessibility.ts` 的 load/save 同一模式）。幂等。
+   */
+  attachStorage(storage: Pick<Storage, 'getItem' | 'setItem'>): void {
+    if (this.storage) return;
+    this.storage = storage;
+    const s = loadAudioSettings(storage);
+    this.volumes = s.volumes;
+    this.muted = s.muted;
+    this.applyGains();
+  }
+
+  private persist(): void {
+    saveAudioSettings(this.storage, { volumes: { ...this.volumes }, muted: this.muted });
+  }
+
   setVolumes(v: Partial<AudioVolumes>): void {
     this.volumes = { ...this.volumes, ...v };
     this.applyGains();
+    this.persist();
   }
 
   get volumeSettings(): AudioVolumes {
@@ -152,6 +176,7 @@ export class AudioManager {
   toggleMute(): boolean {
     this.muted = !this.muted;
     this.applyGains();
+    this.persist();
     return this.muted;
   }
 
