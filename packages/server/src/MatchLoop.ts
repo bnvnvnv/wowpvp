@@ -831,16 +831,37 @@ const removalReason = (
 
 /**
  * 一条消息里提到的全部实体 id。可见性判断用。
- * ★ `Damage` / `Heal` 不在这里 —— 它们走 `redactFor()` 的抹来源分支，
- *   而不是「有一个看不见就整条丢」。
+ * ★ `Damage` / `Heal` / `CastResolved` 不走这里 —— 它们在 `redactFor()`
+ *   有专门的**抹而不丢**分支；这里登记的是「有一个看不见就整条丢」的消息。
+ *
+ * ★★ **switch 必须穷尽**（`satisfies never`，与 codec.ts 同款）——
+ *   此前是 `default: return []` 的 fail-open：新增一条带 EntityId 的
+ *   服务器消息而忘了登记，`redactFor` 会**原样放行**，静默泄露实体 id，
+ *   而且没有任何测试站在这个断点上（技术债总账 A7）。
+ *   现在新增消息类型不在这里表态就**编译不过** —— 归类是强制的、显眼的。
  */
-const referencedEntities = (msg: ServerMessage): EntityId[] => {
+export const referencedEntities = (msg: ServerMessage): EntityId[] => {
   switch (msg.t) {
+    // ── 走 dispatch() 广播的事件消息：引用的实体逐字段登记 ──────
     case 'AuraApplied': case 'AuraRemoved': return [msg.targetId];
     case 'Death': return msg.killerId !== undefined ? [msg.entityId, msg.killerId] : [msg.entityId];
     case 'CastStarted': return [msg.casterId];
     case 'CastInterrupted': return [msg.casterId];
     case 'FlagEvent': return msg.carrierId !== undefined ? [msg.carrierId] : [];
-    default: return [];
+    // ── 抹而不丢（redactFor 的专门分支，永远到不了这里）────────
+    case 'Damage': case 'Heal': case 'CastResolved': return [];
+    // ── 不走 dispatch() 的消息：私信（CastFailed/ArsenalOffer/PickupResult/
+    //    Rejected/Welcome/MatchStart）、按接收者构建（Snapshot —— 它若出现在
+    //    dispatch 里本身就是接线错误，可见性由 buildSnapshot 保证）、
+    //    赛后/房间广播（RoomState/RoundEnd/MatchEnd/MatchStats/Peer*，
+    //    对局结束或房间阶段没有需要瞒的实体）──────────────────
+    case 'Welcome': case 'RoomState': case 'MatchStart': case 'Snapshot':
+    case 'CastFailed': case 'ArsenalOffer': case 'PickupResult':
+    case 'RoundEnd': case 'MatchEnd': case 'MatchStats': case 'Rejected':
+    case 'PeerDisconnected': case 'PeerReconnected': case 'PeerEliminated':
+      return [];
+    default:
+      // ★ 走到这里说明协议加了新消息却没在上面归类 —— 编译期就该红
+      return [msg satisfies never];
   }
 };

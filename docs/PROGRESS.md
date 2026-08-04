@@ -16,7 +16,7 @@
 下一站 **M17 留存钩子**（生涯记录 → 外观 → 回放，
 依赖对局人口，判据届时再定）。
 **清账批次已开工**（[16-roadmap-post-m16.md](16-roadmap-post-m16.md)，
-账本 [15-debt-registry.md](15-debt-registry.md)）：批次一 1.1–1.4（A1/A2/A3/A6）✅
+账本 [15-debt-registry.md](15-debt-registry.md)）：批次一 1.1–1.5（A1/A2/A3/A6/A7）✅
 
 ---
 
@@ -195,6 +195,27 @@ typecheck ✓ · **1114 单测**（+1）· `verify:m10` 15/15 · `verify:m16` 29
 新断言（`RoomServer.test.ts`，真 socket）三条各对一个洞：
 对手收到 `Death` 且无 killerId、临时装备清空 + 回落默认武器、
 结算面板（`MatchStats`）里退出者 deaths = 1。
+
+---
+
+## 清账批次一 · A7：消息裁剪的登记表改 fail-closed（2026-08-04）
+
+docs/16 批次一第 5 项，技术债总账 A7 清偿。
+
+**根因**：`referencedEntities()` 的 `default: return []` 是 fail-open ——
+新增一条带 EntityId 的服务器消息而忘了登记，`redactFor` 会**原样放行**，
+静默泄露实体 id；而 codec 侧对客户端消息用的是 `satisfies never` 穷尽保证。
+同一类问题、两侧相反的做法，且没有任何测试站在这个断点上。
+
+**修法**：switch 穷尽化（`satisfies never`，与 codec.ts 同款）——
+全部 23 种服务器消息逐一归类（事件消息登记引用的 id；抹而不丢的三种
+标注去向；不走 dispatch 的私信/快照/赛后广播显式归为空并写明理由）。
+**新消息不归类就编译不过**：归类成为强制的、显眼的决定。
+
+**验证**：typecheck ✓ · **1123 单测**（+5：逐类登记断言，含「凶手缺席只引用
+死者」「无旗手为空」「抹而不丢的三种返回空」）·
+**编译期变异**：从 switch 摘掉 `MatchStats`，tsc 精确报
+`does not satisfy the expected type 'never'`。
 
 ---
 
