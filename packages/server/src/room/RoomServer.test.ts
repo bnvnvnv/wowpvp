@@ -535,6 +535,44 @@ describe('A3：两个真客户端从房间跑到快照', () => {
     c.close();
   });
 
+  /**
+   * ★★ A3（技术债总账）：半开连接由心跳识别，走与正常断线**同一条**接管路径。
+   *
+   *   半开连接（断电/拔网线/NAT 超时）不触发 'close' —— 心跳落地之前，
+   *   偏差 #14「断线瞬间接管」只对优雅关闭的连接成立，最常见的断线形态下
+   *   那个角色是一具站着挨打的尸体，直到 TCP 自己超时（可能十几分钟）。
+   *
+   *   模拟手法：暂停客户端的底层 TCP 读取 —— pong 是 ws 库读到 ping 帧时
+   *   自动回复的（RFC 6455），读不到 ping 自然不会回，对服务器与拔网线同观。
+   *   ★ 变异测试：把心跳里的 terminate 拿掉，这条在 waitFor 超时上红。
+   */
+  it('★★ A3：半开连接触发心跳淘汰 → 对手收到 PeerDisconnected，角色由人机接管', async () => {
+    const hb = await startServer(0, { heartbeatIntervalMs: 120, heartbeatMaxMisses: 2 });
+    const red = await TestClient.connect(hb.port);
+    const blue = await TestClient.connect(hb.port);
+    try {
+      await readyUp(red, 'a3', '红方', 'red', 'mage');
+      await readyUp(blue, 'a3', '蓝方', 'blue', 'warrior');
+      await red.waitFor('MatchStart');
+      const blueStart = await blue.waitFor('MatchStart');
+
+      // 半开开始：从此蓝方什么都收不到、也不再回 pong —— 但 TCP 没有断
+      (blue.socket as unknown as { _socket: { pause(): void } })._socket.pause();
+
+      const gone = await red.waitFor('PeerDisconnected', 5000);
+      expect(gone.playerId.length).toBeGreaterThan(0);
+
+      // 偏差 #14：接管的是**同一具身体** —— 角色仍在世界里且活着，不是消失/判死
+      const match = hb.rooms.matchOf('a3')!;
+      const blueEntity = match.world.entities.get(blueStart.you)!;
+      expect(blueEntity.alive, '半开断线的角色应由人机接管，而不是消失或判死').toBe(true);
+    } finally {
+      blue.socket.terminate();
+      red.socket.terminate();
+      await hb.close();
+    }
+  });
+
   /** ★ 阶段鉴权：比赛开始后再发 SelectClass 是越权 */
   it('★ 战斗中发 SelectClass 被拒绝（阶段鉴权）', async () => {
     const red = await TestClient.connect(server.port);

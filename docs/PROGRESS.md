@@ -16,7 +16,7 @@
 下一站 **M17 留存钩子**（生涯记录 → 外观 → 回放，
 依赖对局人口，判据届时再定）。
 **清账批次已开工**（[16-roadmap-post-m16.md](16-roadmap-post-m16.md)，
-账本 [15-debt-registry.md](15-debt-registry.md)）：批次一 1.1（A1）、1.2（A2）✅
+账本 [15-debt-registry.md](15-debt-registry.md)）：批次一 1.1–1.3（A1/A2/A3）✅
 
 ---
 
@@ -195,6 +195,28 @@ typecheck ✓ · **1114 单测**（+1）· `verify:m10` 15/15 · `verify:m16` 29
 新断言（`RoomServer.test.ts`，真 socket）三条各对一个洞：
 对手收到 `Death` 且无 killerId、临时装备清空 + 回落默认武器、
 结算面板（`MatchStats`）里退出者 deaths = 1。
+
+---
+
+## 清账批次一 · A3：心跳让半开连接真的触发接管（2026-08-04）
+
+docs/16 批次一第 3 项，技术债总账 A3 清偿。
+
+**根因**：服务器没有任何 ping/pong 或空闲检测。半开连接（断电、拔网线、
+NAT 超时）不触发 `'close'` —— 偏差 #14 承诺的「断线瞬间接管」只对**优雅关闭**
+的连接成立，最常见的断线形态下那个角色是一具站着挨打的尸体，
+直到 TCP 自己超时（可能十几分钟）。
+
+**修法**：`startServer` 加心跳（可配置，默认 30s ping、连续 2 次无 pong 判半开）。
+pong 由对端 ws 实现按 RFC 6455 自动回复，不需要客户端代码配合；
+落空达到上限 → `terminate()` —— 它触发的是与正常断线**同一个**
+`'close'` → `disconnect()` → `takeOverByBot()` 路径，**不开第二条断线通道**
+（与 BotSocket 不开第二条输入通道同一条纪律）。
+
+**验证**：typecheck ✓ · **1117 单测**（+1）· `verify:m10` 15/15 ·
+新断言（真 socket）：暂停蓝方底层 TCP 读取模拟半开 —— 对手收到
+`PeerDisconnected`、角色仍在世界里且活着（接管的是同一具身体）·
+**变异测试**：拿掉 terminate，断言在超时上红。
 
 ---
 

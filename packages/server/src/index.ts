@@ -32,6 +32,13 @@ export interface StartedServer {
   close: () => Promise<void>;
 }
 
+export interface ServerOptions {
+  /** 心跳 ping 间隔（毫秒）。0 = 关闭心跳（需要绝对安静线路的测试用） */
+  heartbeatIntervalMs?: number;
+  /** 连续几次 ping 没等到 pong 就按半开连接 terminate */
+  heartbeatMaxMisses?: number;
+}
+
 /**
  * 起一个服务器。
  *
@@ -39,7 +46,7 @@ export interface StartedServer {
  *   （随机端口、用完关掉）。A6 的 `verify:m10` 也走这个入口 ——
  *   测试跑的和线上跑的是同一段启动代码。
  */
-export const startServer = async (port = 0): Promise<StartedServer> => {
+export const startServer = async (port = 0, opts: ServerOptions = {}): Promise<StartedServer> => {
   const rooms = new RoomServer();
 
   const httpServer = createServer((_req, res) => {
@@ -49,7 +56,37 @@ export const startServer = async (port = 0): Promise<StartedServer> => {
 
   const wss = new WebSocketServer({ server: httpServer });
 
+  /**
+   * ★ 心跳与半开连接检测（技术债总账 A3）。
+   *
+   *   半开连接（断电、拔网线、NAT 超时）**不触发 'close'** —— 没有心跳的话
+   *   它永远不被识别为断线，人机接管（偏差 #14「断线瞬间接管」）对最常见的
+   *   断线形态失效：那个角色就是一具站着挨打的尸体，直到 TCP 自己超时
+   *   （可能十几分钟）。
+   *
+   *   pong 由对端 ws 实现按 RFC 6455 §5.5.3 自动回复，不需要客户端代码配合。
+   *   连续 maxMisses 次 ping 落空 → `terminate()`，它触发的是与正常断线
+   *   **同一个** 'close' → `rooms.disconnect()` → 接管路径 —— 不开第二条
+   *   断线通道（与 BotSocket 不开第二条输入通道同一条纪律）。
+   */
+  const heartbeatMs = opts.heartbeatIntervalMs ?? 30_000;
+  const maxMisses = opts.heartbeatMaxMisses ?? 2;
+  const missesOf = new WeakMap<WebSocket, number>();
+  const heartbeat = heartbeatMs > 0
+    ? setInterval(() => {
+        for (const socket of wss.clients) {
+          if (socket.readyState !== socket.OPEN) continue;
+          const misses = missesOf.get(socket) ?? 0;
+          if (misses >= maxMisses) { socket.terminate(); continue; }
+          missesOf.set(socket, misses + 1);
+          socket.ping();
+        }
+      }, heartbeatMs)
+    : undefined;
+
   wss.on('connection', (socket: WebSocket) => {
+    missesOf.set(socket, 0);
+    socket.on('pong', () => missesOf.set(socket, 0));
     const session = rooms.connect(adapt(socket));
 
     socket.on('message', (raw) => {
@@ -81,6 +118,7 @@ export const startServer = async (port = 0): Promise<StartedServer> => {
     port: actualPort,
     rooms,
     close: async () => {
+      if (heartbeat) clearInterval(heartbeat);
       rooms.stopAll();
       for (const c of wss.clients) c.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
