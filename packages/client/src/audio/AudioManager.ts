@@ -246,7 +246,17 @@ export class AudioManager {
 
     void this.buffer(name, 'music').then((buf) => {
       if (!buf || this.disposed || this.currentMusic !== name) return;
-      this.music?.stop();
+      /**
+       * W13：旧曲 1 秒淡出再停 —— BGM 随战斗状态来回切换后，
+       * 硬切会很刺耳（此前全场一首曲子，这条路径从来没走过第二次）。
+       */
+      const oldSrc = this.music;
+      const oldGain = this.musicGain;
+      if (oldSrc && oldGain) {
+        oldGain.gain.setValueAtTime(oldGain.gain.value, ctx.currentTime);
+        oldGain.gain.linearRampToValueAtTime(0, ctx.currentTime + 1);
+        oldSrc.stop(ctx.currentTime + 1.05);
+      }
       const src = ctx.createBufferSource();
       src.buffer = buf;
       src.loop = true;

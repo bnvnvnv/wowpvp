@@ -78,6 +78,7 @@ import { partyViewFromSnapshot } from '../hud/PartyFrame.js';
 import type { MinimapBlip } from '../hud/ModeHud.js';
 import { nextSpectateTarget } from '../spectate/SpectateController.js';
 import { SettingsPanel } from '../settings/SettingsPanel.js';
+import { MusicDirector, ambientTrackFor } from '../audio/MusicDirector.js';
 import { SnapshotCombatView, castStateFromStarted } from '../net/SnapshotCombatView.js';
 import { audio } from '../audio/AudioManager.js';
 import { FAIL_TEXT } from '../combat/CombatDirector.js';
@@ -244,6 +245,8 @@ export class NetworkScene {
   private readonly rttLabel: HTMLElement;
   /** W9：设置面板（音量/画质/无障碍第一次在联网对局可达）*/
   private readonly settings: SettingsPanel;
+  /** W13：BGM 随战斗状态切换。懒建 —— 氛围曲要等 MatchStart 的 mapId */
+  private musicDir?: MusicDirector;
   /** 指令往返延迟的平滑值（EMA）。★ 含服务器 50ms tick 批处理，如实不减 */
   private rttMs: number | null = null;
   /** Input seq → 发出时刻。快照的 ackSeq 回来时配对算 RTT */
@@ -730,6 +733,8 @@ export class NetworkScene {
       //   （例如没有 avoided/immune 的区分），所以声音也如实地少一层，
       //   ⚠️ 不编一个「大概是格挡」的音效：那会让玩家按不存在的反馈做判断
       case 'Damage': {
+        // W13：可见的战斗事件 = BGM 的战斗判定来源（联网口径）
+        this.musicDir?.noteCombat(this.serverTime);
         /**
          * 打击感改造：整段交给 HitFeedback（与试验场同一编排、同一分档判据）。
          * ★ 顺手修掉旧不一致：flashHit 此前只给自己（:386），现在所有可见
@@ -760,6 +765,7 @@ export class NetworkScene {
         break;
       }
       case 'Heal': {
+        this.musicDir?.noteCombat(this.serverTime); // W13：治疗同样算战斗活动
         audio.play('heal_impact', this.audioDistance(msg.targetId));
         this.feedback.onHeal({
           targetId: msg.targetId, amount: msg.amount, crit: msg.crit === true,
@@ -975,7 +981,11 @@ export class NetworkScene {
     }
     // 速赢清单：O 键记分板
     if (input.pressed.has(Action.ToggleScoreboard)) this.hud.scoreboard.toggle();
-    if (this.started) audio.playMusic('combat_1');
+    if (this.started) {
+      // W13：BGM 随战斗状态切换。联网口径 = 收到的 Damage/Heal（见 MusicDirector 头注）
+      this.musicDir ??= new MusicDirector(ambientTrackFor(this.map?.id as string | undefined));
+      this.musicDir.update(this.serverTime);
+    }
     // 5.3：Tab 正序、Shift+Tab 反序
     if (input.pressed.has(Action.TargetNext)) this.tabTarget(false);
     if (input.pressed.has(Action.TargetPrev)) this.tabTarget(true);

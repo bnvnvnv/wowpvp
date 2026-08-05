@@ -250,7 +250,7 @@ priest 42.9% · paladin 28.6% · druid 21.4% · warrior 0.0%
 | 项 | 位置 | 备注 |
 |---|---|---|
 | ~~音量设置持久化~~ ✅ | `settings/audioSettings.ts`，accessibility 同款 normalize/load/save；静音状态一并落盘 | 已完成 |
-| BGM 随战斗状态切换 | `lastCombatAt` 已有，接 `AudioManager.music` | 氛围 |
+| ~~BGM 随战斗状态切换~~ ✅ | `MusicDirector`：试验场读 sim 的 `lastCombatAt`、联网按可见 Damage/Heal；每图配氛围曲 + 交叉淡化 | 已完成（清账批次二 2.9）|
 | 地图昼夜 preset | `Environment.apply(quality, {preset})` 已支持参数 | 每张图配一个 |
 | 夺旗图铺装饰 | `MapDef.decor` 管线现成（第四轮） | 上轮明说「下一铲」 |
 | ~~Tab 记分板~~ ✅ | `hud/Scoreboard.ts`，键位 **O**（Tab 被 5.3 选目标占用）| 已完成 —— 联网侧此前根本没有比分显示，`match.score` 一直在发无人消费 |

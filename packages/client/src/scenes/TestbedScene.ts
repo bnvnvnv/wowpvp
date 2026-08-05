@@ -35,6 +35,7 @@ import { ModelLibrary } from '../entity/ModelLibrary.js';
 import { CombatHud } from '../hud/CombatHud.js';
 import { partyViewOf } from '../hud/PartyFrame.js';
 import { SettingsPanel } from '../settings/SettingsPanel.js';
+import { MusicDirector, ambientTrackFor } from '../audio/MusicDirector.js';
 import { FAIL_TEXT } from '../combat/CombatDirector.js';
 import { Action, InputManager, type FrameInput } from '../input/InputManager.js';
 import { DecorRenderer } from '../render/DecorRenderer.js';
@@ -107,6 +108,8 @@ export class TestbedScene {
   private readonly hud: CombatHud;
   /** W9：设置面板（F10）*/
   private readonly settings: SettingsPanel;
+  /** W13：BGM 随战斗状态切换（氛围曲按地图配，见 MAP_AMBIENT_TRACK）*/
+  private readonly musicDir: MusicDirector;
   /** 场上其他战斗实体的可视化 */
   private readonly dummyViews = new Map<number, CharacterView>();
   /** M12：假人的动作状态机（由位置差分驱动，与联网场景的远端角色同一思路）*/
@@ -180,6 +183,7 @@ export class TestbedScene {
     stage: Stage = TESTBED_STAGE,
   ) {
     this.stage = stage;
+    this.musicDir = new MusicDirector(ambientTrackFor(stage.map.id as string));
     this.characterYaw = stage.spawn.yaw;
     this.prevPosition = { ...stage.spawn.position };
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -976,7 +980,10 @@ export class TestbedScene {
     if (input.pressed.has(Action.ToggleScoreboard)) this.hud.scoreboard.toggle();
     // ★ 首次交互解锁之后才开 BGM。放在这里而不是构造函数：AudioContext
     //   在用户交互前是 suspended 的，构造时开会得到一段无声播放的音乐
-    audio.playMusic('combat_1');
+    // W13：BGM 随战斗状态切换。战斗口径 = sim 权威的 `lastCombatAt`
+    //（M11 双向打标：打人与被打都算），脱战 8 秒淡回本图氛围曲
+    this.musicDir.noteCombat(this.combat.player.lastCombatAt);
+    this.musicDir.update(this.combat.world.time);
 
     // ── M2 战斗操作 ─────────────────────────────────────────
     // ★ Tab 用的是**镜头** yaw（5.3「当前镜头前方约 140 度范围内循环」）
