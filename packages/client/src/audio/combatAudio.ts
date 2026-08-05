@@ -10,7 +10,7 @@
  *   六种结果六种声音，而不是「打中了就一声闷响」。
  */
 
-import type { CombatEvent, EntityId, School, SkillDef, Vec3 } from '@wowpvp/shared';
+import type { CombatEvent, EntityId, SkillDef, Vec3 } from '@wowpvp/shared';
 import { CastKind, distance2D } from '@wowpvp/shared';
 import type { AudioManager } from './AudioManager.js';
 

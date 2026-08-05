@@ -17,7 +17,6 @@ import type {
   DrCategory,
   Resource,
   School,
-  ShapeKind,
   TargetFilter,
   Targeting,
 } from '../types/enums.js';

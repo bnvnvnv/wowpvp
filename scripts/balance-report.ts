@@ -24,15 +24,14 @@
  */
 
 import {
-  ALL_CLASSES, CastFailure, GameMode, SIM, TEAM_BLUE, TEAM_RED,
+  ALL_CLASSES, GameMode, SIM, TEAM_BLUE, TEAM_RED,
   addEntity, allocEntityId, createArena, createArsenalStore, createAuraStore,
   createCastingStore, createDrStore, createEntity, createGroundStore, createLoadout,
   createLoadoutStore, createMovementState, createProjectileStore, createPickupStore,
-  createSwapStore, createSwingStore, beginSwing, createWorld, distance2D, dirToYaw,
-  getSkill, getWeapon, isCasting, magnitudeOf, sub, tickWorld,
-  validateCast, vec3, ArenaPreset,
+  createSwapStore, createSwingStore, beginSwing, createWorld, getSkill, getWeapon, tickWorld,
+  vec3, ArenaPreset,
   type CastIntent, type ClassDef, type CombatEntity, type EntityId,
-  type MovementState, type SkillDef, type TickDeps, type World,
+  type MovementState, type TickDeps, type World,
 } from '../packages/shared/src/index.ts';
 import { box } from '../packages/shared/src/data/maps/schema.ts';
 import {

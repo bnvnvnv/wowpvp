@@ -12,7 +12,7 @@ import { warrior } from '../../data/index.js';
 import { ctfMap } from '../../data/maps/index.js';
 import type { Vec3 } from '../../math/vec3.js';
 import { FlagState } from '../../types/enums.js';
-import { asEntityId, TEAM_BLUE, TEAM_RED, type EntityId, type TeamId } from '../../types/ids.js';
+import { asEntityId, TEAM_BLUE, TEAM_RED, type TeamId } from '../../types/ids.js';
 import { createAuraStore, deriveStatusFlags, tickAuras, type AuraStore } from '../aura.js';
 import { createEntity, type CombatEntity } from '../entity.js';
 import { addEntity, createWorld, type World } from '../world.js';

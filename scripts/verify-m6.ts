@@ -15,7 +15,7 @@ import * as shared from '../packages/shared/src/index.ts';
 
 const {
   ArenaPreset, GameMode, Resource, School, DispelType,
-  EQUIP, RANGE, TEAM_RED, TEAM_BLUE,
+  EQUIP, RANGE, TEAM_RED,
   SwapKind, addWeapon, applyAura, aurasOf, armoryLayoutFor, armoryOptionsFor,
   availableWeapons, beginPickup, beginSwap, canPickupWeapon,
   createArsenalStore, createAuraStore, createEntity, createLoadout, createLoadoutStore,

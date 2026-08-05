@@ -24,7 +24,6 @@ import { GameMode } from '../../types/enums.js';
 import { TEAM_BLUE, TEAM_RED, type TeamId } from '../../types/ids.js';
 import { clearAuras, type AuraStore } from '../aura.js';
 import { clearDr, type DrStore } from '../dr.js';
-import type { CombatEntity } from '../entity.js';
 import { clearGround, type GroundStore } from '../groundArea.js';
 import { listEntities, type World } from '../world.js';
 import { dampeningAt, type DampeningSnapshot } from './dampening.js';

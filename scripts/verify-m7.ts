@@ -21,7 +21,7 @@ const {
   ctfMap, activeForbidden, routeSeconds,
   createCtf, createWorld, createEntity, createAuraStore, createRespawn,
   addEntity, allocEntityId, vec3, warrior,
-  beginFlagInteract, tickFlags, flagOf, enemyFlagOf, dropFlagBeforeSkill,
+  beginFlagInteract, tickFlags, flagOf, dropFlagBeforeSkill,
   onCarrierLost, ctfWinner, flagViews, clampCarrierSpeedBonus,
   enqueueRespawn, tickRespawn, breakSpawnProtection,
   createMovementState, stepMovement, deriveStatusFlags, tickAuras,

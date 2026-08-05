@@ -29,10 +29,10 @@ import {
 } from './loadout.js';
 import { createSwapStore } from './loadout.js';
 import { createArena, RoundPhase, type ArenaState } from './match/arena.js';
-import { createCtf, enemyFlagOf, type CtfState } from './match/flag.js';
+import { createCtf, enemyFlagOf } from './match/flag.js';
 import { createMovementState, type MovementInput, type MovementState } from './movement.js';
 import { createProjectileStore, type ProjectileStore } from './projectile.js';
-import { createStats, registerPlayer, type StatsStore } from './stats.js';
+import { createStats, registerPlayer } from './stats.js';
 import { TRINKET_COOLDOWN_KEY, tickWorld, type TickDeps } from './tick.js';
 import { addEntity, allocEntityId, createWorld, type World } from './world.js';
 import { dealDamage } from './effects/index.js';

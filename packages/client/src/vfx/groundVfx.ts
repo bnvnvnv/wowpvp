@@ -16,7 +16,6 @@
  * ★ 纯函数、无 three.js 依赖：参数表在 node 单测里逐条断言。
  */
 
-import { MOTION } from './boltVfx.js';
 import { QualityTier, decorativeDensity, isVisible } from '../render/quality.js';
 import type { AttributeVisual } from './schools.js';
 

@@ -65,7 +65,7 @@ console.log('\n── §1 素材许可与登记（附录A#5 / 验收 #51）─�
     hasSource ? 'SOURCE.md 含 GitHub 上游与下载日期' : '缺少 assets/SOURCE.md');
 
   // 1c：T1 硬边界 —— assets/local/ 不得入库（docs/09 §0.2）
-  let trackedLocal = '';
+  let trackedLocal;
   try {
     trackedLocal = execFileSync('git', ['ls-files', 'assets/local'], { cwd: REPO }).toString().trim();
   } catch { trackedLocal = ''; }

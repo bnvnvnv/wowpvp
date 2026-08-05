@@ -67,7 +67,6 @@ import { StatusMarkers } from '../vfx/StatusMarkers.js';
 import { SpellVfx, type CastView } from '../vfx/SpellVfx.js';
 import { TargetRing } from '../vfx/TargetRing.js';
 import { CtfDemo } from '../combat/CtfDemo.js';
-import { CombatHud as Hud } from '../hud/CombatHud.js';
 import type { MinimapBlip } from '../hud/ModeHud.js';
 import { FlagMarkers } from '../vfx/FlagMarkers.js';
 import type { ControlKind } from '../vfx/status.js';

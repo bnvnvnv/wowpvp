@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { getSkill, warrior, mage } from '../data/index.js';
 import { COMBAT_SWING } from '../constants/combat.js';
 import { Resource } from '../types/enums.js';
-import { TEAM_BLUE, TEAM_RED, type EntityId } from '../types/ids.js';
+import { TEAM_BLUE, TEAM_RED } from '../types/ids.js';
 import { box } from '../data/maps/schema.js';
 import { dirToYaw, sub, vec3 } from '../math/vec3.js';
 import { createAuraStore, type AuraStore } from './aura.js';

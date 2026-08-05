@@ -231,7 +231,7 @@ describe('5.3 Tab 优先级排序', () => {
   });
 
   it('其余条件相同时，正在施法的优先', () => {
-    const idle = spawn(mage, BLUE, -1, -12);
+    const _idle = spawn(mage, BLUE, -1, -12); // 站着不动的候选 —— spawn 调用本身是测试布置
     const casting = spawn(mage, BLUE, 1, -12);
     const sorted = sortTabCandidates(
       collectTabCandidates(world, me, { ...opts(), isCasting: (e) => e.id === casting.id }),

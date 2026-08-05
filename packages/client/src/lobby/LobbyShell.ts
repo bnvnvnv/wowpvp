@@ -54,7 +54,6 @@ import {
   sanitizeName,
   shareLink,
   splitRoster,
-  teamLabel,
 } from './logic.js';
 
 /** 昵称的本地存档（照 accessibility 的 `wowpvp.<域>.v1` 键式）*/

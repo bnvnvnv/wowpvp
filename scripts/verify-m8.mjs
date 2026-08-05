@@ -185,7 +185,6 @@ console.log('\n── 验收 #40 / 12.3：带旗使用无敌技能先掉旗（M7
   //   而 `距离太远` 只说明够不着，说不清是没走到、还是被减速、还是滑行中
   const diag = await page.evaluate(() => {
     const s = globalThis.__scene;
-    const p = s.combat.player;
     return {
       x: +s.move.position.x.toFixed(2), z: +s.move.position.z.toFixed(2),
       v: +Math.hypot(s.move.velocity.x, s.move.velocity.z).toFixed(2),

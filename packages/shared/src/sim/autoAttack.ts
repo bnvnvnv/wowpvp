@@ -32,7 +32,7 @@ import type { EffectDef } from '../data/schema.js';
 import { COMBAT_SWING } from '../constants/combat.js';
 import { Resource, School } from '../types/enums.js';
 import type { EntityId } from '../types/ids.js';
-import { effectiveModifiersOf, type AuraStore } from './aura.js';
+import { type AuraStore } from './aura.js';
 import { hitCircleOf, isSelectableBy, type CombatEntity } from './entity.js';
 import { getEntity, listEntities, type World } from './world.js';
 

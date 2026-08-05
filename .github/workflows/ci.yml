@@ -41,6 +41,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      # G2：零告警基线 —— 新增告警在这里变红，不再靠自觉
+      - run: pnpm lint
       - run: pnpm test
 
   # 慢车道：六支非浏览器验收（纯 sim / 真 ws，runner 上确定性成立）+ 配平冒烟

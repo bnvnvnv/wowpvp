@@ -13,7 +13,7 @@
  *   而且刻意放在表格**上方**：先看谁贡献大，再看谁伤害高。
  */
 
-import { TEAM_RED, type AwardView, type MatchStatsRow, type TeamId } from '@wowpvp/shared';
+import { TEAM_RED, type AwardView, type MatchStatsRow } from '@wowpvp/shared';
 
 const esc = (s: string): string =>
   s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));

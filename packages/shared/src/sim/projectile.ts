@@ -15,7 +15,7 @@
  *               例：陨石、箭雨
  */
 
-import { firstProjectileHit, segmentClipT, type Aabb } from '../math/geometry.js';
+import { firstProjectileHit, segmentClipT } from '../math/geometry.js';
 import { addScaled, distance2D, normalize, sub, vec3, type Vec3 } from '../math/vec3.js';
 import type { EffectDef } from '../data/schema.js';
 import type { EntityId, SkillId } from '../types/ids.js';

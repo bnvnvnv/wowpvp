@@ -56,7 +56,6 @@ import { MatchLoop, type MatchCommand } from '../MatchLoop.js';
 import { BotDriver, BotSocket, type BotSeat } from '../BotDriver.js';
 import {
   createReconnectRegistry,
-  graceRemaining,
   leaveImmediately,
   redeemReconnect,
   registerDisconnect,

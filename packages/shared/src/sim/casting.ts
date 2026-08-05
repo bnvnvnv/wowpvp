@@ -213,7 +213,7 @@ export const validateCast = (ctx: CastContext): CastFailure => {
 const checkCondition = (
   ctx: CastContext, cond: NonNullable<SkillDef['requires']>[number], now: number,
 ): CastFailure => {
-  const { caster, target } = ctx;
+  const { caster } = ctx;
   switch (cond.kind) {
     case 'outOfCombat':
       return now - caster.lastCombatAt >= cond.seconds ? CastFailure.Ok : CastFailure.InCombat;

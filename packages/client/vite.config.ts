@@ -11,7 +11,7 @@
  */
 import { defineConfig, type Plugin } from 'vite';
 import { createReadStream, existsSync, statSync } from 'node:fs';
-import { extname, join, resolve, sep } from 'node:path';
+import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 

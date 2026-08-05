@@ -17,7 +17,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { deathknight, druid, paladin, rogue } from './index.js';
-import { asTeamId, TEAM_BLUE, TEAM_RED, type EntityId } from '../types/ids.js';
+import { asTeamId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
 import { School } from '../types/enums.js';
 import { ccDurationTakenFor, neutralModifiers } from '../sim/modifiers.js';
 import { vec3 } from '../math/vec3.js';

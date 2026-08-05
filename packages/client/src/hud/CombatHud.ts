@@ -19,7 +19,6 @@ import * as THREE from 'three';
 import {
   CastFailure,
   CastKind,
-  Resource,
   School,
   distance2D,
   getClass,
@@ -28,7 +27,7 @@ import {
 import { FAIL_TEXT, SCHOOL_TEXT } from '../combat/CombatDirector.js';
 import type { CombatView, HudSkillSlot, HudUnit } from './CombatView.js';
 import { skillIconHtml } from './skillIcon.js';
-import { CONTROL_VISUALS, type ControlKind } from '../vfx/status.js';
+import { CONTROL_VISUALS } from '../vfx/status.js';
 import { Minimap } from './Minimap.js';
 import { ModeHud } from './ModeHud.js';
 import { Scoreboard } from './Scoreboard.js';

@@ -12,7 +12,7 @@ import { DispelType, GameMode, Resource, School } from '../../types/enums.js';
 import { TEAM_BLUE, TEAM_RED } from '../../types/ids.js';
 import { aurasOf, createAuraStore, type AuraStore } from '../aura.js';
 import { applyDr, createDrStore, drFactor, type DrStore } from '../dr.js';
-import { createEntity, type CombatEntity } from '../entity.js';
+import { createEntity } from '../entity.js';
 import { createGroundStore, type GroundStore } from '../groundArea.js';
 import { createProjectileStore } from '../projectile.js';
 import { dealDamage, resolveEffects, type CombatEvent } from '../effects/index.js';

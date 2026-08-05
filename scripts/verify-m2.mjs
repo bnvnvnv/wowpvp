@@ -53,9 +53,6 @@ const logLines = async () =>
   page.$$eval('#combat-log .log', (els) => els.map((e) => e.innerText.replace(/\n/g, ' ')));
 const slotTexts = async () =>
   page.$$eval('#skill-bar .slot', (els) => els.map((e) => e.innerText.replace(/\n/g, ' ')));
-const playerCasting = async () =>
-  page.$eval('#player-cast', (e) => e.offsetParent !== null && e.innerText.trim().length > 0)
-    .catch(() => false);
 
 /** 等到某个条件成立，最多 timeout 毫秒 */
 const waitFor = async (fn, timeout = 15000, interval = 60) => {

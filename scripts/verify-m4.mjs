@@ -63,20 +63,6 @@ const waitSlotUsable = async (i, timeout = 25000) => {
 };
 
 /**
- * ⚠️ 试验场里的战士假人会打断玩家的读条（这是它的职责，7.5 的博弈靠它成立）。
- * 验证读条技能时必须先走远，否则测的是「被打断」而不是「效果结算」。
- * 战士假人在 z ≈ 12，猛击距离 3 米 —— 但它是**站桩**的，走开就够了。
- * 这里改用「等它的猛击进冷却」更稳：只要上一次打断发生过，接下来 15 秒是安全窗口。
- */
-const waitPummelOnCooldown = async () => {
-  // 主动送一次读条把猛击骗掉，之后 15 秒内可以安心读条
-  await page.keyboard.press('Digit1');
-  await page.waitForTimeout(1600);
-  const lines = await logLines();
-  return lines.some((l) => l.includes('猛击'));
-};
-
-/**
  * 退到战士假人的猛击范围（3 米）之外。
  * 战士就站在出生点正前方 —— 那是为了 M2 演示假读条博弈而刻意放的，
  * 但验证控制递减需要连续读条不被打断，所以先退开。
