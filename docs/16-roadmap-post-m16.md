@@ -134,6 +134,41 @@
 | 3.8 | W14 | 上半身动画分层（大件，可并行慢做） | additive/骨骼遮罩；先接四个零调用片段：`Spellcast_Raise`（预备）、`Spellcast_Shoot`（释放）、`2H_Ranged_Shoot`（猎人）、`Block`（格挡） | 真机截图：跑动施法上半身有姿态；m12 不掉 |
 | 3.9 | W7 | 键位重绑 UI + 持久化 | 设置面板 v2：`rebind()` 首次有调用方、localStorage 键、`<kbd>` 改读 `getBindings()` | 断言：重绑后提示同步、刷新保留、冲突检测 |
 
+## W12 开工便签（2026-08-05 探路结论，新会话直接从这里动手）
+
+**比登记时预想的近**：数据侧几乎全通，缺的主要是消费方与模式选择。
+
+已经在了（不用做）：
+- 快照带旗帜：`MatchSnapshot.flags`（team/state/position/carrierId）与
+  `score`（`shared/src/net/visibility.ts` ≈:412），竞技场为 undefined ——
+  15.4 两视图不相交的既有设计
+- `FlagEvent` 服务器消息（protocol.ts ≈:337）、minimap blip 已有
+  `{ kind: 'flag' }`（≈:91）
+- `SetRoomPreset` 客户端消息已存在（**只有 preset**，无 mode/mapId）
+- 房间配置本就有 `mode/mapId`（`RoomServer.ts` DEFAULT_CONFIG，
+  ⚠️ 地图 id 是 `ctf_*` 风格的**下划线**命名，别拿模式名当地图 id ——
+  那个坑注释里有尸体）；`RoomState` 广播已带 mode/preset/mapId
+- 试验场侧的成品可抄：`FlagMarkers`（vfx）、`ModeHud.renderCtf()`、
+  夺旗 HUD 视图派生（`TestbedScene.ts` ≈:768-790）
+
+要做的（按依赖顺序）：
+1. **协议**：`SetRoomPreset` 扩成带 `mode`（或新 `SetRoomMode`，二选一后
+   照 M10 规矩走全套：`ALL_CLIENT_MESSAGE_KINDS`、Session 阶段白名单、
+   codec `satisfies never`、若新增带 EntityId 的服务器消息则
+   `referencedEntities()` 必须登记 —— A7 教训）；服务器换 mode 时**连带换
+   mapId 与合法人数档**，开赛前才可改（setReady 同款 started 守卫，A8）
+2. **大厅**：模式选择 UI（房主可改，非房主只读展示；沿用 RoomState 既有
+   广播链路）
+3. **NetworkScene 消费**：`match.flags` → `FlagMarkers`（3D 旗）+
+   minimap 旗帜/旗手 blip（W2 的底）+ `renderCtf`（W3/W4 的底）+
+   CTF 复活倒计时（W5 余账一并清）
+4. **结算面板**：夺旗列（X4 顺手，`MatchStats` 已有 flag 统计字段可查）
+5. **新 verify 脚本**（判据）：双浏览器纯 UI 开一场夺旗打到得分，
+   全程断言旗帜可见；可参考 verify-m13 的双浏览器骨架与 fillWithBots
+
+红线：批次二那条「只接现有协议数据」在本项**解禁**（W12 本来就是协议项），
+但改动打包进一次版本号变更，`verify:m10` 15/15 不掉。
+
 ---
 
 # 批次四：协议债小批（攒成一次协议版本改动）

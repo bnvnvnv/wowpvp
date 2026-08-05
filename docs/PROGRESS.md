@@ -28,8 +28,12 @@
 每 push 必跑）、3.2（G2 eslint 零告警基线进 CI）、3.3（G3 素材瘦身
 160MB + ui/music 死重盘点；LFS 已拍板：部分克隆过渡、最终方案随 F2）、
 3.4 第一铲（G4 `SceneShell`：双场景共用 renderer/画质/环境/输入地基，
-八支浏览器验收证零行为变化；第二铲实体渲染循环待做）；
-接下来 W12 夺旗联网线、S1–S6 公网硬化
+八支浏览器验收证零行为变化；第二铲实体渲染循环待做）。
+**下一站 3.5（W12 夺旗联网线）—— 开工便签已写在
+[16-roadmap-post-m16.md](16-roadmap-post-m16.md) 批次三表格下方**：
+快照旗帜数据/FlagEvent/blip 类型都已就绪，主活是模式选择协议、
+NetworkScene 消费、结算夺旗列、新双浏览器 verify 脚本。
+之后 S1–S6 公网硬化、P6、W14、W7，批次三收官
 
 ---
 
@@ -2956,9 +2960,11 @@ M15 红线（不动 sim 一行）之内不修，**动手前记得补「重叠时
 
 ## 给下一个接手的人
 
-1. 先跑 `pnpm install && pnpm test && pnpm typecheck`，确认基线是绿的
-   （**1113 个单元测试**，2026-08-04 口径；`typecheck` 也检查测试文件本身，见 M9 章节。
-   e2e 验收需先起 `pnpm --filter @wowpvp/client dev`）
+1. 先跑 `pnpm install && pnpm test && pnpm typecheck && pnpm lint`，确认基线是绿的
+   （**1149 个单元测试 + lint 零告警**，2026-08-05 口径；`typecheck` 也检查
+   测试文件本身，见 M9 章节。e2e 验收需先起 `pnpm --filter @wowpvp/client dev`。
+   每次 push 后 CI 会跑 typecheck/lint/单测 + 六支非浏览器验收，
+   浏览器验收仍需本机手跑）
 2. 读 [16-roadmap-post-m16.md](16-roadmap-post-m16.md) —— **当前执行计划**
    （清账与硬化：批次一正确性 → 批次二接线速赢 → 批次三结构工程 →
    批次四协议债 → 发布前清单，每项带判据）。
