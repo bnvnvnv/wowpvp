@@ -1,0 +1,70 @@
+# G1（技术债总账）：第一条 CI —— 此前 1149 条单测、15 支验收、typecheck
+# 全部只能手跑，没有任何东西保证提交时它们被跑过（「所有其他债的放大器」）。
+#
+# ★ 两个加速决定，都有依据：
+#   · sparse-checkout 排除 assets/（573MB）—— 单测与六支非浏览器验收
+#     都不需要素材：skillIconMap 的磁盘校验在素材缺席时自动跳过
+#     （PROGRESS M12 章节「每一层都能单独失败」正是为此设计的）
+#   · PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD —— playwright 包装机时会下载
+#     浏览器（~300MB），而这两个 job 一个浏览器都不开
+#
+# ★ 浏览器验收（m1–m4/m8/m12/m13/m15 要 vite dev + chromium）不在必跑里，
+#   保持手跑 —— 上 CI 需要先解决软件渲染在 runner 上的稳定性，单独立项。
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+jobs:
+  # 快车道：类型检查 + 全量单测（本地 ~1 分钟）
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          sparse-checkout: |
+            /*
+            !assets/
+          sparse-checkout-cone-mode: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  # 慢车道：六支非浏览器验收（纯 sim / 真 ws，runner 上确定性成立）+ 配平冒烟
+  sim-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          sparse-checkout: |
+            /*
+            !assets/
+          sparse-checkout-cone-mode: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify:m5
+      - run: pnpm verify:m6
+      - run: pnpm verify:m7
+      - run: pnpm verify:m9
+      - run: pnpm verify:m10
+      - run: pnpm verify:m16
+      # 配平是冒烟不是判据：断言具体数字会把每次有意的配平改动都变成红灯
+      - run: pnpm balance
