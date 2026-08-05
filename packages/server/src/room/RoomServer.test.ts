@@ -674,3 +674,88 @@ describe('A3：两个真客户端从房间跑到快照', () => {
     blue.close();
   });
 });
+
+/**
+ * P6（技术债总账）：全员真人掉线的对局不该继续跑到终局。
+ * ★ 用真 socket 的 close：这条债的根因正是「断线」路径，只有真断一次才对。
+ * ★ 自起服务器把宽限压到 150ms —— 默认 30s 会让测试等半分钟。
+ */
+describe('P6：无人对局的回收', () => {
+  let p6: StartedServer;
+  beforeEach(async () => { p6 = await startServer(0, { abandonGraceMs: 150 }); });
+  afterEach(async () => { await p6.close(); });
+
+  const waitUntil = async (cond: () => boolean, ms = 3000): Promise<boolean> => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (cond()) return true;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return cond();
+  };
+
+  it('★★ 两个真人全部掉线 → 宽限过后循环停手、房间回收（人机会话不算人）', async () => {
+    const red = await TestClient.connect(p6.port);
+    const blue = await TestClient.connect(p6.port);
+    await readyUp(red, 'p6a', '红方', 'red', 'mage');
+    await readyUp(blue, 'p6a', '蓝方', 'blue', 'warrior');
+    await red.waitFor('MatchStart');
+    expect(p6.rooms.loopOf('p6a'), '比赛应当在跑').toBeDefined();
+
+    red.close();
+    blue.close();
+
+    const gone = await waitUntil(() => p6.rooms.loopOf('p6a') === undefined);
+    expect(gone, '全员掉线过宽限后循环仍在跑 —— 无人房间照跑 20Hz 到终局').toBe(true);
+    expect(p6.rooms.matchOf('p6a')).toBeUndefined();
+  });
+
+  it('★ 只掉线一个真人时，对局照常继续（另一人还在看，人机顶掉线的那个）', async () => {
+    const red = await TestClient.connect(p6.port);
+    const blue = await TestClient.connect(p6.port);
+    await readyUp(red, 'p6b', '红方', 'red', 'mage');
+    await readyUp(blue, 'p6b', '蓝方', 'blue', 'warrior');
+    await red.waitFor('MatchStart');
+
+    red.close();
+    // 宽限（150ms）过后再看：blue 仍连着，humanSessionCount 不为 0，不该回收
+    await new Promise((r) => setTimeout(r, 400));
+    expect(p6.rooms.loopOf('p6b'), '还有一个真人在看，比赛被误回收了').toBeDefined();
+
+    blue.close();
+  });
+
+  it('★★ 全员掉线但在宽限内重连 → 对局被救回，不回收（集体闪断的正路）', async () => {
+    const red = await TestClient.connect(p6.port);
+    const blue = await TestClient.connect(p6.port);
+    await readyUp(red, 'p6c', '红方', 'red', 'mage');
+    await readyUp(blue, 'p6c', '蓝方', 'blue', 'warrior');
+    const redStart = await red.waitFor('MatchStart');
+    const blueStart = await blue.waitFor('MatchStart');
+    const redToken = redStart.reconnectToken;
+    const blueToken = blueStart.reconnectToken;
+
+    // 双方同时掉线（severConnections 那一幕）
+    red.close();
+    blue.close();
+    // 宽限窗口内（150ms）赶紧各自重连
+    await new Promise((r) => setTimeout(r, 40));
+    const red2 = await TestClient.connect(p6.port);
+    const blue2 = await TestClient.connect(p6.port);
+    red2.send({ t: 'Reconnect', token: redToken });
+    blue2.send({ t: 'Reconnect', token: blueToken });
+    await red2.waitFor('MatchStart');
+
+    // 宽限早已过去 —— 若没被 cancelAbandon 救下，这时房间已经没了
+    await new Promise((r) => setTimeout(r, 250));
+    expect(p6.rooms.loopOf('p6c'), '宽限内重连没能取消回收').toBeDefined();
+    // 且快照恢复流动，证明是真活着不是残壳
+    const before = red2.received.filter((m) => m.t === 'Snapshot').length;
+    await new Promise((r) => setTimeout(r, 200));
+    const after = red2.received.filter((m) => m.t === 'Snapshot').length;
+    expect(after).toBeGreaterThan(before);
+
+    red2.close();
+    blue2.close();
+  });
+});

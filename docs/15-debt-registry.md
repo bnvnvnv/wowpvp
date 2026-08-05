@@ -120,7 +120,7 @@
 | P3 | **快照中与视角无关的部分逐接收者重建**：projectiles/grounds/flags/score/armories/suddenDeathBlips 每人重算；每实体 `Object.fromEntries(resources)`×2 → 24 人 ≈ 2.3 万对象/秒 | `shared/src/net/visibility.ts`（≈:489-547、:566-573） | GC 压力主源 | ⛔ |
 | P4 | `assertNoHiddenEntities` 在生产环境把 O(sessions×entities) 可见性再跑一遍（成本 ×2）。🔵 「宁可掉线不能透视」的决定**保留**，但成本应可度量，可改采样/轮转校验 | `MatchLoop.ts`（≈:697-700） | 有意但未度量 | 🔵/⛔ |
 | P5 | **广播对同一消息 stringify N 次**（RoomState/MatchEnd/统计等全量广播）。修法零风险：stringify 一次 + `sendRaw(string)` | `Session.sendRaw()` + `broadcast()`/`broadcastStats()` 共享编码 | 白算 | ✅ 批次一 1.8（2026-08-04） |
-| P6 | **全员掉线的对局照跑 20Hz 到终局**：started 分支不调 `dropIfEmpty`，且人机会话占着 `sessions` 让判空恒 false → 无人房间跑完整局（夺旗半小时量级），叠加 P2 | `room/RoomServer.ts` `disconnect()`（≈:152-180、:189） | 可被外部触发的资源占用 | ⛔ |
+| P6 | **全员掉线的对局照跑 20Hz 到终局**：started 分支不调 `dropIfEmpty`，且人机会话占着 `sessions` 让判空恒 false → 无人房间跑完整局（夺旗半小时量级），叠加 P2 | `disconnect()` 判**零真人 session**（`humanSessionCount`，人机 `isBot` 不算）→ `scheduleAbandon` 排 30s 宽限计时器 → 窗口过完仍零人则 `abandonMatch`（停循环+遣散人机+回收房间）。★ 宽限而非立刻拆：集体闪断（verify:m13 §4b 一次掐断双方）要留重连的路，`onReconnect` 里 `cancelAbandon` 撤销 | 可被外部触发的资源占用 | ✅ 批次三 3.7（2026-08-05，RoomServer 单测 ×3：回收/单人不误杀/宽限内重连救回；m13 19/19 不掉） |
 | P7 | 重连令牌查找 O(rooms) 线性扫（`[...rooms.values()].find(...)`），应建 token→room 索引 | `room/RoomServer.ts`（≈:580） | 小 | ⛔ |
 | P8 | 无 instancing（全仓 0 处 `InstancedMesh`）；模型材质逐 mesh `.clone()`（为受击闪白）破坏合批 —— 可改顶点色/uniform | `entity/ModelLibrary.ts`（≈:143-145）；`arsenal/ArsenalView.ts` 等 | draw call 随掉落物线性涨 | ⛔ |
 | P9 | **无自动画质降档**：两场景默认 High（2048 阴影 + 2x 像素比），FPS 已量但无反馈回路，低端机只能自己按 F2 | `render/QualityController.ts`；`GameLoop.ts` fps | 低端机第一印象 | ⛔ |

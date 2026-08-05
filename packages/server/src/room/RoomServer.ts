@@ -75,6 +75,14 @@ export interface RoomServerOptions {
   maxRooms?: number;
   maxRoomMembers?: number;
   rate?: RateLimitConfig;
+  /**
+   * P6：全员真人掉线后，等这么久没人回来才回收对局（毫秒）。
+   * ★ 不是立刻回收 —— 共享 wifi 抖动会让一队人同一瞬间集体掉线（verify:m13
+   *   §4b 正是这个：severConnections 一次掐断双方再各自重连）。给一个宽限窗口，
+   *   谁在窗口内重连就取消回收；窗口过完仍零人才拆。默认 30s：远长于一次
+   *   网络闪断的重连（客户端首次退避 250ms），又远短于「空房跑满半小时」。
+   */
+  abandonGraceMs?: number;
 }
 
 /** 默认房间配置。★ 快速比赛单回合制（2.1） */
@@ -114,6 +122,8 @@ interface ServerRoom {
   bots?: BotDriver;
   /** 被人机接管的席位对应的（假）会话，按 playerId 索引 */
   botSessions: Map<string, Session>;
+  /** P6：全员真人掉线后待回收的计时器；有人重连即清除（见 scheduleAbandon）*/
+  abandonTimer?: ReturnType<typeof setTimeout>;
 }
 
 /**
@@ -135,9 +145,12 @@ export class RoomServer {
   private readonly maxRoomMembers: number;
   private readonly rate: RateLimitConfig;
 
+  private readonly abandonGraceMs: number;
+
   constructor(opts: RoomServerOptions = {}) {
     this.maxRooms = opts.maxRooms ?? LIMITS.MAX_ROOMS;
     this.maxRoomMembers = opts.maxRoomMembers ?? LIMITS.MAX_ROOM_MEMBERS;
+    this.abandonGraceMs = opts.abandonGraceMs ?? 30_000;
     this.rate = opts.rate ?? {
       capacity: LIMITS.RATE_CAPACITY,
       refillPerSec: LIMITS.RATE_REFILL_PER_SEC,
@@ -206,10 +219,71 @@ export class RoomServer {
         playerId: session.playerId,
         graceRemaining: entry.expiresAt - now,
       });
+      /**
+       * ★★ P6（技术债总账）：**全员真人掉线 → 回收对局。**
+       *
+       *   此前无人房间照跑 20Hz 到终局（夺旗封顶半小时量级）：`started`
+       *   分支不判空，而人机接管又往 `sessions` 里塞了假会话，`dropIfEmpty`
+       *   的 `sessions.size` 判据恒为真 —— 一个 griefer 开一堆房再断线，
+       *   就留下一堆只有人机在打的空房占着 CPU（可被外部触发的资源占用）。
+       *
+       *   判据是**零真人 session**（人机会话 `isBot` 不算人）。见 scheduleAbandon
+       *   的宽限窗口 —— 不立刻拆，给集体闪断留一条重连的路。
+       */
+      if (this.humanSessionCount(sr) === 0) this.scheduleAbandon(sr);
     } else {
       leaveMatch(sr.room, session.playerId);
       if (!this.dropIfEmpty(sr)) this.broadcastRoomState(sr);
     }
+  }
+
+  /** 还连着的**真人**会话数 —— 人机（BotSocket）不算人（P6 判据） */
+  private humanSessionCount(sr: ServerRoom): number {
+    let n = 0;
+    for (const s of sr.sessions) if (!s.isBot) n++;
+    return n;
+  }
+
+  /**
+   * P6：排一个宽限计时器，窗口过完仍零真人才回收。
+   * ★ 幂等：已经排了就不重排（第二个人掉线时窗口不该被重置延长）。
+   *   谁在窗口内重连由 `cancelAbandon`（onReconnect 调）取消。
+   */
+  private scheduleAbandon(sr: ServerRoom): void {
+    if (sr.abandonTimer) return;
+    log('info', 'match_abandon_scheduled', { roomId: sr.room.id, graceMs: this.abandonGraceMs });
+    sr.abandonTimer = setTimeout(() => {
+      sr.abandonTimer = undefined;
+      // 窗口末尾复查 —— 万一有人重连了（cancelAbandon 没赶上清定时器的极端时序）
+      if (this.humanSessionCount(sr) === 0) this.abandonMatch(sr);
+    }, this.abandonGraceMs);
+  }
+
+  /** P6：有真人回来了，取消待回收 */
+  private cancelAbandon(sr: ServerRoom): void {
+    if (!sr.abandonTimer) return;
+    clearTimeout(sr.abandonTimer);
+    sr.abandonTimer = undefined;
+    log('info', 'match_abandon_cancelled', { roomId: sr.room.id });
+  }
+
+  /**
+   * P6：无人对局的收尾。停循环、遣散人机、回收房间 —— 房间码可复用。
+   * ★ 与 `endMatch` 的区别：那条有胜负、要广播 MatchEnd 给还在的人；
+   *   这条没有观众，广播给谁都没有，所以直接拆。
+   */
+  private abandonMatch(sr: ServerRoom): void {
+    log('info', 'match_abandoned', { roomId: sr.room.id });
+    if (sr.abandonTimer) { clearTimeout(sr.abandonTimer); sr.abandonTimer = undefined; }
+    sr.loop?.stop();
+    for (const s of sr.botSessions.values()) sr.sessions.delete(s);
+    sr.botSessions.clear();
+    sr.bots = undefined;
+    sr.loop = undefined;
+    sr.match = undefined;
+    sr.tokens.clear();
+    sr.tokenByPlayer.clear();
+    this.rooms.delete(sr.room.id);
   }
 
   /** 没人（名单空且无连接）的房间从注册表回收，房间码可复用 */
@@ -673,6 +747,8 @@ export class RoomServer {
     sr.sessions.add(session);
     this.all.add(session);
     markReconnected(sr.room, r.playerId);
+    // ★ P6：真人回来了 —— 撤销待回收（集体闪断后的重连正是这条路）
+    this.cancelAbandon(sr);
     // ★ 已知偏差 #14 的后半句：**重连即交还**。人先回来，人机就下台
     this.handBackFromBot(sr, r.playerId);
 
@@ -765,7 +841,11 @@ export class RoomServer {
 
   /** 测试与优雅退出用 */
   stopAll(): void {
-    for (const sr of this.rooms.values()) sr.loop?.stop();
+    for (const sr of this.rooms.values()) {
+      sr.loop?.stop();
+      // P6 计时器也要清 —— 否则 server.close() 后它还会 fire，测试里挂着不退
+      if (sr.abandonTimer) { clearTimeout(sr.abandonTimer); sr.abandonTimer = undefined; }
+    }
   }
 
   /**

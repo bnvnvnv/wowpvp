@@ -101,6 +101,8 @@ export interface ServerOptions {
   maxRoomMembers?: number;
   /** S1 入站限流参数（转交 Session） */
   rate?: RateLimitConfig;
+  /** P6 全员掉线后的回收宽限（毫秒，转交 RoomServer） */
+  abandonGraceMs?: number;
 }
 
 /**
@@ -115,6 +117,7 @@ export const startServer = async (port = 0, opts: ServerOptions = {}): Promise<S
     ...(opts.maxRooms !== undefined ? { maxRooms: opts.maxRooms } : {}),
     ...(opts.maxRoomMembers !== undefined ? { maxRoomMembers: opts.maxRoomMembers } : {}),
     ...(opts.rate ? { rate: opts.rate } : {}),
+    ...(opts.abandonGraceMs !== undefined ? { abandonGraceMs: opts.abandonGraceMs } : {}),
   });
   const backpressureBytes = opts.backpressureBytes ?? LIMITS.BACKPRESSURE_BYTES;
   const maxConnections = opts.maxConnections ?? LIMITS.MAX_CONNECTIONS;
