@@ -34,7 +34,8 @@ import { AnimationController } from '../entity/AnimationController.js';
 import { CharacterView } from '../entity/CharacterView.js';
 import { CombatHud } from '../hud/CombatHud.js';
 import { partyViewOf } from '../hud/PartyFrame.js';
-import { SettingsPanel } from '../settings/SettingsPanel.js';
+import { SettingsPanel, rebindableActions, prettyKey } from '../settings/SettingsPanel.js';
+import { makeRebindController } from '../settings/keybindings.js';
 import { MusicDirector, ambientTrackFor } from '../audio/MusicDirector.js';
 import { presetOf } from '../render/Environment.js';
 import { FAIL_TEXT } from '../combat/CombatDirector.js';
@@ -360,13 +361,22 @@ export class TestbedScene {
      * W9（技术债总账）：设置面板 —— F10。面板不持状态：无障碍走本场景的
      * `setAccessibility()` 唯一入口，画质与 F2 走同一条应用链。
      */
+    // W7：重绑控制器（应用到 InputManager + 落 localStorage），与联网场景共用
+    const rebindCtl = makeRebindController(
+      this.input, rebindableActions(), globalThis.localStorage,
+    );
     this.settings = new SettingsPanel(canvas.parentElement ?? document.body, {
       getAccessibility: () => this.access,
       setAccessibility: (next) => this.setAccessibility(next),
       getQuality: () => this.quality.current,
       setQuality: (tier) => this.shell.setQualityTier(tier, this.sun, this.decorRenderer),
       bindings: () => this.input.getBindings(),
+      rebind: (action, code) => rebindCtl.rebind(action, code),
+      resetBindings: () => rebindCtl.reset(),
     });
+    // W7：技能栏 <kbd> 读实时绑定（换了技能键跟着变）
+    this.hud.skillKeyLabel = (i) =>
+      prettyKey(this.input.getBindings()[`skill${i + 1}` as never] ?? String(i + 1));
     // M12：玩家模型（法师）。setClass 在 combat 建好后才调得了 —— 字段初始化时职业未知
     // ★ `?art=off` 时 ModelLibrary 没 init，setClass 会安静地无事发生
     this.view.setClass(this.combat.player.classId as string);

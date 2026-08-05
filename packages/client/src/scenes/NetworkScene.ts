@@ -79,7 +79,8 @@ import { CombatHud } from '../hud/CombatHud.js';
 import { partyViewFromSnapshot } from '../hud/PartyFrame.js';
 import type { MinimapBlip } from '../hud/ModeHud.js';
 import { nextSpectateTarget } from '../spectate/SpectateController.js';
-import { SettingsPanel } from '../settings/SettingsPanel.js';
+import { SettingsPanel, rebindableActions, prettyKey } from '../settings/SettingsPanel.js';
+import { makeRebindController } from '../settings/keybindings.js';
 import { MusicDirector, ambientTrackFor } from '../audio/MusicDirector.js';
 import { presetOf } from '../render/Environment.js';
 import { SnapshotCombatView, castStateFromStarted } from '../net/SnapshotCombatView.js';
@@ -412,7 +413,7 @@ export class NetworkScene {
       color: '#c8d2e0', font: '500 11px system-ui, sans-serif',
       pointerEvents: 'none', zIndex: '20', opacity: '.62',
     } as Partial<CSSStyleDeclaration>);
-    hint.textContent = 'Tab 选目标 · 1–8 技能 · Esc 取消读条 · G 交互 · R 解控 · O 记分板 · F10 设置与全部键位';
+    hint.textContent = 'Tab 选目标 · 1–9 技能 · Esc 取消读条 · G 交互 · R 解控 · O 记分板 · F10 设置与键位重绑';
     (canvas.parentElement ?? document.body).appendChild(hint);
 
     // W6：延迟指示。小、常驻、不抢注意力 —— 有异常时颜色先说话
@@ -431,13 +432,22 @@ export class NetworkScene {
      * ★ 面板不持状态：无障碍走本场景的 `setAccessibility()` 唯一入口，
      *   画质与 F2 走**同一条**应用链（漏一环就是「面板改了没生效」）。
      */
+    // W7：重绑控制器（应用到 InputManager + 落 localStorage），两场景共用
+    const rebindCtl = makeRebindController(
+      this.input, rebindableActions(), globalThis.localStorage,
+    );
     this.settings = new SettingsPanel(canvas.parentElement ?? document.body, {
       getAccessibility: () => this.access,
       setAccessibility: (next) => this.setAccessibility(next),
       getQuality: () => this.quality.current,
       setQuality: (tier) => this.shell.setQualityTier(tier, this.sun, this.decorRenderer),
       bindings: () => this.input.getBindings(),
+      rebind: (action, code) => rebindCtl.rebind(action, code),
+      resetBindings: () => rebindCtl.reset(),
     });
+    // W7：技能栏 <kbd> 读**实时**绑定 —— 换了技能键就跟着变，不再写死 1–9
+    this.hud.skillKeyLabel = (i) =>
+      prettyKey(this.input.getBindings()[`skill${i + 1}` as never] ?? String(i + 1));
     /**
      * 连杀升调：同一个音效按连杀数提速 —— 「升调」用 `rate` 而不是换音效，
      * 因为素材里**没有**一组连杀音（盘里只有 ui_arena_loss，连 win 都没有）。

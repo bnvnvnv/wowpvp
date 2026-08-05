@@ -66,6 +66,12 @@ export class CombatHud {
   private readonly focusFrame: HTMLElement;
   private readonly playerCastBar: HTMLElement;
   private readonly skillBar: HTMLElement;
+  /**
+   * W7：技能槽 i 的按键标签。默认显示槽号（1–9），场景重绑后设成
+   * `prettyKey(bindings[Skill{i+1}])` —— 否则技能栏的 <kbd> 会在玩家把
+   * 技能键换成别的之后**继续显示 1–9 撒谎**（总账 W7 点名的那一处）。
+   */
+  skillKeyLabel: (slotIndex: number) => string = (i) => String(i + 1);
   private readonly logBox: HTMLElement;
   private readonly aimHint: HTMLElement;
   private readonly nameplateLayer: HTMLElement;
@@ -368,7 +374,7 @@ export class CombatHud {
             : '';
         return `
           <div class="slot ${usable ? 'usable' : 'blocked'}" style="--school:${color}">
-            <kbd>${i + 1}</kbd>
+            <kbd>${esc(this.skillKeyLabel(i))}</kbd>
             <div class="sk-head">${skillIconHtml(s.skill, 26)}${sweep}<div class="sk-name">${esc(s.skill.name)}</div></div>
             <div class="sk-meta">
               ${s.skill.cast.kind === CastKind.Instant ? '瞬发' : `${s.skill.cast.time}s`}

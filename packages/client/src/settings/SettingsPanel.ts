@@ -12,8 +12,9 @@
  *   （`setAccessibility()` / `QualityController.set()`）—— 面板自己存一份
  *   就会出现「面板显示的和生效的不一致」，护盾判据分叉的老病。
  *
- * ★ 键位表**只读**（展示 `getBindings()`，rebind 的 UI 是 W7 的账）——
- *   先让玩家看得到现在的键位，别再让技能栏的 <kbd> 独自撒谎。
+ * ★ W7：键位表**可重绑**了 —— 点一行进入捕获态、按下新键即改（`rebind` 钩子
+ *   落到 InputManager + 持久化）。冲突按 `rebindWithSwap` 规则处理。
+ *   不传 `rebind` 钩子（大厅没有 InputManager）时退回**只读**展示。
  */
 
 import { audio } from '../audio/AudioManager.js';
@@ -26,6 +27,7 @@ import {
 } from './accessibility.js';
 import type { QualityTier } from '../render/quality.js';
 import { Action, DEFAULT_BINDINGS } from '../input/InputManager.js';
+import type { RebindOutcome } from './keybindings.js';
 
 export interface SettingsPanelHooks {
   /** 场景的无障碍唯一入口（应用 + 持久化）。大厅传「存盘 + 应用缩放」的自家实现 */
@@ -36,6 +38,13 @@ export interface SettingsPanelHooks {
   setQuality?: (tier: QualityTier) => void;
   /** 键位表。不传用默认表（大厅没有 InputManager）*/
   bindings?: () => Readonly<Record<Action, string>>;
+  /**
+   * W7：把某动作重绑到某键。**给了它，键位表就可点击重绑**；不给则只读。
+   * 回结构化结果，提示文案由面板用自己的 `ACTION_LABELS` 拼（标签在这边）。
+   */
+  rebind?: (action: Action, code: string) => RebindOutcome;
+  /** W7：恢复默认键位 */
+  resetBindings?: () => void;
 }
 
 const COLORBLIND_TEXT: Record<ColorblindMode, string> = {
@@ -55,8 +64,22 @@ const VOLUME_TEXT: Record<keyof AudioVolumes, string> = {
  * 键位表的条目与中文名。★ 手写的**精选**清单而不是遍历 Action 枚举 ——
  * 移动四键并成一行、内部动作（实战模式）不进玩家表；
  * 完整性由 settingsPanel.test.ts 反向钉住（表里的每一项都必须是真 Action）。
+ *
+ * ★ W7：这张表同时是「哪些动作可重绑」的唯一来源（`rebindableActions`）——
+ *   不在表里的动作（移动四键、系统内部动作）不给改，也不被交换意外顶走。
  */
 export const ACTION_LABELS: readonly { action: Action; label: string }[] = [
+  // ★ 技能九格：17.2「全键位」明确要它们可重绑（左手党、非 QWERTY）。
+  //   技能栏 <kbd> 读实时绑定 —— 换了这里，图标上的键号跟着变（W7 的可见证据）。
+  { action: Action.Skill1, label: '技能 1' },
+  { action: Action.Skill2, label: '技能 2' },
+  { action: Action.Skill3, label: '技能 3' },
+  { action: Action.Skill4, label: '技能 4' },
+  { action: Action.Skill5, label: '技能 5' },
+  { action: Action.Skill6, label: '技能 6' },
+  { action: Action.Skill7, label: '技能 7' },
+  { action: Action.Skill8, label: '技能 8' },
+  { action: Action.Skill9, label: '技能 9' },
   { action: Action.Jump, label: '跳跃' },
   { action: Action.TargetNext, label: '循环选择目标' },
   { action: Action.SetFocus, label: '设置焦点目标' },
@@ -85,8 +108,23 @@ export const prettyKey = (code: string): string =>
 const esc = (s: string): string =>
   s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
 
+/**
+ * W7：可重绑动作集（= `ACTION_LABELS` 里的动作）。移动四键与系统内部动作
+ * **不在**这里 —— `rebindWithSwap` 用它区分「可交换」与「拒绝改」。
+ */
+const REBINDABLE = new Set<Action>(ACTION_LABELS.map((x) => x.action));
+export const rebindableActions = (): ReadonlySet<Action> => REBINDABLE;
+
+/** 动作的中文标签（交换提示用）。不在精选表里的回落到 id */
+const labelFor = (action: Action): string =>
+  ACTION_LABELS.find((x) => x.action === action)?.label ?? action;
+
 export class SettingsPanel {
   private readonly el: HTMLElement;
+  /** W7：正在捕获新键的动作（点了某行键位后）。null = 不在捕获态 */
+  private capturing: Action | null = null;
+  /** W7：捕获态或冲突的一句话提示，渲染在键位表顶部 */
+  private keyHint = '';
 
   constructor(
     container: HTMLElement,
@@ -94,6 +132,9 @@ export class SettingsPanel {
   ) {
     this.el = document.createElement('div');
     this.el.id = 'settings-panel';
+    // W7：可聚焦 —— 捕获新键要靠面板自己收到 keydown（点一个普通 div 不会
+    //   移动焦点，tabindex=-1 让点击落进面板、后续按键才到得了这里的监听器）
+    this.el.tabIndex = -1;
     Object.assign(this.el.style, {
       position: 'absolute', right: '12px', top: '48px', width: '292px',
       maxHeight: '78vh', overflowY: 'auto',
@@ -115,6 +156,18 @@ export class SettingsPanel {
       this.el.addEventListener(t, (e) => {
         const ke = e as KeyboardEvent;
         if (t === 'keydown') {
+          /**
+           * ★ W7 捕获态优先：正在等一个新键时，除 Esc（取消）外**任何键**
+           *   都是要绑的那个键 —— 包括 F10 本身（有人就想把设置键换掉）。
+           *   所以捕获分支必须排在「Esc / 设置键关闭面板」之前。
+           */
+          if (this.capturing !== null) {
+            ke.preventDefault();
+            if (ke.code === 'Escape') this.cancelCapture();
+            else this.applyCapture(ke.code);
+            e.stopPropagation();
+            return;
+          }
           const settingsKey = (this.hooks.bindings?.() ?? DEFAULT_BINDINGS)[Action.OpenSettings];
           if (ke.code === 'Escape' || ke.code === settingsKey) {
             ke.preventDefault();
@@ -129,9 +182,48 @@ export class SettingsPanel {
     this.el.addEventListener('input', (e) => this.onControl(e));
     this.el.addEventListener('change', (e) => this.onControl(e));
     this.el.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement).dataset['close'] !== undefined) this.close();
+      const el = (e.target as HTMLElement).closest<HTMLElement>('[data-close],[data-rebind],[data-reset-keys]');
+      if (el?.dataset['close'] !== undefined) this.close();
+      else if (el?.dataset['rebind'] !== undefined && this.hooks.rebind) {
+        // 点一行键位 → 进入捕获态，等下一个按键。focus() 让后续 keydown 落到本面板
+        this.capturing = el.dataset['rebind'] as Action;
+        this.keyHint = '按下要绑定的键（Esc 取消）';
+        this.rerender();
+        this.el.focus();
+      } else if (el?.dataset['resetKeys'] !== undefined && this.hooks.resetBindings) {
+        this.hooks.resetBindings();
+        this.cancelCapture();
+        this.keyHint = '已恢复默认键位';
+        this.rerender();
+      }
       e.stopPropagation();
     });
+  }
+
+  /** W7：捕获到新键 —— 交给调用方（走 rebindWithSwap），拼一句提示 */
+  private applyCapture(code: string): void {
+    const action = this.capturing;
+    this.capturing = null;
+    if (action === null || !this.hooks.rebind) return;
+    const r = this.hooks.rebind(action, code);
+    this.keyHint = !r.ok
+      // conflict 一定是不可重绑的动作（移动/系统键）—— 不逐一点名，让玩家换个键即可
+      ? '该键已被移动或系统按键占用，请换一个键'
+      : r.swappedWith !== undefined
+        ? `已与「${labelFor(r.swappedWith)}」互换按键`
+        : '';
+    this.rerender();
+  }
+
+  private cancelCapture(): void {
+    this.capturing = null;
+    this.keyHint = '';
+    this.rerender();
+  }
+
+  /** 捕获/冲突提示变化时只重画，不改开合状态 */
+  private rerender(): void {
+    if (this.visible) this.el.innerHTML = this.html();
   }
 
   get visible(): boolean {
@@ -145,6 +237,9 @@ export class SettingsPanel {
 
   /** 打开时整体重建 —— 面板不持有状态，每次都从数据层现读 */
   open(): void {
+    // 上次关面板时若停在捕获态，重开要清干净
+    this.capturing = null;
+    this.keyHint = '';
     this.el.innerHTML = this.html();
     this.el.style.display = '';
   }
@@ -181,13 +276,25 @@ export class SettingsPanel {
       : '';
 
     const bindings = (this.hooks.bindings?.() ?? DEFAULT_BINDINGS);
+    // W7：给了 rebind 钩子才可点；否则退回只读展示（大厅路径）
+    const editable = this.hooks.rebind !== undefined;
     const keyRows = ACTION_LABELS
-      .map(({ action, label }) =>
-        `<div style="display:flex;justify-content:space-between">
-           <span style="opacity:.8">${esc(label)}</span>
-           <kbd style="background:#232a38;border-radius:4px;padding:0 6px">${esc(prettyKey(bindings[action]))}</kbd>
-         </div>`)
+      .map(({ action, label }) => {
+        const capturing = this.capturing === action;
+        const kbd = `<kbd style="background:${capturing ? '#3a2a12' : '#232a38'};border-radius:4px;padding:0 6px">${capturing ? '按键…' : esc(prettyKey(bindings[action]))}</kbd>`;
+        const rowStyle = `display:flex;justify-content:space-between${editable ? ';cursor:pointer' : ''}`;
+        return `<div style="${rowStyle}"${editable ? ` data-rebind="${action}"` : ''}>
+           <span style="opacity:.8">${esc(label)}</span>${kbd}
+         </div>`;
+      })
       .join('');
+    const keyHead = editable ? '键位（点一行改键）' : '键位（只读）';
+    const keyHintHtml = this.keyHint
+      ? `<div style="opacity:.7;font-size:12px;margin:2px 0">${esc(this.keyHint)}</div>`
+      : '';
+    const resetBtn = editable && this.hooks.resetBindings
+      ? `<button data-reset-keys style="margin-top:6px;background:#232a38;border:1px solid #3a4150;color:#cdd6e4;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:12px">恢复默认键位</button>`
+      : '';
 
     return `
       <div style="display:flex;justify-content:space-between;align-items:center">
@@ -214,8 +321,10 @@ export class SettingsPanel {
       ${row('屏幕闪烁', toggle('data-acc-toggle="screenFlash"', a.screenFlash))}
       ${row('武器粒子', toggle('data-acc-toggle="weaponParticles"', a.weaponParticles))}
       ${row('打击顿帧', toggle('data-acc-toggle="hitStop"', a.hitStop))}
-      ${head('键位（只读）')}
+      ${head(keyHead)}
+      ${keyHintHtml}
       ${keyRows}
+      ${resetBtn}
     `;
   }
 

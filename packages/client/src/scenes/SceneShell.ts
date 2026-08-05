@@ -19,6 +19,7 @@ import { Environment } from '../render/Environment.js';
 import { QualityController } from '../render/QualityController.js';
 import { QualityTier } from '../render/quality.js';
 import { artEnabled } from '../settings/artMode.js';
+import { loadBindings } from '../settings/keybindings.js';
 import type { DecorRenderer } from '../render/DecorRenderer.js';
 
 export class SceneShell {
@@ -54,7 +55,9 @@ export class SceneShell {
     this.env = new Environment(this.renderer, this.scene);
 
     this.cam = new CameraController(canvas.clientWidth / canvas.clientHeight);
-    this.input = new InputManager(canvas);
+    // W7：开局就套用持久化的键位（坏存档回落默认，见 keybindings.ts）——
+    // 此前 InputManager 永远只吃 DEFAULT_BINDINGS，重绑无从谈起
+    this.input = new InputManager(canvas, loadBindings(globalThis.localStorage));
 
     window.addEventListener('resize', this.onResize);
     this.onResize();

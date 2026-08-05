@@ -321,6 +321,57 @@ try {
         ((sp['net'] as { spawnProtections?: number } | null)?.spawnProtections ?? 0) >= 1,
         `spawnProtections=${(sp['net'] as { spawnProtections?: number } | null)?.spawnProtections}`);
     }
+
+    /**
+     * ★ W7（技术债总账）：键位真的可重绑了。此前 rebind()/getBindings()
+     *   全仓零调用、无持久化，17.2「全键位可重绑」不可达。
+     *   走一个完整往返：F10 → 点「通用解控」行进入捕获态 → 按 H →
+     *   落 localStorage + 面板 <kbd> 变 H；再验冲突（按移动键 W 被拒、绑定不变）；
+     *   再验技能键重绑真的改了技能栏图标上的键号（<kbd> 不再写死）。
+     */
+    {
+      await pageA.keyboard.press('F10');
+      await waitStatus(pageA, 'A 设置面板打开', 'st.net && st.net.settingsOpen === true', 4000);
+
+      // 1) 通用解控 R → H
+      await pageA.click('#settings-panel [data-rebind="trinket"]');
+      await pageA.keyboard.press('KeyH');
+      const trinketKbd = await pageA.evaluate(`(() => {
+        const row = document.querySelector('#settings-panel [data-rebind="trinket"]');
+        return row ? row.querySelector('kbd').textContent : '';
+      })()`);
+      const savedTrinket = await pageA.evaluate(
+        `JSON.parse(localStorage.getItem('wowpvp.keybindings.v1') || '{}').trinket`,
+      );
+      check('20', '★★ 键位可重绑：通用解控 R→H，面板 <kbd> 与 localStorage 同步（W7）',
+        trinketKbd === 'H' && savedTrinket === 'KeyH',
+        `面板显示「${trinketKbd}」，落盘 trinket=${String(savedTrinket)}`);
+
+      // 2) 冲突检测：把它绑到移动键 W → 被拒，绑定不变
+      await pageA.click('#settings-panel [data-rebind="trinket"]');
+      await pageA.keyboard.press('KeyW');
+      const afterConflict = await pageA.evaluate(`(() => {
+        const row = document.querySelector('#settings-panel [data-rebind="trinket"]');
+        const hint = document.querySelector('#settings-panel');
+        return { kbd: row.querySelector('kbd').textContent, text: hint.textContent };
+      })()`) as { kbd: string; text: string };
+      check('21', '★ 冲突检测：绑到移动键被拒、原绑定不变、有提示（W7）',
+        afterConflict.kbd === 'H' && afterConflict.text.includes('占用'),
+        `<kbd>=${afterConflict.kbd}，提示含「占用」=${afterConflict.text.includes('占用')}`);
+
+      // 3) 技能键重绑真的改技能栏图标上的键号（<kbd> 不再写死 1–9）
+      await pageA.click('#settings-panel [data-rebind="skill2"]');
+      await pageA.keyboard.press('KeyJ');
+      await pageA.keyboard.press('F10'); // 关面板，让技能栏可见
+      await sleep(120);
+      const skill2Kbd = await pageA.evaluate(`(() => {
+        const kbds = [...document.querySelectorAll('#skill-bar .slot kbd')].map(k => k.textContent);
+        return kbds[1] || '';
+      })()`);
+      check('22', '★★ 技能键重绑反映到技能栏 <kbd>（不再写死 1–9，W7）',
+        skill2Kbd === 'J',
+        `技能 2 的键号显示「${skill2Kbd}」（期望 J）`);
+    }
   }
 
   // ── 4b：断线横幅与重连闭环（W6，技术债总账）─────────────────
