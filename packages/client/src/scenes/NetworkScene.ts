@@ -23,6 +23,7 @@
 
 import * as THREE from 'three';
 import {
+  FlagState,
   GEOMETRY,
   MAP_BY_ID,
   SIM,
@@ -38,6 +39,7 @@ import {
   resolveGroundPlacement,
   usesNoTarget,
   type AllyEquipmentSnapshot,
+  type FlagView,
   type ArmorySnapshot,
   type AwardView,
   type CombatEntity,
@@ -87,6 +89,7 @@ import { AimingController, type AimInput } from '../targeting/AimingController.j
 import { DirectionIndicator } from '../targeting/DirectionIndicator.js';
 import { GroundIndicator, screenToGround } from '../targeting/GroundIndicator.js';
 import { SpellVfx, type CastView, type SpellVfxStatus } from '../vfx/SpellVfx.js';
+import { FlagMarkers } from '../vfx/FlagMarkers.js';
 import { StatusMarkers } from '../vfx/StatusMarkers.js';
 import { TargetRing } from '../vfx/TargetRing.js';
 import { strongestShield, type ControlKind } from '../vfx/status.js';
@@ -159,6 +162,19 @@ export interface NetStatus {
   shields: { visible: number; absorbs: number; breaks: number };
   /** W16：场上可见的复活保护标记数 */
   spawnProtections: number;
+  /**
+   * W12：夺旗自检（verify:w12 的判据入口）。竞技场对局恒为 null ——
+   * 顺手也是 15.4 否定式的可执行断言（竞技场里读到非 null 就是接错了）。
+   */
+  ctf: {
+    scoreRed: number;
+    scoreBlue: number;
+    scoreToWin: number;
+    flags: { team: number; state: string; carried: boolean }[];
+    /** 场上 3D 旗帜 mesh 数（FlagMarkers 真的画了才计入）*/
+    markers: number;
+    respawnIn: number | null;
+  } | null;
   /** W5：死亡遮罩当前是否可见 */
   deathOverlay: boolean;
   /** W5：正在观战的实体 id；未观战为 null */
@@ -232,6 +248,11 @@ export class NetworkScene {
   private lastMatch: Snapshot['match'] | undefined;
   /** 竞技场回合比分。快照不带（只有 RoundEnd 事件），本地累计 */
   private readonly roundWins = { red: 0, blue: 0 };
+  /**
+   * W12：旗帜的 3D 表现 —— 与试验场同一个类。竞技场对局它一帧数据都收不到
+   * （`match.flags` 是 undefined），meshes 恒空 —— 15.4 的否定式免费成立。
+   */
+  private readonly flagMarkers = new FlagMarkers();
   /**
    * W5（技术债总账）：死亡遮罩与观战。
    * `spectatingId` 是**本地意图** —— 合法性由服务器复核（`spectatableFor`
@@ -311,6 +332,12 @@ export class NetworkScene {
      * 回归路径同样要能抢装备，否则 M6 的验收在那条路径上无从谈起。
      */
     this.scene.add(this.arsenalView.group);
+    /**
+     * W12 旗帜。★ 与军械表现同一条理由**不受 `art` 门禁**：12.2 要求旗帜
+     * 信息对双方持续可见，它是玩法信息不是美术层 —— `?art=off` 的验收
+     * 路径同样要能看旗抢旗。
+     */
+    this.scene.add(this.flagMarkers.group);
     // 14.2 特效层：与试验场同一门禁、同一实现
     if (this.art) {
       this.spellVfx = new SpellVfx();
@@ -510,6 +537,7 @@ export class NetworkScene {
     this.canvas.removeEventListener('mousemove', this.onCanvasMouseMove);
     this.canvas.removeEventListener('mousedown', this.onCanvasMouseDown);
     this.spellVfx?.dispose();
+    this.flagMarkers.dispose();
     this.shell.dispose();
   }
 
@@ -548,6 +576,7 @@ export class NetworkScene {
       // W16：场上可见的复活保护标记数（verify 断言读它）
       spawnProtections: [...this.statusMarkers.values()]
         .filter((m) => m.spawnProtectionVisible).length,
+      ctf: this.ctfStatus(),
       // W5：死亡遮罩与观战状态（verify:m13 的判据入口）
       deathOverlay: this.deathOverlay.style.display !== 'none',
       spectating: this.spectatingId,
@@ -557,6 +586,25 @@ export class NetworkScene {
       // W9：设置面板
       settingsOpen: this.settings.visible,
       fps: this.loop.fps,
+    };
+  }
+
+  /** W12：夺旗自检数据（NetStatus.ctf）。竞技场如实 null */
+  private ctfStatus(): NetStatus['ctf'] {
+    const m = this.lastMatch;
+    if (!m || m.flags === undefined) return null;
+    const score = m.score ?? {};
+    return {
+      scoreRed: score[String(TEAM_RED as number)] ?? 0,
+      scoreBlue: score[String(TEAM_BLUE as number)] ?? 0,
+      scoreToWin: m.scoreToWin ?? 0,
+      flags: m.flags.map((f) => ({
+        team: f.team as number,
+        state: String(f.state),
+        carried: f.carrierId !== undefined,
+      })),
+      markers: this.flagMarkers.count,
+      respawnIn: m.respawnIn ?? null,
     };
   }
 
@@ -859,6 +907,22 @@ export class NetworkScene {
           this.feedback.onShieldBroken({ targetId: msg.targetId });
         }
         break;
+
+      /**
+       * W12：旗帜事件进战斗日志。旗帜的**状态**由快照持续驱动（HUD 与 3D
+       * 旗都读快照），这条事件只负责「那一瞬间」的播报 —— 12.2 的
+       * 「关键事件有明确反馈」。文案按新状态查表，carrierId 可查名就带名。
+       */
+      case 'FlagEvent': {
+        const side = msg.flagTeam === TEAM_RED ? '红旗' : '蓝旗';
+        // 只有「被夺走」把旗手名放进句子 —— 其余状态的 carrierId 要么没有、
+        // 要么（交付中）说出来反而拗口，旗手是谁 HUD 的旗帜行一直在显示
+        const text = msg.state === FlagState.Carried && msg.carrierId !== undefined
+          ? `被 ${this.nameOf(msg.carrierId)} 夺走！`
+          : FLAG_EVENT_TEXT[msg.state];
+        if (text) this.view.push(`${side}${text}`, 'interrupt');
+        break;
+      }
 
       /** 16a 战后统计。★ 场景只负责转交给上层（大厅的结算页在渲染它）*/
       case 'MatchStats':
@@ -1371,6 +1435,7 @@ export class NetworkScene {
     });
 
     this.updateArsenal();
+    this.updateFlags();
     this.killFeed.render(this.serverTime);
 
     this.renderer.render(this.scene, this.cam.camera);
@@ -1404,7 +1469,7 @@ export class NetworkScene {
 
   /**
    * W5：死亡遮罩。竞技场死亡不复活（11.4），如实告知去向；
-   * 有存活队友则提示 V 观战。夺旗的复活倒计时随 W12 的联网夺旗线。
+   * 有存活队友则提示 V 观战；夺旗显示波次倒计时（12.6，W12 接入）。
    */
   private renderDeathState(): void {
     const me = this.lastEntities.find((e) => e.id === this.selfId);
@@ -1435,12 +1500,47 @@ export class NetworkScene {
     const watching = this.spectatingId !== null
       ? this.lastEntities.find((e) => (e.id as number) === this.spectatingId)?.name
       : undefined;
+    /**
+     * W12（W5 的余账）：两种模式的死亡去向不同，如实分开说 ——
+     * 竞技场死了这回合就没了（11.4），夺旗按波次回来（12.6，倒计时来自
+     * 快照的全局波次钟）。
+     */
+    const isCtf = this.lastMatch?.flags !== undefined;
+    const respawnIn = this.lastMatch?.respawnIn;
+    const fate = isCtf
+      ? `复活波次 ${Math.ceil(respawnIn ?? 0)}s`
+      : '本回合已淘汰';
     const hint = watching !== undefined
       ? `正在观战 ${watching} · 按 V 切换`
-      : mates.length > 0 ? '按 V 观战队友' : '等待本回合结束';
-    const sub = `本回合已淘汰 · ${hint}`;
+      : mates.length > 0 ? '按 V 观战队友' : isCtf ? '留在原地等待复活' : '等待本回合结束';
+    const sub = `${fate} · ${hint}`;
     if (this.deathOverlaySub.textContent !== sub) this.deathOverlaySub.textContent = sub;
     if (this.deathOverlay.style.display !== '') this.deathOverlay.style.display = '';
+  }
+
+  /**
+   * W12：快照的旗帜数据 → 与试验场同构的 `FlagView[]`。
+   * ★ `carrierName` 从快照实体反查 —— 12.3 禁止旗手潜行，所以旗手
+   *   永远在快照里，查不到名字只可能是他刚离场（如实不带名）。
+   */
+  private flagViewsFromSnapshot(): FlagView[] {
+    return (this.lastMatch?.flags ?? []).map((f) => {
+      const carrierName = f.carrierId !== undefined
+        ? this.lastEntities.find((e) => e.id === f.carrierId)?.name
+        : undefined;
+      return {
+        team: f.team,
+        state: f.state,
+        position: f.position,
+        ...(carrierName !== undefined ? { carrierName } : {}),
+      };
+    });
+  }
+
+  /** W12：3D 旗帜每帧跟快照（竞技场 flags 恒空，update 一次都不会建 mesh）*/
+  private updateFlags(): void {
+    this.flagMarkers.cameraDistance = this.cam.distance;
+    this.flagMarkers.update(this.flagViewsFromSnapshot(), this.elapsed);
   }
 
   /**
@@ -1454,7 +1554,6 @@ export class NetworkScene {
    *   落地：6 米网格的模糊位置、**无 id**（防选中是它的设计）。无 id 就
    *   无法与精确点对齐去重 —— 用「附近已有同阵营精确点就跳过」的距离
    *   启发式压掉一人两点的噪音（网格量化误差 ≤ ~4.3 米，阈值取 8）。
-   * ★ 夺旗的旗手/掉落旗 blip 不在这里 —— 随 W12 的联网夺旗线一起接。
    */
   private renderMinimap(): void {
     const me = this.lastEntities.find((e) => e.id === this.selfId);
@@ -1480,6 +1579,26 @@ export class NetworkScene {
         kind: b.team === me.team ? 'ally' : 'enemy', team: b.team,
       });
     }
+    /**
+     * W12 / 15.4：小地图**永久**显示双方旗手与掉落旗帜 —— 与试验场同一个
+     * 派生口径（携带中 → 旗手 blip 带名字；掉落 → 掉落旗 blip）。
+     * 竞技场 `flags` 是 undefined，这段一个 blip 都不会产生（15.4 否定式）。
+     * 旗手潜行也照画 —— 12.2「旗手位置不受潜行影响」，数据源（快照旗帜）
+     * 本来就不经过实体裁剪。
+     */
+    for (const f of this.lastMatch?.flags ?? []) {
+      if (f.state === FlagState.Carried) {
+        const label = f.carrierId !== undefined
+          ? this.lastEntities.find((e) => e.id === f.carrierId)?.name
+          : undefined;
+        blips.push({
+          x: f.position.x, z: f.position.z, kind: 'flagCarrier', team: f.team,
+          ...(label !== undefined ? { label } : {}),
+        });
+      } else if (f.state === FlagState.Dropped) {
+        blips.push({ x: f.position.x, z: f.position.z, kind: 'droppedFlag', team: f.team });
+      }
+    }
     this.hud.minimap.draw(blips, pos.x, pos.z, this.characterYaw);
   }
 
@@ -1493,12 +1612,30 @@ export class NetworkScene {
    * ★ 存活人数按**可见口径**（与记分板同一条规矩）：潜行者不进快照也就
    *   不计入 —— 如实按我所见，不编一个全知计数（精确计数要加协议字段，
    *   独立的一笔账，不在这里顺手做）。
-   * ★ 夺旗面板刻意不在这里：联网夺旗整条线（大厅入口、旗帜 3D、renderCtf）
-   *   归 W12 一起做 —— 现在联网根本进不了夺旗局，接了也是死代码。
+   * ★ W12：夺旗分支接上（`renderCtf` 在联网侧的第一个调用方）。
+   *   两个视图仍是不相交的类型 —— 竞技场拿不到旗帜数据，夺旗拿不到
+   *   存活计数，「顺手把旗手标记画进竞技场」在类型上写不出来。
    */
   private renderModeHud(): void {
     const m = this.lastMatch;
-    if (!m || m.flags !== undefined) return;
+    if (!m) return;
+    if (m.flags !== undefined) {
+      const score = m.score ?? {};
+      this.hud.modeHud.renderCtf({
+        scoreRed: score[String(TEAM_RED as number)] ?? 0,
+        scoreBlue: score[String(TEAM_BLUE as number)] ?? 0,
+        scoreToWin: m.scoreToWin ?? 0,
+        flags: this.flagViewsFromSnapshot(),
+        focusStacks: m.focusStacks ?? 0,
+        /**
+         * ⚠️ 刻意**不传 timeRemaining**：sim 里没有夺旗时限（`CTF.DURATION`
+         * 零消费方，时限/加时是总账里的一笔账）。显示一个数到零也不会
+         * 发生任何事的倒计时，比不显示更糟 —— 附录A#7 的占位禁令。
+         */
+        ...(m.respawnIn !== undefined ? { respawnIn: m.respawnIn } : {}),
+      });
+      return;
+    }
     const alive = (team: number): number =>
       this.lastEntities.filter((e) => (e.team as number) === team && e.alive).length;
     this.hud.modeHud.renderArena({
@@ -1851,4 +1988,17 @@ const SCHOOL_NAMES: Readonly<Record<string, string>> = {
   nature: '自然',
   shadow: '暗影',
   holy: '神圣',
+};
+
+/**
+ * W12：旗帜事件的战斗日志文案，按**新状态**查表。
+ * `carried` 不在表里 —— 那条要带旗手名，在 FlagEvent 分支里单独拼。
+ * `resetting` 刻意缺席：重置是内部过渡态，一瞬后紧跟 atBase，播两条是噪音。
+ */
+const FLAG_EVENT_TEXT: Readonly<Record<string, string>> = {
+  atBase: '已回到基地',
+  beingTaken: '正在被拔取…',
+  dropped: '掉落在地！',
+  beingReturned: '正在被归还…',
+  beingCaptured: '即将被交付！',
 };

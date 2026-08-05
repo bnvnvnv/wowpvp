@@ -98,6 +98,11 @@ export class FlagMarkers {
     }
   }
 
+  /** 已建出的旗帜 mesh 数。verify 用它断言「旗真的画了」而不是只有数据 */
+  get count(): number {
+    return this.meshes.size;
+  }
+
   update(views: readonly FlagView[], elapsed: number): void {
     const scale = essentialMarkerScale(this.cameraDistance);
     for (const v of views) {

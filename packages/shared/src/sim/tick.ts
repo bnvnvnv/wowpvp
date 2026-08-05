@@ -66,9 +66,9 @@ import {
 import { takeConsumable, tickSwaps, type LoadoutStore, type SwapStore, type SwapTickEvent } from './loadout.js';
 import { tickArena, type ArenaEvents, type ArenaState } from './match/arena.js';
 import { tickFlags, type CtfDeps, type CtfState, type FlagEvent } from './match/flag.js';
-import { tickRespawn, type RespawnEvent, type RespawnState } from './match/respawn.js';
+import { enqueueRespawn, tickRespawn, type RespawnEvent, type RespawnState } from './match/respawn.js';
 import {
-  separationVelocity, stepMovement, type MovementInput, type MovementState,
+  separationVelocity, stepMovement, teleportTo, type MovementInput, type MovementState,
 } from './movement.js';
 import { pruneInvalidTargets } from './targeting.js';
 import { tickSwings, type SwingResult, type SwingStore } from './autoAttack.js';
@@ -347,7 +347,9 @@ export const tickWorld = (
    * ★ killerId 如实缺席：弃权没有凶手，编一个会多记一次击杀、
    *   让击杀播报冤枉一个没打过他的人（与 M16a 的「如实，不编」同则）。
    */
-  for (const id of deps.forfeits ?? []) {
+  // ★ 记名单：第 11 步的复活入队要跳过弃权者（淘汰不该被波次复活）
+  const forfeited = new Set<EntityId>(deps.forfeits ?? []);
+  for (const id of forfeited) {
     const e = getEntity(deps.world, id);
     if (!e || !e.alive) continue;
     e.alive = false;
@@ -593,6 +595,16 @@ export const tickWorld = (
   }
   if (deps.respawn) {
     for (const ev of tickRespawn(deps.respawn, deps.world, deps.auras, deps.world.time)) {
+      /**
+       * ★★ 复活必须**同时写 movement 状态**（W12 接线时抓到的真 bug）。
+       *   `tickRespawn` 只写 `e.position`，而联网局里位置由第 2 步的移动积分
+       *   从 `MovementState` 驱动 —— 不写的话下一 tick 就把人**拽回死点**。
+       *   与位移效果同一条老坑（见上面 `resolve()` 的 movement 注释），
+       *   同一个修法：`teleportTo`，顺带置 13.4 的 teleported 标记，
+       *   客户端插值/预测按瞬移处理而不是滑一条 80 米的直线。
+       */
+      const ms = deps.movement.get(ev.entityId);
+      if (ms) deps.movement.set(ev.entityId, teleportTo(ms, ev.position, obstacles));
       result.respawns.push(ev);
       sinks.onRespawn?.(ev);
     }
@@ -613,6 +625,22 @@ export const tickWorld = (
   )) {
     result.deaths.push(ev);
     sinks.onDeathSettled?.(ev);
+    /**
+     * ★★ 12.6 复活波次的**入队**（W12 接线时抓到的真 bug）：
+     *   `enqueueRespawn` 自 M7 起在生产路径**零调用** —— `tickRespawn`
+     *   每 12 秒醒来一次，pending 永远是空的，联网夺旗里死了就永远躺着
+     *   （M7 的验收是测试夹具手工入队的，规则对、没人接线，老教训又一次）。
+     *   排除两类：宠物（12.6 是**玩家**的波次复活；宠物随主人技能重召）、
+     *   本 tick 弃权的（11.5 淘汰 = 退出比赛，波次不该把他复活成无主僵尸）。
+     *   入队在 tickRespawn（第 10 步）**之后**：本 tick 死的赶下一波，
+     *   不在死亡瞬间搭上正在发车的这一波。
+     */
+    if (deps.respawn) {
+      const dead = getEntity(deps.world, ev.entityId);
+      if (dead && !dead.isPet && !forfeited.has(ev.entityId)) {
+        enqueueRespawn(deps.respawn, ev.entityId, deps.world.time);
+      }
+    }
   }
 
   // ── 12. 统计的连续量采样 + 清理失效目标 ─────────────────────

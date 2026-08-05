@@ -50,6 +50,9 @@ export type SessionPhase = (typeof SessionPhase)[keyof typeof SessionPhase];
  */
 const ROOM_ONLY: ReadonlySet<ClientMessage['t']> = new Set([
   'SelectTeam', 'SelectClass', 'SetReady',
+  // ★ W12：换模式只在房间阶段有意义（sim 的 started 守卫是第二道防线，
+  //   但纵深防御不该只剩一层 —— A8 的教训，新消息登记时就把门装上）
+  'SetRoomMode',
 ]);
 
 /**

@@ -36,6 +36,7 @@ import {
   selectClass,
   selectSlot,
   setFillWithBots,
+  setMode,
   setPreset,
   setReady,
   startMatch,
@@ -205,6 +206,9 @@ export class RoomServer {
       // ★ 房主校验在 sim 的 `setPreset()` 里，不在这里 —— 与其他房间变更同源
       case 'SetRoomPreset': return this.onRoomMutation(
         session, (sr) => setPreset(sr.room, session.playerId, msg.preset), 'SetRoomPreset');
+      // ★ W12：换模式连带换地图与人数档，规则全在 sim 的 `setMode()`
+      case 'SetRoomMode': return this.onRoomMutation(
+        session, (sr) => setMode(sr.room, session.playerId, msg.mode), 'SetRoomMode');
       case 'SetFillWithBots': return this.onRoomMutation(
         session, (sr) => setFillWithBots(sr.room, session.playerId, msg.enabled), 'SetFillWithBots');
       case 'LeaveMatch': return this.onLeave(session);

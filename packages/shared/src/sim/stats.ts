@@ -969,6 +969,10 @@ export interface StatsRow {
   absorbProvided: number;
   interruptsLanded: number;
   crits: number;
+  /** 16.3 夺旗贡献三项（W12 结算面板夺旗列）。竞技场对局恒 0，形状不变 */
+  flagCaptures: number;
+  flagReturns: number;
+  carrierKills: number;
 }
 
 /**
@@ -994,5 +998,8 @@ export const statsRows = (store: StatsStore): StatsRow[] =>
       absorbProvided: Math.round(s.general.absorbProvided),
       interruptsLanded: s.general.interruptsLanded,
       crits: s.general.crits,
+      flagCaptures: s.ctf.captures,
+      flagReturns: s.ctf.returns,
+      carrierKills: s.ctf.carrierKills,
     }))
     .sort((a, b) => b.damageDone - a.damageDone);

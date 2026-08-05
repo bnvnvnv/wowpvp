@@ -28,7 +28,9 @@ import {
   type Loadout, type LoadoutView, type SwapKind, type SwapStore,
 } from '../sim/loadout.js';
 import { getArmor, getWeapon } from '../data/index.js';
+import type { FlagState } from '../types/enums.js';
 import type { CtfState } from '../sim/match/flag.js';
+import { secondsToNextWave, type RespawnState } from '../sim/match/respawn.js';
 import type { MovementState } from '../sim/movement.js';
 import type { GroundStore } from '../sim/groundArea.js';
 import type { ProjectileStore } from '../sim/projectile.js';
@@ -411,12 +413,24 @@ export interface MatchSnapshot {
   /** 夺旗对局才有。竞技场为 undefined —— 与 15.4 两种 HUD 视图不相交同源 */
   flags?: readonly {
     team: TeamId;
-    state: string;
+    state: FlagState;
     position: Vec3;
     /** 12.2：旗手身份对双方可见 */
     carrierId?: EntityId;
   }[];
   score?: Readonly<Record<string, number>>;
+  /**
+   * W12 夺旗三项（15.4 右列的数据源，此前 HUD 有组件、快照没数据）。
+   * 三个都是**全场公开事实**，零泄露面：
+   *   · `scoreToWin` 是房主开局前定的规则（12.1）
+   *   · `focusStacks` 的效果双方都在承受（12.4 要求显示出来）
+   *   · `respawnIn` 的波次是全局钟（12.6：波次让防守方有可预测的进攻窗口 ——
+   *     「可预测」本来就是规则的一部分，瞒着谁都不对）
+   */
+  scoreToWin?: number;
+  focusStacks?: number;
+  /** 距下一次复活波次的秒数（12.6）。夺旗对局才有 */
+  respawnIn?: number;
 }
 
 export interface Snapshot {
@@ -448,6 +462,8 @@ export interface SnapshotDeps {
   dampening: number;
   suddenDeath: boolean;
   ctf?: CtfState;
+  /** 12.6 复活波次（夺旗才有）。快照只读它的下一波时刻，不推进它 */
+  respawn?: RespawnState;
   /**
    * 每个实体的移动状态，用来取 `teleported`（13.4，见 `EntitySnapshot.teleported`）。
    *
@@ -545,6 +561,11 @@ export const buildSnapshot = (deps: SnapshotDeps, viewer: CombatEntity): Snapsho
       ...(f.carrierId !== undefined ? { carrierId: f.carrierId } : {}),
     }));
     match.score = { ...deps.ctf.score };
+    match.scoreToWin = deps.ctf.scoreToWin;
+    match.focusStacks = deps.ctf.focusStacks;
+  }
+  if (deps.respawn) {
+    match.respawnIn = secondsToNextWave(deps.respawn, deps.world.time);
   }
 
   return { tick: deps.tick, you: viewer.id, entities, projectiles, grounds, drops, armories, match };

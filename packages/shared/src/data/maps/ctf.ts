@@ -292,8 +292,14 @@ const graveSpawns = (team: TeamId, sign: 1 | -1): SpawnPoint[] =>
       y: 0,
       z: sign * (i < 6 ? 156 : 163),
     },
-    // 红方在 +Z，面向 −Z（yaw π）；蓝方相反
-    yaw: sign === 1 ? Math.PI : 0,
+    /**
+     * 红方在 +Z，面向 −Z（yaw 0）；蓝方相反。
+     * ★ W12 修正：此前写成 `sign === 1 ? Math.PI : 0` —— 与注释意图相反
+     *   （vec3.ts 约定 yaw 0 → −Z，竞技场的 prepRooms 就是这么写的），
+     *   两队出生都背对战场。单机试验场从不用墓地出生点，联网夺旗第一次
+     *   有真人从这里睁眼才暴露。
+     */
+    yaw: sign === 1 ? 0 : Math.PI,
   }));
 
 /**

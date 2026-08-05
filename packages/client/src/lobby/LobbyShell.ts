@@ -27,13 +27,12 @@ import {
   getClass,
   teamSizeOf,
   type ClassId,
-  type GameMode,
   type MapId,
   type Room,
   type RoomPlayerView,
   type ServerMessage,
 } from '@wowpvp/shared';
-import { ArenaPreset } from '@wowpvp/shared';
+import { ArenaPreset, GameMode } from '@wowpvp/shared';
 
 import { audio } from '../audio/AudioManager.js';
 import { skillIconHtml } from '../hud/skillIcon.js';
@@ -77,6 +76,9 @@ export interface LobbyStatus {
   playerId: string | null;
   players: { name: string; team: string; classId: string | null; ready: boolean; connected: boolean }[];
   roomStarted: boolean;
+  /** W12：verify 断言模式选择走通（RoomState 广播回来的口径，不是本地记的按钮）*/
+  mode: string | null;
+  mapId: string | null;
   matchStarts: number;
   matchEnds: number;
   damageSeen: number;
@@ -146,6 +148,8 @@ export class LobbyShell {
         connected: p.connected,
       })),
       roomStarted: this.roomStarted,
+      mode: (this.mode as string | undefined) ?? null,
+      mapId: (this.mapId as string | undefined) ?? null,
       matchStarts: this.matchStarts,
       matchEnds: this.matchEnds,
       damageSeen: this.damageSeen,
@@ -222,6 +226,22 @@ export class LobbyShell {
               <button class="lb-btn lb-small lb-blue" data-action="team" data-team="blue">蓝方</button>
               <button class="lb-btn lb-small" data-action="team" data-team="spectator">观战</button>
               <button class="lb-btn lb-small" data-action="open-class" id="lb-class-btn">选择职业</button>
+            </div>
+            <!--
+              W12 游戏模式。★ 与下面的规则预设是同一个存在理由：房间默认
+              arena3v3，没有这排按钮，M7 交付的整个夺旗模式在联网对局里
+              不可达。服务器只接受房主的这条消息（校验在 sim 的 setMode 里），
+              换模式连带换地图与人数档。
+            -->
+            <div class="lb-row" id="lb-modes">
+              <span class="lb-fine">模式：</span>
+              <button class="lb-btn lb-small" data-action="mode" data-mode="arena2v2">2v2</button>
+              <button class="lb-btn lb-small" data-action="mode" data-mode="arena3v3">3v3</button>
+              <button class="lb-btn lb-small" data-action="mode" data-mode="arena5v5">5v5</button>
+              <button class="lb-btn lb-small" data-action="mode" data-mode="ctf6v6">夺旗 6v6</button>
+              <button class="lb-btn lb-small" data-action="mode" data-mode="ctf8v8">夺旗 8v8</button>
+              <button class="lb-btn lb-small" data-action="mode" data-mode="ctf12v12">夺旗 12v12</button>
+              <span id="lb-mode-why" class="lb-fine"></span>
             </div>
             <!--
               10.1 规则预设。★ **没有这个开关，整个第 10 章不可达** ——
@@ -455,6 +475,13 @@ export class LobbyShell {
           preset: btn?.dataset['preset'] === 'armed' ? ArenaPreset.Armed : ArenaPreset.Classic,
         });
         break;
+      case 'mode': {
+        // ★ 同 preset：只发意图。合法值由按钮的 data-mode 保证，
+        //   服务器 codec 再验一遍白名单（不受信任输入的门在那边）
+        const mode = btn?.dataset['mode'];
+        if (mode) this.conn.send({ t: 'SetRoomMode', mode: mode as GameMode });
+        break;
+      }
       case 'open-class':
         this.page = 'class';
         this.render();
@@ -590,9 +617,15 @@ export class LobbyShell {
       /**
        * 16a 结算面板。★ 没收到统计时**如实留空**，不画一张全 0 的表 ——
        * 全 0 的表看起来像「这局你什么都没做」，而真相是「数据没送到」。
+       * W12：夺旗对局多三列（模式从刚打完这局的地图 family 判 ——
+       * RoomState 在 MatchEnd 后原样带回 mapId，这里读到的就是那局的图）。
        */
-      (this.root.querySelector('#lb-summary') as HTMLElement).innerHTML =
-        this.summary ? renderMatchSummary(this.summary) : '';
+      (this.root.querySelector('#lb-summary') as HTMLElement).innerHTML = this.summary
+        ? renderMatchSummary({
+            ...this.summary,
+            ctf: this.mapId !== undefined && MAP_BY_ID.get(this.mapId as string)?.family === 'ctf',
+          })
+        : '';
     }
   }
 
@@ -602,9 +635,14 @@ export class LobbyShell {
 
     const mapName = this.mapId ? MAP_BY_ID.get(this.mapId as string)?.name ?? this.mapId : '';
     const size = this.mode ? teamSizeOf(this.mode) : 0;
-    const presetLabel = this.preset === ArenaPreset.Armed ? '武装竞技场' : '经典竞技场';
+    const metaCtf = this.mapId !== undefined
+      && MAP_BY_ID.get(this.mapId as string)?.family === 'ctf';
+    // W12：夺旗房间不该顶着「经典竞技场」的帽子（预设在夺旗里不生效）
+    const modeLabel = metaCtf
+      ? '夺旗战场'
+      : this.preset === ArenaPreset.Armed ? '武装竞技场' : '经典竞技场';
     (this.root.querySelector('#lb-room-meta') as HTMLElement).textContent = this.mode
-      ? `${presetLabel} ${size}v${size} · ${mapName}${this.roomStarted ? ' · 对局进行中' : ''}`
+      ? `${modeLabel} ${size}v${size} · ${mapName}${this.roomStarted ? ' · 对局进行中' : ''}`
       : '';
 
     const roster = splitRoster(this.players);
@@ -630,21 +668,38 @@ export class LobbyShell {
       ? `职业：${getClass(self.classId)?.name ?? self.classId}`
       : '选择职业';
 
+    const isHost = this.hostId !== undefined && self?.id === this.hostId;
+    const isCtf = this.mapId !== undefined
+      && MAP_BY_ID.get(this.mapId as string)?.family === 'ctf';
+
+    /**
+     * W12 模式选择。★ 与预设同一条显示规矩：非房主看得到、点不动。
+     */
+    for (const el of this.root.querySelectorAll<HTMLButtonElement>('#lb-modes [data-mode]')) {
+      el.classList.toggle('lb-armed', el.dataset['mode'] === (this.mode as string | undefined));
+      el.disabled = !isHost || this.roomStarted;
+    }
+    (this.root.querySelector('#lb-mode-why') as HTMLElement).textContent = isCtf
+      ? '夺旗：拔起敌方旗帜送回己方基地（G 交互）'
+      : (isHost ? '' : '由房主设置');
+
     /**
      * 10.1 规则预设。★ 非房主也**看得到**当前预设（它决定这局怎么打），
      *   只是按钮点不动 —— 隐藏起来会让队友不知道自己在打哪一种。
+     * ★ W12：夺旗模式下整排禁用 —— 12.x 首版关闭临时装备，
+     *   预设在夺旗里没有任何效果，可点会让人以为能开武装夺旗。
      */
-    const isHost = this.hostId !== undefined && self?.id === this.hostId;
     for (const [id, preset] of [
       ['#lb-preset-classic', ArenaPreset.Classic],
       ['#lb-preset-armed', ArenaPreset.Armed],
     ] as const) {
       const el = this.root.querySelector(id) as HTMLButtonElement;
-      el.classList.toggle('lb-armed', this.preset === preset);
-      el.disabled = !isHost || this.roomStarted;
+      el.classList.toggle('lb-armed', !isCtf && this.preset === preset);
+      el.disabled = !isHost || this.roomStarted || isCtf;
     }
-    (this.root.querySelector('#lb-preset-why') as HTMLElement).textContent =
-      this.preset === ArenaPreset.Armed
+    (this.root.querySelector('#lb-preset-why') as HTMLElement).textContent = isCtf
+      ? '夺旗首版关闭临时装备（12.x），规则预设不生效'
+      : this.preset === ArenaPreset.Armed
         ? '场上会刷军械箱与掉落：G 交互、B 换武器、Z/X 用道具'
         : (isHost ? '纯职业对抗，不刷任何临时装备' : '由房主设置');
 

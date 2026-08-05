@@ -26,6 +26,13 @@ export interface MatchSummaryData {
   awards: readonly AwardView[];
   /** 高亮自己那一行 */
   selfId?: number;
+  /**
+   * W12：夺旗对局多三列（夺旗/归还/截杀旗手）。
+   * ★ 按**模式**开关而不是按「有没有非 0 数据」—— 一场 0 夺旗的夺旗局，
+   *   三列全 0 也该显示（「没人碰旗」本身就是这局的事实）；
+   *   反过来竞技场永远不该出现旗帜列（15.4 的否定式，与 ModeHud 同源）。
+   */
+  ctf?: boolean;
 }
 
 /**
@@ -48,6 +55,9 @@ export const renderMatchSummary = (data: MatchSummaryData): string => {
             : ''}
         </div>`).join('');
 
+  const ctfCells = (r: MatchStatsRow): string =>
+    data.ctf ? `<td>${r.flagCaptures}</td><td>${r.flagReturns}</td><td>${r.carrierKills}</td>` : '';
+
   const rowsHtml = data.rows.map((r) => `
       <tr class="${r.team === TEAM_RED ? 'ms-red' : 'ms-blue'}${r.entityId === data.selfId ? ' ms-self' : ''}">
         <td class="ms-name">${esc(r.name)}</td>
@@ -57,8 +67,12 @@ export const renderMatchSummary = (data: MatchSummaryData): string => {
         <td>${num(r.damageTaken)}</td>
         <td>${num(r.absorbProvided)}</td>
         <td>${r.interruptsLanded}</td>
-        <td>${r.crits}</td>
+        <td>${r.crits}</td>${ctfCells(r)}
       </tr>`).join('');
+
+  const ctfHead = data.ctf
+    ? '<th title="夺旗成功">夺旗</th><th title="归还己方旗帜">归还</th><th title="击杀敌方旗手">截旗</th>'
+    : '';
 
   return `
     <div class="ms-awards">${awardsHtml}</div>
@@ -66,7 +80,7 @@ export const renderMatchSummary = (data: MatchSummaryData): string => {
       <thead><tr>
         <th>玩家</th><th title="击杀">杀</th><th title="死亡">死</th><th title="助攻">助</th>
         <th>伤害</th><th>治疗</th><th>承伤</th><th title="护盾吸收">吸收</th>
-        <th title="成功打断">打断</th><th title="暴击次数">暴击</th>
+        <th title="成功打断">打断</th><th title="暴击次数">暴击</th>${ctfHead}
       </tr></thead>
       <tbody>${rowsHtml}</tbody>
     </table>`;

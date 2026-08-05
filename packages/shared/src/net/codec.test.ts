@@ -46,3 +46,19 @@ describe('★ 服务器消息编解码往返', () => {
     );
   });
 });
+
+describe('W12 SetRoomMode 入站校验', () => {
+  it('★ 六个合法模式全部放行（从枚举派生的白名单）', () => {
+    for (const mode of ['arena2v2', 'arena3v3', 'arena5v5', 'ctf6v6', 'ctf8v8', 'ctf12v12']) {
+      const r = parseClientMessage(JSON.stringify({ t: 'SetRoomMode', mode }));
+      expect(r.ok, `模式 ${mode} 被误拒`).toBe(true);
+    }
+  });
+
+  it('★ 编造的模式被拒绝 —— 不放任意字符串进 sim', () => {
+    for (const mode of ['ctf99v99', '', 42, null, undefined]) {
+      const r = parseClientMessage(JSON.stringify({ t: 'SetRoomMode', mode }));
+      expect(r.ok, `非法 mode ${String(mode)} 被放行了`).toBe(false);
+    }
+  });
+});

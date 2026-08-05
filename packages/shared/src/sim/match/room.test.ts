@@ -25,6 +25,7 @@ import {
   selectClass,
   selectSlot,
   setFillWithBots,
+  setMode,
   setPreset,
   setReady,
   startMatch,
@@ -410,5 +411,67 @@ describe('3.1 房间设置：规则预设与人机补位', () => {
     for (const slot of [Slot.Red, Slot.Blue]) {
       expect(botSeatsNeeded(room).find((s) => s.slot === slot)?.count).toBe(2);
     }
+  });
+});
+
+/**
+ * W12：切换游戏模式（竞技场 ↔ 夺旗）。
+ *
+ * ★ 与 `setPreset` 同一族的房间设置，但多两条自己的规则：
+ *   换模式**连带换地图与人数档**、缩档超编时**拒绝而不是悄悄踢人**。
+ */
+describe('W12 房间设置：游戏模式', () => {
+  beforeEach(() => {
+    room = createRoom('r-mode', 'host', config());
+    joinRoom(room, 'host', '房主');
+    joinRoom(room, 'guest', '客人');
+  });
+
+  it('★ 房主改得动模式，非房主改不动', () => {
+    expect(setMode(room, 'guest', GameMode.Ctf6v6).ok).toBe(false);
+    expect(room.config.mode).toBe(GameMode.Arena3v3);
+
+    expect(setMode(room, 'host', GameMode.Ctf6v6).ok).toBe(true);
+    expect(room.config.mode).toBe(GameMode.Ctf6v6);
+  });
+
+  it('★ 开赛后不能再改模式（与选阵营同一条线）', () => {
+    room.started = true;
+    expect(setMode(room, 'host', GameMode.Ctf6v6).ok).toBe(false);
+  });
+
+  it('★★ 换模式连带换地图 —— mapId 来自地图注册表，不是拿模式名当地图 id', () => {
+    setMode(room, 'host', GameMode.Ctf6v6);
+    // DEFAULT_CONFIG 那个「地图 id 写成模式名 → 房间永远开不了局」的坑，
+    // 这里从注册表反查钉死：换出去的 mapId 必须真的存在且支持该模式
+    expect(room.config.mapId as string).toBe('ctf_twin_bridges');
+
+    setMode(room, 'host', GameMode.Arena2v2);
+    expect(room.config.mapId as string).toBe('arena_2v2');
+  });
+
+  it('★★ 缩小人数档时超编 → 拒绝并说明，不悄悄把人踢去观战', () => {
+    // 3v3 房间里红方坐满 3 人
+    for (const id of ['host', 'guest', 'third']) {
+      joinRoom(room, id, id);
+      selectSlot(room, id, Slot.Red);
+    }
+    const r = setMode(room, 'host', GameMode.Arena2v2);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain('观战席');
+    // 拒绝 = 什么都没变
+    expect(room.config.mode).toBe(GameMode.Arena3v3);
+    expect(playersOn(room, Slot.Red)).toHaveLength(3);
+  });
+
+  it('★ 换模式后全员取消准备 —— 已按下的准备是对上一个模式的同意', () => {
+    selectSlot(room, 'host', Slot.Red);
+    selectClass(room, 'host', asClassId('mage'));
+    setReady(room, 'host', true);
+
+    setMode(room, 'host', GameMode.Ctf6v6);
+    expect(room.players.every((p) => !p.ready)).toBe(true);
+    // 职业与阵营保留（与 resetForRematch 同语义：重新同意，不重选人生）
+    expect(room.players.find((p) => p.id === 'host')?.classId).toBe(asClassId('mage'));
   });
 });

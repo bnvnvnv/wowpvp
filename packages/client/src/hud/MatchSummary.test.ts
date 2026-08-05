@@ -25,6 +25,7 @@ const row = (id: number, name: string, over: Partial<MatchStatsRow> = {}): Match
   kills: 0, deaths: 0, assists: 0,
   damageDone: 0, healingDone: 0, damageTaken: 0, absorbProvided: 0,
   interruptsLanded: 0, crits: 0,
+  flagCaptures: 0, flagReturns: 0, carrierKills: 0,
   ...over,
 });
 
@@ -116,6 +117,28 @@ describe('16.1 结算面板', () => {
     const html = renderMatchSummary({ rows: [row(1, '<img src=x>')], awards: [] });
     expect(html).not.toContain('<img');
     expect(html).toContain('&lt;img');
+  });
+
+  it('★ W12：夺旗对局多出夺旗/归还/截旗三列，数字如实', () => {
+    const html = renderMatchSummary({
+      rows: [row(1, '红甲', { flagCaptures: 2, flagReturns: 1, carrierKills: 3 })],
+      awards: [],
+      ctf: true,
+    });
+    expect(html).toContain('夺旗');
+    expect(html).toContain('归还');
+    expect(html).toContain('截旗');
+    expect(html).toMatch(/<td>2<\/td><td>1<\/td><td>3<\/td>/);
+  });
+
+  it('★ 15.4 否定式：竞技场结算不出现任何旗帜列（即使数据字段在）', () => {
+    const html = renderMatchSummary({
+      rows: [row(1, '红甲', { flagCaptures: 2 })],
+      awards: [],
+      // ctf 未设 —— 竞技场路径
+    });
+    expect(html).not.toContain('夺旗');
+    expect(html).not.toContain('截旗');
   });
 });
 

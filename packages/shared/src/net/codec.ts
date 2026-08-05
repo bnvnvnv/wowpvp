@@ -19,7 +19,7 @@
  */
 
 import { asEntityId, asSkillId, asClassId, type EntityId } from '../types/ids.js';
-import { ArenaPreset, ArsenalChoice } from '../types/enums.js';
+import { ArenaPreset, ArsenalChoice, GameMode } from '../types/enums.js';
 import type { Vec3 } from '../math/vec3.js';
 
 /**
@@ -31,6 +31,9 @@ const ALL_ARSENAL_CHOICES: readonly ArsenalChoice[] = Object.values(ArsenalChoic
 
 /** 10.1 的两个规则预设。同样从枚举派生，理由见上 */
 const ALL_ARENA_PRESETS: readonly ArenaPreset[] = Object.values(ArenaPreset);
+
+/** W12 的六个游戏模式。同样从枚举派生，理由见上 */
+const ALL_GAME_MODES: readonly GameMode[] = Object.values(GameMode);
 import {
   ALL_CLIENT_MESSAGE_KINDS,
   INPUT_LIMITS,
@@ -184,6 +187,12 @@ export const parseClientMessage = (raw: string): ParseResult => {
       const preset = v['preset'];
       if (!(ALL_ARENA_PRESETS as readonly unknown[]).includes(preset)) return bad('preset 无效');
       return { ok: true, msg: { t, preset: preset as ArenaPreset } };
+    }
+
+    case 'SetRoomMode': {
+      const mode = v['mode'];
+      if (!(ALL_GAME_MODES as readonly unknown[]).includes(mode)) return bad('mode 无效');
+      return { ok: true, msg: { t, mode: mode as GameMode } };
     }
 
     case 'Reconnect': {

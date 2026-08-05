@@ -35,6 +35,7 @@ import {
   cancelCast,
   cancelFlagInteract,
   chooseFromArmory,
+  ctfWinner,
   distance2D,
   getWeapon,
   isVisibleTo,
@@ -710,6 +711,8 @@ export class MatchLoop {
       // 10.2 掉落物 + 10.4 军械点。★ 经典竞技场里这两个数组恒空（验收 #28）
       arsenal: m.arsenal,
       ...(m.ctf ? { ctf: m.ctf.state } : {}),
+      // 12.6 复活波次倒计时（W12：夺旗 HUD 与死亡遮罩都读它）
+      ...(m.respawn ? { respawn: m.respawn } : {}),
     };
 
     for (const s of this.deps.sessions()) {
@@ -760,12 +763,24 @@ export class MatchLoop {
   // ── 结束 ──────────────────────────────────────────────────────
 
   private checkEnd(): void {
-    const outcome = this.match.arena?.outcome;
-    if (!outcome) return;
+    /**
+     * 两种模式各自的胜负源，都在 sim：竞技场读 `arena.outcome`（tickArena
+     * 维护），夺旗问 `ctfWinner()`（12.1 先到目标分者胜）。
+     *
+     * ★★ 夺旗那半句是 W12 接线时抓到的真 bug：`ctfWinner` 自 M7 起在
+     *   服务器侧**零调用** —— 旗照抢、分照记、快照照发，但联网夺旗一局
+     *   **永远打不完**（没有 MatchEnd、没有统计、房间回不到「再来一局」）。
+     *   试验场没事是因为 CtfDemo 自己调它 —— 规则只有一份，消费方漏了一个。
+     * ★ 夺旗没有平局分支：没有时限就没有「时间到比分相同」这回事
+     *   （12.x 的时限/加时是另一笔已登记的账，见总账 —— 这里不发明规则）。
+     */
+    const winner: TeamId | 'draw' | null = this.match.arena
+      ? (this.match.arena.outcome ? this.match.arena.outcome.winner ?? 'draw' : null)
+      : this.match.ctf ? ctfWinner(this.match.ctf.state) : null;
+    if (winner === null) return;
     this.ended = true;
     this.stop();
     this.broadcastStats();
-    const winner = outcome.winner ?? 'draw';
     this.deps.onEnd(winner);
   }
 

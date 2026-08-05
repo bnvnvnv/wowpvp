@@ -30,6 +30,7 @@ import {
 import { createSwapStore } from './loadout.js';
 import { createArena, RoundPhase, type ArenaState } from './match/arena.js';
 import { createCtf, enemyFlagOf } from './match/flag.js';
+import { createRespawn, isAwaitingRespawn, type RespawnState } from './match/respawn.js';
 import { createMovementState, type MovementInput, type MovementState } from './movement.js';
 import { createProjectileStore, type ProjectileStore } from './projectile.js';
 import { createStats, registerPlayer } from './stats.js';
@@ -728,5 +729,96 @@ describe('附录A#4 武器方案的技能门禁（M14 前 removes/grants 只在�
     expect(
       validateCast({ world, caster: foe, skill: ms, target: player, phase: 'start' }),
     ).toBe(CastFailure.Ok);
+  });
+});
+
+/**
+ * W12：复活波次真正接进 tick。
+ *
+ * ★★ 两个都是接线断言，不是规则断言 —— 规则在 respawn.test.ts 早就绿了，
+ *   但 `enqueueRespawn` 在生产路径**零调用**（M7 验收是夹具手工入队的），
+ *   复活也**不写 movement 状态**（下一 tick 的移动积分把人拽回死点）。
+ *   变异测试：把 tick.ts 的入队或 teleportTo 那几行删掉，这里必须变红。
+ */
+describe('W12 复活波次接进 tick（enqueue + movement 同步）', () => {
+  const EXIT = vec3(50, 0, 50);
+
+  const ctfDeps = (respawn: RespawnState, over: Partial<TickDeps> = {}): TickDeps =>
+    deps({
+      ctf: {
+        state: createCtf(vec3(-60, 0, 0), vec3(60, 0, 0)),
+        deps: { world, captureZoneContains: () => false },
+        map: ctfMap,
+      },
+      respawn,
+      ...over,
+    });
+
+  /** 本 tick 内真刀真枪打死 foe（death 事件必须出现在这一 tick 的事件流里）*/
+  const killFoeInTick = (respawn: RespawnState): void => {
+    foe.health = 1;
+    player.position = vec3(0, 0, 2);
+    foe.position = vec3(0, 0, 3);
+    const hit = pickCastable(player, foe, (sk) => sk.effects.some((e) => e.kind === 'damage'));
+    tickWorld(
+      ctfDeps(respawn, {
+        castRequests: new Map([[player.id, { skillId: hit.id, targetId: foe.id }]]),
+      }),
+      DT,
+    );
+    expect(foe.alive, '夹具没打死人 —— 后面的断言测不到东西').toBe(false);
+  };
+
+  it('★★ 战斗死亡自动入队，波次到点后复活在墓地出口', () => {
+    const respawn = createRespawn({ [TEAM_BLUE as number]: [EXIT] }, 0);
+    movement.set(foe.id, createMovementState(foe.position, 0));
+    killFoeInTick(respawn);
+
+    // 入队是 tick 自己做的 —— 没有任何测试代码调 enqueueRespawn
+    expect(isAwaitingRespawn(respawn, foe.id), 'enqueueRespawn 没被 tick 调用').toBe(true);
+
+    // 白盒把下一波拨到眼前（不真等 12 秒），推进一 tick
+    respawn.nextWaveAt = world.time + DT / 2;
+    tickWorld(ctfDeps(respawn), DT);
+
+    expect(foe.alive).toBe(true);
+    expect(foe.health).toBe(foe.maxHealth);
+    expect(foe.position.x).toBeCloseTo(EXIT.x, 3);
+    expect(foe.position.z).toBeCloseTo(EXIT.z, 3);
+  });
+
+  it('★★ 复活同时写 movement 状态 —— 下一 tick 不会把人拽回死点', () => {
+    const respawn = createRespawn({ [TEAM_BLUE as number]: [EXIT] }, 0);
+    movement.set(foe.id, createMovementState(foe.position, 0));
+    killFoeInTick(respawn);
+
+    respawn.nextWaveAt = world.time + DT / 2;
+    tickWorld(ctfDeps(respawn), DT);
+    const ms = movement.get(foe.id)!;
+    expect(ms.position.x, 'movement 状态还留在死点 —— 位移效果那条老坑').toBeCloseTo(EXIT.x, 1);
+    expect(ms.teleported, '复活该按 13.4 的瞬移处理，不是滑一条 70 米的直线').toBe(true);
+
+    // 再推进一 tick（无输入 → A2 的全零积分）：人必须还站在出口附近
+    tickWorld(ctfDeps(respawn), DT);
+    expect(foe.position.x).toBeCloseTo(EXIT.x, 0);
+    expect(foe.position.z).toBeCloseTo(EXIT.z, 0);
+  });
+
+  it('★ 弃权者（11.5 淘汰）不进复活队列 —— 波次不复活退赛的人', () => {
+    const respawn = createRespawn({ [TEAM_BLUE as number]: [EXIT] }, 0);
+    tickWorld(ctfDeps(respawn, { forfeits: new Set([foe.id]) }), DT);
+    expect(foe.alive).toBe(false);
+    expect(isAwaitingRespawn(respawn, foe.id)).toBe(false);
+
+    respawn.nextWaveAt = world.time + DT / 2;
+    tickWorld(ctfDeps(respawn), DT);
+    expect(foe.alive, '退赛的人被波次复活成了无主僵尸').toBe(false);
+  });
+
+  it('★ 宠物死亡不进波次（12.6 是玩家的复活规则）', () => {
+    const respawn = createRespawn({ [TEAM_BLUE as number]: [EXIT] }, 0);
+    foe.isPet = true;
+    killFoeInTick(respawn);
+    expect(isAwaitingRespawn(respawn, foe.id)).toBe(false);
   });
 });

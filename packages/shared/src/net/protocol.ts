@@ -106,6 +106,14 @@ export type ClientMessage =
    *   第 10 章的全部规则在真实对局里一次都不会发生。
    */
   | { t: 'SetRoomPreset'; preset: ArenaPreset }
+  /**
+   * W12 切换游戏模式（竞技场 2/3/5 ↔ 夺旗 6/8/12）。**只有房主、只在开赛前。**
+   *
+   * ★ 与 `SetRoomPreset` 的存在理由完全同构：房间默认 `arena3v3`，
+   *   没有这条消息，M7 交付的整个夺旗模式在联网对局里**不可达**。
+   *   服务器换模式时连带换地图与人数档（sim 的 `setMode()`，校验在那边）。
+   */
+  | { t: 'SetRoomMode'; mode: GameMode }
   /** docs/14 §16b 人机补位开关。**只有房主、只在开赛前**，默认关 */
   | { t: 'SetFillWithBots'; enabled: boolean }
   /** 11.5 主动退出。★ 立即按淘汰处理，不能通过退出规避死亡统计 */
@@ -158,7 +166,7 @@ export type ClientMessageKind = ClientMessage['t'];
  */
 export const ALL_CLIENT_MESSAGE_KINDS: readonly ClientMessageKind[] = [
   'JoinRoom', 'SelectTeam', 'SelectClass', 'SetReady', 'SetRoomPreset',
-  'SetFillWithBots', 'LeaveMatch', 'Reconnect',
+  'SetRoomMode', 'SetFillWithBots', 'LeaveMatch', 'Reconnect',
   'Input', 'SetTarget', 'TabTarget', 'CastRequest', 'CancelCast', 'UseTrinket',
   'InteractStart', 'InteractCancel', 'SwapWeapon', 'SwapArmor', 'UseConsumable',
   'OpenArmory', 'ChooseArsenal',
@@ -213,6 +221,16 @@ export interface MatchStatsRow {
   interruptsLanded: number;
   /** 偏差 #7 的暴击次数。16a 的结算面板要展示它 */
   crits: number;
+  /**
+   * 16.3 夺旗贡献三项（W12 —— 结算面板的夺旗列）。
+   * ★ 竞技场对局里恒为 0，字段仍然在：面板按模式决定**显不显示**，
+   *   协议不按模式变形状（与 `MatchSnapshot.flags` 用可选字段表达模式
+   *   不同 —— 统计在赛后下发，全 0 不构成泄露，形状稳定让消费端更简单）。
+   */
+  flagCaptures: number;
+  flagReturns: number;
+  /** 击杀敌方旗手的次数 */
+  carrierKills: number;
 }
 
 /** 16.4 的一项最佳玩家。`winnerId` 为空表示本局无人在该维度有贡献 */

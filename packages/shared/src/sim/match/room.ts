@@ -13,6 +13,7 @@
 import { ArenaPreset, GameMode } from '../../types/enums.js';
 import { TEAM_BLUE, TEAM_RED, type ClassId, type MapId, type TeamId } from '../../types/ids.js';
 import { getClass } from '../../data/index.js';
+import { mapsForMode } from '../../data/maps/index.js';
 import { teamSizeOf } from './arena.js';
 
 export const Slot = {
@@ -140,6 +141,48 @@ export const setPreset = (
   if (room.started) return { ok: false, reason: '比赛已开始，不能更换规则预设' };
   if (room.hostId !== playerId) return { ok: false, reason: '只有房主能更改规则预设' };
   room.config.preset = preset;
+  return { ok: true };
+};
+
+/**
+ * W12：切换游戏模式（竞技场 2/3/5 ↔ 夺旗 6/8/12）。房主专属，开赛前。
+ *
+ * ★★ **没有这条路径的话，整个第 12 章在联网对局里是不可达的** ——
+ *   房间默认 `arena3v3`，而夺旗的全部规则（M7 交付、验收 #38–#43 全绿）
+ *   只有试验场那条单机路径能触发。与 `setPreset` 的存在理由完全同构：
+ *   「规则全对、单测全绿、真实对局里一次都不会发生」。
+ *
+ * ★ **换模式连带换地图与人数档**：`mapId` 换成该模式的首张可用地图
+ *   （地图注册表按模式声明，`mapsForMode` 是唯一权威 —— 这里不写
+ *   `'ctf_twin_bridges'` 这种字面量，DEFAULT_CONFIG 那个「拿模式名当
+ *   地图 id」的坑注释里有尸体）。
+ * ★ **缩小人数档时若有队伍超编，拒绝而不是悄悄踢人**：把谁挪去观战席
+ *   是房主该亲手做的决定，静默降席的表现是「我明明选了红方怎么在观战」。
+ * ★ **换模式后全员取消准备**：已按下的「准备」是对上一个模式的同意，
+ *   6v6 夺旗和 2v2 竞技场不是同一场比赛（与 `resetForRematch` 的
+ *   「重新同意」同一条理由）。
+ */
+export const setMode = (room: Room, playerId: string, mode: GameMode): SelectResult => {
+  if (room.started) return { ok: false, reason: '比赛已开始，不能更换模式' };
+  if (room.hostId !== playerId) return { ok: false, reason: '只有房主能更改模式' };
+
+  const map = mapsForMode(mode)[0];
+  if (!map) return { ok: false, reason: `模式 ${mode} 没有可用地图` };
+
+  const size = teamSizeOf(mode);
+  for (const slot of [Slot.Red, Slot.Blue] as const) {
+    const n = playersOn(room, slot).length;
+    if (n > size) {
+      return {
+        ok: false,
+        reason: `${slot === Slot.Red ? '红方' : '蓝方'}已有 ${n} 人，超过该模式每队上限 ${size} 人 —— 先把多余的玩家移到观战席`,
+      };
+    }
+  }
+
+  room.config.mode = mode;
+  room.config.mapId = map.id;
+  for (const p of room.players) p.ready = false;
   return { ok: true };
 };
 

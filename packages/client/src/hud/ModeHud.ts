@@ -47,8 +47,13 @@ export interface CtfHudView {
   scoreRed: number;
   scoreBlue: number;
   scoreToWin: number;
-  /** 剩余比赛时间，秒 */
-  timeRemaining: number;
+  /**
+   * 剩余比赛时间，秒。
+   * ★ W12 起可选：联网夺旗的 sim **没有**时限规则（`CTF.DURATION` 零消费，
+   *   总账挂账），不传就不画 —— 不显示一个数到零也不会发生任何事的倒计时。
+   *   试验场传的是它自己的本地口径（720 秒演示钟）。
+   */
+  timeRemaining?: number;
   flags: readonly FlagView[];
   /** 12.4 战场聚焦层数 */
   focusStacks: number;
@@ -159,7 +164,7 @@ export class ModeHud {
         <span class="mh-vs">/ ${v.scoreToWin}</span>
         <span class="team blue">${v.scoreBlue}</span>
       </div>
-      <div class="mh-row">剩余 ${mmss(v.timeRemaining)}</div>
+      ${v.timeRemaining === undefined ? '' : `<div class="mh-row">剩余 ${mmss(v.timeRemaining)}</div>`}
       ${flagRows}
       ${focus}
       ${v.respawnIn === undefined ? '' : `<div class="mh-row">复活波次 ${Math.ceil(v.respawnIn)}s</div>`}
