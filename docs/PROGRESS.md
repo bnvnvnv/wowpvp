@@ -175,6 +175,56 @@ m10 14/14 · m12 21/21 · balance 重出 · `scripts/diag-feel.mjs`（新增）�
 
 ---
 
+## 清账批次三 · 3.7–3.9 收官：P6 无人对局回收 · W7 键位重绑 · W14 上半身分层（2026-08-05）
+
+批次三最后三项。P6、W7 全清，W14 分层机制清（standalone 片段与真机截图留账）。
+
+**3.7 P6 —— 无人对局回收**（总账 P6→✅）。全员真人掉线的对局此前照跑
+20Hz 到终局（人机接管往 sessions 塞假会话让 dropIfEmpty 恒 false，griefer
+开一堆房再断线就留一堆空房占 CPU）。判据：零真人 session（人机 isBot 不算）。
+但**不立刻拆**——共享 wifi 抖动会让一队人同一瞬间集体掉线又各自重连
+（verify:m13 §4b 的 severConnections 正是这个），立刻拆他们回不来。改成排
+30s 宽限计时器，谁在窗口内重连就 cancelAbandon 撤销，窗口过完仍零人才拆。
+单测 ×3（回收/单人不误杀/宽限内重连救回）+ m13 19/19 不掉。
+
+**3.9 W7 —— 键位重绑 UI + 持久化**（总账 W7→✅）。`rebind()`/`getBindings()`
+此前全仓零调用、无持久化，17.2「全键位可重绑」不可达；技能栏 <kbd> 写死 1–9。
+新 `settings/keybindings.ts`（存档 + 冲突三分 rebindWithSwap：无人用→绑 /
+可重绑动作占→交换 / 移动系统键占→拒绝 + makeRebindController 两场景共用）；
+SceneShell 开局 loadBindings 进 InputManager；SettingsPanel 键位表可点重绑
+（含技能九格，17.2「全键位」）；CombatHud.skillKeyLabel 读实时绑定不再撒谎。
+keybindings 单测 ×14 + m13 新增 #20/#21/#22（重绑往返/冲突检测/技能栏键号
+同步）→ m13 22/22。
+
+**3.8 W14 —— 上半身动画分层**（总账 W14→🔧 分层机制清）。`applyClip` 是单
+片段全身模型，「跑动施法」只能二选一（腿动手不施法 / 手施法腿定住），此前
+折中成「只在站立时显示施法姿态」——跑动施法**没有任何上半身表现**。
+解法是 additive 叠加：基础层照播 locomotion（腿），叠加层把施法姿态**只作用
+在上半身骨骼**（脊柱子树遮罩 + makeClipAdditive），按权重叠上去。
+- `entity/animLayer.ts`：纯数据部分（骨骼分类/clip 遮罩/转叠加），可在**无 GPU**
+  下单测——three.js 的 clip/mixer 是纯数学。核心断言用**真骨架名**（hips/
+  spine/chest/upperarm.r/upperleg.l，从 barbarian.glb/druid.glb 逐一核对）：
+  取 spine 子树 = 上半身、不含腿（腿挂在 hips 下、与脊柱互为兄弟）。
+- `CharacterView.buildCastLayer`（模型加载时造一次叠加动作）+ `setCasting`
+  （叠加权重淡入淡出，作用于所有 locomotion 状态）。骨架无脊柱/缺 Spellcasting
+  时安全回落旧行为，绝不 T-pose。
+- 验证：animLayer 6 单测（含「腿跑步、手施法」的混合断言）；GLB 静态核对
+  确认真模型有 `Spellcasting` 片段且脊柱名匹配；m12 art=on #12d「无运行时错误」。
+- ★ **诚实边界**：additive 参考帧用 Spellcasting[0]，真机上是否自然**待截图确认**
+  （不自然可换 Idle[0]）；8 个零调用片段里除 Spellcasting 外（Block/
+  Spellcast_Raise/Shoot/2H_Ranged 等）**仍未接**，需要施法分阶段/格挡/远程
+  触发信号——留作 W14 余账，本次不冒充完成（附录A#7）。
+
+### 收官回归
+
+client 单测 399→**1211 全仓**（+animLayer 6 + keybindings 14 + P6/rate/
+hardening/containment 等）；typecheck/lint 全绿；m5 11 · m6 13 · m7 23 ·
+m9 35 · m10 15 · m12 26 · m13 22 · m16 29 · w12 11 · verify:hardening 6 全绿；
+`pnpm balance` 逐位不变（28.6pp）。批次三结构工程收官（W14 standalone 片段
+与真机截图为唯一挂账项）。
+
+---
+
 ## 清账批次三 · 3.6 S1–S6：公网硬化包 —— 「连上来的不再假设是自己人」（2026-08-05）
 
 docs/16 批次三第 6 项，总账 S1/S2/S3/S5/S6 清偿（S4 归发布前 F3，

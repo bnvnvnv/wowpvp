@@ -131,7 +131,7 @@
 | 3.5 | W12 | **夺旗联网线** | 大厅加模式选择（协议扩 `SetRoomPreset` 或新消息，照 M10 规矩）→ `NetworkScene` 接 `FlagMarkers` + 旗手 blip + `renderCtf`（依赖 2.2/2.3 的底）→ 结算面板补夺旗列（X4 顺手） | **新 verify 脚本**：双浏览器纯 UI 开一场夺旗打到得分，全程断言旗帜可见 |
 | 3.6 | S1–S6 | 公网硬化包 ✅ | 令牌桶限流、`maxPayload` 16KB、背压**巡检**断开（初版每 send 判被白盒快进误杀，改巡检式）、origin 白名单（`verifyClient` 握手层 + env）、连接/房间/成员三档上限 + `roomId ≤32`、tick try/catch（爆炸半径=单房间）+ `uncaughtException`（只主入口）+ JSON 日志 + `/healthz` + tick 耗时/丢帧计数 | ✅ `verify:hardening` 6/6：灌 4000 条/s 他房仍 100% 20Hz；限流/断开日志可见（2026-08-05） |
 | 3.7 | P6 | 空房不空转 | 「零真人 session → 终止对局」判据（人机会话不算人） | 单测：全员掉线后 loop 停止、房间回收 |
-| 3.8 | W14 | 上半身动画分层（大件，可并行慢做） | additive/骨骼遮罩；先接四个零调用片段：`Spellcast_Raise`（预备）、`Spellcast_Shoot`（释放）、`2H_Ranged_Shoot`（猎人）、`Block`（格挡） | 真机截图：跑动施法上半身有姿态；m12 不掉 |
+| 3.8 | W14 | 上半身动画分层（大件，可并行慢做）🔧 | additive/骨骼遮罩已交付（脊柱子树遮罩 + makeClipAdditive，跑动施法上半身有姿态）；核心算法 6 单测（真骨架名）。**余账**：Block/Spellcast_Raise/Shoot/2H_Ranged 等 standalone 片段待接、真机观感截图待确认 | 🔧 分层机制清（2026-08-05，m12 art=on 无错）；截图 + standalone 片段留 |
 | 3.9 | W7 | 键位重绑 UI + 持久化 | 设置面板 v2：`rebind()` 首次有调用方、localStorage 键、`<kbd>` 改读 `getBindings()` | 断言：重绑后提示同步、刷新保留、冲突检测 |
 
 ## W12 开工便签（2026-08-05 探路结论）

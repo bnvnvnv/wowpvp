@@ -15,6 +15,7 @@ import * as THREE from 'three';
 import { GEOMETRY } from '@wowpvp/shared';
 import { AnimState } from './AnimationController.js';
 import { ModelLibrary, type CharacterModel } from './ModelLibrary.js';
+import { buildUpperBodyAdditive } from './animLayer.js';
 
 /** 各动作状态的调试配色。模型加载前（或加载失败时）的兜底表现 */
 const STATE_COLOR: Record<AnimState, number> = {
@@ -239,6 +240,7 @@ export class CharacterView {
     this.mixer = new THREE.AnimationMixer(m.root);
     this.currentClip = '';
     this.currentKey = '';
+    this.buildCastLayer(m);
     this.applyClip();
 
     if (this.pendingWeaponId !== undefined) {
@@ -269,10 +271,41 @@ export class CharacterView {
     }
   }
 
-  /** 施法时的上身动作覆盖（只覆盖 Idle，见 CASTING_CLIP 注释） */
+  /**
+   * W14：从全身施法 clip 造「上半身叠加」动作 —— 一次，模型加载时。
+   * ★ 造不出来（骨架无脊柱 / 缺 CASTING_CLIP）时 `castUpper` 留 undefined，
+   *   `setCasting` 与 `applyClip` 会安全回落到旧的「只在 Idle 播施法」行为。
+   */
+  private buildCastLayer(m: CharacterModel): void {
+    if (!this.mixer) return;
+    const clip = THREE.AnimationClip.findByName(m.clips as THREE.AnimationClip[], CASTING_CLIP);
+    if (!clip) return;
+    const bones: THREE.Object3D[] = [];
+    m.root.traverse((o) => { if ((o as THREE.Bone).isBone) bones.push(o); });
+    const additive = buildUpperBodyAdditive(clip, bones);
+    if (!additive) return;
+    const a = this.mixer.clipAction(additive, undefined, THREE.AdditiveAnimationBlendMode);
+    a.setLoop(THREE.LoopRepeat, Infinity);
+    a.play();
+    a.setEffectiveWeight(0); // 常驻播放、平时权重 0，施法时淡入
+    this.castUpper = a;
+  }
+  private castUpper: THREE.AnimationAction | undefined;
+
+  /**
+   * W14：施法的上半身表现。
+   * ★ 有叠加层（`castUpper`）时：腿照跑，上半身**叠加**施法姿态淡入淡出 ——
+   *   「跑动中施法无上半身表现」由此消除（总账 W14 的核心）。
+   * ★ 没有叠加层时：回落旧行为（`applyClip` 里「Idle 才播 Spellcasting」）。
+   */
   setCasting(on: boolean): void {
     if (this.casting === on) return;
     this.casting = on;
+    if (this.castUpper) {
+      this.castUpper.enabled = true;
+      if (on) this.castUpper.fadeIn(0.15);
+      else this.castUpper.fadeOut(0.15);
+    }
     this.applyClip();
   }
 
@@ -544,8 +577,11 @@ export class CharacterView {
     // ★ 庆祝期间不再跟随状态机（见 playCheer 的注释）
     if (this.celebrating) return;
     const spec = CLIP[this.state];
+    // ★ W14：有叠加层时基础层永远是 locomotion/idle（施法姿态走叠加，见
+    //   setCasting）；没有叠加层才回落到旧的「Idle 全身播 Spellcasting」
     const name =
-      this.casting && this.state === AnimState.Idle ? CASTING_CLIP : spec.name;
+      this.casting && this.state === AnimState.Idle && !this.castUpper
+        ? CASTING_CLIP : spec.name;
 
     /**
      * ★ 去重的键是「片段名 **+ 播放配置**」，不只是片段名。
