@@ -75,7 +75,7 @@
 | ID | 债 | 证据 | 影响 | 状态 |
 |---|---|---|---|---|
 | W1 | **联网无队伍框**：`PartyFrame` 已构造、试验场在喂，`NetworkScene` 零调用 → 队友血量看不见，**治疗职业没法玩** | 投影收进 `PartyFrame.ts`（`partyViewOf`/`partyViewFromSnapshot` 共用一份 `partyMemberView`；控制优先级 `controlKindsOf` 顺带把目标框副本收拢）；`NetworkScene.renderParty()` 喂快照 | 极高感知 | ✅ 批次二 2.1（2026-08-04，双源一致性单测 + m13 #11 变异验证） |
-| W2 | **联网无小地图**：`Minimap` 零调用；`'supply'`/`'objective'` blip 类型无生产者（M16 已记的军械点图标属此） | `hud/Minimap.ts`（≈:31）；`hud/ModeHud.ts`（≈:175） | 战场态势不可知 | ⛔ |
+| W2 | **联网无小地图**：`Minimap` 零调用；`'supply'`/`'objective'` blip 类型无生产者（M16 已记的军械点图标属此） | `NetworkScene.renderMinimap()` 喂快照（潜行免费继承验收 #5）+ **`suddenDeathBlips` 首个消费方**（8.5 模糊位置，距离启发式压一人两点噪音）。余账：`supply`/`objective` blip 与旗帜 blip 随 W12/军械图标 | 战场态势不可知 | ✅ 批次二 2.3（2026-08-05，m13 #13 像素级变异验证） |
 | W3 | **联网无模式 HUD**：`ModeHud.renderCtf` 全仓唯一调用点在试验场；`respawnIn`/`supplyRespawnIn`（12.6 复活波次倒计时）**从未被任何一边喂过** | 竞技场侧已由 2.2 覆盖（`renderModeHud` → `renderArena`）；**夺旗侧（renderCtf/respawnIn）随 W12 一起接** —— 现在联网进不了夺旗局，接了是死代码；`supplyRespawnIn` 待军械刷新数据下发口径拍板 | 比分/计时/旗帜/复活全不可见 | 🔧 竞技场半清（批次二 2.2）；余账挂 W12 |
 | W4 | **`ModeHud.renderArena()` 两个场景都零调用** → 8.5 战斗抑制百分比与「决胜阶段」**从未显示给任何玩家** | `NetworkScene.renderModeHud()` 喂快照 `match.dampening/suddenDeath`（M10 起就在每份快照里）；存活数按可见口径（与记分板同规矩，如实不编全知计数）。⚠️ `suddenDeathBlips` 的消费**挪到 W2**（小地图才是它的归宿） | 核心节奏机制不可见 | ✅ 批次二 2.2（2026-08-05，m13 #12 变异验证 + 15.4 否定式断言） |
 | W5 | **死亡后无去向 + 观战未接镜头**：无「你已阵亡」遮罩、无复活倒计时；`SpectateController` 规则/测试齐全但 V 键只 `console.info`，镜头从未切换（其 `:90` 注释指向一个不存在的死亡界面）。观战席玩家开局停在房间页（M13 边界）也归此 | `spectate/SpectateController.ts`（≈:90）；`TestbedScene.ts`（≈:942）；`NetworkScene.ts`（≈:631-653） | 「死后 20 秒」是最易流失时刻 | ⛔ |

@@ -73,6 +73,7 @@ import { Predictor } from '../net/Predictor.js';
 import { pickTabTargetFromSnapshot } from '../net/snapshotTargeting.js';
 import { CombatHud } from '../hud/CombatHud.js';
 import { partyViewFromSnapshot } from '../hud/PartyFrame.js';
+import type { MinimapBlip } from '../hud/ModeHud.js';
 import { SnapshotCombatView, castStateFromStarted } from '../net/SnapshotCombatView.js';
 import { audio } from '../audio/AudioManager.js';
 import { FAIL_TEXT } from '../combat/CombatDirector.js';
@@ -1199,7 +1200,48 @@ export class NetworkScene {
     this.hud.update(this.view, this.cam.camera, this.canvas, dt);
     this.renderParty();
     this.renderModeHud();
+    this.renderMinimap();
     this.renderScoreboard();
+  }
+
+  /**
+   * 15.1 右上：小地图（技术债总账 W2）。
+   *
+   * ★★ 联网侧此前**零调用** —— 组件写好了（连潜行过滤的注释都写好了），
+   *   没人喂：多人局里无法判断战场态势。名单 = 快照实体 —— 可见性裁剪
+   *   在服务器（验收 #5），未被发现的潜行者**不在快照里**，小地图结构上
+   *   画不出他 —— 与记分板同一条免费继承的规矩。
+   * ★ 8.5 决胜阶段的 `suddenDeathBlips`（协议字段，此前零消费方）在这里
+   *   落地：6 米网格的模糊位置、**无 id**（防选中是它的设计）。无 id 就
+   *   无法与精确点对齐去重 —— 用「附近已有同阵营精确点就跳过」的距离
+   *   启发式压掉一人两点的噪音（网格量化误差 ≤ ~4.3 米，阈值取 8）。
+   * ★ 夺旗的旗手/掉落旗 blip 不在这里 —— 随 W12 的联网夺旗线一起接。
+   */
+  private renderMinimap(): void {
+    const me = this.lastEntities.find((e) => e.id === this.selfId);
+    if (!me) return;
+    const pos = this.predictor?.position ?? me.position;
+    const blips: MinimapBlip[] = [
+      { x: pos.x, z: pos.z, kind: 'self' },
+      ...this.lastEntities
+        .filter((e) => e.id !== this.selfId)
+        .map<MinimapBlip>((e) => ({
+          x: e.position.x, z: e.position.z,
+          kind: e.team === me.team ? 'ally' : 'enemy', team: e.team,
+        })),
+    ];
+    for (const b of this.lastMatch?.suddenDeathBlips ?? []) {
+      const nearPrecise = this.lastEntities.some(
+        (e) => e.team === b.team
+          && Math.hypot(e.position.x - b.position.x, e.position.z - b.position.z) < 8,
+      );
+      if (nearPrecise) continue;
+      blips.push({
+        x: b.position.x, z: b.position.z,
+        kind: b.team === me.team ? 'ally' : 'enemy', team: b.team,
+      });
+    }
+    this.hud.minimap.draw(blips, pos.x, pos.z, this.characterYaw);
   }
 
   /**

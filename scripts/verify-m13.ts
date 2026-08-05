@@ -226,6 +226,24 @@ try {
         && modeHud.text.includes('战斗抑制') && modeHud.text.includes('回合')
         && !modeHud.text.includes('旗'),
       `visible=${modeHud.visible} mode=${modeHud.mode} 含旗字=${modeHud.text.includes('旗')}`);
+
+    /**
+     * ★ W2（技术债总账）：联网小地图第一次被喂。canvas 无 DOM 可查，
+     *   直接读中心像素。自己的 blip 恒在中心，但本局 B 就站在 A 面前 2 米
+     *   （≈1.7px），敌方点会压在自己点上面 —— 所以判据是「中心有**某个**
+     *   blip」：白（自己 #fff）或红（敌 #ff7a6f）都 r>200；没接线时 canvas
+     *   全透明（a=0）、只有底盘时 r≈14，两种失败态都分得开。
+     */
+    const minimap = await pageA.evaluate(() => {
+      const cv = document.querySelector('#minimap canvas') as HTMLCanvasElement | null;
+      if (!cv) return { found: false, r: 0, g: 0, b: 0, a: 0 };
+      const ctx = cv.getContext('2d')!;
+      const px = ctx.getImageData(Math.floor(cv.width / 2), Math.floor(cv.height / 2), 1, 1).data;
+      return { found: true, r: px[0]!, g: px[1]!, b: px[2]!, a: px[3]! };
+    });
+    check('13', '★ 联网小地图在画：中心是 blip 而非空白/底盘（W2 接线）',
+      minimap.found && minimap.a > 200 && minimap.r > 200,
+      `found=${minimap.found} rgba=(${minimap.r},${minimap.g},${minimap.b},${minimap.a})`);
   }
 
   // ── 5：收掉这局 → MatchEnd → 双方回房间 → 再开一局 ──────────
