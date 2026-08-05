@@ -42,6 +42,7 @@ import {
   type FlagSite,
   type ForbiddenVolume,
   type Graveyard,
+  type MapDecorDef,
   type MapDef,
   type MapVolume,
   type RouteHint,
@@ -426,6 +427,53 @@ const forbidden: readonly ForbiddenVolume[] = [
   },
 ];
 
+/**
+ * 纯装饰摆设（X1，速赢清单「夺旗图铺装饰」—— 第四轮明说的「下一铲」）。
+ * ★ sim 不读（docs/06 §8.2「所见即所中」红线原样）；位置全部是地图常量的
+ *   确定性函数，红方摆好、蓝方按中心对称旋转 —— 同一张图每个客户端一个样。
+ * ★ 全部避开承重路线：中路 |x|<8 不放、侧翼 x=±52 两侧留 4 米、
+ *   地道口（x 18..26，z 64..90）不放、旗帜房与墓地内部不放；
+ *   大件全部贴外墙/端墙（墙本来就挡人，视觉与判定天然一致）。
+ */
+const makeCtfDecor = (): MapDecorDef[] => {
+  const red: MapDecorDef[] = [];
+
+  // 西/东外墙树线（x=±69.5 贴墙，z 每 32 米一棵，红方半场 z 20..164）
+  const PINES = ['foliage/pine_2', 'foliage/pine_4', 'foliage/oak_1', 'foliage/twisted_1'];
+  for (let i = 0; i < 5; i++) {
+    const z = 20 + i * 32;
+    red.push({ model: PINES[i % PINES.length]!, position: { x: -69.5, y: 0, z }, yaw: i * 1.3 });
+    red.push({ model: PINES[(i + 2) % PINES.length]!, position: { x: 69.5, y: 0, z: z + 14 }, yaw: i * 2.1 });
+  }
+  // 端墙两棵橡树（让开墓地 |x|<20）
+  red.push({ model: 'foliage/oak_3', position: { x: -44, y: 0, z: 176 }, yaw: 0.8 });
+  red.push({ model: 'foliage/oak_5', position: { x: 44, y: 0, z: 176 }, yaw: 3.9 });
+
+  // 旗帜房正面两角的火盆 —— 旗房的地标（12.2 旗帜信息本就该显眼）
+  red.push({ model: 'props/infernal_brazier', position: { x: -18.5, y: 0, z: 108 }, yaw: 0.4 });
+  red.push({ model: 'props/infernal_brazier', position: { x: 18.5, y: 0, z: 108 }, yaw: -0.4 });
+
+  // 侧翼路线外缘的补给残迹（x=±58，离 x=±52 的侧翼路线 6 米）
+  red.push({ model: 'props/barrel', position: { x: -58, y: 0, z: 48 }, yaw: 1.1 });
+  red.push({ model: 'biome/camp_crates', position: { x: 58, y: 0, z: 52 }, yaw: 2.6 });
+
+  // 中场观赏点：中路两侧 10 米外各一颗半埋雕像头（|x|=10 > 中路让空 8）
+  red.push({ model: 'props/statue_head', position: { x: 10.5, y: 0, z: 34 }, yaw: -0.9 });
+
+  // 灌木散点（全部在开阔地边缘，不进任何路线走廊）
+  red.push({ model: 'foliage/bush', position: { x: -36, y: 0, z: 24 }, yaw: 0.3 });
+  red.push({ model: 'foliage/bush_flowers', position: { x: 34, y: 0, z: 100 }, yaw: 1.7 });
+  red.push({ model: 'foliage/fern', position: { x: -40, y: 0, z: 100 }, yaw: 2.2 });
+
+  // 蓝方半场 = 红方按中心对称旋转（rotPoint 同款），朝向加 π 保持相对关系
+  const blue = red.map((d) => ({
+    ...d,
+    position: rotPoint(d.position),
+    yaw: (d.yaw ?? 0) + Math.PI,
+  }));
+  return [...red, ...blue];
+};
+
 export const ctfMap: MapDef = {
   id: asMapId('ctf_twin_bridges'),
   name: '双桥要塞',
@@ -436,6 +484,9 @@ export const ctfMap: MapDef = {
     max: { x: HALF_WID, y: 60, z: HALF_LEN },
   },
   geometry,
+  decor: makeCtfDecor(),
+  // W15：清晨 —— 与竞技场的正午区分开，夺旗的长图在低角度光下层次更好读
+  envPreset: 'dawn',
   forbidden,
   gates: [],
   flags,

@@ -40,12 +40,14 @@ interface ArenaSpec {
   teamSize: number;
   /** 主要掩体数量（11.2）*/
   pillarCount: number;
+  /** W15：环境预设（纯表现，客户端 ENV_PRESETS 的键）。三张图三个时辰，一眼可辨 */
+  envPreset: string;
 }
 
 const SPECS: readonly ArenaSpec[] = [
-  { id: 'arena_2v2', name: '试炼环·小型', mode: GameMode.Arena2v2, spawnToCenterSeconds: 6, teamSize: 2, pillarCount: 3 },
-  { id: 'arena_3v3', name: '试炼环·标准', mode: GameMode.Arena3v3, spawnToCenterSeconds: 8, teamSize: 3, pillarCount: 4 },
-  { id: 'arena_5v5', name: '试炼环·大型', mode: GameMode.Arena5v5, spawnToCenterSeconds: 10, teamSize: 5, pillarCount: 6 },
+  { id: 'arena_2v2', name: '试炼环·小型', mode: GameMode.Arena2v2, spawnToCenterSeconds: 6, teamSize: 2, pillarCount: 3, envPreset: 'dusk' },
+  { id: 'arena_3v3', name: '试炼环·标准', mode: GameMode.Arena3v3, spawnToCenterSeconds: 8, teamSize: 3, pillarCount: 4, envPreset: 'day' },
+  { id: 'arena_5v5', name: '试炼环·大型', mode: GameMode.Arena5v5, spawnToCenterSeconds: 10, teamSize: 5, pillarCount: 6, envPreset: 'overcast' },
 ];
 
 /** 出生点沿 ±Z 对称摆放，队友沿 X 展开 */
@@ -194,6 +196,7 @@ const buildArena = (spec: ArenaSpec): MapDef => {
     },
     geometry,
     decor: makeDecor(spec, half, arenaHalf),
+    envPreset: spec.envPreset,
     // 11.3：开门后准备区对所有人禁入
     forbidden: prepRooms.map((r) => ({
       id: `forbid_${r.id}`,

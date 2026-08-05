@@ -79,6 +79,7 @@ import type { MinimapBlip } from '../hud/ModeHud.js';
 import { nextSpectateTarget } from '../spectate/SpectateController.js';
 import { SettingsPanel } from '../settings/SettingsPanel.js';
 import { MusicDirector, ambientTrackFor } from '../audio/MusicDirector.js';
+import { presetOf } from '../render/Environment.js';
 import { SnapshotCombatView, castStateFromStarted } from '../net/SnapshotCombatView.js';
 import { audio } from '../audio/AudioManager.js';
 import { FAIL_TEXT } from '../combat/CombatDirector.js';
@@ -928,6 +929,9 @@ export class NetworkScene {
     this.mapRenderer = new MapRenderer(map, this.art);
     this.scene.add(this.mapRenderer.group);
     if (this.art) {
+      // W15：地图到手才知道该用哪个昼夜 —— 覆盖构造时的 day（A13 的
+      // lastOpts 记忆让之后切画质保持这个 preset）
+      this.env.apply(this.quality.current, { preset: presetOf(map.envPreset) });
       void this.mapRenderer.applyGroundTexture('stone');
       // 地图装饰摆设（纯表现，sim 不读 —— 见 DecorRenderer 文件头）
       if (map.decor) {

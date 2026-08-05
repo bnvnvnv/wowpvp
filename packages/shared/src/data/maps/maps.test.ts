@@ -11,6 +11,7 @@ import { distance2D, vec3 } from '../../math/vec3.js';
 import { GameMode } from '../../types/enums.js';
 import { TEAM_BLUE, TEAM_RED } from '../../types/ids.js';
 import { ARENA_MAPS, ARENA_SPECS } from './arena.js';
+import { ctfMap } from './ctf.js';
 import { ALL_MAPS } from './index.js';
 import type { MapDef } from './schema.js';
 
@@ -140,5 +141,59 @@ describe('地图注册表', () => {
   it('地图 id 唯一', () => {
     const ids = ALL_MAPS.map((m) => m.id as string);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+/**
+ * X1（技术债总账）：夺旗图装饰 —— 速赢清单「下一铲」的收尾。
+ * ★ 装饰是纯表现（sim 不读），但**摆错位置会误导走位**：这里钉的全是
+ *   「不挡承重路线」的否定式约束，与试验场「走廊必须空」同一个思路。
+ */
+describe('X1 夺旗图装饰', () => {
+  const decor = ctfMap.decor ?? [];
+
+  it('装饰存在且红蓝对称（蓝方 = 红方中心旋转）', () => {
+    expect(decor.length).toBeGreaterThanOrEqual(24);
+    expect(decor.length % 2).toBe(0);
+    const half = decor.length / 2;
+    for (let i = 0; i < half; i++) {
+      const r = decor[i]!;
+      const b = decor[half + i]!;
+      expect(b.position.x).toBeCloseTo(-r.position.x, 6);
+      expect(b.position.z).toBeCloseTo(-r.position.z, 6);
+    }
+  });
+
+  it('全部在地图边界内', () => {
+    for (const d of decor) {
+      expect(Math.abs(d.position.x)).toBeLessThanOrEqual(72);
+      expect(Math.abs(d.position.z)).toBeLessThanOrEqual(180);
+    }
+  });
+
+  it('★ 不挡承重路线：中路让空、地道口让空、旗帜房与墓地内部不放', () => {
+    for (const d of decor) {
+      const { x, z } = d.position;
+      const ax = Math.abs(x);
+      const az = Math.abs(z);
+      // 中央路线走廊（x=0 一路到旗房门口）
+      expect(ax, `${d.model} 挡在中路上（x=${x}）`).toBeGreaterThanOrEqual(8);
+      // 地道口（x 18..26 × z 64..90，两侧对称）—— M7 验收时真的有人掉进去过
+      const inTrench = ax >= 17 && ax <= 27 && az >= 63 && az <= 91;
+      expect(inTrench, `${d.model} 挡在地道口（${x},${z}）`).toBe(false);
+      // 旗帜房内部（|x|<16 × z 110..142）与墓地内部（|x|<20 × z 150..168）
+      const inRoom = ax < 16 && az > 110 && az < 142;
+      const inGrave = ax < 20 && az > 150 && az < 168;
+      expect(inRoom || inGrave, `${d.model} 摆进了旗帜房/墓地（${x},${z}）`).toBe(false);
+    }
+  });
+});
+
+/** W15：每张图一个昼夜（值的合法性由 client 侧 presetOf 测试钉住） */
+describe('W15 环境预设', () => {
+  it('每张图都配了 envPreset', () => {
+    for (const m of ALL_MAPS) {
+      expect(m.envPreset, `${m.id as string} 没配 envPreset`).toBeDefined();
+    }
   });
 });

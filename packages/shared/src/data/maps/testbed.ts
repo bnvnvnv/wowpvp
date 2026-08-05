@@ -151,6 +151,8 @@ export const testbed: MapDef = {
   },
   geometry,
   decor,
+  // W15：试验场保持正午 —— 141 项验收的截图与可读性判断都在这个光照下定的
+  envPreset: 'day',
   forbidden: [],
   gates: [],
   fairness: {

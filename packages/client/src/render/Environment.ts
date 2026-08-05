@@ -32,6 +32,13 @@ export const ENV_PRESETS = {
 export type EnvPreset = keyof typeof ENV_PRESETS;
 
 /**
+ * W15：把 `MapDef.envPreset`（自由字符串，纯表现字段）验成合法预设。
+ * 不认识的值回落 day —— 数据拼错不害渲染，也不静默黑屏。
+ */
+export const presetOf = (envPreset: string | undefined): EnvPreset =>
+  envPreset !== undefined && envPreset in ENV_PRESETS ? (envPreset as EnvPreset) : 'day';
+
+/**
  * 地面材质预设。key 与 `MapVolume.tag` 无关 —— 由场景挑，
  * 因为「这张图是雪地还是草地」是美术决定，不是几何决定。
  */

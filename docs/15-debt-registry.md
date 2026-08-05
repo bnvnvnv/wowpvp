@@ -88,7 +88,7 @@
 | W12 | **夺旗联网线未通**：大厅无模式选择（预设仅经典/武装竞技场）→ 联网夺旗**无入口**；即便进入，`NetworkScene` 无 `FlagMarkers` import、无旗手 blip、无 CTF 面板 —— M7 整套规则 + M9 35 条验收只活在 sim 与试验场演示里 | `NetworkScene.ts`（`match.flags` 仅用于判 isCtf ≈:1212）；`LobbyShell.ts` 预设开关 | 一整个游戏模式联网不可玩 | ⛔ |
 | W13 | **音频接线欠账**：BGM 战斗切换未做（`lastCombatAt` 数据在、audio 层零引用；19 首曲子只播 `combat_1`）；10 个 `amb_*` 环境音零使用；脚步只有 `foot_stone` 单材质；联网无脚步/跳跃/落地/驱散/位移音 | **BGM 半已清**（批次二 2.9）：`MusicDirector`（试验场读 sim 权威 `lastCombatAt`、联网按可见 Damage/Heal，脱战 8 秒滞后）+ 每图氛围曲表 + `playMusic` 交叉淡化。**余账**：`amb_*` 环境音（需 AudioManager 加环境循环通道）、脚步材质、联网脚步/跳落/驱散/位移音 | 氛围与反馈缺层（速赢清单项已销） | 🔧 BGM 清（2026-08-05，+4 单测）；余账在册 |
 | W14 | **8 个动画片段零调用**（`Spellcast_Raise`/`Spellcast_Shoot`/`2H_Ranged_Shoot`/`Block`/`Dualwield_Melee_Attack_Chop`/`Lie_Idle`/`Sit×2`）；**跑动中施法无上半身表现**（`applyClip` 单片段全身淡化，只有 Idle 才播施法姿态，无骨骼分层/additive） | `entity/CharacterView.ts`（≈:540-576，:545-546） | 每分钟都发生的表现缺失；工作量大 | ⛔ |
-| W15 | **昼夜 preset 全闲置**：5 个 HDR preset 只用 `day`，`MapDef` 无 preset 字段（速赢清单「每张图配一个」连数据入口都没开）；`EnvironmentOptions.sky` 从未被传 false | `render/Environment.ts`（≈:24-31）；4 处调用点全 day | 四张图长得一样 | ⛔ |
+| W15 | **昼夜 preset 全闲置**：5 个 HDR preset 只用 `day`，`MapDef` 无 preset 字段（速赢清单「每张图配一个」连数据入口都没开）；`EnvironmentOptions.sky` 从未被传 false | `MapDef.envPreset`（纯表现字段）+ 每图配档（试验场 day 红线不动 / 教学 dawn / 竞技场 dusk·day·overcast / 夺旗 dawn）+ `presetOf` 校验回落 + 双端消费；防拼错测试钉住每图的值。`sky:false` 仍无消费者（无室内图，如实留） | 四张图长得一样 | ✅ 批次二 2.10（2026-08-05，速赢清单销账） |
 | W16 | **复活保护无渲染器**：`spawnProtection` 是 14.4 essential 八项里唯一「保证不被隐藏、但从来没被画过」的角色 | `render/quality.ts`（≈:57-58）全仓孤立引用 | 保护期不可见 → 玩家误判 | ⛔ |
 | W17 | **协议缺 `Damage.avoided`**：联网侧闪避/招架/格挡无区分 → 规避三态特效与音全缺（M12 已知不足迁入，「如实地少一层」） | `NetworkScene.ts`（≈:585-601）；`shared/src/net/protocol.ts` | 一笔协议债，照 M10 规矩还 | ⛔ |
 | W18 | **待复核**：他人姓名板施法条在联网侧是否有数据源（M10 已知不足记「快照无他人施法状态」；特效二期接了 `CastStarted` 事件流后 HUD 侧是否跟上未核实） | `net/SnapshotCombatView.ts` `castOf()` | 复核后要么销账要么转正 | ⚠️ |
@@ -97,7 +97,7 @@
 
 | ID | 债 | 证据 | 影响 | 状态 |
 |---|---|---|---|---|
-| X1 | **夺旗图 0 件装饰** —— 唯一没有 `decor` 字段的图（速赢清单「下一铲」） | `shared/src/data/maps/ctf.ts` | 灰盒观感 | ⛔ |
+| X1 | **夺旗图 0 件装饰** —— 唯一没有 `decor` 字段的图（速赢清单「下一铲」） | `makeCtfDecor()`：30 件，地图常量的确定性函数、红蓝中心对称；否定式约束测试钉住「不挡中路/地道口/旗房/墓地」 | 灰盒观感 | ✅ 批次二 2.10（2026-08-05，速赢清单销账） |
 | X2 | 教学图装饰仅 6 件「够用不够看」；走位环无专用地形 | `maps/tutorial.ts`；`PROGRESS.md` 教学分家章节 | 第一印象 | ⛔ |
 | X3 | **死亡回顾无技能名**：协议 `Damage` 只带 school，需加 `skillId`（与 S7 的泄露口径一起拍板） | `NetworkScene.ts`（≈:604-608）；M16a 已知不足 | 协议债 | ⛔ |
 | X4 | 结算面板无夺旗专属列（携旗距离/护送时长 sim 里都有）；连杀播报无「终结连杀」提示（数据够 UI 没做） | M16a 已知不足 | 夺旗线依赖 W12 | ⛔ |

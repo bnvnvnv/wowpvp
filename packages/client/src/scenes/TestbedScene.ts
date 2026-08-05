@@ -36,6 +36,7 @@ import { CombatHud } from '../hud/CombatHud.js';
 import { partyViewOf } from '../hud/PartyFrame.js';
 import { SettingsPanel } from '../settings/SettingsPanel.js';
 import { MusicDirector, ambientTrackFor } from '../audio/MusicDirector.js';
+import { presetOf } from '../render/Environment.js';
 import { FAIL_TEXT } from '../combat/CombatDirector.js';
 import { Action, InputManager, type FrameInput } from '../input/InputManager.js';
 import { DecorRenderer } from '../render/DecorRenderer.js';
@@ -211,7 +212,8 @@ export class TestbedScene {
     // M12：环境与地面材质。两者都是「加法」，失败即回落到 M11 的画面
     this.env = new Environment(this.renderer, this.scene);
     if (this.art) {
-      this.env.apply(this.quality.current, { preset: 'day' });
+      // W15：昼夜按地图配（试验场=day 红线不动；教学场=dawn）
+      this.env.apply(this.quality.current, { preset: presetOf(this.stage.map.envPreset) });
       void this.mapRenderer.applyGroundTexture('stone');
       // 地图装饰摆设（纯表现，sim 不读 —— 见 DecorRenderer 文件头）
       if (stage.map.decor) {

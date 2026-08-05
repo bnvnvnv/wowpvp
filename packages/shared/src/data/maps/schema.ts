@@ -172,6 +172,13 @@ export interface MapDef {
   forbidden: readonly ForbiddenVolume[];
   /** 纯装饰摆设（可选，表现层专用，见 MapDecorDef）*/
   decor?: readonly MapDecorDef[];
+  /**
+   * 环境预设名（W15，速赢清单「每张图配一个昼夜」）。
+   * ★ 与 `decor` 同属**纯表现**字段：sim 不读，客户端拿它选 HDR 环境
+   *   （键对应 client `ENV_PRESETS`，不认识的值回落 day —— 数据不害渲染）。
+   *   放 MapDef 而不是客户端表：地图长什么样是地图数据的一部分。
+   */
+  envPreset?: string;
 
   prepRooms?: readonly PrepRoom[];
   gates: readonly Gate[];

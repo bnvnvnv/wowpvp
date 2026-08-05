@@ -112,6 +112,8 @@ export const tutorialMap: MapDef = {
   },
   geometry,
   decor,
+  // W15：教学场用清晨 —— 柔和低对比，第一课的视觉压力小一点
+  envPreset: 'dawn',
   forbidden: [],
   gates: [],
   fairness: {
