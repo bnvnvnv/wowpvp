@@ -31,9 +31,11 @@ import {
   encodeClientMessage,
   getSkill,
   isFriendly,
+  isVisibleTo,
   listEntities,
   needsGroundPlacement,
   usesNoTarget,
+  type BotDifficulty,
   type CombatEntity,
   type Match,
 } from '@wowpvp/shared';
@@ -70,6 +72,12 @@ export interface BotSeat {
   playerId: string;
   /** 接管原因。★ 影响的是**交还**：掉线接管会在重连时交还，补位不会 */
   reason: 'fill' | 'disconnect';
+  /**
+   * 难度档。不传 = normal。
+   * ★ 掉线接管刻意用 normal 不用房间设置的档 —— 接管顶替的是一个真人，
+   *   「普通操作水平」是对被顶替者最中性的假设；补位人机（P1c）才读房间配置。
+   */
+  difficulty?: BotDifficulty;
 }
 
 /**
@@ -117,7 +125,7 @@ export class BotDriver {
     const m = this.match();
     if (!m) return;
 
-    for (const [playerId] of this.seats) {
+    for (const [playerId, seat] of this.seats) {
       const entityId = m.entityOf.get(playerId);
       if (entityId === undefined) continue;
       const self = m.world.entities.get(entityId);
@@ -132,6 +140,7 @@ export class BotDriver {
         self,
         foe,
         rng: this.rngs.get(playerId) ?? Math.random,
+        difficulty: seat.difficulty ?? 'normal',
       });
 
       /**
@@ -185,17 +194,25 @@ export class BotDriver {
 }
 
 /**
- * 最近的活着的敌人。
+ * 最近的**可见**敌人。
  *
- * ⚠️ `decideBotAction` 本版**只支持单目标**（它自己的注释写着：选敌 / 换目标 /
- *   保队友都还没做）。这里的「最近敌人」是调用方能给出的最合理的单目标，
- *   **不是**一个像样的选敌策略 —— 3v3 以上要用得先补决策层那一块。
+ * ★★ A4（技术债总账）：此前不过可见性 —— 人机能感知未被发现的潜行者的
+ *   精确坐标并据此走位/选目标，「故意断线换 AI 代打」附带信息优势。
+ *   现在按 `isVisibleTo`（与快照裁剪、SetTarget 校验**同一个**判定）过滤：
+ *   人机看得见的 = 真人看得见的。全场只剩潜行者时人机会原地待机 ——
+ *   那正是真人面对隐身对手的处境，不是「接管人机变瞎子」（可见的敌人
+ *   照常感知；潜行者被发现的瞬间照常进入候选）。
+ *
+ * ⚠️ `decideBotAction` 本版**只支持单目标**。这里的「最近敌人」是调用方能
+ *   给出的最合理的单目标，不是像样的选敌策略 —— 3v3 要用得先补决策层。
  */
-const nearestFoe = (m: Match, self: CombatEntity): CombatEntity | undefined => {
+export const nearestFoe = (m: Match, self: CombatEntity): CombatEntity | undefined => {
+  const ctx = m.ctf ? { ctf: m.ctf.state } : undefined;
   let best: CombatEntity | undefined;
   let bestD = Infinity;
   for (const e of listEntities(m.world)) {
     if (!e.alive || e.isPet || isFriendly(e, self)) continue;
+    if (!isVisibleTo(e, self, ctx)) continue;
     const d = distance2D(self.position, e.position);
     if (d < bestD) { bestD = d; best = e; }
   }

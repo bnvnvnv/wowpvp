@@ -404,6 +404,19 @@ try {
      * ⚠️ 断线期间服务器侧照常走接管（偏差 #14），重连令牌交还 ——
      * 那段闭环在 RoomServer 测试里验过，这里验的是玩家**看得见**它在发生。
      */
+    /**
+     * ★ P1a 之后接管人机**真的会输出**（法师档 ~89 DPS）：约 8 秒的重连窗口
+     *   足以把前几节已经掉血的一方磨死 —— 而死在离线期间意味着客户端收不到
+     *   伤害流，后面 #24 的死亡回顾会是空的。断线前白盒满血，让窗口期的
+     *   人机互殴杀不死人（本节验的是断线横幅与重连，不是战斗结果）。
+     */
+    {
+      const m = server.rooms.matchOf(code)!;
+      for (const id of [aNet.you, bNet.you]) {
+        const e = m.world.entities.get(id as never)!;
+        e.health = e.maxHealth;
+      }
+    }
     server.severConnections();
     await waitStatus(pageB, 'B 显示断线横幅', 'st.net && st.net.reconnecting === true', 8000);
 
@@ -425,7 +438,11 @@ try {
     const loop = server.rooms.loopOf(code)!;
     // 快进过 18 秒准备阶段进入战斗阶段（回合结算只在战斗阶段判定）
     for (let i = 0; i < 420 && !match.arena?.outcome; i++) loop.advance();
-    // 火焰冲击冷却也被上面的快进一并走完了；把败方血量压到 1，再来一发
+    // 火焰冲击冷却也被上面的快进一并走完了；把败方血量压到 1，再来一发。
+    // ★ A 也满血 —— 4b 重连前后人机互殴过（P1a 后它们真的会打），
+    //   不满血的话本节的击杀编排可能被反杀截胡
+    const redE0 = match.world.entities.get(aNet.you as never)!;
+    redE0.health = redE0.maxHealth;
     const blueE = match.world.entities.get(bNet.you as never)!;
     blueE.health = 1;
     const redE = match.world.entities.get(aNet.you as never)!;

@@ -42,7 +42,7 @@
 | A1 | **`LeaveMatch` 淘汰绕过死亡漏斗**：`eliminate()` 直改 `alive/health` 字段，不产生 death 事件 → `deaths` 统计不加（**违反 11.5**，且函数上方注释声称在执行 11.5）、`settleDeaths()` 不跑（10.10 临时装备不清）、无 `Death` 广播。零测试覆盖 | `packages/server/src/room/RoomServer.ts` `eliminate()`；修法见 `sim/tick.ts` 第 0 步 `forfeits` | 统计失真 + 规则静默失效 | ✅ 批次一 1.1（2026-08-04，含变异测试） |
 | A2 | **无输入实体不做物理积分**：`tickWorld` 第 2 步 `if (!input) continue` → 不积分重力、不软推开。停发 Input 即可空中悬停 + 单向卡位；正确性寄托在「客户端每 tick 都发」的自觉上 | `packages/shared/src/sim/tick.ts` 第 2 步（缺输入现按全零输入积分；「无 movement 条目不参与移动」边界不变） | 可被主动利用（悬空/卡位）；高丢包玩家持续微顿 | ✅ 批次一 1.2（2026-08-04，含变异测试；verify-m10 白盒摆位随之改用 teleportTo） |
 | A3 | **无心跳/空闲超时**：半开连接（断电、NAT 超时）永远不被识别为断线 → **不触发人机接管**。偏差 #14「断线瞬间接管」只对优雅关闭的连接成立 | `packages/server/src/index.ts` 心跳（默认 30s ping × 2 次落空 → terminate，走既有 close→disconnect→接管路径） | 最常见的断线形态下队友是十几分钟的活靶 | ✅ 批次一 1.3（2026-08-04，含变异测试） |
-| A4 | **人机决策拿全局信息**：`nearestFoe()` 遍历全部实体，不过可见性/视线 → 能感知潜行者精确坐标并据此走位。「故意断线换 AI 代打」附带信息优势 | `packages/server/src/BotDriver.ts` `nearestFoe()`（≈:186） | 偏差 #14 论证了不规避统计，未论证不规避信息面 | ⛔ |
+| A4 | **人机决策拿全局信息**：`nearestFoe()` 遍历全部实体，不过可见性/视线 → 能感知潜行者精确坐标并据此走位。「故意断线换 AI 代打」附带信息优势 | `nearestFoe` 按 `isVisibleTo`（与快照裁剪/SetTarget 校验同一判定）过滤：人机看得见的 = 真人看得见的；全场只剩潜行者时原地待机（真人同处境，非瞎子）；被发现瞬间照常进候选 | 偏差 #14 论证了不规避统计，未论证不规避信息面 | ✅ P1a（2026-08-05，BotDriver 单测 ×4） |
 | A5 | **朝向无转身速率限制**：`intent.facing` 在 `validateCast` 之前被无条件采信，移动的 `characterYaw` 同 → 脚本客户端永远满足朝向门禁（spinbot）；背刺「背后 120°」的转身博弈对作弊者不成立 | `packages/shared/src/sim/tick.ts`（≈:319）；`FORBIDDEN_CLIENT_FIELDS` 不含 yaw/facing | 反作弊边界的口子 | ⛔ |
 | A6 | **跨房间 `Reconnect` 造成房间永久泄漏**：`onReconnect` 不查 `session.roomId/phase` 直接覆写 → 旧房间的旧 playerId 永不清理，`dropIfEmpty()` 恒 false | `packages/server/src/room/RoomServer.ts` `onReconnect()` 入口守卫（在房会话诚实拒绝，与 JoinRoom 同规矩） | 资源泄漏（非信息泄漏，playerId 全局唯一） | ✅ 批次一 1.4（2026-08-04，含阳性对照与变异测试） |
 | A7 | **`referencedEntities()` fail-open**：`default: return []` → 新增带 EntityId 的服务器消息忘登记时，`redactFor` 原样放行。与 codec 侧 `satisfies never` 的穷尽保证是同一问题的相反做法；零测试 | `packages/server/src/MatchLoop.ts` 穷尽 switch（`satisfies never`，新消息不归类编译不过）+ `MatchLoop.test.ts` 逐类断言 | 防线本身没有防线 | ✅ 批次一 1.5（2026-08-04，编译期变异验证过） |
@@ -155,7 +155,7 @@
 
 | ID | 债 | 证据 | 状态 |
 |---|---|---|---|
-| B1 | `decideBotAction` 只支持单目标（选敌/换目标/保队友没做）；不会用地面技能（`CastIntent` 不产落点，「如实少一类」）；无寻路（撞死角就停）—— 3v3 以上人机可用性的前置 | `shared/src/ai/botController.ts` 自述注释；M16b 已知不足 | ⛔ |
+| B1 | `decideBotAction` 只支持单目标（选敌/换目标/保队友没做）；不会用地面技能（`CastIntent` 不产落点，「如实少一类」）；无寻路（撞死角就停）—— 3v3 以上人机可用性的前置 | **P1a 已清一半**（docs/17）：难度三档反应时间、看读条就打断（假读条 <0.35s 骗不出 normal 的踢）、normal/hard 按单发威力出招（冷却感知 + 自身中心 AOE 距离门 + 五种伤害形状估值）。**余账（P1b/P1c）**：风筝后撤、躲地面 AOE、连击点终结循环（两版尝试逐位同致盗贼 0%，回滚待诊断）、地面落点、换目标、寻路、难度进大厅 | 🔧 P1a（2026-08-05，botController 单测 ×12） |
 | B2 | 配平测量边界：每对 3 场的离散度（种子 2 极差 40.5pp）；盗贼规避组合被 bot 高估 —— 已如实记录，扩大样本量是可选项 | M14 章节 | ⛔ |
 
 ---
