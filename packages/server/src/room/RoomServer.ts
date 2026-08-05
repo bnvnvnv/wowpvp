@@ -602,6 +602,18 @@ export class RoomServer {
 
     // ★ 换回原来的玩家 id —— 角色是按玩家 id 找的
     session.playerId = r.playerId;
+    /**
+     * ★★ 身份换回来了必须**告诉客户端**（W6 的 E2E 抓到的真 bug）：
+     *   重连的新连接刚收到过一条新 Welcome（新 playerId），服务器这里
+     *   把会话换回原 id 之后客户端却还揣着新的 —— 对局里没事（场景认
+     *   entityId），一回到房间页就露馅：大厅按 playerId 找「自己」找不到，
+     *   准备按钮永远禁用，赛后重开一局对重连过的人**整个是坏的**。
+     *   复用 Welcome 消息重发身份 —— 大厅对它的处理就是纯赋值，零新协议。
+     */
+    session.send({
+      t: 'Welcome', playerId: r.playerId,
+      tickRate: SIM.TICK_RATE, interpDelay: SIM.INTERP_DELAY,
+    });
     session.roomId = sr.room.id;
     session.phase = SessionPhase.Match;
     sr.sessions.add(session);

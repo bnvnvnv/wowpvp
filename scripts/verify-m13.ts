@@ -246,6 +246,35 @@ try {
       `found=${minimap.found} rgba=(${minimap.r},${minimap.g},${minimap.b},${minimap.a})`);
   }
 
+  // ── 4b：断线横幅与重连闭环（W6，技术债总账）─────────────────
+  {
+    // 正常连接下延迟读数已经有值（Input seq → 快照 ackSeq 的往返）
+    const rtt = await waitStatus(pageB, 'B 有延迟读数', 'st.net && st.net.rttMs !== null', 6000);
+    const rttVal = (rtt['net'] as { rttMs?: number | null } | null)?.rttMs;
+
+    /**
+     * 掐断连接：从**服务器侧** terminate —— Playwright 的 setOffline 不会
+     * 终止已建立的 WebSocket（首跑实测：offline 后 connected 仍 true、
+     * 快照照流），只能白盒掐（`severConnections` 与 matchOf/loopOf 同类）。
+     * 此前这一幕的玩家体验：约 7.75 秒退避重连**全程零提示**。
+     * ⚠️ 断线期间服务器侧照常走接管（偏差 #14），重连令牌交还 ——
+     * 那段闭环在 RoomServer 测试里验过，这里验的是玩家**看得见**它在发生。
+     */
+    server.severConnections();
+    await waitStatus(pageB, 'B 显示断线横幅', 'st.net && st.net.reconnecting === true', 8000);
+
+    // 服务器一直活着，客户端退避重连（首次 250ms）→ 令牌恢复 → 横幅消失
+    await waitStatus(pageB, 'B 横幅消失（重连成功）', 'st.net && st.net.reconnecting === false', 12000);
+    await waitStatus(pageA, 'A 也重连完成', 'st.net && st.net.reconnecting === false', 12000);
+    const before = await waitStatus(pageB, 'B 状态可读', 'st.net !== null', 2000);
+    const snapsBefore = ((before['net'] as { snapshots?: number } | null)?.snapshots) ?? 0;
+    await waitStatus(pageB, 'B 快照恢复流动', `st.net && st.net.snapshots > ${snapsBefore}`, 8000);
+
+    check('15', '★★ 断线横幅出现 → 恢复后消失、快照恢复流动；连接期有延迟读数（W6）',
+      typeof rttVal === 'number' && rttVal >= 0,
+      `重连闭环走通；断线前延迟=${String(rttVal)}ms`);
+  }
+
   // ── 5：收掉这局 → MatchEnd → 双方回房间 → 再开一局 ──────────
   {
     const match = server.rooms.matchOf(code)!;

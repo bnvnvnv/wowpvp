@@ -30,6 +30,13 @@ export interface StartedServer {
   port: number;
   rooms: RoomServer;
   close: () => Promise<void>;
+  /**
+   * 测试用：掐断全部**现有**连接但不停服务 —— 模拟网络闪断。
+   * ★ Playwright 的 `setOffline` 不会终止已建立的 WebSocket（只拦新请求），
+   *   断线横幅/重连闭环的端到端验收（verify:m13 §4b）只能从服务器侧掐。
+   *   与 `rooms.matchOf/loopOf` 同属白盒出口，生产路径零调用。
+   */
+  severConnections: () => void;
 }
 
 export interface ServerOptions {
@@ -117,6 +124,9 @@ export const startServer = async (port = 0, opts: ServerOptions = {}): Promise<S
   return {
     port: actualPort,
     rooms,
+    severConnections: () => {
+      for (const c of wss.clients) c.terminate();
+    },
     close: async () => {
       if (heartbeat) clearInterval(heartbeat);
       rooms.stopAll();

@@ -157,6 +157,10 @@ export interface NetStatus {
   deathOverlay: boolean;
   /** W5：正在观战的实体 id；未观战为 null */
   spectating: number | null;
+  /** W6：断线横幅当前是否可见（= started 且连接断开）*/
+  reconnecting: boolean;
+  /** W6：指令往返延迟（毫秒，EMA 平滑；未测得为 null）*/
+  rttMs: number | null;
   /**
    * 最近 0.5 秒的平均帧率。
    *
@@ -226,6 +230,17 @@ export class NetworkScene {
   private readonly deathOverlay: HTMLElement;
   private readonly deathOverlaySub: HTMLElement;
   private spectatingId: number | null = null;
+  /**
+   * W6（技术债总账）：断线横幅与延迟指示。
+   * 横幅纯轮询 `conn.connected` —— NetLink 窄接口本来就带它，
+   * 大厅路径与 `?net=` 老路零 API 改动、同一份逻辑。
+   */
+  private readonly connBanner: HTMLElement;
+  private readonly rttLabel: HTMLElement;
+  /** 指令往返延迟的平滑值（EMA）。★ 含服务器 50ms tick 批处理，如实不减 */
+  private rttMs: number | null = null;
+  /** Input seq → 发出时刻。快照的 ackSeq 回来时配对算 RTT */
+  private readonly seqSentAt = new Map<number, number>();
   /**
    * 10.2 掉落物 / 10.4 军械点的表现与 HUD。
    * ★★ 在此之前联网客户端**看不到也碰不到**任何临时武装 —— 整个 M6 在
@@ -340,6 +355,35 @@ export class NetworkScene {
     Object.assign(this.deathOverlaySub.style, { opacity: '.75', fontWeight: '400' });
     this.deathOverlay.append(dTitle, this.deathOverlaySub);
     (canvas.parentElement ?? document.body).appendChild(this.deathOverlay);
+
+    /**
+     * W6：断线横幅。此前 `?net=` 老路的 onClose 是空实现、大厅只在放弃
+     * 重试后 toast 一次 —— 约 7.75 秒的退避重连全程零提示，玩家分不清
+     * 「我卡了」「被控了」「服务器炸了」。
+     */
+    this.connBanner = document.createElement('div');
+    this.connBanner.id = 'conn-banner';
+    Object.assign(this.connBanner.style, {
+      position: 'absolute', left: '50%', top: '12%', transform: 'translate(-50%,0)',
+      padding: '10px 22px', borderRadius: '8px',
+      background: 'rgba(64,20,16,.88)', border: '1px solid rgba(255,122,111,.55)',
+      color: '#ffd9d4', font: '600 14px system-ui, sans-serif', textAlign: 'center',
+      pointerEvents: 'none', display: 'none', zIndex: '40', lineHeight: '1.8',
+    } as Partial<CSSStyleDeclaration>);
+    // ★「尝试」二字是措辞的诚实：NetLink 看不到退避次数，放弃重试后由
+    //   大厅的 toast 补终态提示 —— 本横幅只陈述「断了、在试」这个事实
+    this.connBanner.textContent = '连接已断开 · 正在尝试重连（角色留在原地，不获得无敌）';
+    (canvas.parentElement ?? document.body).appendChild(this.connBanner);
+
+    // W6：延迟指示。小、常驻、不抢注意力 —— 有异常时颜色先说话
+    this.rttLabel = document.createElement('div');
+    this.rttLabel.id = 'rtt-label';
+    Object.assign(this.rttLabel.style, {
+      position: 'absolute', right: '10px', bottom: '8px',
+      color: '#9ad48f', font: '500 11px ui-monospace, monospace',
+      pointerEvents: 'none', zIndex: '20', opacity: '.8',
+    } as Partial<CSSStyleDeclaration>);
+    (canvas.parentElement ?? document.body).appendChild(this.rttLabel);
     /**
      * 连杀升调：同一个音效按连杀数提速 —— 「升调」用 `rate` 而不是换音效，
      * 因为素材里**没有**一组连杀音（盘里只有 ui_arena_loss，连 win 都没有）。
@@ -486,6 +530,9 @@ export class NetworkScene {
       // W5：死亡遮罩与观战状态（verify:m13 的判据入口）
       deathOverlay: this.deathOverlay.style.display !== 'none',
       spectating: this.spectatingId,
+      // W6：断线横幅与指令往返延迟
+      reconnecting: this.connBanner.style.display !== 'none',
+      rttMs: this.rttMs === null ? null : Math.round(this.rttMs),
       fps: this.loop.fps,
     };
   }
@@ -558,6 +605,18 @@ export class NetworkScene {
       case 'Snapshot': {
         this.snapshotCount++;
         this.serverTime = msg.time;
+        /**
+         * W6：指令往返延迟。ackSeq 在服务器 tick 边界确认，所以样本含
+         * 最多 50ms 的批处理时延 —— 如实不减：玩家感受到的就是这个总和。
+         */
+        {
+          const sentAt = this.seqSentAt.get(msg.ackSeq);
+          if (sentAt !== undefined) {
+            const sample = performance.now() - sentAt;
+            this.rttMs = this.rttMs === null ? sample : this.rttMs * 0.8 + sample * 0.2;
+            for (const k of this.seqSentAt.keys()) if (k <= msg.ackSeq) this.seqSentAt.delete(k);
+          }
+        }
         this.interp.push(msg.time, msg.entities);
         this.lastEntities = msg.entities;
         // 14.4 投射物 / 14.3 地面区域：留给 draw 里的 spellVfx.frame 消费
@@ -1206,7 +1265,14 @@ export class NetworkScene {
       // ★ 角色 yaw，不是镜头 yaw（6.5）
       yaw: this.characterYaw,
     };
-    this.conn.send(this.predictor.sample(move));
+    const inputMsg = this.predictor.sample(move);
+    // W6：记下发出时刻，快照的 ackSeq 回来时配对算 RTT。断线期间会积压 —— 封顶清最旧
+    this.seqSentAt.set(inputMsg.seq, performance.now());
+    if (this.seqSentAt.size > 128) {
+      const oldest = this.seqSentAt.keys().next().value;
+      if (oldest !== undefined) this.seqSentAt.delete(oldest);
+    }
+    this.conn.send(inputMsg);
   }
 
   /**
@@ -1259,7 +1325,22 @@ export class NetworkScene {
     this.renderModeHud();
     this.renderMinimap();
     this.renderDeathState();
+    this.renderConnState();
     this.renderScoreboard();
+  }
+
+  /** W6：断线横幅 + 延迟指示。横幅纯轮询 `conn.connected`，两条入网路径同一份逻辑 */
+  private renderConnState(): void {
+    const offline = this.started && !this.conn.connected;
+    const bannerShown = this.connBanner.style.display !== 'none';
+    if (offline !== bannerShown) this.connBanner.style.display = offline ? '' : 'none';
+
+    const txt = offline ? '延迟 —' : this.rttMs === null ? '' : `延迟 ${Math.round(this.rttMs)}ms`;
+    if (this.rttLabel.textContent !== txt) this.rttLabel.textContent = txt;
+    const color = offline || (this.rttMs !== null && this.rttMs >= 150)
+      ? '#ff7a6f'
+      : this.rttMs !== null && this.rttMs >= 80 ? '#ffd76a' : '#9ad48f';
+    if (this.rttLabel.style.color !== color) this.rttLabel.style.color = color;
   }
 
   /**
