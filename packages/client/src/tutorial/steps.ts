@@ -30,6 +30,13 @@
  */
 
 /** 步骤推进只认这些信号。字段带**发生时刻**（sim 时钟），规约自己不看表 */
+/**
+ * 教学进度的 localStorage 键。★ 放在本文件（纯规约、零重依赖）——
+ * 大厅要读它判断「教学做没做完」（W11），从 TutorialDirector 导入会把
+ * 整个战斗指挥链拖进大厅 chunk。
+ */
+export const TUTORIAL_STORAGE_KEY = 'wowpvp.tutorial.v1';
+
 export type TutorialSignal =
   // ── 采样类（Director 每帧折叠出来的里程碑）──
   | { t: 'moved'; meters: number }

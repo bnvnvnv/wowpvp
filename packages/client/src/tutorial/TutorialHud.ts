@@ -27,6 +27,13 @@ export class TutorialHud {
       if (!btn) return;
       if (btn.dataset['tutorialAction'] === 'skip') this.director.skip();
       if (btn.dataset['tutorialAction'] === 'restart') this.director.restart();
+      /**
+       * W11（技术债总账）：毕业文案说「去大厅找真人过招」却没有路 ——
+       * 玩家得自己改 URL。教学是大厅进来的（?tutorial=on），出口也该回大厅。
+       */
+      if (btn.dataset['tutorialAction'] === 'lobby') {
+        location.href = `${location.pathname}?lobby`;
+      }
     });
 
     director.onChange = () => this.render();
@@ -50,7 +57,8 @@ export class TutorialHud {
           <div class="tut-title">🎓 教学完成！</div>
           <div class="tut-goal">反制链已入门：打断、假读条、走位 —— 去大厅找真人过招吧。</div>
           <div class="tut-actions">
-            <button class="tut-btn" data-tutorial-action="restart">重新开始</button>
+            <button class="tut-btn" data-tutorial-action="lobby">🏟 去大厅找真人过招</button>
+            <button class="tut-btn tut-ghost" data-tutorial-action="restart">重新开始</button>
           </div>
         </div>`;
       return;

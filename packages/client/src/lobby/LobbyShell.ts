@@ -42,6 +42,7 @@ import { renderMatchSummary, type MatchSummaryData } from '../hud/MatchSummary.j
 import { NetworkScene } from '../scenes/NetworkScene.js';
 import { clampUiScale, loadAccessibility, saveAccessibility } from '../settings/accessibility.js';
 import { SettingsPanel } from '../settings/SettingsPanel.js';
+import { TUTORIAL_STORAGE_KEY } from '../tutorial/steps.js';
 import { artEnabled } from '../settings/artMode.js';
 import { ClassPreview } from './ClassPreview.js';
 import {
@@ -184,7 +185,11 @@ export class LobbyShell {
           </div>
           <hr/>
           <div class="lb-row">
-            <button class="lb-btn" data-action="tutorial">新手教学（推荐先玩）</button>
+            <button class="lb-btn" data-action="tutorial">${
+              this.tutorialCompleted()
+                ? '新手教学（已完成 ✓ 可重温）'
+                : '新手教学（推荐先玩 · 尚未完成）'
+            }</button>
           </div>
           <div class="lb-row">
             <button class="lb-btn lb-ghost" data-action="practice">试验场（单机练习）</button>
@@ -382,6 +387,22 @@ export class LobbyShell {
     if (!btn) return;
     audio.play('ui_click', { group: 'ui', volume: 0.35 });
     this.act(btn.dataset['action']!, btn);
+  }
+
+  /**
+   * W11（技术债总账）：大厅第一次**读**教学进度 —— 此前做没做过教学的人
+   * 看到的大厅一模一样。判定 = 存档 done 里含毕业环（前缀连续存档，
+   * 含 graduate 即全部走完）；读不到/解析失败按未完成（提示无害）。
+   */
+  private tutorialCompleted(): boolean {
+    try {
+      const raw = globalThis.localStorage.getItem(TUTORIAL_STORAGE_KEY);
+      if (raw === null) return false;
+      const done = (JSON.parse(raw) as { done?: string[] }).done ?? [];
+      return done.includes('graduate');
+    } catch {
+      return false;
+    }
   }
 
   private act(action: string, btn?: HTMLElement): void {

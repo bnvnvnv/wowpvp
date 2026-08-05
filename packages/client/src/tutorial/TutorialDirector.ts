@@ -34,7 +34,9 @@ import {
   type TutorialState,
 } from './steps.js';
 
-export const TUTORIAL_STORAGE_KEY = 'wowpvp.tutorial.v1';
+// W11：键挪到 steps.ts（轻模块，大厅读进度不拖重 chunk），这里转发保持既有导入不变
+import { TUTORIAL_STORAGE_KEY } from './steps.js';
+export { TUTORIAL_STORAGE_KEY };
 
 /** 走位环里两颗陨石之间的间隔，秒（读条 1s + 落地 1.5s + 喘息）*/
 const METEOR_RESTAGE_SECONDS = 4.5;
