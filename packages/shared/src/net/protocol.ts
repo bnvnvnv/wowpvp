@@ -315,7 +315,8 @@ export type ServerMessage =
       crit?: boolean }
   | { t: 'AuraApplied'; targetId: EntityId; auraId: string; duration: number; stacks: number }
   | { t: 'AuraRemoved'; targetId: EntityId; auraId: string
-      reason: 'expired' | 'dispelled' | 'broken' | 'cancelled' | 'shieldBroken' }
+      // ★ 'trinket'：8.3 战斗意志解除（W8）。闭集扩项是**加法**改动，零泄露面
+      reason: 'expired' | 'dispelled' | 'broken' | 'cancelled' | 'shieldBroken' | 'trinket' }
   | { t: 'Death'; entityId: EntityId; killerId?: EntityId }
   /**
    * 10.4：军械箱被打开后的三个横向选择。

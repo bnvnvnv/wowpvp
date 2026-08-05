@@ -19,7 +19,7 @@
 
 import { chromium, type Browser, type Page } from 'playwright';
 import { startServer } from '../packages/server/src/index.ts';
-import { asClassId, getClass, teleportTo } from '../packages/shared/src/index.ts';
+import { applyAura, asClassId, aurasOf, getClass, teleportTo } from '../packages/shared/src/index.ts';
 
 const BASE = process.env.VERIFY_URL ?? 'http://localhost:5173';
 
@@ -267,6 +267,32 @@ try {
       savedOff === false && savedOn === true
         && (closed['net'] as { settingsOpen?: boolean } | null)?.settingsOpen === false,
       `落盘往返=${String(savedOff)}→${String(savedOn)}`);
+
+    /**
+     * ★ W8（技术债总账）：R 通用解控（8.3）。白盒给 A 挂一个可解昏迷 →
+     *   按 R → 服务器侧光环被战斗意志解除（`useTrinket` 从 M9 零调用
+     *   到此有了真实调用链）。**昏迷中按得出来**本身就是 8.3
+     *   「默认允许在昏迷中使用」的活证明 —— 技能键这时全是哑的。
+     */
+    {
+      const m = server.rooms.matchOf(code)!;
+      const redE = m.world.entities.get(aNet.you as never)!;
+      applyAura(m.auras, redE, {
+        id: 'verify.stun', name: '验收用昏迷', kind: 'debuff', duration: 30,
+        dispelType: 'magic', flags: { stunned: true },
+        clearableByTrinket: true, drCategory: 'stun',
+      } as never, redE.id, m.world.time);
+      await sleep(150);
+      await pageA.keyboard.press('KeyR');
+      const deadline = Date.now() + 4000;
+      let cleared = false;
+      while (!cleared && Date.now() < deadline) {
+        cleared = !aurasOf(m.auras, redE.id).some((a) => a.def.id === 'verify.stun');
+        if (!cleared) await sleep(60);
+      }
+      check('17', '★ R 通用解控：昏迷中按 R，昏迷被战斗意志解除（W8）', cleared,
+        `verify.stun 已解除=${cleared}`);
+    }
   }
 
   // ── 4b：断线横幅与重连闭环（W6，技术债总账）─────────────────

@@ -133,6 +133,8 @@ export interface FrameInput {
   leftDrag: { dx: number; dy: number } | null;
   rightDrag: { dx: number; dy: number } | null;
   cameraReset: boolean;
+  /** 5.6 / W8：Alt 自我施法是**按住**语义，不是按下触发 */
+  selfCastHeld: boolean;
   /** 按下即触发一次的动作 */
   pressed: ReadonlySet<Action>;
 }
@@ -276,6 +278,7 @@ export class InputManager {
       leftDrag: this.leftDragAccum,
       rightDrag: this.rightDragAccum,
       cameraReset: this.pressedThisFrame.has(Action.CameraReset),
+      selfCastHeld: this.isDown(Action.SelfCast),
       pressed: new Set(this.pressedThisFrame),
     };
 

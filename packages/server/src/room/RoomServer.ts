@@ -228,15 +228,18 @@ export class RoomServer {
         });
       case 'SpectateFollow': return this.onSpectateFollow(session, msg.entityId);
 
-      case 'UseTrinket':
+      case 'UseTrinket': {
         /**
-         * ★ 诚实地拒绝。`useTrinket()` 规则在 `effects/combat.ts` 里写好了，
-         *   但它需要一个 `EffectContext` —— 也就是说它是**效果结算**，
-         *   而效果结算只有 `tickWorld` 一个出口（A2 的教训）。
-         *   要接它得先在 tick 里加一步，那是一次显眼的改动，不在这里偷做。
-         *   ⚠️ 顺带一提：这个函数至今**只有测试调用过**，客户端也没接。
+         * ★ W8：tick 第 1c 步已经存在，这里终于可以只做路由。
+         *   此前是诚实拒绝（「要接它得先在 tick 里加一步」）—— 那一步加了，
+         *   `useTrinket()` 从 M9 零调用到现在有了真实调用链。
+         *   冷却与「昏迷中可用」都在 tick 里结算，这里不做第二套判定。
          */
-        return session.reject('UseTrinket', '解控饰品尚未接入 tick（需要新增一个结算步骤）');
+        const sr = this.roomOf(session);
+        if (!sr?.loop) { session.reject('UseTrinket', '比赛未进行'); return; }
+        sr.loop.requestTrinket(session.playerId);
+        return;
+      }
 
       case 'UseConsumable': {
         // ★ M11：消耗品使用路径已接上（技术债 #6）

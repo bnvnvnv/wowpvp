@@ -308,12 +308,8 @@ describe('8.3 通用解控「战斗意志」（验收 #23）', () => {
     run([{ kind: 'stun', duration: 4 }]);
     expect(target.flags.stunned).toBe(true);
 
-    const ctx = {
-      world, auras, dr, projectiles, groundAreas: groundStore.areas, traps: groundStore.traps,
-      source: caster, skillId: 'trinket', events: [] as CombatEvent[],
-      resolve: () => {},
-    };
-    expect(useTrinket(ctx, target)).toBe(true);
+    // W8 收窄签名后只要它真读的三样（tick 第 1c 步同款调用）
+    expect(useTrinket({ world, auras, dr }, target, [])).toBe(true);
     target.flags = deriveStatusFlags(auras, target);
     expect(target.flags.stunned).toBe(false);
   });
@@ -323,11 +319,7 @@ describe('8.3 通用解控「战斗意志」（验收 #23）', () => {
     run([{ kind: 'applyAura', target: 'target', aura: slowAura() }]);
     run([{ kind: 'applyAura', target: 'target', aura: dotAura() }]);
 
-    const ctx = {
-      world, auras, dr, projectiles, groundAreas: groundStore.areas, traps: groundStore.traps,
-      source: caster, skillId: 'trinket', events: [] as CombatEvent[], resolve: () => {},
-    };
-    useTrinket(ctx, target);
+    useTrinket({ world, auras, dr }, target, []);
     target.flags = deriveStatusFlags(auras, target);
 
     expect(target.flags.silenced).toBe(true); // 沉默还在

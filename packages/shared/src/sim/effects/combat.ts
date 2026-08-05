@@ -22,14 +22,15 @@ import {
   dispel as dispelAuras,
   effectiveModifiersOf,
   removeAuraById,
+  type AuraStore,
 } from '../aura.js';
-import { applyDr, onControlEndedEarly } from '../dr.js';
+import { applyDr, onControlEndedEarly, type DrStore } from '../dr.js';
 import { gainResource, spendResource, type CombatEntity } from '../entity.js';
 import { ccDurationTakenFor, damageTakenFor, equipmentDamageTakenFor } from '../modifiers.js';
 import { isBehind } from '../../math/geometry.js';
 import { applyInterrupt } from '../interrupt.js';
-import { registerEffect, type EffectContext } from './registry.js';
-import { nextRandom } from '../world.js';
+import { registerEffect, type CombatEvent, type EffectContext } from './registry.js';
+import { nextRandom, type World } from '../world.js';
 import { CRIT } from '../../constants/combat.js';
 
 // ── 数值换算 ─────────────────────────────────────────────────────
@@ -654,13 +655,21 @@ const scaleMagnitude = (m: Magnitude, scale: number): Magnitude => ({
   ...(m.powerCoef !== undefined ? { powerCoef: m.powerCoef * scale } : {}),
 });
 
-/** 8.3 通用解控「战斗意志」。不是 EffectDef，由输入层直接调用 */
-export const useTrinket = (ctx: EffectContext, target: CombatEntity): boolean => {
-  const removed = clearByTrinket(ctx.auras, target.id);
+/**
+ * 8.3 通用解控「战斗意志」。不是 EffectDef，由 tick 第 1c 步调用（W8）。
+ * ★ 签名只要它真读的三样 —— 它从 M9 写好到 W8 接线一直零调用方，
+ *   原先要整个 EffectContext 反而挡住了唯一的调用点。
+ */
+export const useTrinket = (
+  deps: { world: World; auras: AuraStore; dr: DrStore },
+  target: CombatEntity,
+  events: CombatEvent[],
+): boolean => {
+  const removed = clearByTrinket(deps.auras, target.id);
   for (const r of removed) {
-    ctx.events.push({ t: 'auraRemoved', targetId: target.id, auraId: r.aura.def.id, reason: 'trinket' });
+    events.push({ t: 'auraRemoved', targetId: target.id, auraId: r.aura.def.id, reason: 'trinket' });
     const cat = r.aura.def.drCategory;
-    if (cat) onControlEndedEarly(ctx.dr, target.id, cat, ctx.world.time);
+    if (cat) onControlEndedEarly(deps.dr, target.id, cat, deps.world.time);
   }
   return removed.length > 0;
 };

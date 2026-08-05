@@ -944,6 +944,8 @@ export class TestbedScene {
     // ── M9 / 17.2 可访问性 ───────────────────────────────────
     // W9：设置面板
     if (input.pressed.has(Action.OpenSettings)) this.settings.toggle();
+    // W8：R 通用解控（8.3）。冷却提示在 CombatDirector，权威在 tick 第 1c 步
+    if (input.pressed.has(Action.Trinket)) this.combat.requestTrinket();
     if (input.pressed.has(Action.CycleColorblind)) {
       const modes = Object.values(ColorblindMode);
       const next = modes[(modes.indexOf(this.access.colorblind) + 1) % modes.length]!;
@@ -1007,7 +1009,12 @@ export class TestbedScene {
       const slot = this.combat.skills.indexOf(ev.skill);
       // 地面技能：把当前鼠标指向的地面点作为落点
       const ground = screenToGround(this.cam.camera, this.ndc, this.move.position);
-      this.combat.castSlot(slot, ground ? { x: ground.x, y: 0, z: ground.z } : undefined);
+      this.combat.castSlot(
+        slot,
+        ground ? { x: ground.x, y: 0, z: ground.z } : undefined,
+        // 5.6 / W8：按住 Alt 自我施法
+        { selfCast: input.selfCastHeld },
+      );
     }
 
     // 7.5 假读条：Esc 在没有瞄准时用于取消读条

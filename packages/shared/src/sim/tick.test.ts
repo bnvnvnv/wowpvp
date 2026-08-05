@@ -33,7 +33,7 @@ import { createCtf, enemyFlagOf, type CtfState } from './match/flag.js';
 import { createMovementState, type MovementInput, type MovementState } from './movement.js';
 import { createProjectileStore, type ProjectileStore } from './projectile.js';
 import { createStats, registerPlayer, type StatsStore } from './stats.js';
-import { tickWorld, type TickDeps } from './tick.js';
+import { TRINKET_COOLDOWN_KEY, tickWorld, type TickDeps } from './tick.js';
 import { addEntity, allocEntityId, createWorld, type World } from './world.js';
 import { dealDamage } from './effects/index.js';
 import type { EntityId } from '../types/ids.js';
@@ -479,6 +479,40 @@ describe('★★ 顺序约束（每条都有出处，见 tick.ts 头部表格）
 });
 
 // ════════════════════════════════════════════════════════════════
+
+describe('8.3 战斗意志（tick 第 1c 步 —— W8 之前 useTrinket 零调用方）', () => {
+  const stunAura = () =>
+    ({
+      id: 'test.stun', name: '测试昏迷', kind: 'debuff', duration: 30,
+      dispelType: DispelType.Magic, flags: { stunned: true },
+      clearableByTrinket: true, drCategory: 'stun',
+    }) as never;
+
+  it('★★ 昏迷中可用：解除昏迷并进 90 秒冷却（8.3 的两个核心语义）', () => {
+    applyAura(auras, player, stunAura(), foe.id, world.time);
+    tickWorld(deps({ trinketRequests: new Set([player.id]) }), DT);
+    expect(player.flags.stunned, '昏迷没被解除 —— 1c 步可能查了控制状态').toBe(false);
+    expect(player.cooldowns.get(TRINKET_COOLDOWN_KEY) ?? 0).toBeGreaterThan(world.time + 89);
+  });
+
+  it('★ 空放也进冷却 —— 只有命中才进冷却的话，R 连点宏等于自动解控，博弈就没了', () => {
+    tickWorld(deps({ trinketRequests: new Set([player.id]) }), DT);
+    expect(player.cooldowns.get(TRINKET_COOLDOWN_KEY) ?? 0).toBeGreaterThan(0);
+  });
+
+  it('冷却中再按无效：第二个昏迷解不掉', () => {
+    tickWorld(deps({ trinketRequests: new Set([player.id]) }), DT); // 空放，进冷却
+    applyAura(auras, player, stunAura(), foe.id, world.time);
+    tickWorld(deps({ trinketRequests: new Set([player.id]) }), DT);
+    expect(player.flags.stunned).toBe(true);
+  });
+
+  it('死人不能用（也不白进冷却）', () => {
+    player.alive = false;
+    tickWorld(deps({ trinketRequests: new Set([player.id]) }), DT);
+    expect(player.cooldowns.get(TRINKET_COOLDOWN_KEY)).toBeUndefined();
+  });
+});
 
 describe('模式相关的依赖是可选的', () => {
   /** ★ 与 15.4 让两种 HUD 视图不相交同源：竞技场不传 ctf，就没有旗帜逻辑 */

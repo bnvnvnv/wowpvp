@@ -147,6 +147,8 @@ export class MatchLoop {
    * 死亡与清理由 tickWorld 第 0 步的死亡漏斗统一结算（技术债总账 A1）。
    */
   private readonly pendingForfeits = new Set<EntityId>();
+  /** 本 tick 的战斗意志请求（8.3，W8）。与技能/消耗品同规矩：只排意图 */
+  private readonly pendingTrinkets = new Set<EntityId>();
 
   constructor(
     readonly match: Match,
@@ -199,6 +201,7 @@ export class MatchLoop {
         ...tickDepsOf(this.match, inputs, this.pendingCasts),
         consumableRequests: this.pendingConsumables,
         forfeits: this.pendingForfeits,
+        trinketRequests: this.pendingTrinkets,
       },
       SIM.TICK_DT,
       {
@@ -258,6 +261,7 @@ export class MatchLoop {
     this.pendingCasts.clear();
     this.pendingConsumables.clear();
     this.pendingForfeits.clear();
+    this.pendingTrinkets.clear();
 
     for (const ev of result.flags) {
       const flag = this.match.ctf?.state.flags[ev.flagTeam as number];
@@ -334,6 +338,13 @@ export class MatchLoop {
     const entityId = this.match.entityOf.get(playerId);
     if (entityId === undefined) return;
     this.pendingConsumables.set(entityId, slot);
+  }
+
+  /** 8.3 战斗意志（W8）。★ 只排意图，冷却与解除都在 tickWorld 第 1c 步结算 */
+  requestTrinket(playerId: string): void {
+    const entityId = this.match.entityOf.get(playerId);
+    if (entityId === undefined) return;
+    this.pendingTrinkets.add(entityId);
   }
 
   /**
@@ -832,9 +843,9 @@ const pickupFailText = (reason: string): string => {
 /** `CombatEvent.auraRemoved.reason` 是自由字符串，协议那边是闭集 */
 const removalReason = (
   reason: string,
-): 'expired' | 'dispelled' | 'broken' | 'cancelled' | 'shieldBroken' => {
+): 'expired' | 'dispelled' | 'broken' | 'cancelled' | 'shieldBroken' | 'trinket' => {
   switch (reason) {
-    case 'dispelled': case 'broken': case 'cancelled': case 'shieldBroken':
+    case 'dispelled': case 'broken': case 'cancelled': case 'shieldBroken': case 'trinket':
       return reason;
     default:
       return 'expired';

@@ -63,6 +63,7 @@ import {
   createPickupStore,
   createArsenalStore,
   ArenaPreset,
+  TRINKET_COOLDOWN_KEY,
   tickWorld,
   type CastIntent,
   type MovementInput,
@@ -176,6 +177,8 @@ export class CombatDirector {
    *   只接一个是 M4 踩过的坑。交给 tick 之后这个坑在结构上不存在。
    */
   private readonly pendingCasts = new Map<EntityId, CastIntent>();
+  /** 8.3 战斗意志请求（W8）。与技能请求同规矩：只排意图，结算在 tick 第 1c 步 */
+  private readonly pendingTrinkets = new Set<EntityId>();
 
   /** M4：效果系统的状态容器 */
   readonly auras = createAuraStore();
@@ -356,6 +359,7 @@ export class CombatDirector {
         movement: this.movementStates,
         inputs: this.frameInputs,
         castRequests: this.pendingCasts,
+        trinketRequests: this.pendingTrinkets,
         getSkill,
       },
       dt,
@@ -435,6 +439,7 @@ export class CombatDirector {
     // ★ 请求已被 tick 消费，清空。没被消费的（例如实体已死）也一并丢弃 ——
     //   一个 tick 之前的施法意图不该在下一个 tick 复活
     this.pendingCasts.clear();
+    this.pendingTrinkets.clear();
     /**
      * ★ 移动意图同理，**每 tick 重新表达**。此前只 set 不 clear：
      *   实战模式关掉（再按 K）或假人中途被静音后，最后一帧的输入会永远留在
@@ -804,7 +809,20 @@ export class CombatDirector {
    *   否则会出现「指示器显示合法 → 按下去却失败」（5.5 / 验收 #8）。
    *   它是 UI 判据，不是 sim 规则 —— sim 那边 `validateCast` 会再验一次。
    */
-  castSlot(index: number, groundPoint?: Vec3): void {
+  /**
+   * 8.3 战斗意志（W8）。冷却预检只为给提示 —— 权威判定在 tick 第 1c 步，
+   * 且那一步刻意不查控制状态（8.3「昏迷中可用」，解控就是为昏迷造的）。
+   */
+  requestTrinket(): void {
+    const ready = this.player.cooldowns.get(TRINKET_COOLDOWN_KEY) ?? 0;
+    if (this.world.time < ready) {
+      this.push(`战斗意志冷却中（还剩 ${Math.ceil(ready - this.world.time)} 秒）`, 'fail');
+      return;
+    }
+    this.pendingTrinkets.add(this.player.id);
+  }
+
+  castSlot(index: number, groundPoint?: Vec3, opts?: { selfCast?: boolean }): void {
     const skill = this.skills[index];
     if (!skill) return;
 
@@ -826,6 +844,14 @@ export class CombatDirector {
     // 5.6：自身、自身中心、方向技能都不需要选择目标，按角色位置/面向结算
     if (usesNoTarget(skill)) {
       this.requestCast(this.player, skill);
+      return;
+    }
+
+    // 5.6 / W8：按住 Alt 自我施法 —— 只改写「可作用己方」技能的目标；
+    // 对敌技能不改（免得把火球按给自己吃一发拒绝），服务器语义同款
+    if (opts?.selfCast
+        && (skill.targetFilter === TargetFilter.Ally || skill.targetFilter === TargetFilter.Any)) {
+      this.requestCast(this.player, skill, { targetId: this.player.id });
       return;
     }
 

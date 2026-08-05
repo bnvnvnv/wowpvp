@@ -19,6 +19,7 @@
  * | # | 步骤 | 约束 | 出处 |
  * |---|---|---|---|
  * | 0 | forfeits（弃权判死）| **必须在统计折叠 / matchRules / settleDeaths 之前** —— 三者都要在本 tick 看到弃权产生的死亡；放在最前还让弃权者的技能请求与移动经由 `!alive` 自然失效 | 11.5 / 技术债总账 A1 |
+ * | 1c | trinketRequests（战斗意志）| 与技能/消耗品同属 applyInputs；**刻意不查任何控制状态** —— 8.3「默认允许在昏迷中使用」，解控就是为昏迷造的 | 8.3 / 技术债总账 W8 |
  * | 1 | movement | —— | docs/02 §3 |
  * | 2 | casting | **必须在 movement 之后**：7.3「主动移动停止原地施放的读条」，先算完移动才知道这一 tick 有没有位移 | `casting.ts` 头部 |
  * | 3 | auras | 周期跳产生的效果要在本 tick 结算 | docs/02 §3 |
@@ -45,7 +46,8 @@
 import type { Aabb } from '../math/geometry.js';
 import type { SkillDef } from '../data/schema.js';
 import type { MapDef } from '../data/maps/schema.js';
-import type { ClassId, EntityId, SkillId } from '../types/ids.js';
+import { asSkillId, type ClassId, type EntityId, type SkillId } from '../types/ids.js';
+import { PVP_TRINKET } from '../constants/combat.js';
 import type { Vec3 } from '../math/vec3.js';
 import { gainResource, type CombatEntity } from './entity.js';
 import {
@@ -55,7 +57,7 @@ import { beginCast, tickCasting, type CastEvents, type CastState, type CastingSt
 import { resolveCastTargets } from './castResolve.js';
 import type { DrStore } from './dr.js';
 import { settleDeaths, type DeathSettlement } from './death.js';
-import { resolveEffects, type CombatEvent } from './effects/index.js';
+import { resolveEffects, useTrinket, type CombatEvent } from './effects/index.js';
 import { tickGround, type GroundStore } from './groundArea.js';
 import {
   tickArsenal, tickPickups,
@@ -83,6 +85,13 @@ import { getEntity, listEntities, type World } from './world.js';
 // ════════════════════════════════════════════════════════════════
 //  依赖
 // ════════════════════════════════════════════════════════════════
+
+/**
+ * 8.3 战斗意志的冷却记账键（技术债总账 W8）。
+ * ★ 走 `cooldowns` 而不是新开字段：它随 self 快照的 cooldowns 一起下发，
+ *   客户端的冷却预检与显示零协议改动；敌方看不到（cooldowns 是 self-only）。
+ */
+export const TRINKET_COOLDOWN_KEY = asSkillId('trinket');
 
 /** 一次技能请求的意图。★ 只有意图，没有结果 —— 与网络协议同源 */
 export interface CastIntent {
@@ -148,6 +157,14 @@ export interface TickDeps {
    *   而 A2 的教训正是「第二个出口会静默地少做一半事」。
    */
   consumableRequests?: ReadonlyMap<EntityId, number>;
+  /**
+   * 本 tick 要使用「战斗意志」的实体（8.3 通用解控，技术债总账 W8）。
+   * ★ `useTrinket()` 从 M9 写好就零调用方 —— R 键、协议消息、服务器的
+   *   诚实拒绝分支都在等这一步。结算只有 tick 一个出口（与技能/消耗品
+   *   同规矩）。冷却记在 `cooldowns` 的 `TRINKET_COOLDOWN_KEY` 上 ——
+   *   它随 self 快照的 cooldowns 下发，客户端因此能显示/预检冷却。
+   */
+  trinketRequests?: ReadonlySet<EntityId>;
   /**
    * 本 tick 要弃权判死的实体（11.5「主动退出立即按淘汰处理，**不能通过
    * 退出规避死亡统计**」；超时淘汰同路）。
@@ -377,6 +394,28 @@ export const tickWorld = (
     if (def.cooldown > 0) user.cooldowns.set(def.id as never, deps.world.time + def.cooldown);
     result.consumables.push({ entityId: id, consumableId });
     sinks.onConsumable?.(id, def);
+  }
+
+  // ── 1c. 通用解控「战斗意志」（8.3，技术债总账 W8）────────────
+  /**
+   * ★ **刻意不查任何控制状态** —— 8.3「默认允许在昏迷中使用」，
+   *   解控就是为昏迷造的；这正是它与技能请求（被昏迷/沉默挡）的本质区别。
+   * ★ **按下即进冷却，无论解没解掉**：只有命中才进冷却的话，R 连点宏
+   *   等于「自动解掉第一个可解控制」，「什么时候交解控」这层博弈就没了 ——
+   *   与 7.5 假读条骗打断同属本作要保的决策深度。误按的代价由客户端的
+   *   冷却预检挡第一层（它读 self 快照的 cooldowns，见 TRINKET_COOLDOWN_KEY）。
+   */
+  for (const id of deps.trinketRequests ?? []) {
+    const e = getEntity(deps.world, id);
+    if (!e || !e.alive) continue;
+    if (deps.world.time < (e.cooldowns.get(TRINKET_COOLDOWN_KEY) ?? 0)) continue;
+    e.cooldowns.set(TRINKET_COOLDOWN_KEY, deps.world.time + PVP_TRINKET.COOLDOWN);
+    const evs: CombatEvent[] = [];
+    useTrinket({ world: deps.world, auras: deps.auras, dr: deps.dr }, e, evs);
+    if (evs.length > 0) {
+      result.events.push(...evs);
+      sinks.onEffects?.(evs);
+    }
   }
 
   // ── 2. movement ─────────────────────────────────────────────

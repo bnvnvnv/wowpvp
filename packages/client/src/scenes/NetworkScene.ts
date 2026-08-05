@@ -30,6 +30,8 @@ import {
   Targeting,
   createMovementState,
   getSkill,
+  TRINKET_COOLDOWN_KEY,
+  TargetFilter,
   loadoutViewFromSnapshot,
   needsGroundPlacement,
   resolveGroundPlacement,
@@ -939,6 +941,20 @@ export class NetworkScene {
     }
     // W9：设置面板
     if (input.pressed.has(Action.OpenSettings)) this.settings.toggle();
+    /**
+     * W8：R 通用解控（8.3）。冷却预检读 **self 快照的 cooldowns**（trinket 键
+     * 随快照下发，敌方看不到）—— 只为挡误按；权威判定在服务器 tick 第 1c 步。
+     * 昏迷/恐惧中照发：8.3「默认允许在昏迷中使用」，解控就是为昏迷造的。
+     */
+    if (input.pressed.has(Action.Trinket)) {
+      const me = this.lastEntities.find((e) => e.id === this.selfId);
+      const ready = me?.cooldowns?.[TRINKET_COOLDOWN_KEY as string] ?? 0;
+      if (this.serverTime < ready) {
+        this.view.push(`战斗意志冷却中（还剩 ${Math.ceil(ready - this.serverTime)} 秒）`, 'fail');
+      } else {
+        this.conn.send({ t: 'UseTrinket' });
+      }
+    }
     if (input.pressed.has(Action.ToggleMute)) {
       console.info(`[音频] ${audio.toggleMute() ? '已静音' : '已取消静音'}`);
     }
@@ -1127,10 +1143,19 @@ export class NetworkScene {
       this.conn.send({ t: 'CastRequest', skillId: skill.id, facing: this.characterYaw });
       return;
     }
+    /**
+     * 5.6 / W8：按住 Alt 自我施法 —— 只对「可作用己方」的技能改写目标
+     * （对敌技能不改，免得把火球按给自己吃一发拒绝）。服务器照常复核。
+     */
+    const selfCast = this.pendingInput?.selfCastHeld === true
+      && this.selfId !== null
+      && (skill.targetFilter === TargetFilter.Ally || skill.targetFilter === TargetFilter.Any);
     this.conn.send({
       t: 'CastRequest',
       skillId: skill.id,
-      ...(this.currentTargetId !== undefined ? { targetId: this.currentTargetId } : {}),
+      ...(selfCast
+        ? { targetId: this.selfId as never }
+        : this.currentTargetId !== undefined ? { targetId: this.currentTargetId } : {}),
     });
   }
 

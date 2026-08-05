@@ -14,6 +14,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 
 import {
+  TRINKET_COOLDOWN_KEY,
+  applyAura,
   asClassId,
   asWeaponId,
   encodeClientMessage,
@@ -317,24 +319,37 @@ describe('A3：两个真客户端从房间跑到快照', () => {
   });
 
   /**
-   * ★★ 与上一条成对：**没有规则的东西仍然要诚实拒绝**，不静默丢弃。
-   *   解控饰品的规则写在 `effects/combat.ts` 里，但它需要一个 EffectContext ——
-   *   也就是说它是效果结算，而结算只有 tickWorld 一个出口。接它要先在 tick 里
-   *   加一步，那是显眼的改动，不该在路由层偷做。
+   * ★★ W8（技术债总账）：UseTrinket 已接进 tick 第 1c 步 —— 不再被拒绝。
+   *   ⚠️ 这条测试原本断言「被诚实拒绝」（当时 tick 里没有那一步）——
+   *      接线之后它红了，而红得对：改的是产品行为，测试就该跟着改
+   *      （与上面 UseConsumable 那条同一个先例）。
+   *   现在验整条链：白盒给红方挂一个可解昏迷 → 发 UseTrinket →
+   *   光环被解除、客户端收到 reason='trinket' 的 AuraRemoved、冷却已记账。
    */
-  it('★★ UseTrinket 仍被诚实拒绝，且理由说明为什么', async () => {
+  it('★★ W8：UseTrinket 走通 —— 昏迷被解、收到 trinket 事由、冷却记账', async () => {
     const red = await TestClient.connect(server.port);
     const blue = await TestClient.connect(server.port);
     await readyUp(red, 'r9', '红方', 'red', 'mage');
     await readyUp(blue, 'r9', '蓝方', 'blue', 'warrior');
-    await red.waitFor('MatchStart');
+    const start = await red.waitFor('MatchStart');
+
+    const match = server.rooms.matchOf('r9')!;
+    const redE = match.world.entities.get(start.you)!;
+    applyAura(match.auras, redE, {
+      id: 'test.stun', name: '测试昏迷', kind: 'debuff', duration: 30,
+      dispelType: 'magic', flags: { stunned: true },
+      clearableByTrinket: true, drCategory: 'stun',
+    } as never, redE.id, match.world.time);
 
     red.received.length = 0;
     red.send({ t: 'UseTrinket' });
-    const rejected = await red.waitFor('Rejected');
-    expect(rejected.what).toBe('UseTrinket');
-    expect(rejected.reason.length, '拒绝要说明原因，不能是空话').toBeGreaterThan(0);
-    expect(red.open).toBe(true);
+
+    const removed = await red.waitFor('AuraRemoved');
+    expect(removed.auraId).toBe('test.stun');
+    expect(removed.reason, '事由必须是 trinket，不是被兜底成 expired').toBe('trinket');
+    // 8.3 冷却 90 秒已记在保留键上（随 self 快照下发，客户端预检读它）
+    expect(redE.cooldowns.get(TRINKET_COOLDOWN_KEY) ?? 0).toBeGreaterThan(match.world.time);
+    expect(red.received.filter((m) => m.t === 'Rejected')).toEqual([]);
 
     red.close();
     blue.close();
