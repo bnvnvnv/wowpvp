@@ -40,7 +40,8 @@ import { skillIconHtml } from '../hud/skillIcon.js';
 import { Connection } from '../net/Connection.js';
 import { renderMatchSummary, type MatchSummaryData } from '../hud/MatchSummary.js';
 import { NetworkScene } from '../scenes/NetworkScene.js';
-import { clampUiScale, loadAccessibility } from '../settings/accessibility.js';
+import { clampUiScale, loadAccessibility, saveAccessibility } from '../settings/accessibility.js';
+import { SettingsPanel } from '../settings/SettingsPanel.js';
 import { artEnabled } from '../settings/artMode.js';
 import { ClassPreview } from './ClassPreview.js';
 import {
@@ -111,6 +112,8 @@ export class LobbyShell {
   private damageSeen = 0;
 
   private root!: HTMLElement;
+  /** W9：设置面板。懒建 —— 标题页第一次点「设置」才构造 */
+  private settingsPanel?: SettingsPanel;
   private toastTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
@@ -185,6 +188,9 @@ export class LobbyShell {
           </div>
           <div class="lb-row">
             <button class="lb-btn lb-ghost" data-action="practice">试验场（单机练习）</button>
+          </div>
+          <div class="lb-row">
+            <button class="lb-btn lb-ghost" data-action="settings">设置（音量 / 无障碍 / 键位）</button>
           </div>
           <p class="lb-fine">对局需要另一位玩家：创建房间后把房间码或链接发给朋友。</p>
         </div>
@@ -402,6 +408,21 @@ export class LobbyShell {
       case 'tutorial':
         // M15：同一个试验场，多一个 tutorial=on —— 教学是试验场上的旁听层
         location.href = `${location.pathname}?tutorial=on`;
+        break;
+      case 'settings':
+        /**
+         * W9（技术债总账）：设置在进对局**之前**就该可达 —— 音量与无障碍
+         * 是「第一局开打前」就想调的东西。大厅没有场景，无障碍钩子只做
+         * 「存盘 + 应用缩放」；其余项由进入对局的场景在构造时读盘生效。
+         */
+        this.settingsPanel ??= new SettingsPanel(this.root, {
+          getAccessibility: () => loadAccessibility(globalThis.localStorage),
+          setAccessibility: (next) => {
+            saveAccessibility(globalThis.localStorage, next);
+            this.root.style.setProperty('--ui-scale', String(clampUiScale(next.uiScale)));
+          },
+        });
+        this.settingsPanel.toggle();
         break;
       case 'team':
         this.conn.send({ t: 'SelectTeam', team: (btn?.dataset['team'] ?? 'spectator') as 'red' | 'blue' | 'spectator' });

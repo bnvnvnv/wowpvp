@@ -244,6 +244,29 @@ try {
     check('13', '★ 联网小地图在画：中心是 blip 而非空白/底盘（W2 接线）',
       minimap.found && minimap.a > 200 && minimap.r > 200,
       `found=${minimap.found} rgba=(${minimap.r},${minimap.g},${minimap.b},${minimap.a})`);
+
+    /**
+     * ★ W9（技术债总账）：设置面板。此前九项无障碍里六项在联网对局
+     *   **完全无法触达**（F3/F4 只在试验场响应）、音量只有 M 全静音。
+     *   判据走一个完整往返：F10 开面板 → 关掉伤害数字 → localStorage
+     *   落盘为 false → 再点回来 → 落盘为 true → F10 关面板。
+     */
+    await pageA.keyboard.press('F10');
+    await waitStatus(pageA, 'A 设置面板打开', 'st.net && st.net.settingsOpen === true', 4000);
+    await pageA.click('#settings-panel [data-acc-toggle="damageNumbers"]');
+    const savedOff = await pageA.evaluate(
+      `JSON.parse(localStorage.getItem('wowpvp.accessibility.v1') || '{}').damageNumbers`,
+    );
+    await pageA.click('#settings-panel [data-acc-toggle="damageNumbers"]');
+    const savedOn = await pageA.evaluate(
+      `JSON.parse(localStorage.getItem('wowpvp.accessibility.v1') || '{}').damageNumbers`,
+    );
+    await pageA.keyboard.press('F10');
+    const closed = await waitStatus(pageA, 'A 设置面板关闭', 'st.net && st.net.settingsOpen === false', 4000);
+    check('16', '★ 联网对局内设置面板：开 → 改动落盘（false→true 往返）→ 关（W9）',
+      savedOff === false && savedOn === true
+        && (closed['net'] as { settingsOpen?: boolean } | null)?.settingsOpen === false,
+      `落盘往返=${String(savedOff)}→${String(savedOn)}`);
   }
 
   // ── 4b：断线横幅与重连闭环（W6，技术债总账）─────────────────

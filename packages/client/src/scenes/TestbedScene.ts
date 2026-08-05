@@ -34,6 +34,7 @@ import { CharacterView } from '../entity/CharacterView.js';
 import { ModelLibrary } from '../entity/ModelLibrary.js';
 import { CombatHud } from '../hud/CombatHud.js';
 import { partyViewOf } from '../hud/PartyFrame.js';
+import { SettingsPanel } from '../settings/SettingsPanel.js';
 import { FAIL_TEXT } from '../combat/CombatDirector.js';
 import { Action, InputManager, type FrameInput } from '../input/InputManager.js';
 import { DecorRenderer } from '../render/DecorRenderer.js';
@@ -104,6 +105,8 @@ export class TestbedScene {
   /** M2：战斗模拟与 HUD */
   private readonly combat: CombatDirector;
   private readonly hud: CombatHud;
+  /** W9：设置面板（F10）*/
+  private readonly settings: SettingsPanel;
   /** 场上其他战斗实体的可视化 */
   private readonly dummyViews = new Map<number, CharacterView>();
   /** M12：假人的动作状态机（由位置差分驱动，与联网场景的远端角色同一思路）*/
@@ -364,6 +367,22 @@ export class TestbedScene {
     this.hud = new CombatHud(canvas.parentElement ?? document.body);
     // 17.2：恢复上次的可访问性设置。★ 损坏的设置会被 normalize 回落到默认值
     this.setAccessibility(loadAccessibility(globalThis.localStorage));
+    /**
+     * W9（技术债总账）：设置面板 —— F10。面板不持状态：无障碍走本场景的
+     * `setAccessibility()` 唯一入口，画质与 F2 走同一条应用链。
+     */
+    this.settings = new SettingsPanel(canvas.parentElement ?? document.body, {
+      getAccessibility: () => this.access,
+      setAccessibility: (next) => this.setAccessibility(next),
+      getQuality: () => this.quality.current,
+      setQuality: (tier) => {
+        this.quality.set(tier);
+        this.quality.applyToLight(this.sun);
+        if (this.art) this.env.apply(tier);
+        this.decorRenderer?.applyQuality(tier);
+      },
+      bindings: () => this.input.getBindings(),
+    });
     // M12：玩家模型（法师）。setClass 在 combat 建好后才调得了 —— 字段初始化时职业未知
     // ★ `?art=off` 时 ModelLibrary 没 init，setClass 会安静地无事发生
     this.view.setClass(this.combat.player.classId as string);
@@ -923,6 +942,8 @@ export class TestbedScene {
     }
 
     // ── M9 / 17.2 可访问性 ───────────────────────────────────
+    // W9：设置面板
+    if (input.pressed.has(Action.OpenSettings)) this.settings.toggle();
     if (input.pressed.has(Action.CycleColorblind)) {
       const modes = Object.values(ColorblindMode);
       const next = modes[(modes.indexOf(this.access.colorblind) + 1) % modes.length]!;

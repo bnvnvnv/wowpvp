@@ -71,6 +71,8 @@ export const Action = {
   ToggleMute: 'toggleMute',
   /** 速赢清单：对局中记分板（Tab 已被 5.3 选目标占用，用 O）*/
   ToggleScoreboard: 'toggleScoreboard',
+  /** W9（技术债总账）：设置面板。音量/画质/无障碍此前只有快捷键盲切 */
+  OpenSettings: 'openSettings',
 } as const;
 export type Action = (typeof Action)[keyof typeof Action];
 
@@ -113,6 +115,7 @@ export const DEFAULT_BINDINGS: Readonly<Record<Action, string>> = {
   [Action.ToggleCombatMode]: 'KeyK',
   [Action.ToggleMute]: 'KeyM',
   [Action.ToggleScoreboard]: 'KeyO',
+  [Action.OpenSettings]: 'F10',
 };
 
 /** 角色转向速度，弧度/秒。A/D 未按右键时用它转身 */
@@ -177,8 +180,8 @@ export class InputManager {
 
   private attach(): void {
     const onKeyDown = (e: KeyboardEvent) => {
-      // Tab 默认会切换焦点，必须阻止
-      if (['Tab', 'Space', 'F1', 'F2'].includes(e.code)) e.preventDefault();
+      // Tab 默认会切换焦点，必须阻止；F10 会聚焦浏览器菜单栏（W9 设置键）
+      if (['Tab', 'Space', 'F1', 'F2', 'F10'].includes(e.code)) e.preventDefault();
       if (this.down.has(e.code)) return; // 忽略系统的按键重复
       this.down.add(e.code);
       for (const a of Object.values(Action)) {

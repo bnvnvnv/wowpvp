@@ -75,6 +75,7 @@ import { CombatHud } from '../hud/CombatHud.js';
 import { partyViewFromSnapshot } from '../hud/PartyFrame.js';
 import type { MinimapBlip } from '../hud/ModeHud.js';
 import { nextSpectateTarget } from '../spectate/SpectateController.js';
+import { SettingsPanel } from '../settings/SettingsPanel.js';
 import { SnapshotCombatView, castStateFromStarted } from '../net/SnapshotCombatView.js';
 import { audio } from '../audio/AudioManager.js';
 import { FAIL_TEXT } from '../combat/CombatDirector.js';
@@ -161,6 +162,8 @@ export interface NetStatus {
   reconnecting: boolean;
   /** W6：指令往返延迟（毫秒，EMA 平滑；未测得为 null）*/
   rttMs: number | null;
+  /** W9：设置面板当前是否打开 */
+  settingsOpen: boolean;
   /**
    * 最近 0.5 秒的平均帧率。
    *
@@ -237,6 +240,8 @@ export class NetworkScene {
    */
   private readonly connBanner: HTMLElement;
   private readonly rttLabel: HTMLElement;
+  /** W9：设置面板（音量/画质/无障碍第一次在联网对局可达）*/
+  private readonly settings: SettingsPanel;
   /** 指令往返延迟的平滑值（EMA）。★ 含服务器 50ms tick 批处理，如实不减 */
   private rttMs: number | null = null;
   /** Input seq → 发出时刻。快照的 ackSeq 回来时配对算 RTT */
@@ -384,6 +389,25 @@ export class NetworkScene {
       pointerEvents: 'none', zIndex: '20', opacity: '.8',
     } as Partial<CSSStyleDeclaration>);
     (canvas.parentElement ?? document.body).appendChild(this.rttLabel);
+
+    /**
+     * W9（技术债总账）：设置面板 —— F10。此前 F3/F4 只在试验场响应，
+     * 九项无障碍里六项在联网对局**完全无法触达**；音量只有 M 全静音。
+     * ★ 面板不持状态：无障碍走本场景的 `setAccessibility()` 唯一入口，
+     *   画质与 F2 走**同一条**应用链（漏一环就是「面板改了没生效」）。
+     */
+    this.settings = new SettingsPanel(canvas.parentElement ?? document.body, {
+      getAccessibility: () => this.access,
+      setAccessibility: (next) => this.setAccessibility(next),
+      getQuality: () => this.quality.current,
+      setQuality: (tier) => {
+        this.quality.set(tier);
+        this.quality.applyToLight(this.sun);
+        if (this.art) this.env.apply(tier);
+        this.decorRenderer?.applyQuality(tier);
+      },
+      bindings: () => this.input.getBindings(),
+    });
     /**
      * 连杀升调：同一个音效按连杀数提速 —— 「升调」用 `rate` 而不是换音效，
      * 因为素材里**没有**一组连杀音（盘里只有 ui_arena_loss，连 win 都没有）。
@@ -533,6 +557,8 @@ export class NetworkScene {
       // W6：断线横幅与指令往返延迟
       reconnecting: this.connBanner.style.display !== 'none',
       rttMs: this.rttMs === null ? null : Math.round(this.rttMs),
+      // W9：设置面板
+      settingsOpen: this.settings.visible,
       fps: this.loop.fps,
     };
   }
@@ -911,6 +937,8 @@ export class NetworkScene {
       if (this.art) this.env.apply(tier);
       this.decorRenderer?.applyQuality(tier);
     }
+    // W9：设置面板
+    if (input.pressed.has(Action.OpenSettings)) this.settings.toggle();
     if (input.pressed.has(Action.ToggleMute)) {
       console.info(`[音频] ${audio.toggleMute() ? '已静音' : '已取消静音'}`);
     }
