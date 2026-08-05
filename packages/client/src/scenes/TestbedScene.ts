@@ -32,7 +32,6 @@ import { TutorialDirector } from '../tutorial/TutorialDirector.js';
 import { TutorialHud } from '../tutorial/TutorialHud.js';
 import { AnimationController } from '../entity/AnimationController.js';
 import { CharacterView } from '../entity/CharacterView.js';
-import { ModelLibrary } from '../entity/ModelLibrary.js';
 import { CombatHud } from '../hud/CombatHud.js';
 import { partyViewOf } from '../hud/PartyFrame.js';
 import { SettingsPanel } from '../settings/SettingsPanel.js';
@@ -49,8 +48,8 @@ import { AimingController, type AimInput } from '../targeting/AimingController.j
 import { DirectionIndicator } from '../targeting/DirectionIndicator.js';
 import { GroundIndicator, screenToGround } from '../targeting/GroundIndicator.js';
 import { QualityController } from '../render/QualityController.js';
-import { QualityTier } from '../render/quality.js';
 import { Environment } from '../render/Environment.js';
+import { SceneShell } from './SceneShell.js';
 import {
   ColorblindMode,
   DEFAULT_ACCESSIBILITY,
@@ -60,7 +59,6 @@ import {
   type AccessibilitySettings,
 } from '../settings/accessibility.js';
 import { SpectateController } from '../spectate/SpectateController.js';
-import { artEnabled } from '../settings/artMode.js';
 import { audio } from '../audio/AudioManager.js';
 import { playCastActivity, playCombatEvent, type CombatAudioDeps } from '../audio/combatAudio.js';
 import { StatusMarkers } from '../vfx/StatusMarkers.js';
@@ -95,10 +93,12 @@ export interface DebugInfo {
 }
 
 export class TestbedScene {
-  private readonly renderer: THREE.WebGLRenderer;
-  private readonly scene = new THREE.Scene();
-  private readonly cam: CameraController;
-  private readonly input: InputManager;
+  /** G4：renderer/画质/环境/镜头/输入/resize 都在壳里，场景只经 getter 转发 */
+  private readonly shell: SceneShell;
+  private get renderer(): THREE.WebGLRenderer { return this.shell.renderer; }
+  private get scene(): THREE.Scene { return this.shell.scene; }
+  private get cam(): CameraController { return this.shell.cam; }
+  private get input(): InputManager { return this.shell.input; }
   private readonly loop: GameLoop;
   private readonly mapRenderer: MapRenderer;
   private readonly view = new CharacterView();
@@ -121,13 +121,13 @@ export class TestbedScene {
   /** M8：控制状态与护盾标记，每个实体一份 */
   private readonly statusMarkers = new Map<number, StatusMarkers>();
   /** M8：三档画质（F2 循环）*/
-  private readonly quality: QualityController;
+  private get quality(): QualityController { return this.shell.quality; }
   /** M12：HDR 环境光与天空。★ 纯加法，见 Environment.ts 文件头 */
-  private readonly env: Environment;
+  private get env(): Environment { return this.shell.env; }
   /** M12：地图装饰摆设（`?art=off` 或数据缺失时为 undefined）*/
   private decorRenderer: DecorRenderer | undefined;
   /** M12：是否加载外部美术素材（`?art=off` 关闭）。见 settings/artMode.ts */
-  private readonly art = artEnabled();
+  private get art(): boolean { return this.shell.art; }
   /** M9 / 17.2：可访问性设置。从 localStorage 恢复，切换后立即持久化 */
   private access: AccessibilitySettings = { ...DEFAULT_ACCESSIBILITY };
   /** M9 / 11.4：观战。★ 只能跟随己方存活队友，没有自由镜头状态 */
@@ -187,30 +187,15 @@ export class TestbedScene {
     this.musicDir = new MusicDirector(ambientTrackFor(stage.map.id as string));
     this.characterYaw = stage.spawn.yaw;
     this.prevPosition = { ...stage.spawn.position };
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    // M12：HDR 环境是线性高动态的，不做色调映射会大面积过曝成白板。
-    // ★ 与素材同开同关 —— ACES 会整体压暗，`art=off` 时开着就不再是 M11 的画面了
-    if (this.art) {
-      this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      this.renderer.toneMappingExposure = 1.0;
-    }
-    // ★ 17.1 三档画质。默认最高，F2 循环 —— 验收 #48 要逐档人工检查
-    this.quality = new QualityController(this.renderer, QualityTier.High);
-    // M12：模型库（素材缺失或 ?art=off 时所有角色保留程序化胶囊体）
-    if (this.art) ModelLibrary.init(this.renderer);
-
-    this.scene.background = new THREE.Color(0x232a35);
-    // 雾要推到地图边界之外：70×70 的场地对角线约 99 米，太近的雾会让远端墙体糊掉，
+    // G4：renderer/画质/环境/镜头/输入/resize 全在壳里（SceneShell 文件头）。
+    // 雾在 70×70 场地（对角线约 99 米）边界之外 —— 太近的雾会让远端墙体糊掉，
     // 而「看清远处几何」正是这个试验场存在的意义
-    this.scene.fog = new THREE.Fog(0x232a35, 90, 160);
+    this.shell = new SceneShell(canvas);
 
     this.obstacles = stage.map.geometry;
     this.mapRenderer = new MapRenderer(stage.map, this.art);
     this.scene.add(this.mapRenderer.group);
     // M12：环境与地面材质。两者都是「加法」，失败即回落到 M11 的画面
-    this.env = new Environment(this.renderer, this.scene);
     if (this.art) {
       // W15：昼夜按地图配（试验场=day 红线不动；教学场=dawn）
       this.env.apply(this.quality.current, { preset: presetOf(this.stage.map.envPreset) });
@@ -226,8 +211,6 @@ export class TestbedScene {
     this.addGrid();
     this.addLights();
 
-    this.cam = new CameraController(canvas.clientWidth / canvas.clientHeight);
-    this.input = new InputManager(canvas);
     this.move = createMovementState(stage.spawn.position, stage.spawn.yaw);
 
     // M2 战斗 + M3 瞄准。★ 假人布置由舞台决定（见 stage 字段的注释）
@@ -381,12 +364,7 @@ export class TestbedScene {
       getAccessibility: () => this.access,
       setAccessibility: (next) => this.setAccessibility(next),
       getQuality: () => this.quality.current,
-      setQuality: (tier) => {
-        this.quality.set(tier);
-        this.quality.applyToLight(this.sun);
-        if (this.art) this.env.apply(tier);
-        this.decorRenderer?.applyQuality(tier);
-      },
+      setQuality: (tier) => this.shell.setQualityTier(tier, this.sun, this.decorRenderer),
       bindings: () => this.input.getBindings(),
     });
     // M12：玩家模型（法师）。setClass 在 combat 建好后才调得了 —— 字段初始化时职业未知
@@ -422,9 +400,6 @@ export class TestbedScene {
       // 顿帧：只缩放渲染 dt。模拟步/输入采样在 GameLoop 里恒用真实 dt
       (realDt) => this.hitStop.scale(realDt),
     );
-
-    window.addEventListener('resize', this.onResize);
-    this.onResize();
   }
 
   start(): void {
@@ -533,21 +508,14 @@ export class TestbedScene {
 
   dispose(): void {
     this.loop.stop();
-    this.input.dispose();
-    window.removeEventListener('resize', this.onResize);
     this.canvas.removeEventListener('mousedown', this.onCanvasMouseDown);
     this.canvas.removeEventListener('mousemove', this.onCanvasMouseMove);
-    this.env.dispose();
     this.spellVfx?.dispose();
-    this.renderer.dispose();
+    this.shell.dispose();
   }
 
   private onCanvasMouseMove = (ev: MouseEvent): void => {
-    const rect = this.canvas.getBoundingClientRect();
-    this.ndc.set(
-      ((ev.clientX - rect.left) / rect.width) * 2 - 1,
-      -((ev.clientY - rect.top) / rect.height) * 2 + 1,
-    );
+    this.shell.ndcFromMouse(ev, this.ndc);
     this.updateHoverCursor();
   };
 
@@ -591,11 +559,7 @@ export class TestbedScene {
 
     // 瞄准期间左键只用于确认落点，不改变目标
     if (ev.button !== 0 || this.aim.isAiming) return;
-    const rect = this.canvas.getBoundingClientRect();
-    const ndc = new THREE.Vector2(
-      ((ev.clientX - rect.left) / rect.width) * 2 - 1,
-      -((ev.clientY - rect.top) / rect.height) * 2 + 1,
-    );
+    const ndc = this.shell.ndcFromMouse(ev, new THREE.Vector2());
     const ray = new THREE.Raycaster();
     ray.setFromCamera(ndc, this.cam.camera);
 
@@ -607,13 +571,6 @@ export class TestbedScene {
       }
     }
     if (best) this.combat.selectById(best.id);
-  };
-
-  private onResize = (): void => {
-    const w = this.canvas.clientWidth;
-    const h = this.canvas.clientHeight;
-    this.renderer.setSize(w, h, false);
-    this.cam.setAspect(w / h);
   };
 
   /**
@@ -940,15 +897,8 @@ export class TestbedScene {
         : '实战模式已关闭：假人回到站桩');
     }
     if (input.pressed.has(Action.CycleQuality)) {
-      const tier = this.quality.cycle();
-      this.quality.applyToLight(this.sun);
-      // M12：低画质卸掉 IBL 与天空（14.4「可以减少非关键光照」）。
-      // ★ 基础三盏灯不受影响 —— 关键元素在最低画质下仍然清楚可见（#48）
-      if (this.art) this.env.apply(tier);
-      // 装饰摆设按「环境叶片」档裁剪（14.4）
-      this.decorRenderer?.applyQuality(tier);
-      // ★ 注意这里**没有**任何「低画质就隐藏 X」的分支 ——
-      //   关键元素的可见性根本不经过画质档位，见 render/quality.ts
+      // 14.4 的档位取舍与「不藏关键元素」纪律见 SceneShell.setQualityTier 注释
+      const tier = this.shell.cycleQualityTier(this.sun, this.decorRenderer);
       console.info(`[画质] ${tier}`);
     }
 

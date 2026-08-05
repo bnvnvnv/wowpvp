@@ -62,13 +62,12 @@ import { KillFeed } from '../hud/KillFeed.js';
 import { CameraController } from '../camera/CameraController.js';
 import { AnimationController } from '../entity/AnimationController.js';
 import { CharacterView } from '../entity/CharacterView.js';
-import { ModelLibrary } from '../entity/ModelLibrary.js';
 import { Action, InputManager, type FrameInput } from '../input/InputManager.js';
 import { DecorRenderer } from '../render/DecorRenderer.js';
 import { GameLoop } from '../render/GameLoop.js';
 import { MapRenderer } from '../render/MapRenderer.js';
 import { QualityController } from '../render/QualityController.js';
-import { QualityTier } from '../render/quality.js';
+import { SceneShell } from './SceneShell.js';
 import { Environment } from '../render/Environment.js';
 import { Connection, type NetLink } from '../net/Connection.js';
 import { Interpolator } from '../net/Interpolator.js';
@@ -99,7 +98,6 @@ import {
   saveAccessibility,
   type AccessibilitySettings,
 } from '../settings/accessibility.js';
-import { artEnabled } from '../settings/artMode.js';
 import { HitStop } from '../render/HitStop.js';
 import { HitFeedback } from '../feedback/HitFeedback.js';
 
@@ -182,16 +180,18 @@ export interface NetStatus {
 }
 
 export class NetworkScene {
-  private readonly renderer: THREE.WebGLRenderer;
-  private readonly scene = new THREE.Scene();
-  private readonly cam: CameraController;
-  private readonly input: InputManager;
+  /** G4：renderer/画质/环境/镜头/输入/resize 都在壳里，场景只经 getter 转发 */
+  private readonly shell: SceneShell;
+  private get renderer(): THREE.WebGLRenderer { return this.shell.renderer; }
+  private get scene(): THREE.Scene { return this.shell.scene; }
+  private get cam(): CameraController { return this.shell.cam; }
+  private get input(): InputManager { return this.shell.input; }
   private readonly loop: GameLoop;
-  private readonly quality: QualityController;
+  private get quality(): QualityController { return this.shell.quality; }
   /** M12：HDR 环境光与天空 */
-  private readonly env: Environment;
+  private get env(): Environment { return this.shell.env; }
   /** M12：是否加载外部美术素材（`?art=off` 关闭）。见 settings/artMode.ts */
-  private readonly art = artEnabled();
+  private get art(): boolean { return this.shell.art; }
   /** 收发用的连接（自建或大厅注入的，见 NetworkSceneOptions.link）*/
   private readonly conn: NetLink;
   /** 只有自建连接才由场景负责 connect/close；注入的归大厅管 */
@@ -297,22 +297,10 @@ export class NetworkScene {
     private readonly canvas: HTMLCanvasElement,
     private readonly opts: NetworkSceneOptions,
   ) {
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    // M12：HDR 环境是线性高动态的，不做色调映射会大面积过曝。
-    // ★ 与素材同开同关，理由同试验场
-    if (this.art) {
-      this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      this.renderer.toneMappingExposure = 1.0;
-    }
-    this.quality = new QualityController(this.renderer, QualityTier.High);
-    // M12：模型库（素材缺失或 ?art=off 时保留程序化胶囊体）
-    if (this.art) ModelLibrary.init(this.renderer);
+    // G4：renderer/画质/环境/镜头/输入/resize 全在壳里（SceneShell 文件头）
+    this.shell = new SceneShell(canvas);
     this.selfView.setClass(opts.classId);
 
-    this.scene.background = new THREE.Color(0x232a35);
-    this.scene.fog = new THREE.Fog(0x232a35, 90, 160);
     this.scene.add(this.selfView.group);
     this.scene.add(this.targetRing.group);
     // 5.5 瞄准指示器（关键 UI，不受 art 门禁）
@@ -331,12 +319,8 @@ export class NetworkScene {
     canvas.addEventListener('mousemove', this.onCanvasMouseMove);
     canvas.addEventListener('mousedown', this.onCanvasMouseDown);
     this.addLights();
-    // M12：环境光与天空。★ 纯加法，见 Environment.ts 文件头
-    this.env = new Environment(this.renderer, this.scene);
     if (this.art) this.env.apply(this.quality.current, { preset: 'day' });
 
-    this.cam = new CameraController(canvas.clientWidth / canvas.clientHeight);
-    this.input = new InputManager(canvas);
     this.hud = new CombatHud(canvas.parentElement ?? document.body);
     // 10.4 / 10.5 的交互 HUD。★ 与 CombatHud 同一个容器，继承 17.2 的界面缩放
     this.arsenalHud = new ArsenalHud(canvas.parentElement ?? document.body);
@@ -424,12 +408,7 @@ export class NetworkScene {
       getAccessibility: () => this.access,
       setAccessibility: (next) => this.setAccessibility(next),
       getQuality: () => this.quality.current,
-      setQuality: (tier) => {
-        this.quality.set(tier);
-        this.quality.applyToLight(this.sun);
-        if (this.art) this.env.apply(tier);
-        this.decorRenderer?.applyQuality(tier);
-      },
+      setQuality: (tier) => this.shell.setQualityTier(tier, this.sun, this.decorRenderer),
       bindings: () => this.input.getBindings(),
     });
     /**
@@ -504,8 +483,6 @@ export class NetworkScene {
       (realDt) => this.hitStop.scale(realDt),
     );
 
-    window.addEventListener('resize', this.onResize);
-    this.onResize();
   }
 
   start(): void {
@@ -530,21 +507,14 @@ export class NetworkScene {
   dispose(): void {
     this.loop.stop();
     this.ownConn?.close();
-    this.input.dispose();
-    window.removeEventListener('resize', this.onResize);
     this.canvas.removeEventListener('mousemove', this.onCanvasMouseMove);
     this.canvas.removeEventListener('mousedown', this.onCanvasMouseDown);
-    this.env.dispose();
     this.spellVfx?.dispose();
-    this.renderer.dispose();
+    this.shell.dispose();
   }
 
   private onCanvasMouseMove = (ev: MouseEvent): void => {
-    const rect = this.canvas.getBoundingClientRect();
-    this.ndc.set(
-      ((ev.clientX - rect.left) / rect.width) * 2 - 1,
-      -((ev.clientY - rect.top) / rect.height) * 2 + 1,
-    );
+    this.shell.ndcFromMouse(ev, this.ndc);
   };
 
   private onCanvasMouseDown = (ev: MouseEvent): void => {
@@ -965,10 +935,7 @@ export class NetworkScene {
     this.characterYaw += yawDelta;
     if (input.cameraReset) this.cam.resetBehind(this.characterYaw);
     if (input.pressed.has(Action.CycleQuality)) {
-      const tier = this.quality.cycle();
-      this.quality.applyToLight(this.sun);
-      if (this.art) this.env.apply(tier);
-      this.decorRenderer?.applyQuality(tier);
+      this.shell.cycleQualityTier(this.sun, this.decorRenderer);
     }
     // W9：设置面板
     if (input.pressed.has(Action.OpenSettings)) this.settings.toggle();
@@ -1837,13 +1804,6 @@ export class NetworkScene {
   }
 
   // ── 杂项 ──────────────────────────────────────────────────────
-
-  private onResize = (): void => {
-    const w = this.canvas.clientWidth;
-    const h = this.canvas.clientHeight;
-    this.renderer.setSize(w, h, false);
-    this.cam.setAspect(w / h);
-  };
 
   private addLights(): void {
     this.scene.add(new THREE.HemisphereLight(0x9fb4d0, 0x2b3140, 0.8));
