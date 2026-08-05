@@ -76,8 +76,8 @@
 |---|---|---|---|---|
 | W1 | **联网无队伍框**：`PartyFrame` 已构造、试验场在喂，`NetworkScene` 零调用 → 队友血量看不见，**治疗职业没法玩** | 投影收进 `PartyFrame.ts`（`partyViewOf`/`partyViewFromSnapshot` 共用一份 `partyMemberView`；控制优先级 `controlKindsOf` 顺带把目标框副本收拢）；`NetworkScene.renderParty()` 喂快照 | 极高感知 | ✅ 批次二 2.1（2026-08-04，双源一致性单测 + m13 #11 变异验证） |
 | W2 | **联网无小地图**：`Minimap` 零调用；`'supply'`/`'objective'` blip 类型无生产者（M16 已记的军械点图标属此） | `hud/Minimap.ts`（≈:31）；`hud/ModeHud.ts`（≈:175） | 战场态势不可知 | ⛔ |
-| W3 | **联网无模式 HUD**：`ModeHud.renderCtf` 全仓唯一调用点在试验场；`respawnIn`/`supplyRespawnIn`（12.6 复活波次倒计时）**从未被任何一边喂过** | `hud/Scoreboard.ts:7-11` 注释自陈；`hud/ModeHud.ts`（≈:39,56） | 比分/计时/旗帜/复活全不可见 | ⛔ |
-| W4 | **`ModeHud.renderArena()` 两个场景都零调用** → 8.5 战斗抑制百分比与「决胜阶段」**从未显示给任何玩家**；协议字段 `suddenDeathBlips` 客户端零消费 | `hud/ModeHud.ts`（≈:115-127）；`shared/src/net/visibility.ts`（≈:410） | 核心节奏机制不可见 | ⛔ |
+| W3 | **联网无模式 HUD**：`ModeHud.renderCtf` 全仓唯一调用点在试验场；`respawnIn`/`supplyRespawnIn`（12.6 复活波次倒计时）**从未被任何一边喂过** | 竞技场侧已由 2.2 覆盖（`renderModeHud` → `renderArena`）；**夺旗侧（renderCtf/respawnIn）随 W12 一起接** —— 现在联网进不了夺旗局，接了是死代码；`supplyRespawnIn` 待军械刷新数据下发口径拍板 | 比分/计时/旗帜/复活全不可见 | 🔧 竞技场半清（批次二 2.2）；余账挂 W12 |
+| W4 | **`ModeHud.renderArena()` 两个场景都零调用** → 8.5 战斗抑制百分比与「决胜阶段」**从未显示给任何玩家** | `NetworkScene.renderModeHud()` 喂快照 `match.dampening/suddenDeath`（M10 起就在每份快照里）；存活数按可见口径（与记分板同规矩，如实不编全知计数）。⚠️ `suddenDeathBlips` 的消费**挪到 W2**（小地图才是它的归宿） | 核心节奏机制不可见 | ✅ 批次二 2.2（2026-08-05，m13 #12 变异验证 + 15.4 否定式断言） |
 | W5 | **死亡后无去向 + 观战未接镜头**：无「你已阵亡」遮罩、无复活倒计时；`SpectateController` 规则/测试齐全但 V 键只 `console.info`，镜头从未切换（其 `:90` 注释指向一个不存在的死亡界面）。观战席玩家开局停在房间页（M13 边界）也归此 | `spectate/SpectateController.ts`（≈:90）；`TestbedScene.ts`（≈:942）；`NetworkScene.ts`（≈:631-653） | 「死后 20 秒」是最易流失时刻 | ⛔ |
 | W6 | **断线全程静默**：`NetworkScene` 自建连接的 `onClose` 是空实现；大厅只在放弃重试后 toast 一次；约 7.75s 退避重连零提示；全客户端无延迟/连接状态指示 | `NetworkScene.ts`（≈:357）；`lobby/LobbyShell.ts`（≈:126-129）；`net/Connection.ts` | 网络问题被误判成游戏 bug | ⛔ |
 | W7 | **键位事实上不可重绑**：`rebind()`/`getBindings()` 全仓零调用方、无持久化；技能栏 `<kbd>` 写死 1-8（接了重绑也会撒谎）。17.2 明文要求可重绑 | `input/InputManager.ts`（≈:156-163）；`hud/CombatHud.ts`（≈:411） | 无障碍 + 非 QWERTY 玩家被挡 | ⛔ |

@@ -206,6 +206,26 @@ try {
     check('11', '★ 联网队伍框显示己方成员（W1 接线）',
       party.visible && party.count === 1 && party.names.includes('阿红'),
       `visible=${party.visible} rows=${party.count} names=${JSON.stringify(party.names)}`);
+
+    /**
+     * ★ W3/W4（技术债总账）：15.4 竞技场模式 HUD 第一次被喂。
+     *   `renderArena()` 此前全仓库零调用 —— 战斗抑制与决胜阶段从未显示过。
+     *   同时钉 15.4 的否定式：竞技场面板**不显示任何旗帜信息**
+     *   （ArenaHudView 类型上没有旗帜字段，这里从渲染结果再验一遍）。
+     */
+    const modeHud = await pageA.evaluate(() => {
+      const el = document.querySelector('#mode-hud') as HTMLElement | null;
+      return {
+        visible: el !== null && el.style.display !== 'none',
+        mode: el?.dataset['mode'] ?? '',
+        text: el?.textContent ?? '',
+      };
+    });
+    check('12', '★ 联网竞技场模式 HUD：战斗抑制可见，且不含任何旗帜信息（W3/W4 + 15.4 否定式）',
+      modeHud.visible && modeHud.mode === 'arena'
+        && modeHud.text.includes('战斗抑制') && modeHud.text.includes('回合')
+        && !modeHud.text.includes('旗'),
+      `visible=${modeHud.visible} mode=${modeHud.mode} 含旗字=${modeHud.text.includes('旗')}`);
   }
 
   // ── 5：收掉这局 → MatchEnd → 双方回房间 → 再开一局 ──────────

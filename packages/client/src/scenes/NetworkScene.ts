@@ -1198,7 +1198,37 @@ export class NetworkScene {
     // ★ 与试验场同一个调用 —— 只是喂的 CombatView 实现不同
     this.hud.update(this.view, this.cam.camera, this.canvas, dt);
     this.renderParty();
+    this.renderModeHud();
     this.renderScoreboard();
+  }
+
+  /**
+   * 15.4 模式 HUD（技术债总账 W3/W4）。
+   *
+   * ★★ `renderArena()` 此前**全仓库零调用** —— 8.5 的战斗抑制百分比与
+   *   「⚡决胜阶段」从未显示给任何玩家：抑制在实打实地修正伤害，玩家只
+   *   觉得「后期怎么掉血变快」。数据（`match.dampening`/`suddenDeath`）
+   *   从 M10 起就在每份快照里，缺的只是这一口。
+   * ★ 存活人数按**可见口径**（与记分板同一条规矩）：潜行者不进快照也就
+   *   不计入 —— 如实按我所见，不编一个全知计数（精确计数要加协议字段，
+   *   独立的一笔账，不在这里顺手做）。
+   * ★ 夺旗面板刻意不在这里：联网夺旗整条线（大厅入口、旗帜 3D、renderCtf）
+   *   归 W12 一起做 —— 现在联网根本进不了夺旗局，接了也是死代码。
+   */
+  private renderModeHud(): void {
+    const m = this.lastMatch;
+    if (!m || m.flags !== undefined) return;
+    const alive = (team: number): number =>
+      this.lastEntities.filter((e) => (e.team as number) === team && e.alive).length;
+    this.hud.modeHud.renderArena({
+      aliveRed: alive(TEAM_RED as number),
+      aliveBlue: alive(TEAM_BLUE as number),
+      round: this.roundWins.red + this.roundWins.blue + 1,
+      scoreRed: this.roundWins.red,
+      scoreBlue: this.roundWins.blue,
+      dampening: m.dampening,
+      suddenDeath: m.suddenDeath,
+    });
   }
 
   /**
