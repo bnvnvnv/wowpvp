@@ -74,6 +74,7 @@ import { pickTabTargetFromSnapshot } from '../net/snapshotTargeting.js';
 import { CombatHud } from '../hud/CombatHud.js';
 import { partyViewFromSnapshot } from '../hud/PartyFrame.js';
 import type { MinimapBlip } from '../hud/ModeHud.js';
+import { nextSpectateTarget } from '../spectate/SpectateController.js';
 import { SnapshotCombatView, castStateFromStarted } from '../net/SnapshotCombatView.js';
 import { audio } from '../audio/AudioManager.js';
 import { FAIL_TEXT } from '../combat/CombatDirector.js';
@@ -152,6 +153,10 @@ export interface NetStatus {
    * 现在 M16d 补上了 —— 这两个数就是「补上了没有」的可执行证据。
    */
   shields: { visible: number; absorbs: number; breaks: number };
+  /** W5：死亡遮罩当前是否可见 */
+  deathOverlay: boolean;
+  /** W5：正在观战的实体 id；未观战为 null */
+  spectating: number | null;
   /**
    * 最近 0.5 秒的平均帧率。
    *
@@ -213,6 +218,14 @@ export class NetworkScene {
   private lastMatch: Snapshot['match'] | undefined;
   /** 竞技场回合比分。快照不带（只有 RoundEnd 事件），本地累计 */
   private readonly roundWins = { red: 0, blue: 0 };
+  /**
+   * W5（技术债总账）：死亡遮罩与观战。
+   * `spectatingId` 是**本地意图** —— 合法性由服务器复核（`spectatableFor`
+   * 只有一个实现处），猜错的代价只是一次被拒的请求。
+   */
+  private readonly deathOverlay: HTMLElement;
+  private readonly deathOverlaySub: HTMLElement;
+  private spectatingId: number | null = null;
   /**
    * 10.2 掉落物 / 10.4 军械点的表现与 HUD。
    * ★★ 在此之前联网客户端**看不到也碰不到**任何临时武装 —— 整个 M6 在
@@ -304,6 +317,29 @@ export class NetworkScene {
     this.killFeed = new KillFeed(canvas.parentElement ?? document.body);
     this.killFeed.nameOf = (id) =>
       this.lastEntities.find((e) => (e.id as number) === id)?.name;
+
+    /**
+     * W5：死亡遮罩。此前玩家死后对着一具尸体和一个还能拖的镜头，没有任何
+     * 「接下来会发生什么」的信息 —— SpectateController 那句「返回 undefined
+     * 表示应显示死亡界面」指着一个不存在的界面。
+     * ★ 样式内联、文案走 textContent（玩家名是不受信任输入，不进 innerHTML）。
+     */
+    this.deathOverlay = document.createElement('div');
+    this.deathOverlay.id = 'death-overlay';
+    Object.assign(this.deathOverlay.style, {
+      position: 'absolute', left: '50%', top: '34%', transform: 'translate(-50%,-50%)',
+      padding: '14px 26px', borderRadius: '10px',
+      background: 'rgba(12,10,14,.82)', border: '1px solid rgba(255,122,111,.4)',
+      color: '#f3e9e7', font: '600 15px system-ui, sans-serif', textAlign: 'center',
+      pointerEvents: 'none', display: 'none', zIndex: '30', lineHeight: '1.9',
+    } as Partial<CSSStyleDeclaration>);
+    const dTitle = document.createElement('div');
+    Object.assign(dTitle.style, { fontSize: '20px', letterSpacing: '.2em' });
+    dTitle.textContent = '你已阵亡';
+    this.deathOverlaySub = document.createElement('div');
+    Object.assign(this.deathOverlaySub.style, { opacity: '.75', fontWeight: '400' });
+    this.deathOverlay.append(dTitle, this.deathOverlaySub);
+    (canvas.parentElement ?? document.body).appendChild(this.deathOverlay);
     /**
      * 连杀升调：同一个音效按连杀数提速 —— 「升调」用 `rate` 而不是换音效，
      * 因为素材里**没有**一组连杀音（盘里只有 ui_arena_loss，连 win 都没有）。
@@ -447,6 +483,9 @@ export class NetworkScene {
         absorbs: this.feedback.shieldAbsorbsSeen,
         breaks: this.feedback.shieldBreaksSeen,
       },
+      // W5：死亡遮罩与观战状态（verify:m13 的判据入口）
+      deathOverlay: this.deathOverlay.style.display !== 'none',
+      spectating: this.spectatingId,
       fps: this.loop.fps,
     };
   }
@@ -850,6 +889,24 @@ export class NetworkScene {
       this.conn.send({ t: 'CancelCast' });
     }
 
+    /**
+     * W5：死亡观战（11.4）。活着按 V **无效** —— 活人跟随别人就是透视；
+     * 死后轮换己方存活队友并发 SpectateFollow（服务器用 `spectatableFor()`
+     * 复核，规则只有一个实现处）。1v1 没有队友 → 无候选，遮罩如实说。
+     */
+    if (input.pressed.has(Action.SpectateNext)) {
+      const meSnap = this.lastEntities.find((e) => e.id === this.selfId);
+      if (meSnap && !meSnap.alive) {
+        const next = nextSpectateTarget(
+          this.lastEntities, meSnap.id as number, meSnap.team, this.spectatingId,
+        );
+        if (next) {
+          this.spectatingId = next.id as number;
+          this.conn.send({ t: 'SpectateFollow', entityId: next.id });
+        }
+      }
+    }
+
     this.applyArsenalInput(input);
   }
 
@@ -1201,7 +1258,49 @@ export class NetworkScene {
     this.renderParty();
     this.renderModeHud();
     this.renderMinimap();
+    this.renderDeathState();
     this.renderScoreboard();
+  }
+
+  /**
+   * W5：死亡遮罩。竞技场死亡不复活（11.4），如实告知去向；
+   * 有存活队友则提示 V 观战。夺旗的复活倒计时随 W12 的联网夺旗线。
+   */
+  private renderDeathState(): void {
+    const me = this.lastEntities.find((e) => e.id === this.selfId);
+    if (!me || me.alive) {
+      if (this.deathOverlay.style.display !== 'none') this.deathOverlay.style.display = 'none';
+      /**
+       * 复活/回合重置：本地观战意图清零。⚠️ 服务器侧 `session.following`
+       * 不清（协议没有「取消跟随」，不为此加消息）—— 自己活着时服务器
+       * 会忽略它（broadcastSnapshots 只对死者启用跟随视角），无害。
+       */
+      this.spectatingId = null;
+      return;
+    }
+
+    // 被跟随者死了/离场 → 自动换下一个（与 SpectateController.resolve 同语义）
+    if (this.spectatingId !== null) {
+      const still = this.lastEntities.some(
+        (e) => (e.id as number) === this.spectatingId && e.alive && e.team === me.team,
+      );
+      if (!still) {
+        const next = nextSpectateTarget(this.lastEntities, me.id as number, me.team, this.spectatingId);
+        this.spectatingId = next ? (next.id as number) : null;
+        if (next) this.conn.send({ t: 'SpectateFollow', entityId: next.id });
+      }
+    }
+
+    const mates = this.lastEntities.filter((e) => e.id !== me.id && e.team === me.team && e.alive);
+    const watching = this.spectatingId !== null
+      ? this.lastEntities.find((e) => (e.id as number) === this.spectatingId)?.name
+      : undefined;
+    const hint = watching !== undefined
+      ? `正在观战 ${watching} · 按 V 切换`
+      : mates.length > 0 ? '按 V 观战队友' : '等待本回合结束';
+    const sub = `本回合已淘汰 · ${hint}`;
+    if (this.deathOverlaySub.textContent !== sub) this.deathOverlaySub.textContent = sub;
+    if (this.deathOverlay.style.display !== '') this.deathOverlay.style.display = '';
   }
 
   /**
@@ -1411,9 +1510,18 @@ export class NetworkScene {
     }
     this.selfView.update(dt);
 
+    /**
+     * W5：死亡观战 —— 镜头改看被跟随的队友（位置取 `lastRemotePos`，
+     * 与他在屏幕上的模型同源、已插值）。11.4 的边界由数据来源保证：
+     * `spectatingId` 只可能指向快照里的己方存活者，「飞到任意坐标」写不出来。
+     */
+    const meDead = this.lastEntities.some((e) => e.id === this.selfId && !e.alive);
+    const spectPos = meDead && this.spectatingId !== null
+      ? this.lastRemotePos.get(this.spectatingId)
+      : undefined;
     this.cam.update(
       dt,
-      { position: pos, yaw: this.characterYaw, grounded: s.grounded },
+      { position: spectPos ?? pos, yaw: this.characterYaw, grounded: s.grounded },
       this.map?.geometry ?? [],
       this.selfAnim.smoothedSpeed > 0.5,
     );

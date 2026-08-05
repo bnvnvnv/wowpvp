@@ -258,6 +258,33 @@ try {
     const redE = match.world.entities.get(aNet.you as never)!;
     for (const [r, max] of redE.maxResources) redE.resources.set(r, max);
 
+    /**
+     * ★ W5（技术债总账）之一：11.4 反向 —— **活着**按 V 无效。
+     *   活人跟随别人就是透视，客户端根本不发 SpectateFollow。
+     */
+    await pageA.keyboard.press('KeyV');
+    await sleep(150);
+    const aliveV = await waitStatus(pageA, 'A 活着按 V 后状态可读', 'st.net !== null', 2000);
+    const aliveSpectating = (aliveV['net'] as { spectating?: number | null } | null)?.spectating;
+
+    /**
+     * ★ W5 之二：死亡遮罩。B 阵亡到 MatchEnd 之间只有 0.5 秒结算窗口
+     *   （ARENA.DRAW_WINDOW），外部轮询每次往返 ~250ms 会随机漏掉整个窗口 ——
+     *   特效二期 watchPeaks 的老坑，同款修法：**先挂 rAF 监视器再按键**，
+     *   采样全程在页面内完成。
+     */
+    // ★ 字符串形式的 evaluate —— 函数形式会被 tsx/esbuild 注入 __name 助手，
+    //   浏览器上下文里没有它（waitStatus 全程用字符串正是同一个原因）
+    await pageB.evaluate(`(() => {
+      globalThis.__deathSeen = false;
+      const tick = () => {
+        const st = globalThis.__lobby && globalThis.__lobby.status;
+        if (st && st.net && st.net.deathOverlay) { globalThis.__deathSeen = true; return; }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    })()`);
+
     await sleep(300);
     await pageA.keyboard.press('Tab');
     await sleep(120);
@@ -270,6 +297,11 @@ try {
     const banner = (await pageA.textContent('#lb-end-title'))?.trim() ?? '';
     check('6', '★★ 分出胜负：双方看到结算横幅', banner.includes('红方'),
       `A 的横幅：「${banner}」`);
+
+    const deathSeen = (await pageB.evaluate('globalThis.__deathSeen === true')) === true;
+    check('14', '★ 死亡遮罩在阵亡瞬间出现；活着按 V 不进观战（W5 接线 + 11.4 反向）',
+      deathSeen && aliveSpectating === null,
+      `B 遮罩抓到=${deathSeen}；A 活着按 V 后 spectating=${JSON.stringify(aliveSpectating)}`);
 
     // 回到房间：名单还在、全员未准备、职业保留
     await pageA.click('[data-action="rematch"]');

@@ -21,7 +21,30 @@
  *   本文件只负责「在名单里怎么切换」和「镜头怎么摆」。
  */
 
-import { spectatableFor, type CombatEntity, type World } from '@wowpvp/shared';
+import { spectatableFor, type CombatEntity, type TeamId, type World } from '@wowpvp/shared';
+
+/**
+ * 联网侧的观战目标轮换（技术债总账 W5）。
+ *
+ * ★ 纯函数吃**快照实体**而不是 World —— 联网客户端没有 World。
+ *   合法性的权威判定在服务器（`RoomServer.onSpectateFollow` →
+ *   `spectatableFor()`），这里只是「按 V 换下一个」的本地轮换：
+ *   猜错的后果只是一次被拒绝的请求，与联网技能栏的保守判断同一条哲学。
+ * ★ 语义与 `SpectateController.cycle()` 一字不差：同队、存活、非自己；
+ *   从当前目标的下一位环回；无候选返回 undefined（= 显示死亡界面，
+ *   不是留在原地看 —— 那等于自由镜头）。
+ */
+export const nextSpectateTarget = <T extends { id: number; team: TeamId; alive: boolean }>(
+  entities: readonly T[],
+  selfId: number,
+  selfTeam: TeamId,
+  currentId: number | null,
+): T | undefined => {
+  const list = entities.filter((e) => e.id !== selfId && e.team === selfTeam && e.alive);
+  if (list.length === 0) return undefined;
+  const i = list.findIndex((e) => e.id === currentId);
+  return list[(i + 1) % list.length];
+};
 
 export interface SpectateTarget {
   id: number;

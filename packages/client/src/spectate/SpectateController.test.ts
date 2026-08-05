@@ -10,7 +10,7 @@ import {
   TEAM_BLUE, TEAM_RED, addEntity, allocEntityId, createEntity, createWorld,
   mage, priest, vec3, warrior, type CombatEntity, type World,
 } from '@wowpvp/shared';
-import { SpectateController } from './SpectateController.js';
+import { SpectateController, nextSpectateTarget } from './SpectateController.js';
 
 let world: World;
 let me: CombatEntity;
@@ -130,5 +130,31 @@ describe('★★ 11.4 不能自由镜头', () => {
     ctl.cycle(world, me);
     ctl.stop();
     expect(ctl.active).toBe(false);
+  });
+});
+
+/**
+ * W5（技术债总账）：联网侧的纯轮换函数。语义必须与 `SpectateController.cycle()`
+ * 一字不差 —— 它是同一条 11.4 规则在快照数据上的形态（合法性权威在服务器）。
+ */
+describe('W5 nextSpectateTarget（联网快照轮换）', () => {
+  const snap = (id: number, team: typeof TEAM_RED, alive = true) =>
+    ({ id, team, alive });
+
+  it('同队、存活、非自己；从当前目标的下一位环回', () => {
+    const list = [snap(1, TEAM_RED), snap(2, TEAM_RED), snap(3, TEAM_RED), snap(9, TEAM_BLUE)];
+    expect(nextSpectateTarget(list, 1, TEAM_RED, null)?.id).toBe(2);
+    expect(nextSpectateTarget(list, 1, TEAM_RED, 2)?.id).toBe(3);
+    expect(nextSpectateTarget(list, 1, TEAM_RED, 3)?.id).toBe(2); // 回卷
+  });
+
+  it('敌人与死者永远不是候选；无候选返回 undefined（= 显示死亡界面，不是留在原地看）', () => {
+    const list = [snap(1, TEAM_RED), snap(2, TEAM_RED, false), snap(9, TEAM_BLUE)];
+    expect(nextSpectateTarget(list, 1, TEAM_RED, null)).toBeUndefined();
+  });
+
+  it('当前目标已死时从头轮起（与 resolve 的自动换人同语义）', () => {
+    const list = [snap(1, TEAM_RED), snap(2, TEAM_RED, false), snap(3, TEAM_RED)];
+    expect(nextSpectateTarget(list, 1, TEAM_RED, 2)?.id).toBe(3);
   });
 });
