@@ -28,6 +28,10 @@
 ## 快速开始
 
 ```bash
+# 克隆用部分克隆 —— 历史里的素材 blob（~560MB）按需才拉，省一大半传输
+# （2026-08-05 拍板：LFS/素材出库的最终方案与发布前 F2 素材投递一并定）
+git clone --filter=blob:none https://github.com/bnvnvnv/wowpvp.git
+
 # 需要 Node >= 20
 npm i -g pnpm            # 若尚未安装
 pnpm install
