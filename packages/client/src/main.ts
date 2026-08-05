@@ -140,6 +140,15 @@ const serverUrl = params.get('server') ?? `ws://${location.hostname}:8080`;
 
 if (room !== null) {
   const canvas = mountSceneDom();
+  /**
+   * W10（技术债总账）：撤掉试验场专用的帮助与调试面板。那份 #help 的标题
+   * 是「M1 试验场 · 按规格书第 4/13 章验证」（假人验收清单、F1 调试……），
+   * 对联网对局整个是误导；#stats 在这条分支上从来没人绘制过（空框）。
+   * 联网的键位入口与读数由场景**自带**：#net-hint 一行提示 + F10 设置面板
+   * （含完整键位表）+ 右下角延迟/帧率 —— 大厅路径与老路因此同一份体验。
+   */
+  document.getElementById('help')?.remove();
+  document.getElementById('stats')?.remove();
   const { NetworkScene } = await import('./scenes/NetworkScene.js');
   const net = new NetworkScene(canvas, {
     url: serverUrl,

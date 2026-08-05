@@ -293,6 +293,18 @@ try {
       check('17', '★ R 通用解控：昏迷中按 R，昏迷被战斗意志解除（W8）', cleared,
         `verify.stun 已解除=${cleared}`);
     }
+
+    /**
+     * ★ W10（技术债总账）：新手主路径（大厅 → 开局）此前恰好是唯一
+     *   没有任何键位提示的路径。一行提示指向 F10 的完整键位表。
+     */
+    const hint = await pageA.evaluate(`(() => {
+      const el = document.querySelector('#net-hint');
+      return { found: el !== null, text: el ? el.textContent : '' };
+    })()`) as { found: boolean; text: string };
+    check('18', '★ 大厅开局有键位提示且指向 F10 设置（W10）',
+      hint.found && hint.text.includes('F10') && hint.text.includes('Tab'),
+      `text=「${hint.text}」`);
   }
 
   // ── 4b：断线横幅与重连闭环（W6，技术债总账）─────────────────

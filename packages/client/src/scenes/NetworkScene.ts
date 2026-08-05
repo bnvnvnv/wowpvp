@@ -382,6 +382,21 @@ export class NetworkScene {
     this.connBanner.textContent = '连接已断开 · 正在尝试重连（角色留在原地，不获得无敌）';
     (canvas.parentElement ?? document.body).appendChild(this.connBanner);
 
+    /**
+     * W10：一行键位提示。新玩家的主路径（大厅 → 开局）此前**恰好是唯一
+     * 没有任何键位提示的路径** —— 第一局不知道 G 是交互、Esc 能假读条。
+     * 完整键位表在 F10 设置面板里，这一行只解决「知道去哪看」。
+     */
+    const hint = document.createElement('div');
+    hint.id = 'net-hint';
+    Object.assign(hint.style, {
+      position: 'absolute', left: '10px', bottom: '8px',
+      color: '#c8d2e0', font: '500 11px system-ui, sans-serif',
+      pointerEvents: 'none', zIndex: '20', opacity: '.62',
+    } as Partial<CSSStyleDeclaration>);
+    hint.textContent = 'Tab 选目标 · 1–8 技能 · Esc 取消读条 · G 交互 · R 解控 · O 记分板 · F10 设置与全部键位';
+    (canvas.parentElement ?? document.body).appendChild(hint);
+
     // W6：延迟指示。小、常驻、不抢注意力 —— 有异常时颜色先说话
     this.rttLabel = document.createElement('div');
     this.rttLabel.id = 'rtt-label';
@@ -1388,7 +1403,11 @@ export class NetworkScene {
     const bannerShown = this.connBanner.style.display !== 'none';
     if (offline !== bannerShown) this.connBanner.style.display = offline ? '' : 'none';
 
-    const txt = offline ? '延迟 —' : this.rttMs === null ? '' : `延迟 ${Math.round(this.rttMs)}ms`;
+    // W10：帧率一并显示 —— 三期就接进诊断出口的读数，第一次到玩家眼前
+    const fps = Math.round(this.loop.fps);
+    const txt = offline
+      ? '延迟 —'
+      : this.rttMs === null ? '' : `延迟 ${Math.round(this.rttMs)}ms · ${fps}fps`;
     if (this.rttLabel.textContent !== txt) this.rttLabel.textContent = txt;
     const color = offline || (this.rttMs !== null && this.rttMs >= 150)
       ? '#ff7a6f'
