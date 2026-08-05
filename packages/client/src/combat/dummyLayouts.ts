@@ -27,6 +27,13 @@ export interface DummySpot {
   /** 相对玩家出生点的偏移 */
   offset: Vec3;
   name: string;
+  /**
+   * 是否与玩家同阵营。默认 false（敌方）—— 验收与教学的假人都是靶子。
+   * ★ 压测台用它摆出真正的 12v12（11 队友 + 12 敌人）：
+   *   全场都是敌人不只是「不好玩」，它连**负载**都不真实
+   *   （真实对局里一半的人不会来打你），更测不出敌我区分够不够用。
+   */
+  ally?: boolean;
 }
 
 /**
@@ -87,6 +94,14 @@ export const TUTORIAL_DUMMIES: readonly DummySpot[] = [
  */
 export const stressDummies = (count = 23): readonly DummySpot[] => {
   const classes = ['mage', 'priest', 'warrior'] as const;
+  /**
+   * ★★ **一半队友一半敌人**（默认 11 队友 + 12 敌人 = 与玩家凑成 12v12）。
+   *   首版全设成敌方，实测立刻暴露两个问题：1v23 没法玩（用户反馈「被一堆
+   *   近战追着打很快就嘎了」），而且**负载本身也不真实** —— 真实对局里
+   *   一半的人不会来打你。分左右两半：**左半边（x<0）友方、右半边敌方**，
+   *   于是「敌我区分够不够用」在这张台子上一眼可验。
+   */
+  const allyCount = Math.floor(count / 2);
   return Array.from({ length: count }, (_, i) => {
     // 两环：内环 8 个（半径 9），其余外环（半径 16）
     const inner = i < 8;
@@ -95,14 +110,17 @@ export const stressDummies = (count = 23): readonly DummySpot[] => {
     const radius = inner ? 9 : 16;
     // 从 -Z（正前方）起顺时针铺开，全部落在默认镜头视野内
     const angle = (idx / ringCount) * Math.PI * 2;
+    const ally = i < allyCount;
     return {
       classId: classes[i % classes.length]!,
       offset: {
-        x: Math.sin(angle) * radius,
+        // 友方铺左半边、敌方铺右半边 —— 混在一起时敌我区分才**看得出**是否有效
+        x: (ally ? -1 : 1) * Math.abs(Math.sin(angle)) * radius,
         y: 0,
         z: -Math.cos(angle) * radius,
       },
-      name: `压测${i + 1}`,
+      name: ally ? `队友${i + 1}` : `敌${i - allyCount + 1}`,
+      ally,
     };
   });
 };

@@ -358,6 +358,15 @@ export class TestbedScene {
     };
     this.combat.onSwapResult = (ok) =>
       audio.play(ok ? 'ui_weapon_unsheathe' : 'ui_error', { group: 'ui' });
+    /**
+     * 7.6 白字命中 → 挥砍动画 + 破空声（实战模式才有 —— 见 CombatDirector
+     * 的 `swings` 注释）。★ 与技能挥砍走**同一个** `playMeleeSwing()`：
+     * 近战「一直在打」的视觉主体是白字，技能之间那 4–10 秒的冷却全靠它填。
+     */
+    this.combat.onSwingHit = (attackerId) => {
+      this.viewFor(attackerId)?.playMeleeSwing();
+      audio.playVariant('swing', { volume: 0.45, ...audioDeps.positionOf(attackerId) });
+    };
 
     this.flagMarkers = new FlagMarkers();
     this.scene.add(this.flagMarkers.group);

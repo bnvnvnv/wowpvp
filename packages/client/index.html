@@ -268,9 +268,14 @@
       .np-name { font-size: 11px; text-shadow: 0 1px 2px #000; }
       .np-hp { height: 4px; background: #2a2f3a; border-radius: 2px; overflow: hidden; margin-top: 2px; }
       .np-hp i { display: block; height: 100%; background: #d05a5a; }
+      /* 规格 777 阵营区分：颜色由 JS 按色盲色板给，这里给**第二通道**（字形）
+         —— 17.2「不能只靠颜色区分」。友方带 ▲，敌方带 ◆ */
+      .nameplate.np-friendly .np-name::before { content: '▲ '; opacity: .85; }
+      .nameplate.np-hostile .np-name::before { content: '◆ '; opacity: .85; }
+      /* 选中/焦点的高亮**盖过**阵营色 —— 它们是「当前操作对象」，优先级更高 */
       .nameplate.selected .np-hp { box-shadow: 0 0 0 1px #ffd166; }
-      .nameplate.selected .np-name { color: #ffd166; font-weight: 600; }
-      .nameplate.focused .np-name { color: #9ad0ff; }
+      .nameplate.selected .np-name { color: #ffd166 !important; font-weight: 600; }
+      .nameplate.focused .np-name { color: #9ad0ff !important; }
       .np-cast { height: 4px; background: #2a2f3a; border-radius: 2px; overflow: hidden; margin-top: 2px; }
       .np-cast i { display: block; height: 100%; background: var(--school); }
       .np-cast.shielded { outline: 1px dashed #8e96a8; }

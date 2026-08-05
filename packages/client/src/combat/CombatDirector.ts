@@ -45,6 +45,7 @@ import {
   type World,
   addEntity,
   allocEntityId,
+  createSwingStore,
   asSkillId,
   asTeamId,
   getEntity,
@@ -160,6 +161,18 @@ export class CombatDirector {
    * 不生成任何临时武装，正好对应「试验场里没有军械箱」这个事实。
    */
   readonly arsenal = createArsenalStore(ArenaPreset.Classic);
+  /**
+   * 7.6 普通攻击的挥击计时。
+   *
+   * ★★ **只在实战模式下才喂给 `tickWorld`**（见 `tick()` 里的条件）。
+   *   站桩模式必须没有它 —— 141 项验收依赖「假人不会白打玩家」。
+   *
+   * ⚠️ 它是「近战看起来不攻击」的根因（用户实测反馈）：此前试验场**完全
+   *   没有这个 store**，于是近战假人贴到你脸上之后只会放技能，而近战技能
+   *   冷却 4–10 秒 —— 大部分时间他就站在那儿一动不动。白字才是近战
+   *   「一直在打」的视觉主体。
+   */
+  readonly swings = createSwingStore();
 
   /**
    * 交给 `tickWorld` 的移动状态与输入。
@@ -266,6 +279,7 @@ export class CombatDirector {
           z: playerSpawn.z + spot.offset.z,
         },
         spot.name,
+        spot.ally ?? false,
       );
     }
 
@@ -297,10 +311,11 @@ export class CombatDirector {
     this.loadouts.set(this.player.id, loadout);
   }
 
-  private spawnDummy(cls: typeof mage, pos: Vec3, name: string): CombatEntity {
+  private spawnDummy(cls: typeof mage, pos: Vec3, name: string, ally = false): CombatEntity {
+    // ★ 压测台要摆真正的 12v12（一半队友）—— 默认仍是敌方（验收与教学的靶子）
     const e = addEntity(
       this.world,
-      createEntity(allocEntityId(this.world), cls, BLUE, pos, { name }),
+      createEntity(allocEntityId(this.world), cls, ally ? RED : BLUE, pos, { name }),
     );
     // 假人不动，但资源给满，好让它能持续施法
     for (const [r, max] of e.maxResources) e.resources.set(r, max);
@@ -360,6 +375,8 @@ export class CombatDirector {
         inputs: this.frameInputs,
         castRequests: this.pendingCasts,
         trinketRequests: this.pendingTrinkets,
+        // ★ 7.6 白字只在实战模式给 —— 站桩模式必须没有（见 swings 的注释）
+        ...(this.combatMode ? { swings: this.swings } : {}),
         getSkill,
       },
       dt,
@@ -433,6 +450,15 @@ export class CombatDirector {
         onDeathSettled: (settled) => {
           const who = getEntity(this.world, settled.entityId);
           this.push(`${who?.name ?? ''} 的临时装备已失效（10.10）`, 'info');
+        },
+        /**
+         * 7.6 白字命中 → **挥砍动画 + 破空声**。
+         * ★ 这是「近战看起来在打」的视觉主体：技能之间隔着 4–10 秒冷却，
+         *   中间填满节奏的是普攻。与技能挥砍走同一个 `playMeleeSwing()`。
+         */
+        onSwing: (sw) => {
+          if (sw.miss !== undefined) return;
+          this.onSwingHit?.(sw.attackerId);
         },
       },
     );
@@ -516,6 +542,8 @@ export class CombatDirector {
   ) => void;
   /** 换装结束（true=完成，false=中断）*/
   onSwapResult?: (completed: boolean) => void;
+  /** 7.6 白字命中 → 表现层播挥砍动画与破空声（实战模式才会触发）*/
+  onSwingHit?: (attackerId: EntityId) => void;
 
   /**
    * 把一条战斗事件转成日志行。
@@ -588,6 +616,14 @@ export class CombatDirector {
         this.dummyMovement.set(e.id, ms);
         this.movementStates.set(e.id, ms);
       }
+
+      /**
+       * ★ 7.6 白字的开火判据是「敌方硬目标存活」（偏差 #9），所以实战模式下
+       *   必须给假人设硬目标 —— 服务器那边由 `SetTarget` 消息设，试验场
+       *   没有协议层，这里直接设。**没有这一步就没有白字**，近战会一直
+       *   站着不打（用户实测反馈的另一半根因）。
+       */
+      if (e.targets.hard !== this.player.id) e.targets.hard = this.player.id;
 
       const action = decideBotAction({
         world: this.world,

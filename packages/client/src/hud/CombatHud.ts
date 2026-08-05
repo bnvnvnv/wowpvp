@@ -472,11 +472,28 @@ export class CombatHud {
 
       if (!full) continue;
 
+      /**
+       * ★★ 阵营区分（规格书 777：「阵营通过**姓名板**、脚下标记、轮廓和 UI
+       *   区分，不把整个人物简单染红或染蓝」）。
+       *
+       *   在此之前姓名板**所有人一个样**（白字 + 红血条）—— 这条规格从未被
+       *   实现，而 12v12 里分不清敌我等于没法玩（用户实测反馈）。
+       * ★ 颜色走 `paletteFor()` 的语义色，与目标环/小地图**同一份色板** ——
+       *   色盲模式切换时一起变，玩家不必学两套颜色（17.2）。
+       * ★ 同时挂 class：**颜色之外还有一个通道**（17.2「不能只靠颜色区分」），
+       *   友方名字带 `▲` 前缀由 CSS 的 ::before 给出。
+       */
+      const friendly = e.team === dir.player.team;
+      el.classList.toggle('np-friendly', friendly);
+      el.classList.toggle('np-hostile', !friendly);
+      const p = paletteFor(this.access.colorblind);
+      const teamColor = friendly ? p.friendly : p.hostile;
+
       const hpPct = Math.max(0, (e.health / e.maxHealth) * 100);
       const cast = dir.castOf(e);
       el.innerHTML = `
-        <div class="np-name">${esc(e.name)}</div>
-        <div class="np-hp"><i style="width:${hpPct}%"></i></div>
+        <div class="np-name" style="color:${teamColor}">${esc(e.name)}</div>
+        <div class="np-hp"><i style="width:${hpPct}%;background:${teamColor}"></i></div>
         ${cast ? `<div class="np-cast ${cast.interruptible ? '' : 'shielded'}"
              style="--school:${SCHOOL_COLOR[cast.school] ?? '#ccc'}">
              <i style="width:${castPct(cast, dir.now)}%"></i>
