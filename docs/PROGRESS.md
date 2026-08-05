@@ -25,8 +25,9 @@
 2.11（W16 复活保护表现）、2.12（W11 教学闭环）——
 **批次二（接线速赢）12/12 全部完成**，十四支验收 + balance 收官全绿。
 批次三（结构工程）进行中 —— 3.1（G1 CI：typecheck+单测+六支非浏览器验收
-每 push 必跑）、3.2（G2 eslint 零告警基线进 CI）；
-接下来 G3 资产瘦身/LFS、G4 双场景共享层、W12 夺旗联网线、S1–S6 公网硬化
+每 push 必跑）、3.2（G2 eslint 零告警基线进 CI）、3.3 上半（G3 素材瘦身
+160MB + ui/music 死重盘点，LFS 拍板待用户决策）；
+接下来 G4 双场景共享层、W12 夺旗联网线、S1–S6 公网硬化
 
 ---
 
@@ -162,6 +163,53 @@ m10 14/14 · m12 21/21 · balance 重出 · `scripts/diag-feel.mjs`（新增）�
 ★ **每一层都保留程序化兜底**：素材缺失或加载失败时自动回落到 M11 的画面，
 `?art=off` 可以显式回到那条路径 —— M1–M10 的 155 项验收正是跑在它上面
 （理由见下面的 M12 章节）。
+
+---
+
+## 清账批次三 · G3 上半：素材瘦身 160MB + 全量死重盘点（2026-08-05）
+
+docs/16 批次三第 3 项的前两步（删可证明死重 → 盘点）。LFS 拍板待用户决策。
+
+### 删了什么（每一件都先全仓 grep 证明零引用）
+
+- **16 张 `_2k.hdr`（127MB）**：`Environment.ts:104` 只拼 `_1k` 路径，
+  `_2k` 从项目第一天起就没有加载途径
+- **11 张未引用 `_1k.hdr`（23MB）**：`ENV_PRESETS` 只有 5 个底图
+  （vale_day/peaks_dawn/hollow_dusk/marsh_overcast/night），
+  其余 11 个 preset（amber_sunset、vale_cup 等）无键指向
+- assets 572MB → **412MB**；`env/` 只剩 5 张在用的 + 3 组 backdrop
+- CREDITS/SOURCE **不动**：那是上游素材包的来源存档（里面本来就列着
+  大量本仓库没有的文件）；docs/09 §4 按包登记（`assets/art/**` 一行），
+  包内删文件不改登记
+
+### 盘点（登记在总账 G3a，删除是后续批次的事）
+
+- `ui/` 30MB：1451 文件仅 ~91 个被引用（skills 手写表 ~88 + index.html
+  光标 3）。~27MB 死 —— daily-rewards/deeds/dungeons/mobs/professions/
+  ranks/store 是上游包搬来的无关功能整目录。**skills/ 未引用图标不删**：
+  它是加技能时「语义最近」选图的调色板（◆ 惯例的原料）
+- `music/` 178MB：987 文件按基名反查仅 91 个被引用，死重上限 ~147MB。
+  ⚠️ 删除前必须核对 sfx 表是否有 `${base}_${n}` 变体拼名
+- 零引用小件：6 张 `*_backdrop*.webp`、`space_galaxy.jpg`
+- git 历史侧：全历史 blob 584MB，其中 **assets 占 561MB（96%）且几乎
+  全是单版本** —— LFS/历史重写的收益就是这 561MB
+
+### LFS 拍板材料（决定含 force push，留给用户）
+
+- 现状：`.git` 487MB；fresh clone ≈ 487MB 传输 + 412MB checkout
+- 方案 A（LFS + `git lfs migrate --everything`）：`.git` 缩到 ~25MB，
+  但 GitHub 免费 LFS 带宽 1GB/月 ≈ 每月两次 fresh clone 就见顶
+- 方案 B（零改写立即可用）：`git clone --filter=blob:none` 部分克隆，
+  只下 checkout 需要的 blob（~430MB→今后随瘦身继续降），历史按需拉
+- 方案 C：素材彻底出库（发布包/CDN）—— 与发布前 F2 素材投递方案合流
+- 无论选哪个：**先把 G3a 的死重删完再迁移**，免得死文件进 LFS 计费
+
+### 验证
+
+1149 单测 ✓ · `verify:m12` **26/26**（判据 §1 素材校验四项每轮全绿；
+中间两轮 #12b/#10-m12/#15a 偶发失败是装饰/模型**加载时序抖动**，
+与素材删除无关 —— 正是总账 G6 记的「verify 靠硬编码 sleep 偶发脆弱」，
+失败项每轮不同、读数只差 1-2 件、`envLoaded` 恒 true 可证）
 
 ---
 
