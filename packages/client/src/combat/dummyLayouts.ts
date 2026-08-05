@@ -65,3 +65,44 @@ export const TUTORIAL_DUMMIES: readonly DummySpot[] = [
   { classId: 'priest', offset: { x: 6, y: 0, z: -13 }, name: '假人·牧师' },
   { classId: 'mage', offset: { x: 0, y: 0, z: -20 }, name: '假人·法师' },
 ];
+
+/**
+ * P2 压测布置（`?stress=`）：**12v12 的最坏情况**。
+ *
+ * ★★ 存在的理由是 X10 —— 全部验收都跑在 swiftshader 软渲染（空闲 4 FPS）上，
+ *   「12v12 掉不掉帧」「特效够不够炫」**从来没有真机数据**。这个舞台把
+ *   最坏情况一次性摆出来，让人在真显卡上跑一轮就能回答那两个问题。
+ *
+ * 为什么这样摆：
+ *   · **23 个**（+ 玩家 = 24）—— 12v12 的实体数
+ *   · **两个同心环**：全部落在一个镜头视野里 —— 真正的最坏情况不是「场上有
+ *     24 个人」，而是「24 个人同时出现在你的屏幕上」（绘制调用、粒子、
+ *     姓名板、骨骼动画一起爆）。散开摆反而测不到峰值。
+ *   · **三职业轮换**：法师（读条 + 火/冰特效）、牧师（治疗 + 神圣）、
+ *     战士（近战 + 物理挥击）—— 覆盖读条条、治疗数字、近战刀光三类表现。
+ *     `DummySpot.classId` 只有这三个（它是验收数据的类型），够用。
+ *
+ * ⚠️ 半径避开出生点 6 米：24 个人叠在脸上会被软推开挤成一团，
+ *   那测的是碰撞不是渲染。
+ */
+export const stressDummies = (count = 23): readonly DummySpot[] => {
+  const classes = ['mage', 'priest', 'warrior'] as const;
+  return Array.from({ length: count }, (_, i) => {
+    // 两环：内环 8 个（半径 9），其余外环（半径 16）
+    const inner = i < 8;
+    const ringCount = inner ? 8 : Math.max(1, count - 8);
+    const idx = inner ? i : i - 8;
+    const radius = inner ? 9 : 16;
+    // 从 -Z（正前方）起顺时针铺开，全部落在默认镜头视野内
+    const angle = (idx / ringCount) * Math.PI * 2;
+    return {
+      classId: classes[i % classes.length]!,
+      offset: {
+        x: Math.sin(angle) * radius,
+        y: 0,
+        z: -Math.cos(angle) * radius,
+      },
+      name: `压测${i + 1}`,
+    };
+  });
+};

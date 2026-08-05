@@ -91,6 +91,16 @@ export interface DebugInfo {
   characterYaw: number;
   cameraDistance: number;
   firstPerson: boolean;
+  /**
+   * P2 压测读数（渲染负载）。★ 恒发不额外算 —— `renderer.info` 是 three
+   * 每帧自己在统计的；压测面板显示它，普通试验场面板照旧不显示。
+   */
+  render?: {
+    calls: number;
+    triangles: number;
+    entities: number;
+    quality: string;
+  };
 }
 
 export class TestbedScene {
@@ -414,6 +424,14 @@ export class TestbedScene {
 
   start(): void {
     this.loop.start();
+  }
+
+  /**
+   * P2 压测台用：直接打开实战模式（等价于按 K）。
+   * ★ 默认仍是关的 —— 141 项验收依赖假人站桩，见 K 键分支的注释。
+   */
+  set combatMode(on: boolean) {
+    this.combat.combatMode = on;
   }
 
   /**
@@ -1189,6 +1207,13 @@ export class TestbedScene {
       characterYaw: this.characterYaw,
       cameraDistance: this.cam.distance,
       firstPerson: this.cam.isFirstPerson,
+      // P2 压测读数：`renderer.info` 是 three 自己每帧统计的，零额外开销
+      render: {
+        calls: this.renderer.info.render.calls,
+        triangles: this.renderer.info.render.triangles,
+        entities: this.combat.allEntities().length,
+        quality: this.quality.current,
+      },
     });
   }
 

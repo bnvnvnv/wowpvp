@@ -37,6 +37,7 @@
     "verify:m16": "tsx scripts/verify-m16.ts",
     "verify:w12": "tsx scripts/verify-w12.ts",
     "verify:hardening": "tsx scripts/verify-hardening.ts",
+    "verify:stress": "node scripts/verify-stress.mjs",
     "balance": "tsx scripts/balance-report.ts"
   },
   "devDependencies": {

@@ -11,7 +11,7 @@ import { GEOMETRY, MOVE, RANGE } from '@wowpvp/shared';
 import { probeIconAssets } from './hud/skillIcon.js';
 import { artEnabled } from './settings/artMode.js';
 import { TestbedScene, type DebugInfo } from './scenes/TestbedScene.js';
-import { TESTBED_STAGE, TUTORIAL_STAGE } from './scenes/stages.js';
+import { TESTBED_STAGE, TUTORIAL_STAGE, stressStage } from './scenes/stages.js';
 
 // M12：探测素材目录是否可用。不 await —— 场景启动不等它，
 // 探测成功后下一次 HUD 重建（≤50ms）自然切到真实图标。
@@ -125,6 +125,58 @@ const makePaintStats = (stats: HTMLElement): ((d: DebugInfo) => void) => {
 };
 
 /**
+ * P2 压测面板（`?stress`）。**回答的是「12v12 掉不掉帧」，所以显示的是
+ * 帧时间的分布而不是瞬时 FPS** —— 平均 60 帧但每秒卡一下 200ms 的体验
+ * 是「卡」，瞬时读数看不出来，p95/最差帧才看得出来。
+ *
+ * ★ 采样窗口 3 秒滚动；`renderer.info` 是 three 每帧自己在统计的，零额外开销。
+ */
+const makePaintStress = (stats: HTMLElement): ((d: DebugInfo) => void) => {
+  const frames: { at: number; ms: number }[] = [];
+  let last = performance.now();
+  let lastPaint = 0;
+  let worst = 0;
+
+  return (d: DebugInfo): void => {
+    const now = performance.now();
+    const ms = now - last;
+    last = now;
+    // 首帧与切标签页回来的巨大间隔不计（那不是渲染负载）
+    if (ms > 0 && ms < 1000) {
+      frames.push({ at: now, ms });
+      if (ms > worst) worst = ms;
+    }
+    while (frames.length > 0 && now - frames[0]!.at > 3000) frames.shift();
+    if (now - lastPaint < 250) return;
+    lastPaint = now;
+
+    const sorted = frames.map((f) => f.ms).sort((a, b) => a - b);
+    const avg = sorted.length ? sorted.reduce((s, v) => s + v, 0) / sorted.length : 0;
+    const p95 = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))]! : 0;
+    const fps = avg > 0 ? 1000 / avg : 0;
+    // 60 帧 = 16.7ms。p95 超过 33ms（30 帧）就是肉眼可见的卡顿
+    const cls = (v: number, ok: number, warn: number): string =>
+      v <= ok ? 'ok' : v <= warn ? '' : 'warn';
+    const r = d.render;
+
+    stats.innerHTML = `
+      <div class="row"><span>压测</span><b>${r?.entities ?? '?'} 实体同屏</b><i>?stress=&lt;人数&gt;</i></div>
+      <hr/>
+      <div class="row"><span>平均帧率</span><b class="${cls(1000 / Math.max(fps, 0.01), 17, 34)}">${fps.toFixed(0)} fps</b></div>
+      <div class="row"><span>平均帧时间</span><b class="${cls(avg, 17, 34)}">${avg.toFixed(1)} ms</b></div>
+      <div class="row"><span>p95 帧时间</span><b class="${cls(p95, 20, 40)}">${p95.toFixed(1)} ms</b><i>卡顿看这个</i></div>
+      <div class="row"><span>最差帧</span><b class="${cls(worst, 34, 100)}">${worst.toFixed(0)} ms</b></div>
+      <hr/>
+      <div class="row"><span>绘制调用</span><b>${r?.calls ?? '?'}</b></div>
+      <div class="row"><span>三角面</span><b>${((r?.triangles ?? 0) / 1000).toFixed(0)}k</b></div>
+      <div class="row"><span>画质档</span><b>${r?.quality ?? '?'}</b><i>F2 切档</i></div>
+      <hr/>
+      <div class="row"><span>镜头距离</span><b>${d.cameraDistance.toFixed(1)} m</b><i>滚轮拉远看全场</i></div>
+    `;
+  };
+};
+
+/**
  * ★ 三条入口并存。`?net=<房间名>` 进联网场景（M10 老路，全部 verify 脚本
  *   靠它，**原样保留**）；`?lobby` 进大厅（M13，纯 UI 的建房/加房流程，
  *   `?lobby=<码>` 深链预填房间码）；不带参数进试验场 ——
@@ -180,11 +232,25 @@ if (room !== null) {
    *   为什么两台戏不能共用一个舞台，见 `scenes/stages.ts` 的文件头。
    */
   const tutorialMode = params.get('tutorial') === 'on';
+  /**
+   * P2 压测台（`?stress` / `?stress=<人数>`）：24 个实体同屏开打，
+   * 面板换成渲染负载读数。存在的理由是 X10 —— 12v12 的真机帧率从来没有
+   * 数据。★ 与教学同一条机制：**只换舞台数据**，默认路径一个字节没动。
+   */
+  const stressParam = params.get('stress');
+  const stressMode = params.has('stress');
+  const stage = stressMode
+    ? stressStage(Number(stressParam) > 0 ? Number(stressParam) : undefined)
+    : tutorialMode ? TUTORIAL_STAGE : TESTBED_STAGE;
   const scene = new TestbedScene(
     canvas,
-    makePaintStats(document.getElementById('stats')!),
-    tutorialMode ? TUTORIAL_STAGE : TESTBED_STAGE,
+    stressMode
+      ? makePaintStress(document.getElementById('stats')!)
+      : makePaintStats(document.getElementById('stats')!),
+    stage,
   );
+  // 压测要假人**真的在打**（站桩测不到特效负载）—— 与 K 键同一个开关
+  if (stressMode) scene.combatMode = true;
   // ★ 暴露给验收脚本读场景状态（M12 的美术自检、M9 的观战与可访问性）。
   //   与联网场景的 `__net` 是同一个用途
   (globalThis as Record<string, unknown>).__scene = scene;

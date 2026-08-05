@@ -21,7 +21,9 @@
 import {
   TESTBED_SPAWN, TUTORIAL_SPAWN, testbed, tutorialMap, type MapDef,
 } from '@wowpvp/shared';
-import { TUTORIAL_DUMMIES, VERIFY_DUMMIES, type DummySpot } from '../combat/dummyLayouts.js';
+import {
+  TUTORIAL_DUMMIES, VERIFY_DUMMIES, stressDummies, type DummySpot,
+} from '../combat/dummyLayouts.js';
 
 export interface Stage {
   map: MapDef;
@@ -45,3 +47,18 @@ export const TUTORIAL_STAGE: Stage = {
   spawn: { position: TUTORIAL_SPAWN.position, yaw: TUTORIAL_SPAWN.yaw },
   dummies: TUTORIAL_DUMMIES,
 };
+
+/**
+ * P2 压测场（`?stress=`）：24 个实体全部在一个视野里同时开打。
+ *
+ * ★ 复用试验场的地图与出生点 —— 压测要量的是**实体与特效负载**，
+ *   换一张地图会把地图几何的差异混进读数。第三个舞台只改「摆几个人、
+ *   摆在哪」，与前两个舞台是同一条机制。
+ * ★ `?stress=<n>` 可调人数（默认 23 + 玩家 = 24 = 12v12）——
+ *   跑出瓶颈后想二分定位「多少人开始掉帧」时用得上。
+ */
+export const stressStage = (count?: number): Stage => ({
+  map: testbed,
+  spawn: { position: TESTBED_SPAWN.position, yaw: TESTBED_SPAWN.yaw },
+  dummies: stressDummies(count),
+});
