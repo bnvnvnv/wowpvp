@@ -17,6 +17,7 @@ import {
   stepMovement,
   moveSpeedMultiplierOf,
   separationVelocity,
+  SPAWN_PROTECTION_AURA,
   teleportTo,
   type Aabb,
   type CombatEvent,
@@ -796,6 +797,11 @@ export class TestbedScene {
       m.setShield(
         shield?.remaining, shield?.initial ?? 1, dist,
         shield ? visualForAuraId(shield.auraId)?.primary : undefined,
+      );
+      // W16：复活保护按光环 id 检测（与联网侧同一判据；试验场今天没有
+      // 复活波次，organically 不触发 —— 但判据必须先在，等 W12 的夺旗线）
+      m.setSpawnProtected(
+        aurasOf(this.combat.auras, e.id).some((a) => a.def.id === SPAWN_PROTECTION_AURA.id),
       );
     }
   }

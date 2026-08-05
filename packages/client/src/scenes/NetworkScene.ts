@@ -30,6 +30,7 @@ import {
   Targeting,
   createMovementState,
   getSkill,
+  SPAWN_PROTECTION_AURA,
   TRINKET_COOLDOWN_KEY,
   TargetFilter,
   loadoutViewFromSnapshot,
@@ -158,6 +159,8 @@ export interface NetStatus {
    * 现在 M16d 补上了 —— 这两个数就是「补上了没有」的可执行证据。
    */
   shields: { visible: number; absorbs: number; breaks: number };
+  /** W16：场上可见的复活保护标记数 */
+  spawnProtections: number;
   /** W5：死亡遮罩当前是否可见 */
   deathOverlay: boolean;
   /** W5：正在观战的实体 id；未观战为 null */
@@ -572,6 +575,9 @@ export class NetworkScene {
         absorbs: this.feedback.shieldAbsorbsSeen,
         breaks: this.feedback.shieldBreaksSeen,
       },
+      // W16：场上可见的复活保护标记数（verify 断言读它）
+      spawnProtections: [...this.statusMarkers.values()]
+        .filter((m) => m.spawnProtectionVisible).length,
       // W5：死亡遮罩与观战状态（verify:m13 的判据入口）
       deathOverlay: this.deathOverlay.style.display !== 'none',
       spectating: this.spectatingId,
@@ -1794,6 +1800,8 @@ export class NetworkScene {
       shield?.remaining, shield?.initial ?? 1, this.cam.distance,
       shield ? visualForAuraId(shield.auraId)?.primary : undefined,
     );
+    // W16：复活保护按光环 id 检测（快照 auras 全公开，与化形检测同通道）
+    m.setSpawnProtected(snap.auras.some((a) => a.auraId === SPAWN_PROTECTION_AURA.id));
   }
 
   /**

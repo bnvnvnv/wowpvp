@@ -38,6 +38,8 @@ const R = GEOMETRY.HITBOX_RADIUS;
  *   （冰盾冰蓝、护心屏障圣金）。此前这个值是唯一的颜色。
  */
 const SHIELD_FALLBACK_COLOR = 0xffd98a;
+/** W16 复活保护：亮金（语义近圣光，与护盾回落色同族但形态完全不同）*/
+const SPAWN_PROTECTION_COLOR = 0xffe9a0;
 
 /** 按 CONTROL_VISUALS 的 shape 键造几何体 */
 const makeControlGeometry = (shape: string): THREE.BufferGeometry => {
@@ -140,6 +142,18 @@ export class StatusMarkers {
   private shellSpin = 0;
   private shownState: ShieldState | null = null;
 
+  /**
+   * W16（技术债总账）：复活保护（12.6）。
+   * ★ 它是 14.4 essential 八项里**唯一从未被画过**的角色 —— 清单保证了
+   *   「不许被画质隐藏」，却没有人给它一个渲染器。
+   * ★ 必须与护盾（球壳）和完全免疫读得开：保护是「刚复活、别打我也
+   *   别指望他拔旗」的**状态公告**，用金色地环 + 柔光柱 —— 语义近圣光，
+   *   形态上没有任何其他标记用竖直光柱。
+   */
+  private readonly spawnRing: THREE.Mesh;
+  private readonly spawnPillar: THREE.Mesh;
+  private spawnProtected = false;
+
   constructor() {
     for (const [kind, v] of Object.entries(CONTROL_VISUALS) as [ControlKind, typeof CONTROL_VISUALS[ControlKind]][]) {
       const mesh = new THREE.Mesh(
@@ -187,6 +201,45 @@ export class StatusMarkers {
     this.shell.add(this.shieldOuter);
 
     this.group.add(this.shell);
+
+    // W16 复活保护：金色地环（管径 0.1 —— 四期教训：0.05 在正常镜头下看不见）
+    this.spawnRing = new THREE.Mesh(
+      new THREE.TorusGeometry(R * 1.7, 0.1, 8, 32),
+      new THREE.MeshBasicMaterial({
+        color: SPAWN_PROTECTION_COLOR, transparent: true, opacity: 0.85, depthWrite: false,
+      }),
+    );
+    this.spawnRing.rotation.x = -Math.PI / 2;
+    this.spawnRing.position.y = 0.06;
+    this.spawnRing.visible = false;
+    this.spawnRing.renderOrder = 10;
+    this.group.add(this.spawnRing);
+
+    // 柔光柱：开口圆筒 + 加法混合，从脚下升到头顶上方
+    this.spawnPillar = new THREE.Mesh(
+      new THREE.CylinderGeometry(R * 1.15, R * 1.35, H * 1.7, 16, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: SPAWN_PROTECTION_COLOR, transparent: true, opacity: 0.14,
+        depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
+      }),
+    );
+    this.spawnPillar.position.y = H * 0.85;
+    this.spawnPillar.visible = false;
+    this.spawnPillar.renderOrder = 9;
+    this.group.add(this.spawnPillar);
+  }
+
+  /** W16：复活保护开关。检测在调用方（按光环 id，两个场景同一判据）*/
+  setSpawnProtected(on: boolean): void {
+    if (on === this.spawnProtected) return;
+    this.spawnProtected = on;
+    this.spawnRing.visible = on;
+    this.spawnPillar.visible = on;
+  }
+
+  /** 诊断出口（verify 断言读它）*/
+  get spawnProtectionVisible(): boolean {
+    return this.spawnProtected;
   }
 
   /**
@@ -205,6 +258,12 @@ export class StatusMarkers {
   ): void {
     // 14.3 最后一条 + 低画质补偿：关键标记在远处和低画质下都要更大
     const scale = essentialMarkerScale(cameraDistance) * controlMarkerScale(quality);
+
+    // W16 复活保护：地环缓转 + 关键标记同一套远近缩放（不看画质 —— essential）
+    if (this.spawnProtected) {
+      this.spawnRing.rotation.z = elapsed * 0.8;
+      this.spawnRing.scale.setScalar(essentialMarkerScale(cameraDistance));
+    }
 
     for (const [kind, mesh] of this.control) {
       const on = active.has(kind);

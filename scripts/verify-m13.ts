@@ -19,7 +19,7 @@
 
 import { chromium, type Browser, type Page } from 'playwright';
 import { startServer } from '../packages/server/src/index.ts';
-import { applyAura, asClassId, aurasOf, getClass, teleportTo } from '../packages/shared/src/index.ts';
+import { SPAWN_PROTECTION_AURA, applyAura, asClassId, aurasOf, getClass, teleportTo } from '../packages/shared/src/index.ts';
 
 const BASE = process.env.VERIFY_URL ?? 'http://localhost:5173';
 
@@ -305,6 +305,22 @@ try {
     check('18', '★ 大厅开局有键位提示且指向 F10 设置（W10）',
       hint.found && hint.text.includes('F10') && hint.text.includes('Tab'),
       `text=「${hint.text}」`);
+
+    /**
+     * ★ W16（技术债总账）：复活保护标记 —— essential 八项里最后一个拿到
+     *   渲染器的角色。organically 只在夺旗复活波次出现（W12 后），
+     *   这里白盒挂上光环，断言标记真的画了出来（检测按光环 id，双端同判据）。
+     */
+    {
+      const m = server.rooms.matchOf(code)!;
+      const redE = m.world.entities.get(aNet.you as never)!;
+      applyAura(m.auras, redE, SPAWN_PROTECTION_AURA, redE.id, m.world.time);
+      const sp = await waitStatus(pageA, 'A 看到复活保护标记',
+        'st.net && st.net.spawnProtections >= 1', 4000);
+      check('19', '★ 复活保护标记被画出来（W16 —— essential 最后一个渲染器）',
+        ((sp['net'] as { spawnProtections?: number } | null)?.spawnProtections ?? 0) >= 1,
+        `spawnProtections=${(sp['net'] as { spawnProtections?: number } | null)?.spawnProtections}`);
+    }
   }
 
   // ── 4b：断线横幅与重连闭环（W6，技术债总账）─────────────────

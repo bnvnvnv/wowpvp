@@ -89,7 +89,7 @@
 | W13 | **音频接线欠账**：BGM 战斗切换未做（`lastCombatAt` 数据在、audio 层零引用；19 首曲子只播 `combat_1`）；10 个 `amb_*` 环境音零使用；脚步只有 `foot_stone` 单材质；联网无脚步/跳跃/落地/驱散/位移音 | **BGM 半已清**（批次二 2.9）：`MusicDirector`（试验场读 sim 权威 `lastCombatAt`、联网按可见 Damage/Heal，脱战 8 秒滞后）+ 每图氛围曲表 + `playMusic` 交叉淡化。**余账**：`amb_*` 环境音（需 AudioManager 加环境循环通道）、脚步材质、联网脚步/跳落/驱散/位移音 | 氛围与反馈缺层（速赢清单项已销） | 🔧 BGM 清（2026-08-05，+4 单测）；余账在册 |
 | W14 | **8 个动画片段零调用**（`Spellcast_Raise`/`Spellcast_Shoot`/`2H_Ranged_Shoot`/`Block`/`Dualwield_Melee_Attack_Chop`/`Lie_Idle`/`Sit×2`）；**跑动中施法无上半身表现**（`applyClip` 单片段全身淡化，只有 Idle 才播施法姿态，无骨骼分层/additive） | `entity/CharacterView.ts`（≈:540-576，:545-546） | 每分钟都发生的表现缺失；工作量大 | ⛔ |
 | W15 | **昼夜 preset 全闲置**：5 个 HDR preset 只用 `day`，`MapDef` 无 preset 字段（速赢清单「每张图配一个」连数据入口都没开）；`EnvironmentOptions.sky` 从未被传 false | `MapDef.envPreset`（纯表现字段）+ 每图配档（试验场 day 红线不动 / 教学 dawn / 竞技场 dusk·day·overcast / 夺旗 dawn）+ `presetOf` 校验回落 + 双端消费；防拼错测试钉住每图的值。`sky:false` 仍无消费者（无室内图，如实留） | 四张图长得一样 | ✅ 批次二 2.10（2026-08-05，速赢清单销账） |
-| W16 | **复活保护无渲染器**：`spawnProtection` 是 14.4 essential 八项里唯一「保证不被隐藏、但从来没被画过」的角色 | `render/quality.ts`（≈:57-58）全仓孤立引用 | 保护期不可见 → 玩家误判 | ⛔ |
+| W16 | **复活保护无渲染器**：`spawnProtection` 是 14.4 essential 八项里唯一「保证不被隐藏、但从来没被画过」的角色 | `StatusMarkers` 金色地环+柔光柱（纯程序化，`?art=off` 同构造）；双端按光环 id `system.spawnProtection` 检测（快照 auras 全公开，与化形同通道）。organically 要等 W12 的夺旗复活波次，白盒断言先钉住 | 保护期不可见 → 玩家误判 | ✅ 批次二 2.11（2026-08-05，单测 ×2 + m13 #19 白盒变异验证） |
 | W17 | **协议缺 `Damage.avoided`**：联网侧闪避/招架/格挡无区分 → 规避三态特效与音全缺（M12 已知不足迁入，「如实地少一层」） | `NetworkScene.ts`（≈:585-601）；`shared/src/net/protocol.ts` | 一笔协议债，照 M10 规矩还 | ⛔ |
 | W18 | **待复核**：他人姓名板施法条在联网侧是否有数据源（M10 已知不足记「快照无他人施法状态」；特效二期接了 `CastStarted` 事件流后 HUD 侧是否跟上未核实） | `net/SnapshotCombatView.ts` `castOf()` | 复核后要么销账要么转正 | ⚠️ |
 
