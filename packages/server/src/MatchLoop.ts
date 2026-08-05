@@ -81,6 +81,8 @@ export type MatchCommand =
 
 import { takeExpired, type ReconnectRegistry } from './room/reconnect.js';
 import type { Session } from './room/Session.js';
+import { LIMITS } from './limits.js';
+import { log } from './log.js';
 
 /**
  * 一次 `pump()` 最多补几个 tick。
@@ -96,6 +98,8 @@ export interface MatchLoopDeps {
   /** 当前**连着**的会话。断线的人不在这里，但他的实体还在世界里（11.5）*/
   sessions: () => Iterable<Session>;
   reconnects: ReconnectRegistry;
+  /** 所属房间 id，只进日志（S5/S6）—— 循环本身不需要知道自己在哪个房间 */
+  roomId?: string;
   /**
    * 淘汰一个玩家。
    * ★ 后果留在调用方 —— `takeExpired()` 只给名单，这是 M9 刻意留的设计
@@ -123,8 +127,29 @@ export class MatchLoop {
   private ended = false;
   tick = 0;
 
+  /**
+   * S6 可观测：tick 计数与耗时。此前**追帧丢弃是静默的** ——
+   * 服务器已经在丢模拟时间（比赛悄悄变慢）而没有任何一行输出。
+   * `/healthz` 聚合它，压测判据（他房 tick 节奏不受影响）直接读它。
+   */
+  readonly stats = {
+    ticks: 0,
+    /** 单 tick 实际耗时超过 TICK_DT 的次数（追不上节奏的先兆） */
+    slowTicks: 0,
+    /** 有史以来最慢的一个 tick，毫秒 */
+    maxTickMs: 0,
+    /** 因超过 MAX_CATCHUP_TICKS 被丢弃的模拟时间，折算成 tick 数 */
+    droppedTicks: 0,
+    /** S1 第二道防线丢弃的战斗指令数 */
+    droppedCommands: 0,
+  };
+  /** 过载日志节流：droppedTicks 的告警最多每 5 秒一条，防止过载时日志自己成为负载 */
+  private lastOverloadLogMs = 0;
+
   /** 本 tick 收到的技能请求。每 tick 消费后清空 */
   private readonly pendingCasts = new Map<EntityId, CastIntent>();
+  /** S1：每玩家本 tick 已入队的指令数（enqueue 的上限判据），applyCommands 清零 */
+  private readonly pendingCommandCounts = new Map<string, number>();
 
   /**
    * 本 tick 收到的其他战斗指令（选目标、换装、交互…）。
@@ -178,11 +203,54 @@ export class MatchLoop {
     this.lastRealMs = now;
 
     const maxAccum = MAX_CATCHUP_TICKS * SIM.TICK_DT;
-    if (this.accumulator > maxAccum) this.accumulator = maxAccum;
+    if (this.accumulator > maxAccum) {
+      // S6：追帧丢弃不再静默 —— 折算成 tick 数计入，并节流地喊一声
+      this.stats.droppedTicks += Math.floor((this.accumulator - maxAccum) / SIM.TICK_DT);
+      this.accumulator = maxAccum;
+      if (now - this.lastOverloadLogMs > 5000) {
+        this.lastOverloadLogMs = now;
+        log('warn', 'ticks_dropped', {
+          roomId: this.deps.roomId, totalDropped: this.stats.droppedTicks,
+        });
+      }
+    }
 
-    while (this.accumulator >= SIM.TICK_DT && !this.ended) {
-      this.accumulator -= SIM.TICK_DT;
-      this.advance();
+    /**
+     * S5：**爆炸半径 = 单房间。** 此前 tick 里任何一个异常都是未捕获异常，
+     * 带走整个进程 —— 而 `assertNoHiddenEntities` **设计上就会抛**
+     * （宁可断也不透视）。现在一个房间的 bug 只结束这一个房间：
+     * 判平局收场（服务器故障，不该有人白赢白输），玩家回到房间页，
+     * 其他房间照常 tick。
+     * ★ `advance()` 刻意留在 catch 外面不包 —— 它是测试/验收的白盒入口，
+     *   那边**要**异常冒出来才能定位；这里是生产入口，才需要收容。
+     */
+    try {
+      while (this.accumulator >= SIM.TICK_DT && !this.ended) {
+        this.accumulator -= SIM.TICK_DT;
+        const t0 = performance.now();
+        this.advance();
+        const ms = performance.now() - t0;
+        this.stats.ticks++;
+        if (ms > this.stats.maxTickMs) this.stats.maxTickMs = ms;
+        if (ms > SIM.TICK_DT * 1000) this.stats.slowTicks++;
+      }
+    } catch (err) {
+      log('error', 'tick_error', {
+        roomId: this.deps.roomId,
+        tick: this.tick,
+        error: err instanceof Error ? (err.stack ?? err.message) : String(err),
+      });
+      this.ended = true;
+      this.stop();
+      try {
+        this.deps.onEnd('draw');
+      } catch (endErr) {
+        // 收场自己也炸了：只能记下来。房间留在 started 态，等下一次全服重启
+        log('error', 'tick_error_onend_failed', {
+          roomId: this.deps.roomId,
+          error: endErr instanceof Error ? (endErr.stack ?? endErr.message) : String(endErr),
+        });
+      }
     }
   }
 
@@ -329,8 +397,21 @@ export class MatchLoop {
     this.pendingCasts.set(entityId, intent);
   }
 
-  /** 其他战斗指令排队。合法性由 RoomServer 在收到时校验（要能回 Rejected）*/
+  /**
+   * 其他战斗指令排队。合法性由 RoomServer 在收到时校验（要能回 Rejected）。
+   *
+   * ★ S1 第二道防线：每玩家每 tick 最多 `COMMANDS_PER_TICK_MAX` 条 ——
+   *   令牌桶按秒算、这里按 tick 算：即便某类消息将来绕过了桶，
+   *   一 tick 也做不出 1000 次 TabTarget 全实体排序。超出**丢弃计数**，
+   *   不回话（能触到这条上限的只有脚本；合法玩家 50ms 里点不出 16 条）。
+   */
   enqueue(playerId: string, cmd: MatchCommand): void {
+    const n = (this.pendingCommandCounts.get(playerId) ?? 0) + 1;
+    this.pendingCommandCounts.set(playerId, n);
+    if (n > LIMITS.COMMANDS_PER_TICK_MAX) {
+      this.stats.droppedCommands++;
+      return;
+    }
     this.pendingCommands.push({ playerId, cmd });
   }
 
@@ -370,6 +451,7 @@ export class MatchLoop {
   private applyCommands(): void {
     const commands = this.pendingCommands;
     this.pendingCommands = [];
+    this.pendingCommandCounts.clear();
 
     for (const { playerId, cmd } of commands) {
       const e = this.viewerOf(playerId);

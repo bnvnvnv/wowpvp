@@ -61,12 +61,12 @@
 
 | ID | 债 | 证据 | 影响 | 状态 |
 |---|---|---|---|---|
-| S1 | **无任何消息速率限制**：`inputQueue` 在 tick 间无上限；`pendingCommands` 无界且逐条执行（1000 条 TabTarget = 一 tick 内 1000 次全实体排序）。单客户端可拖慢同机全部房间 | `packages/server/src/room/Session.ts` `handleRaw`；`MatchLoop.ts` `enqueue()`/`applyCommands()` | **不需要游戏知识即可打穿**的路径 | ⛔ |
-| S2 | **无 `maxPayload`（ws 默认 100MiB）/ 无出站背压（不看 `bufferedAmount`）/ `roomId` 无长度上限**（会被当 Map 键长期持有） | `packages/server/src/index.ts`（≈:50、:23-27）；`shared/src/net/codec.ts` roomId 分支 | 内存放大 / 慢读者拖爆出站缓冲 | ⛔ |
-| S3 | **无 origin 校验、无连接/房间/房内人数上限**（观战席无限，每人每 tick 一份完整快照） | `index.ts`（无 verifyClient）；`room/RoomServer.ts` `connect()`；`shared/src/sim/match/room.ts` `joinRoom()` | 跨站连接 + 资源放大 | ⛔ |
-| S4 | **无 TLS/WSS**：客户端硬编码 `ws://`；重连令牌明文过网且**整局 24h 有效** → 同网段嗅探一次即可在受害者断线时接管。令牌本身是 UUIDv4（够强），弱点全在传输层 | `packages/client/src/main.ts`（≈:139）；`room/RoomServer.ts` `TAKEOVER_GRACE_SECONDS`（≈:112） | 会话劫持面；HTTPS 页面下混合内容直接连不上 | ⛔ |
-| S5 | **tick 循环无异常防护**：`setInterval(pump)` 无 try/catch、无 `uncaughtException`/SIGTERM 处理，而 `assertNoHiddenEntities` 设计上会抛 → 一个 bug = 全服进程崩、带走所有房间 | `packages/server/src/MatchLoop.ts`（≈:152-157、:697） | 单点全崩 | ⛔ |
-| S6 | **无监控/结构化日志/健康检查**：全部日志 6 行 console；追帧丢弃（超 5 tick 丢）是静默的，过载不可见 | `index.ts`；`MatchLoop.ts`（≈:171） | 运维盲区 | ⛔ |
+| S1 | **无任何消息速率限制**：`inputQueue` 在 tick 间无上限；`pendingCommands` 无界且逐条执行（1000 条 TabTarget = 一 tick 内 1000 次全实体排序）。单客户端可拖慢同机全部房间 | 入站令牌桶（`Session.handleRaw` 解析**前**判、静默丢弃、持续滥用 terminate）+ 每玩家每 tick 命令数上限（`MatchLoop.enqueue`）。参数集中在 `limits.ts`，人机会话跳过 | **不需要游戏知识即可打穿**的路径 | ✅ 批次三 3.6（2026-08-05，Session.rate 单测 8 + verify:hardening 压测「灌 4000 条/s 他房仍 100% 20Hz」） |
+| S2 | **无 `maxPayload`（ws 默认 100MiB）/ 无出站背压（不看 `bufferedAmount`）/ `roomId` 无长度上限**（会被当 Map 键长期持有） | `maxPayload` 16KB（ws 以 1009 关）+ **背压巡检**（`backpressureStrike` 纯函数：连续两个巡检间隔都超阈值才断 —— 瞬时冲高不误杀，白盒同步快进那一幕正是被它救的）+ codec `roomId ≤ 32` | 内存放大 / 慢读者拖爆出站缓冲 | ✅ 批次三 3.6（2026-08-05，背压判定 4 单测 + hardening maxPayload e2e） |
+| S3 | **无 origin 校验、无连接/房间/房内人数上限**（观战席无限，每人每 tick 一份完整快照） | Origin 白名单（`verifyClient` 握手层拒绝，env `WOWPVP_ORIGINS`）+ 连接数（1013）/房间数（拒新建）/房内成员数（拒加入）三档上限 | 跨站连接 + 资源放大 | ✅ 批次三 3.6（2026-08-05，hardening e2e 5 条） |
+| S4 | **无 TLS/WSS**：客户端硬编码 `ws://`；重连令牌明文过网且**整局 24h 有效** → 同网段嗅探一次即可在受害者断线时接管。令牌本身是 UUIDv4（够强），弱点全在传输层 | `packages/client/src/main.ts`（≈:139）；`room/RoomServer.ts` `TAKEOVER_GRACE_SECONDS`（≈:112） | 会话劫持面；HTTPS 页面下混合内容直接连不上 | ⛔ **归发布前 F3**（要配反向代理，与部署形态绑定） |
+| S5 | **tick 循环无异常防护**：`setInterval(pump)` 无 try/catch、无 `uncaughtException`/SIGTERM 处理，而 `assertNoHiddenEntities` 设计上会抛 → 一个 bug = 全服进程崩、带走所有房间 | `MatchLoop.pump` try/catch（**爆炸半径 = 单房间**：出错房间判平局收场，其余照跑）+ 主入口 `uncaughtException`/`unhandledRejection`/SIGTERM/SIGINT（**只在直接运行时装**，import 时不装以免吞测试失败） | 单点全崩 | ✅ 批次三 3.6（2026-08-05，containment 4 单测：advance 抛 → onEnd(draw)、不二次抛、日志可见、onEnd 自身也抛的兜底） |
+| S6 | **无监控/结构化日志/健康检查**：全部日志 6 行 console；追帧丢弃（超 5 tick 丢）是静默的，过载不可见 | JSON 行日志 `log.ts`（`onLog` 测试钩子）+ `/healthz`（聚合读数、**不带房间码**）+ tick 耗时/慢 tick/丢帧计数（`MatchLoop.stats`，过载告警 5s 节流）+ 半开/限流/背压/异常关闭全部留痕 | 运维盲区 | ✅ 批次三 3.6（2026-08-05，/healthz e2e + 各防线日志被压测断言） |
 | S7 | **光环 id 全量下发泄露隐身攻击者的职业**：`Damage.sourceId` 抹了，但目标身上的 `auraId`（形如 `rogue.rupture`）与 `AuraApplied` 广播直接说出攻击者职业。「抹来源」防线的语义漏点，需拍板口径（与 X3 的 skillId 同题） | `shared/src/net/visibility.ts` `snapshotEntity` auras 分支 | 不违反任何验收，但未记录过 | ⛔ |
 | S8 | **`PeerDisconnected`/`PeerEliminated` 全房广播** → 敌方准确知道哪个对手正由 AI 操作（战术信息）。需设计拍板：是否只发给己方 | `room/RoomServer.ts`（≈:176-180、:509） | 与偏差 #14 耦合 | ⛔ |
 | S9 | **文档债**：无延迟补偿（判定用服务器当前 tick，高延迟纯吃亏）是合理取舍但 docs/08 **没写**；「20Hz 够用」的论证只覆盖控制时长分辨率，没覆盖输入 50ms 量化对打断窗口的影响 | `docs/08-network-protocol.md` §5 | 取舍未记档 = 将来被当 bug 反复排查 | ⛔ |

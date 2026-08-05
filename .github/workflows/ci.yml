@@ -68,5 +68,7 @@ jobs:
       - run: pnpm verify:m9
       - run: pnpm verify:m10
       - run: pnpm verify:m16
+      # 3.6 公网硬化压测：单客户端灌 1000 条/s 不影响他房 tick 节奏（纯 ws）
+      - run: pnpm verify:hardening
       # 配平是冒烟不是判据：断言具体数字会把每次有意的配平改动都变成红灯
       - run: pnpm balance

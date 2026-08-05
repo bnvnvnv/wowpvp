@@ -30,6 +30,22 @@ import {
   type ServerMessage,
 } from '@wowpvp/shared';
 
+import { log } from '../log.js';
+
+/**
+ * 入站消息限流（技术债总账 S1）。
+ * ★ 参数由 RoomServer 注入（最终来自 `LIMITS`/ServerOptions）——
+ *   Session 不 import 默认值，测试压小阈值时走的仍是同一条判定路径。
+ */
+export interface RateLimitConfig {
+  /** 桶容量（突发额度，条） */
+  capacity: number;
+  /** 每秒回填（条/秒）。必须显著高于合法客户端稳态流量（见 LIMITS 注释） */
+  refillPerSec: number;
+  /** 累计丢弃达到这么多条后断开连接 */
+  disconnectAfterDropped: number;
+}
+
 /** 连接当前处于哪个阶段。决定哪些消息合法 */
 export const SessionPhase = {
   /** 刚连上，还没进房间 */
@@ -68,10 +84,15 @@ const MATCH_ONLY: ReadonlySet<ClientMessage['t']> = new Set([
   'SpectateFollow',
 ]);
 
-/** 本层需要的 socket 能力。★ 只要这三样 —— 便于测试注入假 socket */
+/** 本层需要的 socket 能力。★ 只要这几样 —— 便于测试注入假 socket */
 export interface SessionSocket {
   send: (data: string) => void;
   close: () => void;
+  /**
+   * 立即掐断（不走关闭握手）。滥用断开用它 —— `close()` 的优雅关闭
+   * 要等对端配合，而 flooder 不配合。没有提供时退回 `close()`。
+   */
+  terminate?: () => void;
   readonly closed: boolean;
   /** 人机的假 socket 标 true（BotSocket）。广播路径据此跳过白做的活（P2）*/
   readonly isBot?: boolean;
@@ -124,13 +145,23 @@ export class Session {
    */
   ackSeq = 0;
 
+  /** S1 令牌桶状态。`rate` 未注入（纯单测）或人机会话时整个跳过 */
+  private tokens = 0;
+  private lastRefillMs = 0;
+  /** 被限流丢弃的消息数（日志与断开判据用） */
+  droppedByRate = 0;
+
   constructor(
     readonly socket: SessionSocket,
     playerId: string,
     /** 收到一条**已鉴权**的消息。协议分发由 RoomServer 负责，本层只管门禁 */
     private readonly onMessage: (session: Session, msg: ClientMessage) => void,
+    /** S1 入站限流参数。不传 = 不限（既有单测与人机会话） */
+    private readonly rate?: RateLimitConfig,
   ) {
     this.playerId = playerId;
+    this.tokens = rate?.capacity ?? 0;
+    this.lastRefillMs = Date.now();
   }
 
   send(msg: ServerMessage): void {
@@ -164,6 +195,42 @@ export class Session {
    *    那会连带整条连接。所以解析用返回值报错，鉴权失败也只是 `reject()`。
    */
   handleRaw(raw: string): void {
+    /**
+     * S1 限流：**在解析之前**。被限的消息连 JSON.parse 都不配拿到 ——
+     * 限流防的正是「每条都要花服务器 CPU」这件事，先解析再限等于白防。
+     *
+     * ★ 丢弃是**静默**的（不回 Rejected）：给每条超速消息回一条拒绝，
+     *   等于把 1000 条/s 的入站放大成 1000 条/s 的出站 —— 回复比丢弃贵。
+     *   「拒绝不等于掉线」那条纪律管的是**内容**非法（单条畸形包）；
+     *   量的滥用没有那条豁免：持续灌注直接断开，日志留证。
+     * ★ 人机会话（BotSocket）跳过：它们是服务器自己造的流量，节奏由
+     *   BotDriver 决定（≈25 条/s，贴着回填速率），限它只会引入抖动。
+     */
+    if (this.rate && this.socket.isBot !== true) {
+      const now = Date.now();
+      this.tokens = Math.min(
+        this.rate.capacity,
+        this.tokens + ((now - this.lastRefillMs) / 1000) * this.rate.refillPerSec,
+      );
+      this.lastRefillMs = now;
+      if (this.tokens < 1) {
+        this.droppedByRate++;
+        if (this.droppedByRate === 1) {
+          log('warn', 'rate_limited', { playerId: this.playerId, roomId: this.roomId });
+        }
+        // ★ 恰好到阈值那一条才断开+记日志：terminate 之后在途消息仍会
+        //   到达几条，用 >= 会把同一件事记几十遍
+        if (this.droppedByRate === this.rate.disconnectAfterDropped) {
+          log('warn', 'rate_flood_disconnect', {
+            playerId: this.playerId, roomId: this.roomId, dropped: this.droppedByRate,
+          });
+          (this.socket.terminate ?? this.socket.close)();
+        }
+        return;
+      }
+      this.tokens -= 1;
+    }
+
     const parsed = parseClientMessage(raw);
     if (!parsed.ok) {
       this.reject('parse', parsed.reason);

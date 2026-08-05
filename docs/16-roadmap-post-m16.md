@@ -129,7 +129,7 @@
 | 3.3 | G3 | 资产瘦身 + LFS | 先删可证明死重（`_2k.hdr` 全部 + 11 个未引用 preset ≈150MB）→ 盘点 `ui/` 死文件 → 拍板 LFS 迁移时机（**改写历史，越早越便宜**，需要所有克隆重拉） | `verify:m12` §1 素材校验不掉；clone 体积下降可量 |
 | 3.4 | G4 | 双场景抽共享层 | **渐进不重写**：第一铲抽 `SceneShell`（renderer/env/quality/resize/canvas 输入接线），第二铲统一实体渲染循环（marker/护盾/化形那 5 行×2 收成一份），`syncWeapon` 只剩一份 | 行为零变化：全量 verify 不掉；重复清单逐项销 |
 | 3.5 | W12 | **夺旗联网线** | 大厅加模式选择（协议扩 `SetRoomPreset` 或新消息，照 M10 规矩）→ `NetworkScene` 接 `FlagMarkers` + 旗手 blip + `renderCtf`（依赖 2.2/2.3 的底）→ 结算面板补夺旗列（X4 顺手） | **新 verify 脚本**：双浏览器纯 UI 开一场夺旗打到得分，全程断言旗帜可见 |
-| 3.6 | S1–S6 | 公网硬化包 | 令牌桶限流（每连接每秒消息数）、`maxPayload` 16KB、`bufferedAmount` 背压断开、origin 白名单（env 配置）、全局上限（连接/房间/房内人数/roomId 长度）、tick try/catch + `uncaughtException` + 结构化日志 + `/healthz` + tick 耗时/丢帧计数 | 压测脚本：单客户端灌 1000 条/s 不影响他房 tick 节奏；半开/超载均有日志可见 |
+| 3.6 | S1–S6 | 公网硬化包 ✅ | 令牌桶限流、`maxPayload` 16KB、背压**巡检**断开（初版每 send 判被白盒快进误杀，改巡检式）、origin 白名单（`verifyClient` 握手层 + env）、连接/房间/成员三档上限 + `roomId ≤32`、tick try/catch（爆炸半径=单房间）+ `uncaughtException`（只主入口）+ JSON 日志 + `/healthz` + tick 耗时/丢帧计数 | ✅ `verify:hardening` 6/6：灌 4000 条/s 他房仍 100% 20Hz；限流/断开日志可见（2026-08-05） |
 | 3.7 | P6 | 空房不空转 | 「零真人 session → 终止对局」判据（人机会话不算人） | 单测：全员掉线后 loop 停止、房间回收 |
 | 3.8 | W14 | 上半身动画分层（大件，可并行慢做） | additive/骨骼遮罩；先接四个零调用片段：`Spellcast_Raise`（预备）、`Spellcast_Shoot`（释放）、`2H_Ranged_Shoot`（猎人）、`Block`（格挡） | 真机截图：跑动施法上半身有姿态；m12 不掉 |
 | 3.9 | W7 | 键位重绑 UI + 持久化 | 设置面板 v2：`rebind()` 首次有调用方、localStorage 键、`<kbd>` 改读 `getBindings()` | 断言：重绑后提示同步、刷新保留、冲突检测 |

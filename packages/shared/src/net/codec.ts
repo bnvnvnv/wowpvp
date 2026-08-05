@@ -144,7 +144,14 @@ export const parseClientMessage = (raw: string): ParseResult => {
     case 'JoinRoom': {
       const roomId = v['roomId'];
       const name = v['name'];
-      if (typeof roomId !== 'string' || roomId.length === 0) return bad('roomId 无效');
+      /**
+       * ★ 上限 32（S2）：roomId 会被服务器当 Map 键**长期持有** ——
+       *   没有上限的话一条消息就能塞进来一个 10MB 的字符串常驻内存。
+       *   合法房间码只有 4 个字符（lobby 的 makeRoomCode），32 已是宽裕。
+       */
+      if (typeof roomId !== 'string' || roomId.length === 0 || roomId.length > 32) {
+        return bad('roomId 无效（1–32 字符）');
+      }
       if (typeof name !== 'string' || name.length === 0 || name.length > 24) {
         return bad('name 无效（1–24 字符）');
       }

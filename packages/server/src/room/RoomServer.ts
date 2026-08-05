@@ -55,6 +55,8 @@ import { randomUUID } from 'node:crypto';
 
 import { MatchLoop, type MatchCommand } from '../MatchLoop.js';
 import { BotDriver, BotSocket, type BotSeat } from '../BotDriver.js';
+import { LIMITS } from '../limits.js';
+import { log } from '../log.js';
 import {
   createReconnectRegistry,
   leaveImmediately,
@@ -62,7 +64,18 @@ import {
   registerDisconnect,
   type ReconnectRegistry,
 } from './reconnect.js';
-import { Session, SessionPhase, type SessionSocket } from './Session.js';
+import { Session, SessionPhase, type RateLimitConfig, type SessionSocket } from './Session.js';
+
+/**
+ * S1/S3 的资源上限（全部有 LIMITS 默认值；测试压小走同一条路径）。
+ * ★ 这些是**服务器资源**边界，不是游戏规则 —— 游戏规则（队伍容量、
+ *   观战席不设限）仍在 sim 的 room.ts，这里不复述也不覆盖。
+ */
+export interface RoomServerOptions {
+  maxRooms?: number;
+  maxRoomMembers?: number;
+  rate?: RateLimitConfig;
+}
 
 /** 默认房间配置。★ 快速比赛单回合制（2.1） */
 const DEFAULT_CONFIG = {
@@ -118,13 +131,27 @@ export class RoomServer {
   private readonly rooms = new Map<string, ServerRoom>();
   /** 所有活着的连接，含还没进房间的 */
   private readonly all = new Set<Session>();
+  private readonly maxRooms: number;
+  private readonly maxRoomMembers: number;
+  private readonly rate: RateLimitConfig;
+
+  constructor(opts: RoomServerOptions = {}) {
+    this.maxRooms = opts.maxRooms ?? LIMITS.MAX_ROOMS;
+    this.maxRoomMembers = opts.maxRoomMembers ?? LIMITS.MAX_ROOM_MEMBERS;
+    this.rate = opts.rate ?? {
+      capacity: LIMITS.RATE_CAPACITY,
+      refillPerSec: LIMITS.RATE_REFILL_PER_SEC,
+      disconnectAfterDropped: LIMITS.RATE_DISCONNECT_AFTER_DROPPED,
+    };
+  }
 
   // ── 连接 ──────────────────────────────────────────────────────
 
   /** 接入一条新连接。返回的 Session 由传输层喂原始数据 */
   connect(socket: SessionSocket): Session {
     const playerId = `p${nextPlayerSeq++}`;
-    const session = new Session(socket, playerId, (s, msg) => this.handle(s, msg));
+    // ★ S1 限流只挂真人连接 —— 人机会话（takeOverByBot）不传 rate
+    const session = new Session(socket, playerId, (s, msg) => this.handle(s, msg), this.rate);
     this.all.add(session);
     session.send({
       t: 'Welcome',
@@ -318,7 +345,27 @@ export class RoomServer {
       session.reject('JoinRoom', '已经在一个房间里了');
       return;
     }
-    const sr = this.rooms.get(roomId) ?? this.createRoomFor(roomId, session.playerId);
+    /**
+     * S3 资源上限。两条都是**服务器容量**判定，不是游戏规则：
+     *   · 房间数满 → 拒绝**新建**（加入既有房间不受影响）
+     *   · 房间成员满（含观战席）→ 拒绝加入。3.2「观战席不设限」的规则
+     *     语义在 sim 里原样不动 —— 但每个观战者每 tick 都要一份完整快照
+     *     构建与序列化，无上限的观战席就是免费的放大器
+     */
+    const existing = this.rooms.get(roomId);
+    if (!existing && this.rooms.size >= this.maxRooms) {
+      log('warn', 'room_cap_reject', { playerId: session.playerId, rooms: this.rooms.size });
+      session.reject('JoinRoom', '服务器房间数已满，稍后再试');
+      return;
+    }
+    if (existing
+      && existing.room.players.length >= this.maxRoomMembers
+      && !existing.room.players.some((p) => p.id === session.playerId)) {
+      log('warn', 'room_member_cap_reject', { playerId: session.playerId, roomId });
+      session.reject('JoinRoom', `该房间人数已达上限（${this.maxRoomMembers}）`);
+      return;
+    }
+    const sr = existing ?? this.createRoomFor(roomId, session.playerId);
     if (sr.room.started) {
       // ★ 开局后不能加入。想回来要用 Reconnect + 令牌
       session.reject('JoinRoom', '比赛已开始');
@@ -419,6 +466,7 @@ export class RoomServer {
     sr.loop = new MatchLoop(match, {
       sessions: () => sr.sessions,
       reconnects: sr.reconnects,
+      roomId: sr.room.id,
       onEliminate: (playerId, reason) => this.eliminate(sr, playerId, reason),
       onEnd: (winner) => this.endMatch(sr, winner),
       onPreTick: () => sr.bots?.tick(),
@@ -735,5 +783,29 @@ export class RoomServer {
   /** 验收脚本用：某个房间当前的循环（用于单步推进） */
   loopOf(roomId: string): MatchLoop | undefined {
     return this.rooms.get(roomId)?.loop;
+  }
+
+  /**
+   * S6：`/healthz` 的聚合读数。只读、O(房间数)，不碰任何比赛状态。
+   * ★ 刻意不带房间 id 明细 —— 健康检查端点是公开的（负载均衡/监控要探），
+   *   把房间码列出去等于把「可加入的房间」泄露给扫描器。
+   */
+  healthSnapshot(): {
+    connections: number; rooms: number; matches: number;
+    slowTicks: number; droppedTicks: number; droppedCommands: number;
+  } {
+    let matches = 0, slowTicks = 0, droppedTicks = 0, droppedCommands = 0;
+    for (const sr of this.rooms.values()) {
+      if (!sr.loop) continue;
+      matches++;
+      slowTicks += sr.loop.stats.slowTicks;
+      droppedTicks += sr.loop.stats.droppedTicks;
+      droppedCommands += sr.loop.stats.droppedCommands;
+    }
+    return {
+      connections: this.all.size,
+      rooms: this.rooms.size,
+      matches, slowTicks, droppedTicks, droppedCommands,
+    };
   }
 }
