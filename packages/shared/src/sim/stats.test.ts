@@ -72,7 +72,7 @@ const damageEvent = (
   extra: Partial<Extract<CombatEvent, { t: 'damage' }>> = {},
 ): CombatEvent => ({
   t: 'damage', sourceId: src.id, targetId: dst.id, amount, school: School.Fire,
-  absorbed: 0, overkill: 0, immune: false, preventedByEquipment: 0, ...extra,
+  absorbed: 0, overkill: 0, immune: false, skillId: 'test.hit', preventedByEquipment: 0, ...extra,
 });
 
 // ════════════════════════════════════════════════════════════════

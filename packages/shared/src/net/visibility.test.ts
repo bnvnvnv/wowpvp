@@ -20,6 +20,7 @@ import { createCtf, type CtfState } from '../sim/match/flag.js';
 import { addEntity, allocEntityId, createWorld, type World } from '../sim/world.js';
 import {
   CULLING_RULES,
+  HIDDEN_AURA_ID,
   SUDDEN_DEATH_BLIP_GRID,
   assertNoHiddenEntities,
   buildSnapshot,
@@ -499,6 +500,46 @@ describe('14.3 护盾吸收量进快照（M16d）', () => {
     const snap = buildSnapshot(deps(), me);
     expect(snap.entities.map((e) => e.id as number)).not.toContain(sneak.id as number);
     expect(JSON.stringify(snap)).not.toContain('ice_barrier');
+  });
+});
+
+/**
+ * S7：光环 id 泄露施加者职业（`rogue.rupture`）。施加者对接收者不可见时，
+ * 目标身上那条光环的 id 要被掩成中性 token —— 「有个 debuff」照常，
+ * 但不说是谁的什么。
+ */
+describe('S7：隐身施加者的光环 id 掩码', () => {
+  /** 一条会泄露职业的 DoT，id 直接带职业前缀 */
+  const dotDef = {
+    id: 'rogue.rupture', name: '割裂', kind: 'debuff', duration: 12,
+    dispelType: DispelType.Poison, drCategory: 'bleed', school: 0,
+    flags: {},
+  } as never;
+
+  it('★★ 潜行盗贼给可见目标挂 DoT → 敌方接收者看到的 auraId 被掩成中性 token', () => {
+    sneak.flags.stealthed = true;                 // 盗贼对红队不可见
+    applyAura(auras, foe, dotDef, sneak.id, 0);    // 挂在可见的战士身上
+    const snap = buildSnapshot(deps(), me);        // 红队法师视角
+
+    const foeSnap = snap.entities.find((e) => e.id === (foe.id as number))!;
+    const aura = foeSnap.auras[0]!;
+    expect(aura.auraId, '泄露了施加者职业').toBe(HIDDEN_AURA_ID);
+    // 整份快照的字节里不该出现 rogue.rupture
+    expect(JSON.stringify(snap)).not.toContain('rupture');
+  });
+
+  it('★ 施加者可见（未潜行）→ auraId 原样，不误掩', () => {
+    applyAura(auras, foe, dotDef, sneak.id, 0);    // sneak 未潜行 = 可见
+    const snap = buildSnapshot(deps(), me);
+    const foeSnap = snap.entities.find((e) => e.id === (foe.id as number))!;
+    expect(foeSnap.auras[0]!.auraId).toBe('rogue.rupture');
+  });
+
+  it('★ 自己/队友身上的光环不掩（来源友方，本就可见）', () => {
+    applyAura(auras, mate, dotDef, me.id, 0);      // 法师给队友挂（演示：来源=自己）
+    const snap = buildSnapshot(deps(), me);
+    const mateSnap = snap.entities.find((e) => e.id === (mate.id as number))!;
+    expect(mateSnap.auras[0]!.auraId).toBe('rogue.rupture');
   });
 });
 

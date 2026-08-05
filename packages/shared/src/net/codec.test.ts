@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { asEntityId } from '../types/ids.js';
+import { asEntityId, asSkillId } from '../types/ids.js';
 import { School } from '../types/enums.js';
 import { decodeServerMessage, encodeServerMessage, parseClientMessage } from './codec.js';
 import type { ServerMessage } from './protocol.js';
@@ -31,6 +31,23 @@ describe('★ 服务器消息编解码往返', () => {
     const back = decodeServerMessage(encodeServerMessage(msg));
     expect(back).toEqual(msg);
     expect(back && 'crit' in back).toBe(false);
+  });
+
+  it('★ W17/X3：Damage 带 avoided/skillId 往返无损', () => {
+    const msg: ServerMessage = {
+      t: 'Damage', sourceId: asEntityId(1), targetId: asEntityId(2),
+      amount: 0, school: School.Physical, absorbed: 0, immune: false, overkill: 0,
+      avoided: 'parry', skillId: asSkillId('warrior.mortal_strike'),
+    };
+    expect(decodeServerMessage(encodeServerMessage(msg))).toEqual(msg);
+  });
+
+  it('★ S7：AuraApplied 带 sourceId 往返无损（redactFor 据它决定掩不掩）', () => {
+    const msg: ServerMessage = {
+      t: 'AuraApplied', targetId: asEntityId(2), sourceId: asEntityId(1),
+      auraId: 'rogue.rupture', duration: 12, stacks: 1,
+    };
+    expect(decodeServerMessage(encodeServerMessage(msg))).toEqual(msg);
   });
 
   it("★ 入站校验不受影响：客户端消息里塞 'crit' 仍被丢弃", () => {

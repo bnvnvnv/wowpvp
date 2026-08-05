@@ -67,7 +67,7 @@
 | S4 | **无 TLS/WSS**：客户端硬编码 `ws://`；重连令牌明文过网且**整局 24h 有效** → 同网段嗅探一次即可在受害者断线时接管。令牌本身是 UUIDv4（够强），弱点全在传输层 | `packages/client/src/main.ts`（≈:139）；`room/RoomServer.ts` `TAKEOVER_GRACE_SECONDS`（≈:112） | 会话劫持面；HTTPS 页面下混合内容直接连不上 | ⛔ **归发布前 F3**（要配反向代理，与部署形态绑定） |
 | S5 | **tick 循环无异常防护**：`setInterval(pump)` 无 try/catch、无 `uncaughtException`/SIGTERM 处理，而 `assertNoHiddenEntities` 设计上会抛 → 一个 bug = 全服进程崩、带走所有房间 | `MatchLoop.pump` try/catch（**爆炸半径 = 单房间**：出错房间判平局收场，其余照跑）+ 主入口 `uncaughtException`/`unhandledRejection`/SIGTERM/SIGINT（**只在直接运行时装**，import 时不装以免吞测试失败） | 单点全崩 | ✅ 批次三 3.6（2026-08-05，containment 4 单测：advance 抛 → onEnd(draw)、不二次抛、日志可见、onEnd 自身也抛的兜底） |
 | S6 | **无监控/结构化日志/健康检查**：全部日志 6 行 console；追帧丢弃（超 5 tick 丢）是静默的，过载不可见 | JSON 行日志 `log.ts`（`onLog` 测试钩子）+ `/healthz`（聚合读数、**不带房间码**）+ tick 耗时/慢 tick/丢帧计数（`MatchLoop.stats`，过载告警 5s 节流）+ 半开/限流/背压/异常关闭全部留痕 | 运维盲区 | ✅ 批次三 3.6（2026-08-05，/healthz e2e + 各防线日志被压测断言） |
-| S7 | **光环 id 全量下发泄露隐身攻击者的职业**：`Damage.sourceId` 抹了，但目标身上的 `auraId`（形如 `rogue.rupture`）与 `AuraApplied` 广播直接说出攻击者职业。「抹来源」防线的语义漏点，需拍板口径（与 X3 的 skillId 同题） | `shared/src/net/visibility.ts` `snapshotEntity` auras 分支 | 不违反任何验收，但未记录过 | ⛔ |
+| S7 | **光环 id 全量下发泄露隐身攻击者的职业**：`Damage.sourceId` 抹了，但目标身上的 `auraId`（形如 `rogue.rupture`）与 `AuraApplied` 广播直接说出攻击者职业。「抹来源」防线的语义漏点，需拍板口径（与 X3 的 skillId 同题） | **口径：施加者不可见 → auraId 掩成 `HIDDEN_AURA_ID`（"hidden"）、连学派一起藏。** 两条通道都改：`snapshotEntity`（持续快照，按 aura sourceId 判可见性）+ `AuraApplied`（加可空 sourceId，`redactFor` 同款掩码，`referencedEntities` 兜底登记 fail-closed）。客户端所有按 auraId 分派（护盾/控制/化形/复活保护）都不匹配 "hidden"，自然回落中性显示 | 不违反任何验收，但未记录过 | ✅ 批次四（2026-08-05，visibility 掩码单测 ×3 + m10 #1e 字节级） |
 | S8 | **`PeerDisconnected`/`PeerEliminated` 全房广播** → 敌方准确知道哪个对手正由 AI 操作（战术信息）。需设计拍板：是否只发给己方 | `room/RoomServer.ts`（≈:176-180、:509） | 与偏差 #14 耦合 | ⛔ |
 | S9 | **文档债**：无延迟补偿（判定用服务器当前 tick，高延迟纯吃亏）是合理取舍但 docs/08 **没写**；「20Hz 够用」的论证只覆盖控制时长分辨率，没覆盖输入 50ms 量化对打断窗口的影响 | `docs/08-network-protocol.md` §5 | 取舍未记档 = 将来被当 bug 反复排查 | ⛔ |
 
@@ -91,8 +91,8 @@
 | W14 | **8 个动画片段零调用**（`Spellcast_Raise`/`Spellcast_Shoot`/`2H_Ranged_Shoot`/`Block`/`Dualwield_Melee_Attack_Chop`/`Lie_Idle`/`Sit×2`）；**跑动中施法无上半身表现**（`applyClip` 单片段全身淡化，只有 Idle 才播施法姿态，无骨骼分层/additive） | **上半身叠加分层已交付**（`entity/animLayer.ts`：脊柱子树遮罩 + `makeClipAdditive`；`CharacterView.buildCastLayer`/`setCasting` 叠加权重淡入淡出，腿照跑手施法；骨架无脊柱时安全回落旧行为）。核心算法 6 单测（用**真骨架名** hips/spine/chest/upperarm.r/upperleg.l，从 GLB 逐一核对）；art=on 无运行时错误（m12 #12d）。**真机观感截图待确认**（additive 参考帧若不自然，可换 Idle[0]）。**余账**：8 个零调用片段里除 `Spellcasting` 外仍未接（需要施法分阶段/格挡/远程等触发信号）| 每分钟都发生的表现缺失；工作量大 | 🔧 批次三 3.8（2026-08-05，分层机制清；standalone 片段待接） |
 | W15 | **昼夜 preset 全闲置**：5 个 HDR preset 只用 `day`，`MapDef` 无 preset 字段（速赢清单「每张图配一个」连数据入口都没开）；`EnvironmentOptions.sky` 从未被传 false | `MapDef.envPreset`（纯表现字段）+ 每图配档（试验场 day 红线不动 / 教学 dawn / 竞技场 dusk·day·overcast / 夺旗 dawn）+ `presetOf` 校验回落 + 双端消费；防拼错测试钉住每图的值。`sky:false` 仍无消费者（无室内图，如实留） | 四张图长得一样 | ✅ 批次二 2.10（2026-08-05，速赢清单销账） |
 | W16 | **复活保护无渲染器**：`spawnProtection` 是 14.4 essential 八项里唯一「保证不被隐藏、但从来没被画过」的角色 | `StatusMarkers` 金色地环+柔光柱（纯程序化，`?art=off` 同构造）；双端按光环 id `system.spawnProtection` 检测（快照 auras 全公开，与化形同通道）。organically 要等 W12 的夺旗复活波次，白盒断言先钉住 | 保护期不可见 → 玩家误判 | ✅ 批次二 2.11（2026-08-05，单测 ×2 + m13 #19 白盒变异验证） |
-| W17 | **协议缺 `Damage.avoided`**：联网侧闪避/招架/格挡无区分 → 规避三态特效与音全缺（M12 已知不足迁入，「如实地少一层」） | `NetworkScene.ts`（≈:585-601）；`shared/src/net/protocol.ts` | 一笔协议债，照 M10 规矩还 | ⛔ |
-| W18 | **待复核**：他人姓名板施法条在联网侧是否有数据源（M10 已知不足记「快照无他人施法状态」；特效二期接了 `CastStarted` 事件流后 HUD 侧是否跟上未核实） | `net/SnapshotCombatView.ts` `castOf()` | 复核后要么销账要么转正 | ⚠️ |
+| W17 | **协议缺 `Damage.avoided`**：联网侧闪避/招架/格挡无区分 → 规避三态特效与音全缺（M12 已知不足迁入，「如实地少一层」） | `Damage` 加 `avoided?`（sim 早有，只差下发）；`pushEvent` 转发；`NetworkScene` 传给 `HitFeedback.onHit`（闪避/招架/格挡浮字 + 音，其消费早有单测）。规避是被攻击者信息，无泄露争议 | 一笔协议债，照 M10 规矩还 | ✅ 批次四（2026-08-05，codec 往返 + HitFeedback avoided 单测） |
+| W18 | **待复核**：他人姓名板施法条在联网侧是否有数据源（M10 已知不足记「快照无他人施法状态」；特效二期接了 `CastStarted` 事件流后 HUD 侧是否跟上未核实） | **复核结论：数据源已在，销账。** `CastStarted` → `SnapshotCombatView.beginCast()` 注册表 → `castOf(e)`，被 `renderUnitFrame`（目标/焦点框）**与** `renderNameplates`（`.np-cast`）双双消费。M10 缺口早由特效二期事件流补上 | 复核后要么销账要么转正 | ✅ 批次四复核销账（2026-08-05，m13 #23：B 通过事件流看到 A 施法） |
 
 ## X. 表现与内容打磨
 
@@ -100,7 +100,7 @@
 |---|---|---|---|---|
 | X1 | **夺旗图 0 件装饰** —— 唯一没有 `decor` 字段的图（速赢清单「下一铲」） | `makeCtfDecor()`：30 件，地图常量的确定性函数、红蓝中心对称；否定式约束测试钉住「不挡中路/地道口/旗房/墓地」 | 灰盒观感 | ✅ 批次二 2.10（2026-08-05，速赢清单销账） |
 | X2 | 教学图装饰仅 6 件「够用不够看」；走位环无专用地形 | `maps/tutorial.ts`；`PROGRESS.md` 教学分家章节 | 第一印象 | ⛔ |
-| X3 | **死亡回顾无技能名**：协议 `Damage` 只带 school，需加 `skillId`（与 S7 的泄露口径一起拍板） | `NetworkScene.ts`（≈:604-608）；M16a 已知不足 | 协议债 | ⛔ |
+| X3 | **死亡回顾无技能名**：协议 `Damage` 只带 school，需加 `skillId`（与 S7 的泄露口径一起拍板） | `Damage` 加 `skillId?`（`CombatEvent` damage 加 `skillId`，`dealDamage` 三处带 `ctx.skillId`）；死亡回顾用 `getSkill(skillId).name`（`autoAttack`→「普通攻击」，查不到退学派）。**泄露口径**：来源不可见时 `redactFor` 连 skillId 一起抹 | 协议债 | ✅ 批次四（2026-08-05，m13 #24 回顾显示技能名 + m10 #1e 抹除断言） |
 | X4 | 结算面板无夺旗专属列（携旗距离/护送时长 sim 里都有）；连杀播报无「终结连杀」提示（数据够 UI 没做） | 夺旗列已清：`MatchStatsRow` 补夺旗/归还/截旗三列，面板按模式开关（15.4 否定式反向断言）。**余账**：携旗距离/护送时长等深度列、「终结连杀」提示 | 夺旗列 ✅；终结连杀仍欠 | 🔧 上半批次三 3.5（2026-08-05） |
 | X5 | 装备满槽无「选哪件换掉」对比 UI（10.5 后半，M16 已知不足） | `hud/ArsenalHud.ts` | 武装竞技场体验 | ⛔ |
 | X6 | 引导条 HUD 仍是读条口径（4 秒满格）——3D 法阵已按引导独立时间轴走，HUD 没跟 | `hud/CombatHud.ts` `endsAt - startedAt` 口径 | 引导技能读条骗人 | ⛔ |

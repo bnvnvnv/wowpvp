@@ -21,9 +21,11 @@
  */
 
 import {
+  HIDDEN_AURA_ID,
   INTERACT_RANGE,
   SIM,
   SwapKind,
+  asSkillId,
   encodeServerMessage,
   assertNoHiddenEntities,
   beginFlagInteract,
@@ -643,7 +645,9 @@ export class MatchLoop {
           t: 'Damage', sourceId: ev.sourceId, targetId: ev.targetId,
           amount: ev.amount, school: ev.school, absorbed: ev.absorbed, immune: ev.immune,
           overkill: ev.overkill,
-          // crit 条件展开：普通命中不付这个字段的带宽（与事件层同一约定）
+          // W17/X3 条件展开：普通命中不付未用字段的带宽（与事件层同一约定）
+          ...(ev.avoided ? { avoided: ev.avoided } : {}),
+          ...(ev.skillId ? { skillId: asSkillId(ev.skillId) } : {}),
           ...(ev.crit ? { crit: true } : {}),
         });
         break;
@@ -656,7 +660,9 @@ export class MatchLoop {
         break;
       case 'auraApplied':
         out.push({
-          t: 'AuraApplied', targetId: ev.targetId, auraId: ev.auraId,
+          // ★ S7：带上 sourceId —— redactFor 据它决定是否掩掉 auraId（施加者
+          //   不可见时，`rogue.rupture` 会连同 sourceId 一起被抹）
+          t: 'AuraApplied', targetId: ev.targetId, sourceId: ev.sourceId, auraId: ev.auraId,
           duration: ev.duration, stacks: 1,
         });
         break;
@@ -739,8 +745,24 @@ export class MatchLoop {
         if (!visible(msg.targetId)) return undefined;
         // 来源看不见 → 抹掉来源，数字照发（14.1）
         if (!visible(msg.sourceId)) {
-          const { sourceId: _drop, ...rest } = msg;
+          // ★ X3/S7：`skillId`（`rogue.rupture`）与 sourceId 同样泄露职业，
+          //   一起抹。`avoided`/`crit`/`school` 不泄露来源，留着（14.1 反馈）
+          const { sourceId: _s, ...rest } = msg as Extract<ServerMessage, { t: 'Damage' | 'Heal' }>;
+          if ('skillId' in rest) delete (rest as { skillId?: unknown }).skillId;
           return rest as ServerMessage;
+        }
+        return msg;
+      }
+      /**
+       * ★ S7：光环 id 泄露施加者职业。施加者不可见 → 抹 sourceId + 把 auraId
+       *   掩成中性 token（目标身上「有个 debuff」照常显示，不说是谁的什么）。
+       *   施加者可见（或已离场 = `visible` 判 true）→ 原样。
+       */
+      case 'AuraApplied': {
+        if (!visible(msg.targetId)) return undefined;
+        if (!visible(msg.sourceId)) {
+          const { sourceId: _s, ...rest } = msg;
+          return { ...rest, auraId: HIDDEN_AURA_ID };
         }
         return msg;
       }
@@ -963,7 +985,12 @@ const removalReason = (
 export const referencedEntities = (msg: ServerMessage): EntityId[] => {
   switch (msg.t) {
     // ── 走 dispatch() 广播的事件消息：引用的实体逐字段登记 ──────
-    case 'AuraApplied': case 'AuraRemoved': return [msg.targetId];
+    // ★ S7：AuraApplied 现在有可空 sourceId。redactFor 有它的专门分支（抹 id +
+    //   掩 auraId），这里登记 sourceId 是**兜底**：万一那个分支被删，这里会因
+    //   sourceId 不可见而整条丢（过严但安全），不会漏出 `rogue.rupture`
+    case 'AuraApplied':
+      return msg.sourceId !== undefined ? [msg.targetId, msg.sourceId] : [msg.targetId];
+    case 'AuraRemoved': return [msg.targetId];
     case 'Death': return msg.killerId !== undefined ? [msg.entityId, msg.killerId] : [msg.entityId];
     case 'CastStarted': return [msg.casterId];
     case 'CastInterrupted': return [msg.casterId];

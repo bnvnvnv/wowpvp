@@ -175,6 +175,45 @@ m10 14/14 · m12 21/21 · balance 重出 · `scripts/diag-feel.mjs`（新增）�
 
 ---
 
+## 清账批次四：协议债小批（W17 + X3 + S7 + W18）—— 一次打包（2026-08-05）
+
+四项都要过同一套流程（协议类型 + codec 校验 + 零泄露断言），攒批做一次
+回归比零敲碎打便宜。总账 W17/X3/S7→✅、W18 复核销账。
+
+- **W17 `Damage.avoided`**：闪避/招架/格挡三态。sim 早有（`dealDamage` 的
+  `rollAvoidance`），只差下发 —— `Damage` 加 `avoided?`、`pushEvent` 转发、
+  `NetworkScene` 传给 `HitFeedback.onHit`（浮字 + 音，消费早有单测）。
+  规避是被攻击者信息，对攻击者可见是 8.x 既有语义，无泄露争议。
+- **X3 `Damage.skillId`**：死亡回顾此前只有学派（「冰霜 240」）。`CombatEvent`
+  damage 加 `skillId`、`dealDamage` 三处带 `ctx.skillId`、`Damage` 加 `skillId?`；
+  回顾用 `getSkill(skillId).name`（`autoAttack`→「普通攻击」，查不到退学派）。
+- **S7 光环 id 隐身泄露**：`Damage.sourceId` 早就抹了，但目标身上的
+  `auraId`（`rogue.rupture`）与 AuraApplied 直接说出攻击者职业。**拍板口径**：
+  施加者对接收者不可见 → auraId 掩成 `HIDDEN_AURA_ID`（"hidden"）、连学派一起藏。
+  两条通道都改：`snapshotEntity`（持续快照，按 aura 的 sourceId 判可见性）+
+  `AuraApplied`（加可空 sourceId、`redactFor` 同款掩码、`referencedEntities`
+  兜底登记 fail-closed）。X3 的 skillId 走同一口径：来源不可见时随 sourceId 一起抹。
+  ★ 客户端所有按 auraId 分派的逻辑（护盾/控制/化形/复活保护）都不匹配 "hidden"，
+  自然回落「一个不知来历的 debuff」的中性显示 —— 正是要的效果，零客户端改动。
+- **W18 复核销账**：他人姓名板施法条**有数据源** ——`CastStarted` 事件流 →
+  `SnapshotCombatView.beginCast()` 注册表 → `castOf(e)`，被 `renderUnitFrame`
+  （目标/焦点框）与 `renderNameplates`（`.np-cast`）双双消费。M10 的「快照无
+  他人施法状态」缺口早由特效二期的事件流补上，这次核实并钉住。
+
+### 判据与回归
+
+`verify:m10` **16/16**（新增 #1e：来源不可见时 skillId + auraId 一并抹、
+掩成 "hidden" 的**字节级**断言，与既有 #1c「抹 sourceId」同一场景加验）；
+消费侧断言齐全：m13 **24/24**（新增 #23 W18「B 通过事件流看到 A 施法」、
+#24 X3「回顾显示技能/普攻名不是学派名」）、HitFeedback avoided 单测、
+visibility S7 掩码 ×3、codec 往返 ×2、referencedEntities AuraApplied sourceId。
+全仓 **1217 单测**；m16 29/29 · w12 11/11 · `pnpm balance` 逐位不变（28.6pp，
+skillId 上事件不改伤害数字）· typecheck/lint 全绿。
+
+**批次四收官。** 机动池的 A5（转身速率）/A4（人机可见性）仍留评估 → 批次五。
+
+---
+
 ## 清账批次三 · 3.7–3.9 收官：P6 无人对局回收 · W7 键位重绑 · W14 上半身分层（2026-08-05）
 
 批次三最后三项。P6、W7 全清，W14 分层机制清（standalone 片段与真机截图留账）。
@@ -3141,7 +3180,7 @@ M15 红线（不动 sim 一行）之内不修，**动手前记得补「重叠时
 ## 给下一个接手的人
 
 1. 先跑 `pnpm install && pnpm test && pnpm typecheck && pnpm lint`，确认基线是绿的
-   （**1188 个单元测试 + lint 零告警**，2026-08-05 S1–S6 后口径；`typecheck` 也检查
+   （**1217 个单元测试 + lint 零告警**，2026-08-05 批次四后口径；`typecheck` 也检查
    测试文件本身，见 M9 章节。e2e 验收需先起 `pnpm --filter @wowpvp/client dev`。
    每次 push 后 CI 会跑 typecheck/lint/单测 + 七支非浏览器验收（含 verify:hardening），
    浏览器验收仍需本机手跑）

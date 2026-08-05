@@ -33,6 +33,12 @@ export type CombatEvent =
   | { t: 'damage'; sourceId: EntityId; targetId: EntityId; amount: number; school: School
       absorbed: number; overkill: number; immune: boolean
       /**
+       * X3：造成这次伤害的技能 id（死亡回顾要显示真名，此前只有 school）。
+       * ★ 从 `EffectContext.skillId` 来 —— 每次结算本来就带着它。
+       *   下发到协议时若来源不可见会连同 sourceId 一起被抹（S7 口径）。
+       */
+      skillId: string
+      /**
        * 16.2「护甲减少伤害」：本次伤害里被**装备**（武器 + 护甲）挡掉的量。
        * 与防御技能挡掉的量分开记 —— 否则圣盾术的功劳会记到板甲头上。
        */

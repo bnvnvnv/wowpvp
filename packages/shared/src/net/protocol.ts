@@ -325,13 +325,32 @@ export type ServerMessage =
        * ★ 不泄露任何东西：紧随其后必然有一条公开的 Death。
        */
       overkill: number
+      /**
+       * W17：这一发被完全规避的方式（8.x 闪避/招架/格挡）。amount 恒为 0。
+       * ★ 规避是**被攻击者**的信息，对攻击者可见是 8.x 既有语义，无泄露争议。
+       */
+      avoided?: 'dodge' | 'parry' | 'block'
+      /**
+       * X3：造成伤害的技能 id（死亡回顾显示真名，此前只有 school）。
+       * ★★ **可空且随 sourceId 一起被抹**（S7 口径）：`rogue.rupture` 这类
+       *   id 直接说出攻击者职业 —— 来源不可见时它和 sourceId 同样是泄露面，
+       *   `redactFor` 抹 sourceId 时连它一起抹。来源可见时才带。
+       */
+      skillId?: SkillId
       /** 暴击（已知偏差 #7）。★ 服务器→客户端方向，见 FORBIDDEN_CLIENT_FIELDS 注释 */
       crit?: boolean }
   /** `sourceId` 可空，理由同 Damage */
   | { t: 'Heal'; sourceId?: EntityId; targetId: EntityId; amount: number; overheal: number
       /** 治疗暴击，语义同 Damage.crit */
       crit?: boolean }
-  | { t: 'AuraApplied'; targetId: EntityId; auraId: string; duration: number; stacks: number }
+  /**
+   * ★ S7：`sourceId` 可空且**可被抹**。光环 id（`rogue.rupture`）泄露施加者
+   *   职业，与 Damage.skillId 同题：施加者对接收者不可见时，`redactFor` 把
+   *   `sourceId` 抹掉、`auraId` 掩成中性 token（`HIDDEN_AURA_ID`），
+   *   目标身上「有个 debuff」照常显示，但不说是谁的什么。来源可见才带真 id。
+   */
+  | { t: 'AuraApplied'; targetId: EntityId; sourceId?: EntityId; auraId: string
+      duration: number; stacks: number }
   | { t: 'AuraRemoved'; targetId: EntityId; auraId: string
       // ★ 'trinket'：8.3 战斗意志解除（W8）。闭集扩项是**加法**改动，零泄露面
       reason: 'expired' | 'dispelled' | 'broken' | 'cancelled' | 'shieldBroken' | 'trinket' }

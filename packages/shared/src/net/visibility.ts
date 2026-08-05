@@ -47,6 +47,15 @@ export interface VisibilityContext {
 }
 
 /**
+ * S7：来源不可见时，光环 id 被掩成这个中性 token。
+ * ★ 客户端所有按 auraId 分派的逻辑（护盾/控制/化形/复活保护）都不匹配它，
+ *   于是自然回落到「一个不知来历的 debuff」的中性显示 —— 正是要的效果。
+ * ★ 放在 visibility.ts 而不是 protocol.ts：protocol 反过来 import 本文件的
+ *   快照类型，常量搁这边免了循环依赖。
+ */
+export const HIDDEN_AURA_ID = 'hidden';
+
+/**
  * docs/08 §4.1 的判定阶梯：实体 `target` 是否进入 `viewer` 的快照。
  *
  * 注意与「能否选中」的区别：
@@ -578,6 +587,19 @@ const snapshotEntity = (
 ): EntitySnapshot => {
   const isSelf = e.id === viewer.id;
   const friendly = isFriendly(e, viewer);
+  const ctx: VisibilityContext = deps.ctf ? { ctf: deps.ctf } : {};
+  /**
+   * ★ S7：光环 id（`rogue.rupture`）泄露施加者职业。施加者对 viewer 不可见时
+   *   （潜行的盗贼挂完 DoT 又遁形），把 auraId 掩成中性 token —— 目标身上
+   *   「有个 debuff」照常，但不说是谁的什么。施加者可见 / 是自己或队友 /
+   *   已离场时不掩（正常显示）。
+   * ★ 这是**持续**泄露面（每 tick 一份快照）；AuraApplied 那条一次性的在
+   *   `redactFor` 里用同一口径处理。
+   */
+  const auraSourceVisible = (a: { sourceId: EntityId }): boolean => {
+    const src = deps.world.entities.get(a.sourceId);
+    return !src || isVisibleTo(src, viewer, ctx);
+  };
 
   const snap: EntitySnapshot = {
     id: e.id,
@@ -592,19 +614,24 @@ const snapshotEntity = (
     alive: e.alive,
     resources: Object.fromEntries(e.resources),
     maxResources: Object.fromEntries(e.maxResources),
-    auras: aurasOf(deps.auras, e.id).map((a) => ({
-      auraId: a.def.id,
-      stacks: a.stacks,
-      remaining: Number.isFinite(a.expiresAt) ? Math.max(0, a.expiresAt - deps.world.time) : null,
-      // ★ 非吸收光环一个字节都不带（八职业 90 技能里只有 4 个盾）
-      ...(a.absorbRemaining > 0
-        ? { absorbRemaining: a.absorbRemaining, absorbInitial: a.absorbInitial }
-        : {}),
-      // ★ 同理：只有**控制类**光环带学派（其余一个字节都不带）
-      ...(a.def.drCategory !== undefined && a.def.school !== undefined
-        ? { school: a.def.school }
-        : {}),
-    })),
+    auras: aurasOf(deps.auras, e.id).map((a) => {
+      // S7：施加者不可见 → 掩 id、连学派一起藏（学派也是线索）
+      const hidden = !auraSourceVisible(a);
+      return {
+        auraId: hidden ? HIDDEN_AURA_ID : a.def.id,
+        stacks: a.stacks,
+        remaining: Number.isFinite(a.expiresAt) ? Math.max(0, a.expiresAt - deps.world.time) : null,
+        // ★ 非吸收光环一个字节都不带（八职业 90 技能里只有 4 个盾）
+        //   掩码的 debuff 本就来自敌人，不会是自己/队友给的盾，无需保留吸收量
+        ...(!hidden && a.absorbRemaining > 0
+          ? { absorbRemaining: a.absorbRemaining, absorbInitial: a.absorbInitial }
+          : {}),
+        // ★ 同理：只有**控制类**光环带学派（掩码时连学派也不给）
+        ...(!hidden && a.def.drCategory !== undefined && a.def.school !== undefined
+          ? { school: a.def.school }
+          : {}),
+      };
+    }),
     carryingFlag: e.flags.carryingFlag,
     flags: {
       stunned: e.flags.stunned,

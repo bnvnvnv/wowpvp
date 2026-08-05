@@ -189,6 +189,22 @@ try {
       netCast?.self === true, `casting=${JSON.stringify(netCast)}`);
 
     /**
+     * ★ W18（技术债总账，本次复核销账）：**他人**姓名板施法条有数据源。
+     *   A 正在读条 → 服务器把 CastStarted 广播给 B → B 的 SnapshotCombatView
+     *   注册表登记 A 的施法（`casting.total >= 1` 但 `casting.self === false`）——
+     *   这正是姓名板 `.np-cast` 与目标框施法条的数据源。M10「快照无他人施法
+     *   状态」的缺口早由特效二期的事件流补上，这里把它钉住。
+     */
+    const bCast = await waitStatus(
+      pageB, 'B 看到 A 在施法',
+      'st.net && st.net.casting.total >= 1 && st.net.casting.self === false', 4000,
+    ).catch(() => null);
+    const bCastVal = (bCast?.['net'] as { casting?: { self: boolean; total: number } } | null)?.casting;
+    check('23', '★ 他人姓名板施法条有数据源：B 通过事件流看到 A 的施法（W18 复核）',
+      bCastVal !== undefined && bCastVal.total >= 1 && bCastVal.self === false,
+      `B 侧 casting=${JSON.stringify(bCastVal)}`);
+
+    /**
      * ★ W1（技术债总账）：联网队伍框第一次被喂数据。
      *   `PartyFrame` 自 M8 就构造好、试验场在喂，联网侧此前零调用 ——
      *   治疗职业在联网局里看不到任何队友血量。1v1 里己方 = 自己一人，
@@ -434,9 +450,17 @@ try {
     //   浏览器上下文里没有它（waitStatus 全程用字符串正是同一个原因）
     await pageB.evaluate(`(() => {
       globalThis.__deathSeen = false;
+      globalThis.__recapText = '';
+      // 遮罩（快照 alive=false）与回顾（Death 消息 → showRecap）是**两条**到达
+      // 路径，先后不定 —— 各自独立捕获，谁先满足记谁，不互相等
       const tick = () => {
         const st = globalThis.__lobby && globalThis.__lobby.status;
-        if (st && st.net && st.net.deathOverlay) { globalThis.__deathSeen = true; return; }
+        if (st && st.net && st.net.deathOverlay) globalThis.__deathSeen = true;
+        const recap = document.querySelector('#death-recap');
+        if (recap && recap.style.display !== 'none' && recap.querySelector('.dr-skill')) {
+          globalThis.__recapText = recap.textContent || '';
+        }
+        if (globalThis.__deathSeen && globalThis.__recapText) return;
         requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
@@ -459,6 +483,18 @@ try {
     check('14', '★ 死亡遮罩在阵亡瞬间出现；活着按 V 不进观战（W5 接线 + 11.4 反向）',
       deathSeen && aliveSpectating === null,
       `B 遮罩抓到=${deathSeen}；A 活着按 V 后 spectating=${JSON.stringify(aliveSpectating)}`);
+
+    /**
+     * ★ X3（技术债总账）：死亡回顾用 **skillId** 显示名字，不再学派兜底。
+     *   B 死于 A（可见来源，skillId 未被抹）的**普通攻击**（A 一直把 B 当硬目标 →
+     *   syncSwings 白字，抢在火焰冲击之前把 1 血的 B 打死）。「普通攻击」正是
+     *   `skillId: 'autoAttack'` 的映射 —— 而 X3 之前这里只会显示学派名「物理」。
+     *   所以「回顾里是技能/普攻名、不是学派名」就是 skillId 一路到玩家眼前的证据。
+     */
+    const recapText = (await pageB.evaluate('globalThis.__recapText || ""')) as string;
+    check('24', '★ 死亡回顾用 skillId 显示名字（X3：普攻/技能名，不再学派兜底）',
+      recapText.includes('普通攻击') && !recapText.includes('物理'),
+      `回顾文本「${recapText.replace(/\s+/g, ' ').trim().slice(0, 80)}」`);
 
     // 回到房间：名单还在、全员未准备、职业保留
     await pageA.click('[data-action="rematch"]');

@@ -256,6 +256,20 @@ console.log('\n── 验收 #5 / #36：裁剪发生在快照层，不是客户�
       `蓝方收到 ${dmg.length} 条 Damage（必须 >0，否则这条平凡成立）；` +
       `带潜行者 sourceId 的帧＝${leaksSource ? '有（泄露）' : '无'}`);
 
+    /**
+     * ★ X3 + S7：来源不可见时，`skillId`（技能名）与光环 `auraId`（`verify.dot`）
+     *   同样泄露施加者身份，必须一起抹。1c 里蓝方唯一的伤害/debuff 都来自
+     *   那个看不见的红方 —— 所以蓝方收到的字节里出现**任何** Damage.skillId
+     *   或真实 auraId 都是泄露；掩码后应看到中性 `"hidden"`。
+     */
+    const leaksSkill = blue.raw.some((f) => f.includes('"Damage"') && f.includes('"skillId"'));
+    const leaksAuraId = blue.raw.some((f) => f.includes('verify.dot'));
+    const masked = blue.raw.some((f) => f.includes('"hidden"'));
+    check('1e', '★★ 来源不可见时 skillId 与光环 id 一并抹掉、光环掩成中性 token（X3/S7）',
+      !leaksSkill && !leaksAuraId && masked,
+      `Damage.skillId 泄露＝${leaksSkill}；auraId(verify.dot) 泄露＝${leaksAuraId}；` +
+      `见到掩码 "hidden"＝${masked}`);
+
     clearAuras(match.auras, blueId);
 
     /**

@@ -764,37 +764,41 @@ export class NetworkScene {
       // 战斗事件 → 战斗日志。★ 与试验场同一套文案由 HUD 渲染
       //
       // ★ M12 音效在这里接**协议消息**，而不是 CombatEvent —— 联网客户端
-      //   没有本地 sim，它知道的只有服务器发来的这几条。信息比试验场少
-      //   （例如没有 avoided/immune 的区分），所以声音也如实地少一层，
-      //   ⚠️ 不编一个「大概是格挡」的音效：那会让玩家按不存在的反馈做判断
+      //   没有本地 sim，它知道的只有服务器发来的这几条。W17/X3 之后信息与
+      //   试验场对齐（avoided 区分、skillId 真名），这一层不再「如实地少一层」
       case 'Damage': {
         // W13：可见的战斗事件 = BGM 的战斗判定来源（联网口径）
         this.musicDir?.noteCombat(this.serverTime);
         /**
          * 打击感改造：整段交给 HitFeedback（与试验场同一编排、同一分档判据）。
-         * ★ 顺手修掉旧不一致：flashHit 此前只给自己（:386），现在所有可见
-         *   目标都闪 —— 与试验场一致。
-         * 联网侧的 crit/overkill 来自协议（PR-B），maxHealth 从快照查。
+         * ★ W17：`avoided`（闪避/招架/格挡）现在从协议来 —— HitFeedback 据它
+         *   出「闪避/招架/格挡」浮字与对应音效（此前联网侧全缺，只能吃「0 伤害」）。
+         * 联网侧的 crit/overkill 来自协议，maxHealth 从快照查。
          */
         this.feedback.onHit({
           targetId: msg.targetId, sourceId: msg.sourceId,
           amount: msg.amount, absorbed: msg.absorbed, immune: msg.immune,
           crit: msg.crit === true, overkill: msg.overkill, school: msg.school,
+          ...(msg.avoided ? { avoided: msg.avoided } : {}),
           targetMaxHealth: this.lastEntities.find((e) => e.id === msg.targetId)?.maxHealth,
         });
-        this.view.push(`${this.nameOf(msg.sourceId)} → ${this.nameOf(msg.targetId)} ${msg.amount} 点伤害`, 'ok');
+        // 战斗日志：规避如实写「闪避/招架/格挡」而不是「0 点伤害」
+        const line = msg.avoided
+          ? `${this.nameOf(msg.targetId)} ${AVOIDED_TEXT[msg.avoided]}了 ${this.nameOf(msg.sourceId)}`
+          : `${this.nameOf(msg.sourceId)} → ${this.nameOf(msg.targetId)} ${msg.amount} 点伤害`;
+        this.view.push(line, 'ok');
         /**
          * 16a 死亡回顾的原料。★ 只记打到**自己**身上的 —— 12v12 里全场
          * 伤害流会把这个数组变成内存黑洞，而回顾要回答的只有「我怎么死的」。
-         * ⚠️ 协议里没有技能名（`Damage` 只带学派），所以这里用学派兜底 ——
-         *    不编一个技能名出来。要真名得给协议加 skillId，那是另一笔债。
+         * ★ X3：协议现在带 skillId → 显示技能真名（`getSkill`），`autoAttack`
+         *   映射「普通攻击」，查不到（来源不可见时被抹）才退回学派兜底。
          */
         if (msg.targetId === this.selfId) {
           this.killFeed.noteIncoming(this.serverTime, {
             sourceId: msg.sourceId,
             amount: msg.amount,
             crit: msg.crit === true,
-            skillName: SCHOOL_NAMES[msg.school] ?? '伤害',
+            skillName: skillNameFor(msg.skillId, msg.school),
           });
         }
         break;
@@ -1998,6 +2002,22 @@ const SCHOOL_NAMES: Readonly<Record<string, string>> = {
   nature: '自然',
   shadow: '暗影',
   holy: '神圣',
+};
+
+/** W17：规避三态的战斗日志文案 */
+const AVOIDED_TEXT: Readonly<Record<'dodge' | 'parry' | 'block', string>> = {
+  dodge: '闪避', parry: '招架', block: '格挡',
+};
+
+/**
+ * X3：死亡回顾里这一发的名字。
+ * ★ 有 skillId → 技能真名（`autoAttack` 特判「普通攻击」，它不是数据里的技能）；
+ *   没有 skillId（来源不可见时随 sourceId 一起被抹）→ 退回学派兜底，如实不编。
+ */
+const skillNameFor = (skillId: string | undefined, school: string): string => {
+  if (skillId === undefined) return SCHOOL_NAMES[school] ?? '伤害';
+  if (skillId === 'autoAttack') return '普通攻击';
+  return getSkill(skillId as never)?.name ?? SCHOOL_NAMES[school] ?? '伤害';
 };
 
 /**

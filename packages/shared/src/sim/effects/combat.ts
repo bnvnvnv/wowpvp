@@ -121,7 +121,7 @@ export const dealDamage = (
     ctx.events.push({
       t: 'damage', sourceId: ctx.source.id, targetId: target.id,
       amount: 0, school, absorbed: 0, overkill: 0, immune: true,
-      preventedByEquipment: 0,
+      skillId: ctx.skillId, preventedByEquipment: 0,
     });
     return 0;
   }
@@ -147,7 +147,7 @@ export const dealDamage = (
     ctx.events.push({
       t: 'damage', sourceId: ctx.source.id, targetId: target.id,
       amount: 0, school, absorbed: 0, overkill: 0, immune: false,
-      preventedByEquipment: 0, avoided,
+      skillId: ctx.skillId, preventedByEquipment: 0, avoided,
     });
     // ★ 招架要记时刻 —— 9.x 反击刺「近期发生过招架」靠它（ConditionDef.recentlyParried）
     if (avoided === 'parry') target.lastParryAt = ctx.world.time;
@@ -213,7 +213,7 @@ export const dealDamage = (
   ctx.events.push({
     t: 'damage', sourceId: ctx.source.id, targetId: target.id,
     amount: dealt, school, absorbed, overkill, immune: false,
-    preventedByEquipment,
+    skillId: ctx.skillId, preventedByEquipment,
     ...(byShieldSource.length > 0 ? { absorbedBy: byShieldSource } : {}),
     ...(crit ? { crit: true } : {}),
   });

@@ -26,6 +26,12 @@ describe('A7：referencedEntities 逐类登记', () => {
     expect(referencedEntities(msg({ t: 'AuraRemoved', targetId: id(4) }))).toEqual([id(4)]);
   });
 
+  it('★ S7：AuraApplied 带 sourceId 时同时登记它（兜底 fail-closed）', () => {
+    // redactFor 有专门分支掩 auraId，但万一被删，这里登记 sourceId 让它整条丢
+    expect(referencedEntities(msg({ t: 'AuraApplied', targetId: id(3), sourceId: id(9) })))
+      .toEqual([id(3), id(9)]);
+  });
+
   it('Death 引用死者与凶手；凶手缺席（弃权/来源已抹）时只引用死者', () => {
     expect(referencedEntities(msg({ t: 'Death', entityId: id(1), killerId: id(2) })))
       .toEqual([id(1), id(2)]);
