@@ -141,6 +141,9 @@ export class BotDriver {
         foe,
         rng: this.rngs.get(playerId) ?? Math.random,
         difficulty: seat.difficulty ?? 'normal',
+        // P1b 走位感知：脚下的敌方区域与待落的陨星（只读）
+        ground: m.ground,
+        projectiles: m.projectiles,
       });
 
       /**

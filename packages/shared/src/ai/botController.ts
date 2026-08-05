@@ -25,11 +25,13 @@
 import { ALL_CLASSES, getWeapon } from '../data/index.js';
 import type { SkillDef } from '../data/schema.js';
 import { CastFailure } from '../types/enums.js';
-import { dirToYaw, distance2D, sub } from '../math/vec3.js';
+import { dirToYaw, distance2D, sub, yawToDir, type Vec3 } from '../math/vec3.js';
 import { getCast, isCasting, validateCast, type CastingStore } from '../sim/casting.js';
 import { magnitudeOf } from '../sim/effects/combat.js';
-import type { CombatEntity } from '../sim/entity.js';
+import { isFriendly, type CombatEntity } from '../sim/entity.js';
+import type { GroundStore } from '../sim/groundArea.js';
 import type { MovementInput } from '../sim/movement.js';
+import type { ProjectileStore } from '../sim/projectile.js';
 import type { CastIntent } from '../sim/tick.js';
 import type { World } from '../sim/world.js';
 
@@ -188,6 +190,94 @@ export const standOff = (self: CombatEntity, skills: readonly SkillDef[]): numbe
   return best;
 };
 
+// ── 走位（P1b：风筝与躲圈）─────────────────────────────────────────
+
+/**
+ * 世界方向 → 角色本地的 `forward/strafe` 输入。
+ *
+ * ★★ 这是 P1b 唯一容易搞反的地方，所以抽成纯函数单测：`movement.ts` 的约定是
+ *   `forward = yawToDir(yaw)`、`right = (-forward.z, 0, forward.x)`，
+ *   一次投影即可。⚠️ 后退有 65% 速度惩罚（`BACKWARD_FACTOR`）——**不在这里
+ *   补偿**：那是移动系统的规则，AI 与真人吃同一份。
+ *
+ * @param dir 想去的世界方向（无需归一化，零向量返回原地不动）
+ */
+export const toLocalMove = (
+  dir: { x: number; z: number },
+  yaw: number,
+): { forward: number; strafe: number } => {
+  const len = Math.hypot(dir.x, dir.z);
+  if (len < 1e-6) return { forward: 0, strafe: 0 };
+  const nx = dir.x / len;
+  const nz = dir.z / len;
+  const f = yawToDir(yaw);
+  // right = (-f.z, 0, f.x)，与 movement.ts 逐字一致
+  return {
+    forward: nx * f.x + nz * f.z,
+    strafe: nx * -f.z + nz * f.x,
+  };
+};
+
+/** 一片要躲开的危险区域：圆心 + 半径 */
+interface Danger {
+  center: Vec3;
+  radius: number;
+}
+
+/**
+ * 此刻踩在脚下、**敌方放的、会造成伤害的**地面危险。
+ *
+ * ★ 三个限定词都不能少：
+ *   · 敌方 —— 队友的区域（乃至自己的旋刃斩）不该被躲开
+ *   · 会造成伤害 —— 烟雾弹/照明弹没伤害，躲它等于被一片烟雾赶跑
+ *   · 踩在脚下 —— 圈外的区域绕开是路径规划（P1b 不做），只处理「已经站进去了」
+ */
+const dangersUnderfoot = (p: BotPerception): Danger[] => {
+  const { self } = p;
+  const out: Danger[] = [];
+
+  for (const a of p.ground?.areas ?? []) {
+    const src = p.world.entities.get(a.sourceId);
+    if (src && isFriendly(src, self)) continue;
+    if (!a.onTick.some((e) => e.kind === 'damage')) continue;
+    if (distance2D(self.position, a.center) <= a.radius) {
+      out.push({ center: a.center, radius: a.radius });
+    }
+  }
+
+  // 延迟落点（陨星）：还没砸下来、我站在圈里 → 走出去。14.3 的倒计时
+  // 对玩家可见，AI 用同一份数据做同一个判断
+  for (const pr of p.projectiles?.items ?? []) {
+    if (pr.kind !== 'delayedImpact') continue;
+    if (pr.impactAt <= p.world.time) continue;
+    const src = p.world.entities.get(pr.sourceId);
+    if (src && isFriendly(src, self)) continue;
+    if (distance2D(self.position, pr.center) <= pr.radius) {
+      out.push({ center: pr.center, radius: pr.radius });
+    }
+  }
+  return out;
+};
+
+/**
+ * 逃离一片危险的世界方向：从圆心指向自己（最短出圈路径）。
+ * ★ 恰好站在圆心时（dist≈0）没有「最短方向」—— 用朝向的**反方向**兜底，
+ *   也就是「往后退」，而不是除零成 NaN。
+ */
+const escapeDir = (
+  self: { position: Vec3 },
+  d: Danger,
+  yaw: number,
+): { x: number; z: number } => {
+  const dx = self.position.x - d.center.x;
+  const dz = self.position.z - d.center.z;
+  if (Math.hypot(dx, dz) < 0.05) {
+    const f = yawToDir(yaw);
+    return { x: -f.x, z: -f.z };
+  }
+  return { x: dx, z: dz };
+};
+
 // ── 决策 ─────────────────────────────────────────────────────────
 
 /** 一次决策需要看到的全部东西。★ 只读 —— 这个模块拿不到任何写入口 */
@@ -208,6 +298,13 @@ export interface BotPerception {
   rng: () => number;
   /** 难度档。不传 = `normal`（balance-report 与老调用方走这个默认）*/
   difficulty?: BotDifficulty;
+  /**
+   * P1b 走位感知。**都可选** —— 不传就退化成「不躲圈」，老调用方零改动
+   *（与 `difficulty?` 同一手法）。
+   * ★ 只读：决策层拿不到任何写入口，红线不变。
+   */
+  ground?: GroundStore;
+  projectiles?: ProjectileStore;
 }
 
 /** 一次决策的产出 —— 与真人的两条通道同构 */
@@ -273,8 +370,42 @@ export const decideBotAction = (p: BotPerception): BotAction => {
    *   现行：standOff() 的六成火力规则，见其注释。
    */
   const reach = standOff(self, skills);
-  /** 站位移动：够不着就往前走（风筝后撤是 P1b 的账）*/
-  const advance: MovementInput = { forward: d > reach * 0.9 ? 1 : 0, strafe: 0, jump: false, yaw };
+
+  /**
+   * ★★ P1b 走位：**躲圈 > 进场**。
+   *
+   *   · **躲圈** —— 脚下有敌方伤害区域/待落的陨星就往外走。站在火里不动是
+   *     最致命的低级错误，也是新手最容易看出「这 AI 是木头」的一幕。
+   *   · **进场** —— 够不着就往前走（P1a 既有行为）。
+   *
+   * ★ 难度门：easy 不躲圈（保持木桩手感，与它不打断同源）。
+   *
+   * ⚠️⚠️ **「远程被贴脸就后退」（风筝）实现过，实测后回滚 —— 规则不支持它。**
+   *   P1b 首版加了 `d < reach*0.5 → forward:-1`，基线从 52.4pp 恶化到
+   *   **85.7pp**：法师 21.4→14.3、牧师 69.0→28.6。分离验证（只关风筝、
+   *   保留躲圈）当场回到 52.4pp，元凶确凿。
+   *
+   *   根因是**两条规则的乘积**，不是实现 bug：
+   *     · 后退只有 65% 速度（`BACKWARD_FACTOR`）→ 追不掉 100% 速度的近战
+   *     · 移动打断读条（7.3）→ 风筝全程读不完任何条
+   *   于是纯后退 = 自我封印主要输出/治疗（法师霜矢、牧师全部治疗都是读条），
+   *   却又拉不开距离。**真人的风筝是「先控住（新星/减速）再退再读条」的
+   *   组合技，不是无脑后退** —— 那需要「控制命中后才进入后撤窗口」的条件
+   *   逻辑，是独立一笔工作（总账 B1 余账）。在它做出来之前，不后退才是
+   *   这套规则下的正确打法。
+   */
+  const dodgeDir = difficulty === 'easy' ? undefined : (() => {
+    const dangers = dangersUnderfoot(p);
+    if (dangers.length === 0) return undefined;
+    // 多片重叠时躲**最近的圆心**那片（离出圈最近，先脱离它）
+    const worst = dangers.reduce((a, b) =>
+      distance2D(self.position, a.center) <= distance2D(self.position, b.center) ? a : b);
+    return escapeDir(self, worst, yaw);
+  })();
+
+  const advance: MovementInput = dodgeDir
+    ? { ...toLocalMove(dodgeDir, yaw), jump: false, yaw }
+    : { forward: d > reach * 0.9 ? 1 : 0, strafe: 0, jump: false, yaw };
 
   /**
    * ★★ **看到敌人读一个可打断的法术 → 打断它。** 这是「会玩」和「木桩」之间

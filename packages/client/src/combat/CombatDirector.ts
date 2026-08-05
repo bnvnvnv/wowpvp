@@ -595,6 +595,9 @@ export class CombatDirector {
         self: e,
         foe: this.player,
         rng: this.botRng,
+        // P1b：脚下的敌方区域与待落的陨星 —— 试验场假人也会躲圈了
+        ground: this.ground,
+        projectiles: this.projectiles,
       });
       this.frameInputs.set(e.id, action.move);
       if (action.cast) {

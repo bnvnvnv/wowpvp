@@ -15,6 +15,7 @@ import { asSkillId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
 import { vec3 } from '../math/vec3.js';
 import { createEntity } from '../sim/entity.js';
 import type { CastState, CastingStore } from '../sim/casting.js';
+import type { GroundArea } from '../sim/groundArea.js';
 import { addEntity, allocEntityId, createWorld } from '../sim/world.js';
 import {
   burstDamageOf,
@@ -22,6 +23,7 @@ import {
   hasDamage,
   isHealSkill,
   isInterruptSkill,
+  toLocalMove,
   type BotPerception,
 } from './botController.js';
 
@@ -162,6 +164,138 @@ describe('P1a 出招：normal/hard 按单发威力，easy 保持随机', () => {
     s.casting.set(s.foe.id, castOf());
     s.world.time = 0.5;
     expect(decideBotAction(perceive(s)).cast?.skillId).toBe(COUNTERSPELL);
+  });
+});
+
+describe('P1b 方向转换（最容易搞反的一环）', () => {
+  // yaw=0 时 forward = yawToDir(0) = (0,0,-1)，即 -Z 是「前」
+  it('★★ 朝向正前方 → forward=1', () => {
+    const m = toLocalMove({ x: 0, z: -1 }, 0);
+    expect(m.forward).toBeCloseTo(1, 6);
+    expect(m.strafe).toBeCloseTo(0, 6);
+  });
+
+  it('★★ 朝向正后方 → forward=-1（后退，吃 65% 惩罚是移动系统的事）', () => {
+    const m = toLocalMove({ x: 0, z: 1 }, 0);
+    expect(m.forward).toBeCloseTo(-1, 6);
+  });
+
+  it('★ 正右方 → strafe=+1（与 movement.ts 的 right=(-f.z,0,f.x) 同约定）', () => {
+    const m = toLocalMove({ x: 1, z: 0 }, 0);
+    expect(m.strafe).toBeCloseTo(1, 6);
+    expect(m.forward).toBeCloseTo(0, 6);
+  });
+
+  it('★ 转身后仍然正确（yaw=π 时 +Z 变成「前」）', () => {
+    const m = toLocalMove({ x: 0, z: 1 }, Math.PI);
+    expect(m.forward).toBeCloseTo(1, 6);
+  });
+
+  it('★ 零向量不产生 NaN（原地不动）', () => {
+    expect(toLocalMove({ x: 0, z: 0 }, 1.2)).toEqual({ forward: 0, strafe: 0 });
+  });
+});
+
+describe('P1b 躲圈：站在敌方伤害区域里就往外走', () => {
+  /** 造一片敌人放的伤害地面区域，圆心压在 self 脚下偏移处 */
+  const dangerArea = (
+    s: ReturnType<typeof setup>, center: ReturnType<typeof vec3>, radius = 6,
+  ): GroundArea => ({
+    id: 1, areaId: 'x', skillId: 'x', sourceId: s.foe.id,
+    center, radius, createdAt: 0, expiresAt: 99, tickInterval: 0.5, nextTickAt: 0,
+    onTick: [{ kind: 'damage', school: School.Fire, amount: { flat: 30 } }],
+    blocksTargetingFromOutside: false, revealsStealth: false,
+  });
+
+  it('★★ 站在圈里 → 沿「圆心指向自己」的方向出圈', () => {
+    const s = setup(20);
+    // 圆心在自己身后（+Z 侧 3 米），自己应当往 -Z（前方，即朝敌人）跑出去
+    const ground = { areas: [dangerArea(s, vec3(0, 0, 3))], traps: [] };
+    const a = decideBotAction(perceive(s, { difficulty: 'normal', ground }));
+    // 逃离方向 = 自己 - 圆心 = -Z；yaw 朝敌人（+Z 方向的敌人 → yaw=π）
+    // 于是「-Z」在本地坐标里是**后退**
+    expect(a.move.forward).toBeLessThan(-0.9);
+  });
+
+  it('★★ 圈在正前方（敌人脚下）→ 往后退出圈，而不是继续冲进去', () => {
+    const s = setup(6);
+    const ground = { areas: [dangerArea(s, vec3(0, 0, 6), 8)], traps: [] };
+    const a = decideBotAction(perceive(s, { difficulty: 'normal', ground }));
+    expect(a.move.forward).toBeLessThan(0);
+  });
+
+  it('★ 圈外不动摇站位（只处理「已经站进去了」，绕开是路径规划）', () => {
+    const s = setup(20);
+    const ground = { areas: [dangerArea(s, vec3(50, 0, 50), 3)], traps: [] };
+    const a = decideBotAction(perceive(s, { difficulty: 'normal', ground }));
+    // 「没有在逃」= forward 非负（逃离这些用例的圈都会产生负 forward）。
+    // ⚠️ 不写死 1：20 米对法师（站位 32m）已在射程内，站位本来就是 0
+    expect(a.move.forward).toBeGreaterThanOrEqual(0);
+  });
+
+  it('★★ 队友/自己放的区域不躲（旋刃斩不该把自己吓跑）', () => {
+    const s = setup(20);
+    const mine = { ...dangerArea(s, vec3(0, 0, 3)), sourceId: s.self.id };
+    const a = decideBotAction(perceive(s, { difficulty: 'normal', ground: { areas: [mine], traps: [] } }));
+    expect(a.move.forward).toBeGreaterThanOrEqual(0);
+  });
+
+  it('★★ 没伤害的区域不躲（烟雾弹/照明弹不该把人赶跑）', () => {
+    const s = setup(20);
+    const smoke = { ...dangerArea(s, vec3(0, 0, 3)), onTick: [] };
+    const a = decideBotAction(perceive(s, { difficulty: 'normal', ground: { areas: [smoke], traps: [] } }));
+    expect(a.move.forward).toBeGreaterThanOrEqual(0);
+  });
+
+  it('★ easy 档不躲圈（木桩手感，与它不打断同源）', () => {
+    const s = setup(20);
+    const ground = { areas: [dangerArea(s, vec3(0, 0, 3))], traps: [] };
+    const a = decideBotAction(perceive(s, { difficulty: 'easy', ground }));
+    expect(a.move.forward).toBeGreaterThanOrEqual(0);
+  });
+
+  it('★★ 待落的陨星（delayedImpact）同样躲；已经砸完的不躲', () => {
+    const s = setup(20);
+    const impact = {
+      kind: 'delayedImpact' as const, id: 1, skillId: asSkillId('mage.meteor'),
+      sourceId: s.foe.id, center: vec3(0, 0, 3), radius: 6,
+      createdAt: 0, impactAt: 2, onImpact: [],
+    };
+    s.world.time = 1; // 还没落
+    expect(decideBotAction(perceive(s, {
+      difficulty: 'normal', projectiles: { items: [impact], nextId: 2 },
+    })).move.forward).toBeLessThan(-0.9);
+
+    s.world.time = 3; // 已经砸完 —— 没有威胁了
+    expect(decideBotAction(perceive(s, {
+      difficulty: 'normal', projectiles: { items: [impact], nextId: 2 },
+    })).move.forward).toBeGreaterThanOrEqual(0);
+  });
+});
+
+/**
+ * ⚠️ **「远程被贴脸就后退」（风筝）实现过、实测后回滚。** 详见
+ * `botController.ts` 走位段的注释：基线 52.4→85.7pp，法师/牧师反而暴跌，
+ * 分离验证证明元凶是风筝。根因是规则的乘积（后退 65% 追不掉 + 移动打断读条），
+ * 不是实现 bug。这条测试把结论钉住 —— 免得下一个人「顺手把风筝加回来」。
+ */
+describe('P1b 风筝：**刻意不做**（规则不支持纯后退）', () => {
+  it('★★ 远程被贴脸也不后退 —— 后退 65% 追不掉，且全程读不完条', () => {
+    const s = setup(3); // 法师被贴到 3 米
+    const a = decideBotAction(perceive(s, { difficulty: 'normal' }));
+    expect(a.move.forward, '加回了纯后退风筝 —— 先看那段注释里的基线数据')
+      .toBeGreaterThanOrEqual(0);
+  });
+
+  it('★ 近战贴脸照常进场（贴身就是他们的活）', () => {
+    const world = createWorld();
+    const self = addEntity(world, createEntity(allocEntityId(world), warrior, TEAM_RED, vec3(0, 0, 0)));
+    const foe = addEntity(world, createEntity(allocEntityId(world), mage, TEAM_BLUE, vec3(0, 0, 2)));
+    for (const e of [self, foe]) for (const [r, max] of e.maxResources) e.resources.set(r, max);
+    const a = decideBotAction({
+      world, casting: new Map(), self, foe, rng: seqRng(), difficulty: 'normal',
+    });
+    expect(a.move.forward).toBeGreaterThanOrEqual(0);
   });
 });
 

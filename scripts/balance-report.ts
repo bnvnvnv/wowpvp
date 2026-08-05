@@ -165,7 +165,8 @@ const duel = (clsA: ClassDef, clsB: ClassDef, rng: () => number): DuelResult => 
    * 这里只负责把本局的 world / casting / rng 喂进去。
    */
   const think = (self: CombatEntity, foe: CombatEntity): BotAction =>
-    decideBotAction({ world, casting, self, foe, rng });
+    // P1b：走位感知一并喂进去 —— 基线里的 AI 与生产里的是同一个
+    decideBotAction({ world, casting, self, foe, rng, ground, projectiles });
 
 
   const maxTicks = Math.ceil(MAX_SECONDS / SIM.TICK_DT);
