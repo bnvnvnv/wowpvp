@@ -257,8 +257,19 @@ export class InputManager {
   sample(dt: number): FrameInput {
     const rightHeld = this.rightDown;
 
-    const forward =
-      (this.isDown(Action.MoveForward) ? 1 : 0) - (this.isDown(Action.MoveBackward) ? 1 : 0);
+    /**
+     * ★★ **双键跑**（同时按住左右键 = 一直向前，MMO 的经典操作）。
+     *   右键本来就联动朝向（4.2），所以「双键 = 跟着镜头方向跑」是自然结果 ——
+     *   不需要单独一套「朝鼠标方向跑」的逻辑，右键那条已经在做这件事。
+     * ★ 与 W 键是**或**关系：双键跑期间按 S 仍然能后退（两者相加后钳制），
+     *   这与所有 MMO 的手感一致。
+     */
+    const bothButtons = this.leftDown && this.rightDown;
+    const forward = clampUnit(
+      (this.isDown(Action.MoveForward) ? 1 : 0)
+      - (this.isDown(Action.MoveBackward) ? 1 : 0)
+      + (bothButtons ? 1 : 0),
+    );
 
     // 4.2：A/D 默认是转向；按住右键时作为侧移
     const ad = (this.isDown(Action.TurnRight) ? 1 : 0) - (this.isDown(Action.TurnLeft) ? 1 : 0);

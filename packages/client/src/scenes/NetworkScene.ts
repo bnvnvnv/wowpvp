@@ -299,6 +299,8 @@ export class NetworkScene {
   private readonly directionIndicator = new DirectionIndicator();
   private readonly ndc = new THREE.Vector2();
   private clickFlags = { left: false, right: false };
+  /** 鼠标点过的技能格，下一帧被 readInput 消费（与数字键同一条流程）*/
+  private clickedSlot: number | null = null;
 
   private selfId: EntityId | null = null;
   /** 自己的队伍与当前硬目标 —— Tab 循环要用 */
@@ -485,6 +487,8 @@ export class NetworkScene {
       audio,
       access: () => this.access,
     });
+    // 鼠标点技能格 → 记下槽位，下一帧走与数字键完全相同的瞄准流程
+    this.hud.onSkillClick = (slot) => { this.clickedSlot = slot; };
     // 点姓名板选人 → 发 SetTarget（服务器仍会校验可见集合）
     this.view.onSelect = (id) => {
       this.currentTargetId = id;
@@ -1049,6 +1053,11 @@ export class NetworkScene {
     let pressedSlot: number | null = null;
     for (let i = 0; i < SKILL_SLOT_COUNT; i++) {
       if (input.pressed.has(`skill${i + 1}` as Action)) pressedSlot = i;
+    }
+    // 鼠标点技能格：与数字键**走同一条**瞄准流程（地面技能同样要选落点）
+    if (this.clickedSlot !== null) {
+      pressedSlot = this.clickedSlot;
+      this.clickedSlot = null;
     }
     if (pressedSlot !== null) {
       this.hud.pulseSlot(pressedSlot);

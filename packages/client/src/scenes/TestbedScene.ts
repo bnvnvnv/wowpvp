@@ -374,6 +374,8 @@ export class TestbedScene {
     this.scene.add(this.targetRing.group, this.focusRing.group);
     canvas.addEventListener('mousemove', this.onCanvasMouseMove);
     this.hud = new CombatHud(canvas.parentElement ?? document.body);
+    // 鼠标点技能格 → 记下槽位，下一帧走与数字键完全相同的瞄准流程
+    this.hud.onSkillClick = (slot) => { this.clickedSlot = slot; };
     // 17.2：恢复上次的可访问性设置。★ 损坏的设置会被 normalize 回落到默认值
     this.setAccessibility(loadAccessibility(globalThis.localStorage));
     /**
@@ -442,6 +444,9 @@ export class TestbedScene {
   set combatMode(on: boolean) {
     this.combat.combatMode = on;
   }
+
+  /** 鼠标点过的技能格，下一帧被 readInput 消费（与数字键同一条流程）*/
+  private clickedSlot: number | null = null;
 
   /**
    * 17.2：应用并持久化一份可访问性设置。
@@ -989,6 +994,11 @@ export class TestbedScene {
     let pressedSlot: number | null = null;
     for (let i = 0; i < SKILL_SLOT_COUNT; i++) {
       if (input.pressed.has(`skill${i + 1}` as Action)) pressedSlot = i;
+    }
+    // 鼠标点技能格：与数字键**走同一条**瞄准流程（点地面技能同样要选落点）
+    if (this.clickedSlot !== null) {
+      pressedSlot = this.clickedSlot;
+      this.clickedSlot = null;
     }
     // M12：按下即回执，不等施法结果（见 CombatHud.pulseSlot）
     if (pressedSlot !== null) {

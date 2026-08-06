@@ -72,6 +72,12 @@ export class CombatHud {
    * 技能键换成别的之后**继续显示 1–9 撒谎**（总账 W7 点名的那一处）。
    */
   skillKeyLabel: (slotIndex: number) => string = (i) => String(i + 1);
+  /**
+   * 鼠标点击技能格 → 施放（用户反馈：技能栏点不动，只能按数字键）。
+   * ★ 场景注入 —— HUD 不知道怎么施法，它只把「玩家点了第 i 格」报上去，
+   *   与姓名板点击选目标同一手法（那条早就在了，技能栏一直缺）。
+   */
+  onSkillClick: ((slotIndex: number) => void) | undefined;
   private readonly logBox: HTMLElement;
   private readonly aimHint: HTMLElement;
   private readonly nameplateLayer: HTMLElement;
@@ -122,6 +128,19 @@ export class CombatHud {
     this.focusFrame = this.root.querySelector('#focus-frame')!;
     this.playerCastBar = this.root.querySelector('#player-cast')!;
     this.skillBar = this.root.querySelector('#skill-bar')!;
+    /**
+     * 技能格点击 → 施放。**事件委托**挂在容器上：格子每 20Hz 全量重建
+     * （`renderSkillBar` 重写 innerHTML），逐格绑事件会在每次重建后失效。
+     * ★ `stopPropagation`：别让这一次点击穿透到画布，被当成瞄准确认。
+     */
+    this.skillBar.addEventListener('mousedown', (ev) => {
+      const slot = (ev.target as HTMLElement).closest<HTMLElement>('.slot');
+      if (!slot?.parentElement) return;
+      const index = [...slot.parentElement.children].indexOf(slot);
+      if (index >= 0) this.onSkillClick?.(index);
+      ev.stopPropagation();
+      ev.preventDefault();
+    });
     this.logBox = this.root.querySelector('#combat-log')!;
     this.aimHint = this.root.querySelector('#aim-hint')!;
 
