@@ -480,7 +480,9 @@ const weapons: WeaponDef[] = [
     swingPercent: 1.6,
     reach: RANGE.LONG,
     isRanged: true,
-    advantage: '射程和单发最高',
+    // P7 暴击轴：狙击手 —— 暴击倍率 ×1.2（与瞄准 +15% 是两根轴，可叠出天文数字）
+    modifiers: { critDamage: 1.2 },
+    advantage: '射程和单发最高，暴击更重（倍率 ×1.2）',
     cost: '攻速慢；重型射击需站定',
     // 9.5：瞄准射击伤害 +15%
     skillModifiers: { 'hunter.aimed_shot': { damageMultiplier: 1.15 } },

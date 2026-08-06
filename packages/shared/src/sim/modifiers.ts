@@ -37,6 +37,9 @@ export interface EffectiveModifiers {
   resourceGain: number;
   maxHealth: number;
   absorbDone: number;
+  /** P7 暴击轴：几率加算（叠在 CRIT.BASE_CHANCE 上）；倍率乘算（乘在 1.5 上）*/
+  critChance: number;
+  critDamage: number;
 
   /**
    * **只来自装备**的承伤系数。0.92 表示当前武器 + 护甲合计减伤 8%。
@@ -71,6 +74,9 @@ export const neutralModifiers = (): EffectiveModifiers => ({
   resourceGain: 1,
   maxHealth: 1,
   absorbDone: 1,
+  // P7 暴击轴：几率加算基数 0（叠在 CRIT.BASE_CHANCE 上），倍率乘算基数 1
+  critChance: 0,
+  critDamage: 1,
   equipmentDamageTaken: 1,
   equipmentDamageTakenBySchool: {},
 });
@@ -222,6 +228,10 @@ const applyMultiplicative = (out: EffectiveModifiers, m: AuraModifiers): void =>
   if (m.dodgeFront !== undefined) out.dodgeFront += m.dodgeFront;
   if (m.parry !== undefined) out.parry += m.parry;
   if (m.block !== undefined) out.block += m.block;
+  // P7 暴击轴：几率与闪避同为「本来就是概率，加算最直观」；
+  // 倍率与 damageDealt 同为「爆发窗口是设计意图」→ 相乘
+  if (m.critChance !== undefined) out.critChance += m.critChance;
+  if (m.critDamage !== undefined) out.critDamage *= m.critDamage;
 };
 
 /**

@@ -331,13 +331,14 @@ const skills: SkillDef[] = [
           kind: 'buff',
           duration: 10,
           dispelType: DispelType.Magic,
-          modifiers: { damageDealt: 1.2, healingDone: 1.2 },
-          description: '造成的伤害与治疗提高 20%。',
+          // P7 暴击轴：第一个「爆发窗口」—— 开翅膀期间伤害治疗都爱暴
+          modifiers: { damageDealt: 1.2, healingDone: 1.2, critChance: 0.15 },
+          description: '造成的伤害与治疗提高 20%，暴击几率提高 15%。',
           vfx: 'paladin_avenging_wrath',
         },
       },
     ],
-    description: '10 秒内伤害和治疗提高 20%，拥有高可读性的金色视觉。',
+    description: '10 秒内伤害和治疗提高 20%、暴击几率提高 15%，拥有高可读性的金色视觉。',
     vfx: 'paladin_avenging_wrath',
   },
   // 武器方案授予的技能

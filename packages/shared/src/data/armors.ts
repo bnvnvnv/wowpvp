@@ -43,8 +43,9 @@ const TEMPLATES: readonly ArchetypeTemplate[] = [
     suffix: 'offense',
     name: '进攻型护甲',
     archetype: ArmorArchetype.Offense,
-    modifiers: { damageDealt: 1.12, resourceGain: 1.15, damageTaken: 1.08, healingTaken: 0.92 },
-    advantage: '攻击、法术与资源效率提高',
+    // P7 暴击轴：进攻织入暴击 +5% —— 与 damageDealt 同属「进攻」预算的一部分
+    modifiers: { damageDealt: 1.12, resourceGain: 1.15, critChance: 0.05, damageTaken: 1.08, healingTaken: 0.92 },
+    advantage: '攻击、法术、资源效率与暴击几率提高',
     cost: '防御下降，受到的治疗降低',
   },
   {

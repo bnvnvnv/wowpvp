@@ -437,8 +437,9 @@ const weapons: WeaponDef[] = [
     swingInterval: 2.4,
     swingPercent: 1.55,
     reach: RANGE.MELEE_EXTENDED,
-    modifiers: { damageTaken: 1.1 },
-    advantage: '单击和横扫伤害最高',
+    // P7 暴击轴：慢刀「一击的重量」再放大 —— 暴击倍率 ×1.15（1.5→1.725）
+    modifiers: { damageTaken: 1.1, critDamage: 1.15 },
+    advantage: '单击和横扫伤害最高，暴击更重（倍率 ×1.15）',
     cost: '防御 -10%，攻速慢',
     grantsSkills: [asSkillId('warrior.cleave')],
     removesSkills: [asSkillId('warrior.shield_slam'), asSkillId('warrior.combo_storm')],

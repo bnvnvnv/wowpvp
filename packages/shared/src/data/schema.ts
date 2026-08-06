@@ -101,6 +101,16 @@ export interface AuraModifiers {
   absorbDone?: number;
   /** 治疗读条时间乘算，独立于通用 castSpeed（权杖+圣典「单体治疗读条 -15%」）*/
   healCastSpeed?: number;
+  /**
+   * P7 暴击轴。此前暴击是全员固定 10% 的骰子，任何装备/增益都影响不了 ——
+   * 「堆暴击、赌暴击、开爆发窗口」这层 PVP 乐趣不存在（用户点名）。
+   * · `critChance`：暴击几率**加算**（与 dodgeFront/parry/block 同约定），
+   *   0.1 = +10%。结算时叠在 `CRIT.BASE_CHANCE` 上、上限 `CRIT.MAX_CHANCE`。
+   * · `critDamage`：暴击**倍率乘算**（与 damageDealt 同约定），
+   *   1.2 = 暴击伤害 ×1.5×1.2 = ×1.8。治疗暴击同轴。
+   */
+  critChance?: number;
+  critDamage?: number;
 }
 
 /**

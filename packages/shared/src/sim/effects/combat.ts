@@ -163,11 +163,19 @@ export const dealDamage = (
    *   完全吃掉」会读成没暴击；
    *   在 `Math.round` **之前** —— 先乘后取整，避免二次舍入。
    */
-  const crit = (opts.canCrit ?? true) && rollCrit(ctx.source);
+  /**
+   * P7：几率 = 基础 10% + 攻击方修正（匕首/进攻甲/义愤…），夹在 [0, 上限]；
+   * 倍率 = 1.5 × 攻击方 critDamage（大剑/长弓的「一击更重」）。
+   * 修正为 0/1（绝大多数实体）时与旧行为逐位一致。
+   */
+  const critChance = Math.min(
+    CRIT.MAX_CHANCE, Math.max(0, CRIT.BASE_CHANCE + attackerMods.critChance),
+  );
+  const crit = (opts.canCrit ?? true) && rollCrit(ctx.source, critChance);
 
   let amount =
     rawAmount *
-    (crit ? CRIT.DAMAGE_MULTIPLIER : 1) *
+    (crit ? CRIT.DAMAGE_MULTIPLIER * attackerMods.critDamage : 1) *
     attackerMods.damageDealt *
     damageTakenFor(targetMods, school);
 
@@ -324,13 +332,17 @@ export const dealHeal = (
 
   // 暴击乘在 dampening 之前：暴击是施法者的能力，抑制是赛制的削减
   //（顺序不影响数值，但语义要清楚）。HoT 周期跳不暴击，同 rollCrit 注释。
-  const crit = (opts.canCrit ?? true) && rollCrit(ctx.source);
+  // P7：几率与倍率修正与伤害同轴（义愤期间治疗也爱暴）
+  const critChance = Math.min(
+    CRIT.MAX_CHANCE, Math.max(0, CRIT.BASE_CHANCE + casterMods.critChance),
+  );
+  const crit = (opts.canCrit ?? true) && rollCrit(ctx.source, critChance);
 
   // 8.5：治疗受竞技场战斗抑制影响
   const amount = Math.max(
     0,
     Math.round(
-      rawAmount * (crit ? CRIT.HEAL_MULTIPLIER : 1) *
+      rawAmount * (crit ? CRIT.HEAL_MULTIPLIER * casterMods.critDamage : 1) *
         casterMods.healingDone * targetMods.healingTaken * (1 - dampening.amount),
     ),
   );

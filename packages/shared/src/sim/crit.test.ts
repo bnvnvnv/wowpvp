@@ -263,3 +263,80 @@ describe('★★ 周期跳不暴击', () => {
     expect(atk.rng).toBe(before);
   });
 });
+
+/**
+ * P7 暴击轴：几率与倍率从此可被装备/增益修正 —— 此前 rollCrit 的 chance
+ * 参数零调用方传值，暴击是一颗任何人都影响不了的骰子（用户点名的缺口）。
+ */
+describe('★★ P7 暴击修正轴（critChance 加算 / critDamage 乘算）', () => {
+  const critBuff = (modifiers: AuraDef['modifiers'], id = 'test.critbuff'): AuraDef => ({
+    id, name: '暴击测试', kind: 'buff', duration: 99,
+    dispelType: 'none', modifiers, description: '测',
+  } as AuraDef);
+
+  it('★★ critChance 修正被 rollCrit 采用：负修正压到 0 → 必暴种子也不暴', () => {
+    applyAura(auras, atk, critBuff({ critChance: -1 }), atk.id, 0);
+    atk.rng = critSeed(); // 基础 10% 下这个种子必暴
+    dealDamage(ctx(), def, 100, School.Fire);
+    expect(lastDamage()?.crit, '几率已被压到 0 还在暴').toBeUndefined();
+  });
+
+  it('★★ 正修正扩大暴击窗口：roll ∈ [基础, 上限) 的种子只有带 buff 才暴', () => {
+    // 找一个落在 (BASE_CHANCE, MAX_CHANCE) 之间的掷骰种子
+    const midSeed = seedWhere((r) => r > CRIT.BASE_CHANCE + 0.05 && r < CRIT.MAX_CHANCE - 0.05);
+    atk.rng = midSeed;
+    dealDamage(ctx(), def, 100, School.Fire);
+    expect(lastDamage()?.crit, '没 buff 就不该暴').toBeUndefined();
+
+    def.health = def.maxHealth;
+    events.length = 0;
+    applyAura(auras, atk, critBuff({ critChance: 0.9 }), atk.id, 0); // 叠满会被上限夹住
+    atk.rng = midSeed;
+    dealDamage(ctx(), def, 100, School.Fire);
+    expect(lastDamage()?.crit, '窗口扩大后这个种子该暴').toBe(true);
+  });
+
+  it('★★ 上限 MAX_CHANCE 钉死：+900% 也不能必暴（暴击的价值在不确定）', () => {
+    applyAura(auras, atk, critBuff({ critChance: 9 }), atk.id, 0);
+    const overCapSeed = seedWhere((r) => r > CRIT.MAX_CHANCE + 0.01);
+    atk.rng = overCapSeed;
+    dealDamage(ctx(), def, 100, School.Fire);
+    expect(lastDamage()?.crit, '超过上限的堆叠变成了必暴').toBeUndefined();
+  });
+
+  it('★★ critDamage 乘在暴击倍率上：同一发暴击 1.5× vs 1.5×1.2', () => {
+    // 基线先量出来（法师默认法杖带 damageTaken 1.08，硬编 100 会误报）
+    atk.rng = noCritSeed();
+    const base = dealDamage(ctx(), def, 100, School.Fire);
+    def.health = def.maxHealth;
+
+    atk.rng = critSeed();
+    const plain = dealDamage(ctx(), def, 100, School.Fire);
+    expect(plain).toBe(Math.round(base * CRIT.DAMAGE_MULTIPLIER));
+
+    def.health = def.maxHealth;
+    applyAura(auras, atk, critBuff({ critDamage: 1.2 }), atk.id, 0);
+    atk.rng = critSeed();
+    const heavy = dealDamage(ctx(), def, 100, School.Fire);
+    expect(heavy).toBe(Math.round(base * CRIT.DAMAGE_MULTIPLIER * 1.2));
+  });
+
+  it('★ 治疗与伤害同轴：负修正下必暴种子的治疗不暴', () => {
+    def.health = def.maxHealth - 500;
+    applyAura(auras, atk, critBuff({ critChance: -1 }), atk.id, 0);
+    atk.rng = critSeed();
+    const healed = dealHeal(ctx(), def, 100);
+    expect(healed).toBe(100);
+    expect(lastHeal()?.crit).toBeUndefined();
+  });
+
+  it('★ 不暴击的一发不吃 critDamage（它只放大暴击，不是通用增伤）', () => {
+    atk.rng = noCritSeed();
+    const base = dealDamage(ctx(), def, 100, School.Fire);
+    def.health = def.maxHealth;
+    applyAura(auras, atk, critBuff({ critDamage: 2 }), atk.id, 0);
+    atk.rng = noCritSeed();
+    const dealt = dealDamage(ctx(), def, 100, School.Fire);
+    expect(dealt).toBe(base);
+  });
+});

@@ -540,8 +540,9 @@ const weapons: WeaponDef[] = [
     //   0.25 是按着 bug 校准的过度矫正；bug 修掉后盗贼 DPS 全场最低（28~30），白字抬回一部分
     swingPercent: 0.45,
     reach: RANGE.DAGGER,
-    modifiers: { resourceGain: 1.15 },
-    advantage: '背后爆发最高，能量循环快',
+    // P7 暴击轴：+10% 暴击是刺客的本命 —— 快刀单发轻，暴击找补「一击的重量」
+    modifiers: { resourceGain: 1.15, critChance: 0.1 },
+    advantage: '背后爆发最高，能量循环快，暴击 +10%',
     cost: '距离最短，正面弱',
     // 9.4「强化背刺和毒刃」
     skillModifiers: {

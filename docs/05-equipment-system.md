@@ -23,7 +23,7 @@
 | 方案 | 类型 | 单击 | 攻击间隔 | 距离 | 优势 | 代价 | 改变的技能 |
 |---|---|---|---|---|---|---|---|
 | **单手剑 + 盾牌**（默认） | 单手 | 90% | 1.7s | 2.8m | 正面格挡 20%，防御 +15% | 爆发低 | 获得 warrior.shield_slam；禁用 warrior.cleave, warrior.combo_storm |
-| 双手巨剑 | 双手 | 155% | 2.4s | 3.4m | 单击和横扫伤害最高 | 防御 -10%，攻速慢 | 获得 warrior.cleave；禁用 warrior.shield_slam, warrior.combo_storm |
+| 双手巨剑 | 双手 | 155% | 2.4s | 3.4m | 单击和横扫伤害最高，暴击更重（倍率 ×1.15） | 防御 -10%，攻速慢 | 获得 warrior.cleave；禁用 warrior.shield_slam, warrior.combo_storm |
 | 双持单手剑 | 双持 | 42% | 0.75s | 2.8m | 攻速快，怒气获取 +20% | 单击低，防御 -8% | 获得 warrior.combo_storm；禁用 warrior.shield_slam, warrior.cleave；warrior.mortal_strike: damageMultiplier=0.85 |
 
 ### 圣骑士
@@ -46,7 +46,7 @@
 
 | 方案 | 类型 | 单击 | 攻击间隔 | 距离 | 优势 | 代价 | 改变的技能 |
 |---|---|---|---|---|---|---|---|
-| **双匕首**（默认） | 双持 | 45% | 0.7s | 2.4m | 背后爆发最高，能量循环快 | 距离最短，正面弱 | 禁用 rogue.blade_flurry, rogue.riposte；rogue.backstab: damageMultiplier=1.15；rogue.poisoned_blade: damageMultiplier=1.15 |
+| **双匕首**（默认） | 双持 | 45% | 0.7s | 2.4m | 背后爆发最高，能量循环快，暴击 +10% | 距离最短，正面弱 | 禁用 rogue.blade_flurry, rogue.riposte；rogue.backstab: damageMultiplier=1.15；rogue.poisoned_blade: damageMultiplier=1.15 |
 | 双剑 | 双持 | 56% | 0.9s | 2.8m | 正面持续伤害稳定 | 背后加成降低，攻速慢 | 获得 rogue.blade_flurry；禁用 rogue.riposte；rogue.backstab: damageMultiplier=0.85 |
 | 匕首 + 格挡短刃 | 单手 | 29% | 0.85s | 2.5m | 招架 +15%，反击稳定 | 爆发 -15% | 获得 rogue.riposte；禁用 rogue.blade_flurry；rogue.kidney_shot: damageMultiplier=0.7；rogue.eviscerate: damageMultiplier=0.85；rogue.backstab: damageMultiplier=0.85 |
 
@@ -55,7 +55,7 @@
 | 方案 | 类型 | 单击 | 攻击间隔 | 距离 | 优势 | 代价 | 改变的技能 |
 |---|---|---|---|---|---|---|---|
 | **短弓**（默认） | 远程 | 95% | 1.35s | 28m | 射速快，可全速移动射击 | 单发低，射程短 | 禁用 hunter.piercing_bolt；hunter.arcane_shot: cooldownMultiplier=0.75 |
-| 长弓 | 远程 | 160% | 2.2s | 35m | 射程和单发最高 | 攻速慢；重型射击需站定 | 禁用 hunter.piercing_bolt；hunter.aimed_shot: damageMultiplier=1.15 |
+| 长弓 | 远程 | 160% | 2.2s | 35m | 射程和单发最高，暴击更重（倍率 ×1.2） | 攻速慢；重型射击需站定 | 禁用 hunter.piercing_bolt；hunter.aimed_shot: damageMultiplier=1.15 |
 | 重弩 | 远程 | 165% | 2.6s | 32m | 穿甲和冲击高 | 每发前有 1 秒装填；移动会中断 | 获得 hunter.piercing_bolt |
 
 ### 法师
@@ -92,7 +92,7 @@
 | 方案 | 原型 | 优势 | 代价 | 数值修正 |
 |---|---|---|---|---|
 | **板甲**（默认） | baseline | 标准化基线，无任何倾向 | 没有专精优势 | — |
-| 板甲·进攻型护甲 | offense | 攻击、法术与资源效率提高 | 防御下降，受到的治疗降低 | damageDealt=1.12 resourceGain=1.15 damageTaken=1.08 healingTaken=0.92 |
+| 板甲·进攻型护甲 | offense | 攻击、法术、资源效率与暴击几率提高 | 防御下降，受到的治疗降低 | damageDealt=1.12 resourceGain=1.15 critChance=0.05 damageTaken=1.08 healingTaken=0.92 |
 | 板甲·守护型护甲 | guardian | 物理防御与爆发承受能力提高 | 移动、攻速与施法速度降低 | damageTaken=0.85 block=0.1 moveSpeed=0.93 attackSpeed=1.08 castSpeed=1.08 |
 | 板甲·机动型护甲 | mobility | 移动与追击能力提高 | 基础防御与击退抵抗降低 | moveSpeed=1.12 damageTaken=1.1 knockbackTaken=1.25 |
 | 板甲·抗法型护甲 | spellWard | 法术伤害与魔法控制时长降低 | 物理防御明显降低 | damageTaken=1.12 damageTakenBySchool={"holy":0.82,"fire":0.82,"frost":0.82,"arcane":0.82,"shadow":0.82,"nature":0.82} ccDurationTakenBySchool={"holy":0.8,"fire":0.8,"frost":0.8,"arcane":0.8,"shadow":0.8,"nature":0.8} |
@@ -103,7 +103,7 @@
 | 方案 | 原型 | 优势 | 代价 | 数值修正 |
 |---|---|---|---|---|
 | **板甲**（默认） | baseline | 标准化基线，无任何倾向 | 没有专精优势 | — |
-| 板甲·进攻型护甲 | offense | 攻击、法术与资源效率提高 | 防御下降，受到的治疗降低 | damageDealt=1.12 resourceGain=1.15 damageTaken=1.08 healingTaken=0.92 |
+| 板甲·进攻型护甲 | offense | 攻击、法术、资源效率与暴击几率提高 | 防御下降，受到的治疗降低 | damageDealt=1.12 resourceGain=1.15 critChance=0.05 damageTaken=1.08 healingTaken=0.92 |
 | 板甲·守护型护甲 | guardian | 物理防御与爆发承受能力提高 | 移动、攻速与施法速度降低 | damageTaken=0.85 block=0.1 moveSpeed=0.93 attackSpeed=1.08 castSpeed=1.08 |
 | 板甲·机动型护甲 | mobility | 移动与追击能力提高 | 基础防御与击退抵抗降低 | moveSpeed=1.12 damageTaken=1.1 knockbackTaken=1.25 |
 | 板甲·抗法型护甲 | spellWard | 法术伤害与魔法控制时长降低 | 物理防御明显降低 | damageTaken=1.12 damageTakenBySchool={"holy":0.82,"fire":0.82,"frost":0.82,"arcane":0.82,"shadow":0.82,"nature":0.82} ccDurationTakenBySchool={"holy":0.8,"fire":0.8,"frost":0.8,"arcane":0.8,"shadow":0.8,"nature":0.8} |
@@ -114,7 +114,7 @@
 | 方案 | 原型 | 优势 | 代价 | 数值修正 |
 |---|---|---|---|---|
 | **符文板甲**（默认） | baseline | 标准化基线，无任何倾向 | 没有专精优势 | — |
-| 符文板甲·进攻型护甲 | offense | 攻击、法术与资源效率提高 | 防御下降，受到的治疗降低 | damageDealt=1.12 resourceGain=1.15 damageTaken=1.08 healingTaken=0.92 |
+| 符文板甲·进攻型护甲 | offense | 攻击、法术、资源效率与暴击几率提高 | 防御下降，受到的治疗降低 | damageDealt=1.12 resourceGain=1.15 critChance=0.05 damageTaken=1.08 healingTaken=0.92 |
 | 符文板甲·守护型护甲 | guardian | 物理防御与爆发承受能力提高 | 移动、攻速与施法速度降低 | damageTaken=0.85 block=0.1 moveSpeed=0.93 attackSpeed=1.08 castSpeed=1.08 |
 | 符文板甲·机动型护甲 | mobility | 移动与追击能力提高 | 基础防御与击退抵抗降低 | moveSpeed=1.12 damageTaken=1.1 knockbackTaken=1.25 |
 | 符文板甲·抗法型护甲 | spellWard | 法术伤害与魔法控制时长降低 | 物理防御明显降低 | damageTaken=1.12 damageTakenBySchool={"holy":0.82,"fire":0.82,"frost":0.82,"arcane":0.82,"shadow":0.82,"nature":0.82} ccDurationTakenBySchool={"holy":0.8,"fire":0.8,"frost":0.8,"arcane":0.8,"shadow":0.8,"nature":0.8} |
@@ -125,7 +125,7 @@
 | 方案 | 原型 | 优势 | 代价 | 数值修正 |
 |---|---|---|---|---|
 | **皮甲**（默认） | baseline | 标准化基线，无任何倾向 | 没有专精优势 | — |
-| 皮甲·进攻型护甲 | offense | 攻击、法术与资源效率提高 | 防御下降，受到的治疗降低 | damageDealt=1.12 resourceGain=1.15 damageTaken=1.08 healingTaken=0.92 |
+| 皮甲·进攻型护甲 | offense | 攻击、法术、资源效率与暴击几率提高 | 防御下降，受到的治疗降低 | damageDealt=1.12 resourceGain=1.15 critChance=0.05 damageTaken=1.08 healingTaken=0.92 |
 | 皮甲·守护型护甲 | guardian | 物理防御与爆发承受能力提高 | 移动、攻速与施法速度降低 | damageTaken=0.85 block=0.1 moveSpeed=0.93 attackSpeed=1.08 castSpeed=1.08 |
 | 皮甲·机动型护甲 | mobility | 移动与追击能力提高 | 基础防御与击退抵抗降低 | moveSpeed=1.12 damageTaken=1.1 knockbackTaken=1.25 |
 | 皮甲·抗法型护甲 | spellWard | 法术伤害与魔法控制时长降低 | 物理防御明显降低 | damageTaken=1.12 damageTakenBySchool={"holy":0.82,"fire":0.82,"frost":0.82,"arcane":0.82,"shadow":0.82,"nature":0.82} ccDurationTakenBySchool={"holy":0.8,"fire":0.8,"frost":0.8,"arcane":0.8,"shadow":0.8,"nature":0.8} |
@@ -136,7 +136,7 @@
 | 方案 | 原型 | 优势 | 代价 | 数值修正 |
 |---|---|---|---|---|
 | **锁甲**（默认） | baseline | 标准化基线，无任何倾向 | 没有专精优势 | — |
-| 锁甲·进攻型护甲 | offense | 攻击、法术与资源效率提高 | 防御下降，受到的治疗降低 | damageDealt=1.12 resourceGain=1.15 damageTaken=1.08 healingTaken=0.92 |
+| 锁甲·进攻型护甲 | offense | 攻击、法术、资源效率与暴击几率提高 | 防御下降，受到的治疗降低 | damageDealt=1.12 resourceGain=1.15 critChance=0.05 damageTaken=1.08 healingTaken=0.92 |
 | 锁甲·守护型护甲 | guardian | 物理防御与爆发承受能力提高 | 移动、攻速与施法速度降低 | damageTaken=0.85 block=0.1 moveSpeed=0.93 attackSpeed=1.08 castSpeed=1.08 |
 | 锁甲·机动型护甲 | mobility | 移动与追击能力提高 | 基础防御与击退抵抗降低 | moveSpeed=1.12 damageTaken=1.1 knockbackTaken=1.25 |
 | 锁甲·抗法型护甲 | spellWard | 法术伤害与魔法控制时长降低 | 物理防御明显降低 | damageTaken=1.12 damageTakenBySchool={"holy":0.82,"fire":0.82,"frost":0.82,"arcane":0.82,"shadow":0.82,"nature":0.82} ccDurationTakenBySchool={"holy":0.8,"fire":0.8,"frost":0.8,"arcane":0.8,"shadow":0.8,"nature":0.8} |
@@ -147,7 +147,7 @@
 | 方案 | 原型 | 优势 | 代价 | 数值修正 |
 |---|---|---|---|---|
 | **布甲**（默认） | baseline | 标准化基线，无任何倾向 | 没有专精优势 | — |
-| 布甲·进攻型护甲 | offense | 攻击、法术与资源效率提高 | 防御下降，受到的治疗降低 | damageDealt=1.12 resourceGain=1.15 damageTaken=1.08 healingTaken=0.92 |
+| 布甲·进攻型护甲 | offense | 攻击、法术、资源效率与暴击几率提高 | 防御下降，受到的治疗降低 | damageDealt=1.12 resourceGain=1.15 critChance=0.05 damageTaken=1.08 healingTaken=0.92 |
 | 布甲·守护型护甲 | guardian | 物理防御与爆发承受能力提高 | 移动、攻速与施法速度降低 | damageTaken=0.85 block=0.1 moveSpeed=0.93 attackSpeed=1.08 castSpeed=1.08 |
 | 布甲·机动型护甲 | mobility | 移动与追击能力提高 | 基础防御与击退抵抗降低 | moveSpeed=1.12 damageTaken=1.1 knockbackTaken=1.25 |
 | 布甲·抗法型护甲 | spellWard | 法术伤害与魔法控制时长降低 | 物理防御明显降低 | damageTaken=1.12 damageTakenBySchool={"holy":0.82,"fire":0.82,"frost":0.82,"arcane":0.82,"shadow":0.82,"nature":0.82} ccDurationTakenBySchool={"holy":0.8,"fire":0.8,"frost":0.8,"arcane":0.8,"shadow":0.8,"nature":0.8} |
@@ -158,7 +158,7 @@
 | 方案 | 原型 | 优势 | 代价 | 数值修正 |
 |---|---|---|---|---|
 | **布甲**（默认） | baseline | 标准化基线，无任何倾向 | 没有专精优势 | — |
-| 布甲·进攻型护甲 | offense | 攻击、法术与资源效率提高 | 防御下降，受到的治疗降低 | damageDealt=1.12 resourceGain=1.15 damageTaken=1.08 healingTaken=0.92 |
+| 布甲·进攻型护甲 | offense | 攻击、法术、资源效率与暴击几率提高 | 防御下降，受到的治疗降低 | damageDealt=1.12 resourceGain=1.15 critChance=0.05 damageTaken=1.08 healingTaken=0.92 |
 | 布甲·守护型护甲 | guardian | 物理防御与爆发承受能力提高 | 移动、攻速与施法速度降低 | damageTaken=0.85 block=0.1 moveSpeed=0.93 attackSpeed=1.08 castSpeed=1.08 |
 | 布甲·机动型护甲 | mobility | 移动与追击能力提高 | 基础防御与击退抵抗降低 | moveSpeed=1.12 damageTaken=1.1 knockbackTaken=1.25 |
 | 布甲·抗法型护甲 | spellWard | 法术伤害与魔法控制时长降低 | 物理防御明显降低 | damageTaken=1.12 damageTakenBySchool={"holy":0.82,"fire":0.82,"frost":0.82,"arcane":0.82,"shadow":0.82,"nature":0.82} ccDurationTakenBySchool={"holy":0.8,"fire":0.8,"frost":0.8,"arcane":0.8,"shadow":0.8,"nature":0.8} |
@@ -169,7 +169,7 @@
 | 方案 | 原型 | 优势 | 代价 | 数值修正 |
 |---|---|---|---|---|
 | **皮甲**（默认） | baseline | 标准化基线，无任何倾向 | 没有专精优势 | — |
-| 皮甲·进攻型护甲 | offense | 攻击、法术与资源效率提高 | 防御下降，受到的治疗降低 | damageDealt=1.12 resourceGain=1.15 damageTaken=1.08 healingTaken=0.92 |
+| 皮甲·进攻型护甲 | offense | 攻击、法术、资源效率与暴击几率提高 | 防御下降，受到的治疗降低 | damageDealt=1.12 resourceGain=1.15 critChance=0.05 damageTaken=1.08 healingTaken=0.92 |
 | 皮甲·守护型护甲 | guardian | 物理防御与爆发承受能力提高 | 移动、攻速与施法速度降低 | damageTaken=0.85 block=0.1 moveSpeed=0.93 attackSpeed=1.08 castSpeed=1.08 |
 | 皮甲·机动型护甲 | mobility | 移动与追击能力提高 | 基础防御与击退抵抗降低 | moveSpeed=1.12 damageTaken=1.1 knockbackTaken=1.25 |
 | 皮甲·抗法型护甲 | spellWard | 法术伤害与魔法控制时长降低 | 物理防御明显降低 | damageTaken=1.12 damageTakenBySchool={"holy":0.82,"fire":0.82,"frost":0.82,"arcane":0.82,"shadow":0.82,"nature":0.82} ccDurationTakenBySchool={"holy":0.8,"fire":0.8,"frost":0.8,"arcane":0.8,"shadow":0.8,"nature":0.8} |
