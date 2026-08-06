@@ -23,12 +23,13 @@
 // ★ 逐模块 import 而不是从 `../index.js` —— index 现在也导出本文件，
 //   走 index 会形成循环依赖。
 import { ALL_CLASSES, getWeapon } from '../data/index.js';
-import type { SkillDef } from '../data/schema.js';
-import { CastFailure } from '../types/enums.js';
+import type { AuraDef, SkillDef } from '../data/schema.js';
+import { CastFailure, CastKind, DrCategory } from '../types/enums.js';
 import { dirToYaw, distance2D, sub, yawToDir, type Vec3 } from '../math/vec3.js';
 import { getCast, isCasting, validateCast, type CastingStore } from '../sim/casting.js';
-import { aurasOf, type AuraStore } from '../sim/aura.js';
-import { magnitudeOf } from '../sim/effects/combat.js';
+import { aurasOf, dispelEligible, type AuraStore } from '../sim/aura.js';
+import { drFactor, type DrStore } from '../sim/dr.js';
+import { CONTROL_DR_CATEGORY, magnitudeOf } from '../sim/effects/combat.js';
 import { isFriendly, type CombatEntity } from '../sim/entity.js';
 import type { EntityId } from '../types/ids.js';
 import type { GroundStore } from '../sim/groundArea.js';
@@ -170,6 +171,128 @@ export const hasDamage = (sk: SkillDef): boolean =>
 /** 是否是一个专用打断技能（效果里带 interrupt）*/
 export const isInterruptSkill = (sk: SkillDef): boolean =>
   sk.effects.some((e) => e.kind === 'interrupt');
+
+// ── P4：四类此前从未被 bot 使用的技能的分类器 ──────────────────────
+//
+// ★★ 背景：P4 之前选招是 `pool = damaging.length > 0 ? damaging : offensive`
+//   —— 只要有伤害技能可用（几乎永远成立），控制/保命/驱散/位移就**永远**
+//   进不了候选集。量化过：53/116 = 46% 的技能一次都不会被按。
+//   下面每个分类器都对应决策链里一个新步骤，谁也不进旧的伤害 argmax。
+
+/** 这个光环挂在自己身上算不算「保命增益」（减伤/吸收/免疫/闪避招架）*/
+const isDefensiveAura = (def: AuraDef): boolean =>
+  def.kind === 'buff' &&
+  (def.flags?.immuneAll === true ||
+    def.flags?.immunePhysical === true ||
+    def.flags?.immuneMagic === true ||
+    (def.absorb ?? 0) > 0 ||
+    (def.absorbPercentMaxHealth ?? 0) > 0 ||
+    (def.modifiers?.damageTaken ?? 1) < 1 ||
+    (def.modifiers?.dodgeFront ?? 0) > 0 ||
+    (def.modifiers?.parry ?? 0) > 0);
+
+/**
+ * 保命键：给**自己**挂一个防御性光环的技能（冰封庇护、神圣壁障、防御架势、
+ * 法术反射、硬化树皮、疾闪、符文守护…）。
+ * ★ 排除治疗（有自己的半血步骤）；排除挂在敌人身上的减益
+ *   （`target: 'target'` 且目标是敌人的那类不进来 —— 用 targetFilter 判）。
+ * ⚠️ **排除带 `cannotAttack` 的交易型保命（龟甲护体）**：它是「减伤 35% 换
+ *   4 秒零输出」的对赌键，赢面在于骗掉对手的爆发窗口 —— 那需要读对手的
+ *   爆发，bot 读不了。分步归因实测：让 bot 无脑低血就缩壳，猎人 23.8→7.1%
+ *   （缩着挨打，出壳血更少）。与 blinkForward 同一原则：用不对不如不用。
+ */
+export const isSelfDefenseSkill = (sk: SkillDef): boolean =>
+  !isHealSkill(sk) &&
+  // 巨熊形态的 damageTaken 0.85 搭着形态切换 —— 与 isSpeedBurstSkill 排除
+  // 迅猫形态同理：变身后施法套件被 notInForm 封死，保命分类器不开这个侧门
+  !sk.effects.some((e) => e.kind === 'shapeshift') &&
+  sk.effects.some(
+    (e) =>
+      e.kind === 'applyAura' &&
+      isDefensiveAura(e.aura) &&
+      e.aura.flags?.cannotAttack !== true &&
+      (e.target === 'self' || sk.targetFilter !== 'enemy'),
+  );
+
+/**
+ * 控制技能所属的递减类别。**只认顶层控制效果**（stun/fear/incapacitate/
+ * root/silence）—— 与结算侧 `applyControl` 走的是同一批 kind，映射
+ * `CONTROL_DR_CATEGORY` 也来自那边的 `CONTROL_SPECS`，不另抄一份事实。
+ * 带 interrupt 的技能（断招踢/斥令）**不算控制** —— 踢要留给打断步骤，
+ * 被当成普通控制丢出去，真读条来了就没踢可用了。
+ */
+export const ccCategoryOf = (sk: SkillDef): DrCategory | undefined => {
+  if (isInterruptSkill(sk)) return undefined;
+  for (const e of sk.effects) {
+    const cat = (CONTROL_DR_CATEGORY as Partial<Record<string, DrCategory>>)[e.kind];
+    if (cat !== undefined) return cat;
+  }
+  return undefined;
+};
+
+/**
+ * 逃脱位移：向后跃出（后撤跃）。
+ * ⚠️ **刻意不含 `blinkForward`（瞬闪）**：bot 的 yaw 永远面向对手，向前闪
+ *   等于闪进近战怀里。真人的逃脱闪现是「转身-闪-回头」三步，当前单 tick
+ *   决策模型表达不了 —— 与其闪错方向不如不闪，如实记 B1 余账。
+ */
+export const isEscapeSkill = (sk: SkillDef): boolean =>
+  sk.effects.some((e) => e.kind === 'leapBackward');
+
+/**
+ * 近战拉近：冲锋 / 背刺传送。`chargeToAlly`（挡援）不算 ——
+ * 单目标感知里没有队友模型，冲向队友无从谈起。
+ */
+export const isGapCloserSkill = (sk: SkillDef): boolean =>
+  sk.effects.some((e) => e.kind === 'chargeTo' || e.kind === 'teleportBehindTarget');
+
+/**
+ * 给自己加速的爆发键（猎豹守护、疾奔怒吼）：追人/拉开都用它。
+ * ⚠️ **排除带 `shapeshift` 的技能（迅猫形态）**：它的 15% 加速搭着一整次
+ *   形态切换 —— 分步归因抓到：被贴脸的德鲁伊「开加速」变成了猫，随后
+ *   愤怒/星涌/治疗全部 `notInForm` 验不过，整套施法职业套件自我封印，
+ *   德鲁伊 59.5→14.3%。形态轮换是 B3 明确不做的事，加速分类器不能
+ *   从侧门把它放进来。
+ */
+export const isSpeedBurstSkill = (sk: SkillDef): boolean =>
+  !sk.effects.some((e) => e.kind === 'shapeshift') &&
+  sk.effects.some(
+    (e) =>
+      e.kind === 'applyAura' &&
+      e.target !== 'target' &&
+      (e.aura.modifiers?.moveSpeed ?? 1) > 1,
+  );
+
+/**
+ * P4 战术阈值。⚠️ **全部是占位值** —— 没有一条来自规格书，都是「先取一个
+ * 说得通的数、由 `pnpm balance` 逐步归因来检验」（数字旁边写由来，
+ * PROGRESS 技术债 §2 的教训）。它们只影响 bot 出招时机，不进任何结算。
+ */
+const TACTICS = {
+  /** 血量低于最大值的这个比例 → 开保命键（比半血治疗更晚：保命键 CD 长）*/
+  SURVIVAL_HEALTH: 0.35,
+  /** 对手血量低于此比例 → 控制值得用来锁杀 */
+  CC_KILL_WINDOW: 0.35,
+  /** 自己血量低于此比例 → 控制值得用来解围 */
+  CC_SELF_DANGER: 0.5,
+  /** 对手贴到这个距离内算「贴脸」（远程的 peel/逃脱窗口）*/
+  PEEL_RANGE: 5,
+  /** standOff 至少这么远才算「远程打法」（法师 32 / 猎人 25；近战全在 4 以下）*/
+  RANGED_REACH_MIN: 12,
+  /** 递减系数低于 1/2 不出控制 —— 半衰以下的控制不值一个公共冷却 */
+  DR_MIN_FACTOR: 0.5,
+  /**
+   * 安全风筝退到**这个绝对距离**就停，不是退满 standOff。
+   * ⚠️ 第一版是 `reach * 0.8`（法师 25.6m / 德鲁伊 24m）—— 分步归因抓到：
+   *   从 5m 退到 24m 要在 65% 速度下走约 5 秒，整个控制窗口全花在走路上，
+   *   读条填充（德鲁伊愤怒 1.4s）全程被 castableNow 封着 —— 德鲁伊
+   *   59.5→28.6%、法师 42.9→21.4%，跌的全是「用走路换输出」这一刀。
+   *   12m = 出了近战触及 + 一个身位余量，够放一发读条再决定下一步。
+   */
+  KITE_TO: 12,
+  /** 近战与对手拉开超过这个距离才动用冲锋（太近了冲锋有 minRange 也放不出）*/
+  GAP_CLOSE_MIN_D: 8,
+} as const;
 
 /**
  * 这一发**直接**打出的伤害（不摊冷却）。用于「用当前可用技能里最狠的一发」——
@@ -366,11 +489,17 @@ export interface BotPerception {
   ground?: GroundStore;
   projectiles?: ProjectileStore;
   /**
-   * 光环仓，用来看**对手身上已经在跳的 DoT**（`dotsAlreadyOn`）。
-   * 不传 → bot 退化成「看不见 DoT」，即旧的覆盖重挂行为。
+   * 光环仓，用来看**对手身上已经在跳的 DoT**（`dotsAlreadyOn`）、
+   * 自己身上有没有已生效的保命增益（不叠盾）、双方身上可驱散的东西。
+   * 不传 → bot 退化成「看不见 DoT、不开保命、不驱散」。
    * ★ 只读，与 ground/projectiles 同一条红线：决策层拿不到写入口。
    */
   auras?: AuraStore;
+  /**
+   * P4：控制递减仓（只读）。bot 出控制前查目标该类别的递减层数 ——
+   * 半衰以下不出手，免疫绝不空放。不传 → 不做递减判断（当全额算）。
+   */
+  dr?: DrStore;
 }
 
 /** 一次决策的产出 —— 与真人的两条通道同构 */
@@ -380,11 +509,14 @@ export interface BotAction {
 }
 
 /**
- * AI：面向对手、按站位保持距离、**看到读条就打断**、半血保命、
- * 用当前可用技能里最狠的一发输出。难度档决定「会不会/多快打断」。
+ * AI：面向对手、按站位保持距离、**看到读条就打断**、血线告急开保命键、
+ * 会用控制（带递减/免疫判断）、会驱散、被贴脸会拉开、够不着会冲锋、
+ * 半血治疗、用当前可用技能里最狠的一发输出。难度档决定会不会用这些技巧
+ * （easy 全部不用，保持木桩手感）。
  *
- * ★ 仍然不会的事（P1b 之后再补）：风筝后撤、躲地面 AOE、换目标、选落点。
- *   它现在是「会打断、会挑技能的普通对手」，不再是「随机按键的木桩」。
+ * ★ 仍然不会的事（B1 余账，逐条有原因）：换目标/保队友（单目标感知）、
+ *   选地面落点、德鲁伊形态轮换、盗贼潜行开场、瞬闪逃脱（yaw 模型）、
+ *   连击点终结技（两次实测打回未定位）、绕柱寻路。
  */
 export const decideBotAction = (p: BotPerception): BotAction => {
   const { world, casting, self, foe, rng } = p;
@@ -469,9 +601,85 @@ export const decideBotAction = (p: BotPerception): BotAction => {
     return escapeDir(self, worst, yaw);
   })();
 
+  /**
+   * ★★ P4「先控再退」—— 上面那段回滚史的**条件版**答案。
+   *
+   *   纯后退死在两条规则的乘积上（65% 速度追不掉 + 移动断读条）。
+   *   但两条里的第一条有一个成立不了的前提：**对手得追得动**。对手被定身/
+   *   昏迷/恐惧时，65% 的后退速度追的是一个速度为 0 的人 —— 稳赚。
+   *   这正是真人「新星 → 拉开 → 再输出」组合技的后半段。
+   *
+   *   四道门，少一道都会退化成被打回的那版纯风筝：
+   *   · 对手**当前被硬控**（追不上来）—— 不是「我觉得危险」
+   *   · 对手拿的是**近战武器** —— 距离只对必须贴脸的人才是硬通货；
+   *     对着远程后退换不来安全，只换来自己读条全废（分步归因的教训之二）
+   *   · 自己是远程打法（standOff ≥ RANGED_REACH_MIN；近战退了打不到人）
+   *   · 距离还没拉到 KITE_TO（12m 绝对值，不是退满 standOff —— 见其注释）
+   *
+   *   第二条规则（移动断读条）由 `kiting` 旗子处理：后撤窗口内只放瞬发
+   *   （见下面各出招步骤的 castableNow）—— 上次惨案的另一半根因。
+   *   ★ easy 不风筝，与不打断/不躲圈同源。
+   */
+  const kiting =
+    !dodgeDir &&
+    difficulty !== 'easy' &&
+    reach >= TACTICS.RANGED_REACH_MIN &&
+    !(getWeapon(foe.weaponId)?.isRanged ?? false) &&
+    (foe.flags.stunned || foe.flags.rooted || foe.flags.feared) &&
+    d < TACTICS.KITE_TO;
+
   const advance: MovementInput = dodgeDir
     ? { ...toLocalMove(dodgeDir, yaw), jump: false, yaw }
-    : { forward: d > reach * 0.9 ? 1 : 0, strafe: 0, jump: false, yaw };
+    : kiting
+      ? { forward: -1, strafe: 0, jump: false, yaw }
+      : { forward: d > reach * 0.9 ? 1 : 0, strafe: 0, jump: false, yaw };
+
+  /** 后撤窗口内只放瞬发 —— 移动会打断读条（7.3），别自己断自己 */
+  const castableNow = (sk: SkillDef): boolean =>
+    !kiting || sk.cast.kind === CastKind.Instant;
+
+  /**
+   * ★★ P4 保命：血线告急 → 开保命键（冰封庇护/神圣壁障/龟甲护体/防御架势/
+   *   疾闪…）。此前这 33 个增益全是死键 —— bot 血见底了还在硬吃。
+   *
+   * 两道门：
+   *   · 血量 < SURVIVAL_HEALTH（比半血治疗更晚触发 —— 保命键冷却长，
+   *     半血就交会在真正要命时空窗）
+   *   · **身上没有已生效的保命增益** —— 盾上叠盾是纯浪费，而且 argmax
+   *     不会停：不加这道门它会把全部保命键在同一秒连着倒出来
+   * ★ easy 不开保命 —— 新手对手挨打站桩，与不打断同源。
+   */
+  if (
+    difficulty !== 'easy' &&
+    self.health < self.maxHealth * TACTICS.SURVIVAL_HEALTH &&
+    !(p.auras && aurasOf(p.auras, self.id).some((a) => isDefensiveAura(a.def)))
+  ) {
+    const guard = skills.find(
+      (sk) => isSelfDefenseSkill(sk) && castableNow(sk) && usableOn(sk, self),
+    );
+    if (guard) return { move: advance, cast: { skillId: guard.id, targetId: self.id } };
+    /**
+     * 交易型保命（龟甲护体：减伤 + 偏转投射物，但期间不能攻击）只在
+     * **对面正在读条**时开 —— 这正是它设计上的赢面：壳里吃掉那发大的，
+     * 自己损失的输出时间与对面读条重叠，交易划算。无条件低血就缩壳
+     * 已被分步归因打回（猎人 23.8→7.1%，缩着挨白字打）。
+     */
+    if (getCast(casting, foe.id)) {
+      const shell = skills.find(
+        (sk) =>
+          !isHealSkill(sk) &&
+          castableNow(sk) &&
+          sk.effects.some(
+            (e) =>
+              e.kind === 'applyAura' &&
+              isDefensiveAura(e.aura) &&
+              e.aura.flags?.cannotAttack === true,
+          ) &&
+          usableOn(sk, self),
+      );
+      if (shell) return { move: advance, cast: { skillId: shell.id, targetId: self.id } };
+    }
+  }
 
   /**
    * ★★ **看到敌人读一个可打断的法术 → 打断它。** 这是「会玩」和「木桩」之间
@@ -482,6 +690,7 @@ export const decideBotAction = (p: BotPerception): BotAction => {
    * 为 Infinity → 这段永不触发（新手对手不会留打断）。
    * ★ 不消耗 rng —— 纯确定性判断，回放/种子复现不受影响。
    */
+  let foeCastingUnkicked = false;
   if (difficulty !== 'easy') {
     const foeCast = getCast(casting, foe.id);
     if (foeCast?.interruptible) {
@@ -490,23 +699,127 @@ export const decideBotAction = (p: BotPerception): BotAction => {
       if (elapsed >= REACTION_SECONDS[difficulty] && remaining > 0.1) {
         const kick = offensive.find(isInterruptSkill);
         if (kick) return { move: advance, cast: { skillId: kick.id, targetId: foe.id } };
+        // 没踢可用但对面在读 —— 下面的控制步骤拿它当替补打断的触发条件
+        foeCastingUnkicked = true;
+      }
+    }
+  }
+
+  /**
+   * ★★ P4 控制：破胆怒吼/致盲/霜爆新星/缠根…（10 个纯控制键）此前从未被按。
+   *
+   * 时机（其一即可，全部与「我为什么现在要控他」对得上）：
+   *   · 替补打断 —— 对面在读条而我没踢（控制打断读条的效果一样）
+   *   · peel —— 对手贴脸而我是远程（控住才能拉开，见上面 kiting 的组合技）
+   *   · 锁杀 —— 对手血量进击杀窗口（控住让他放不了保命/治疗）
+   *   · 自保 —— 我自己血线不稳（控住换喘息）
+   *
+   * 三道门（少一道就会看起来「蠢」）：
+   *   · 递减 ≥ DR_MIN_FACTOR —— 半衰以下的控制不值一个公共冷却；
+   *     免疫（factor 0）绝不空放（8.2 的免疫窗口对空放不推进计数，
+   *     但 GCD 与资源是真的丢了）
+   *   · 对手未被硬控 —— 控上叠控 = 浪费自己的 DR 预算
+   *   · 对手没开完全免疫（8.4 圣盾/冰箱期间一切控制落空）
+   *
+   * ★ 沉默不会从这里出手 —— 不是遗漏：全花名册唯一的 silence 效果长在
+   *   牧师「沉默」里，而它**同时带 interrupt**，被 `ccCategoryOf` 划给了
+   *   打断步骤（踢要留着踢读条）。若将来加入纯沉默技能，这里需要补一道
+   *   「对手用蓝才出手」的门（对战士沉默是字面意义的空气）—— 现在不写，
+   *   写了也是一条永不执行的死分支（本仓库的老病：规则写对了没人调）。
+   */
+  if (
+    difficulty !== 'easy' &&
+    !foe.flags.stunned &&
+    !foe.flags.feared &&
+    !foe.flags.immuneAll
+  ) {
+    const wantCc =
+      foeCastingUnkicked ||
+      (d <= TACTICS.PEEL_RANGE && reach >= TACTICS.RANGED_REACH_MIN) ||
+      foe.health < foe.maxHealth * TACTICS.CC_KILL_WINDOW ||
+      self.health < self.maxHealth * TACTICS.CC_SELF_DANGER;
+    if (wantCc) {
+      const cc = offensive.find((sk) => {
+        const cat = ccCategoryOf(sk);
+        if (cat === undefined || !castableNow(sk)) return false;
+        if (cat === DrCategory.Root && foe.flags.rooted) return false; // 定身叠定身同样是浪费
+        const factor = p.dr ? drFactor(p.dr, foe.id, cat, world.time) : 1;
+        return factor >= TACTICS.DR_MIN_FACTOR;
+      });
+      if (cc) return { move: advance, cast: { skillId: cc.id, targetId: foe.id } };
+    }
+  }
+
+  /**
+   * ★★ P4 驱散：净化术/自由庇佑/群体净化（4 个驱散键）此前从未被按。
+   *
+   * 规则自成闭环：**按下去能清掉东西才按**（`dispelEligible` —— 与结算侧
+   * `dispel()` 共用同一份资格判定，不另抄一套会漂移的镜像）。
+   *   · 队向（from:'ally'）→ 清自己身上的减益
+   *   · 敌向（from:'enemy'）→ 偷对手身上的增益
+   * 没有可清目标就绝不按 —— 这一条保证它几乎不可能打崩基线。
+   */
+  if (difficulty !== 'easy' && p.auras) {
+    for (const sk of skills) {
+      if (!castableNow(sk)) continue;
+      for (const e of sk.effects) {
+        if (e.kind !== 'dispel') continue;
+        const selector = { types: e.types, impairs: e.impairs };
+        if (e.from === 'ally') {
+          if (
+            dispelEligible(p.auras, self.id, selector, 'debuff', e.canRemoveImmunity).length >
+              0 &&
+            usableOn(sk, self)
+          ) {
+            return { move: advance, cast: { skillId: sk.id, targetId: self.id } };
+          }
+        } else if (
+          dispelEligible(p.auras, foe.id, selector, 'buff', e.canRemoveImmunity).length > 0 &&
+          usableOn(sk, foe)
+        ) {
+          return { move: advance, cast: { skillId: sk.id, targetId: foe.id } };
+        }
       }
     }
   }
 
   // 半血以下且有治疗可用 → 先保命。这是「同等操作水平」的底线共识，
   // 不属于反制链博弈。治疗仍随机挑 —— 三个奶技能差异不大，权重不值得建模
+  // ★ P4：后撤窗口内只挑瞬发治疗（castableNow）—— 读条治疗留到拉开之后
   if (self.health < self.maxHealth * 0.5) {
-    const heals = skills.filter((sk) => isHealSkill(sk) && usableOn(sk, self));
+    const heals = skills.filter((sk) => isHealSkill(sk) && castableNow(sk) && usableOn(sk, self));
     if (heals.length > 0) {
       const pick = heals[Math.floor(rng() * heals.length)]!;
       return { move: advance, cast: { skillId: pick.id, targetId: self.id } };
     }
   }
 
+  /**
+   * ★★ P4 位移：6 个位移键此前从未被按。分两种打法，方向相反：
+   *   · **远程被贴脸** → 后撤跃（瞬间拉开 6 米）；没有就开加速爆发。
+   *     与上面的 kiting 是同一套「拉开」棋路的两枚子。
+   *   · **近战够不着** → 突进/背刺传送贴上去。方向与 advance 一致，
+   *     只是把「跑 12 米」换成「一瞬到位」—— 多出来的全是输出时间，
+   *     这也是四类位移里风险最低的一条。
+   * ★ 后撤跃/加速目标是自己，冲锋目标是对手 —— usableOn 分别验。
+   */
+  if (difficulty !== 'easy') {
+    if (d <= TACTICS.PEEL_RANGE && reach >= TACTICS.RANGED_REACH_MIN) {
+      const out =
+        skills.find((sk) => isEscapeSkill(sk) && castableNow(sk) && usableOn(sk, self)) ??
+        skills.find((sk) => isSpeedBurstSkill(sk) && castableNow(sk) && usableOn(sk, self));
+      if (out) return { move: advance, cast: { skillId: out.id, targetId: self.id } };
+    }
+    if (d > TACTICS.GAP_CLOSE_MIN_D && reach < TACTICS.RANGED_REACH_MIN) {
+      const closer = offensive.find((sk) => isGapCloserSkill(sk) && castableNow(sk));
+      if (closer) return { move: advance, cast: { skillId: closer.id, targetId: foe.id } };
+    }
+  }
+
   // 有伤害技能可用时优先输出，否则退而求其次放别的（增益/控制）
-  const damaging = offensive.filter(hasDamage);
-  const pool = damaging.length > 0 ? damaging : offensive;
+  // ★ P4：后撤窗口内只放瞬发（castableNow）—— 移动断读条，别自己断自己
+  const damaging = offensive.filter((sk) => hasDamage(sk) && castableNow(sk));
+  const pool = damaging.length > 0 ? damaging : offensive.filter(castableNow);
   if (pool.length === 0) return { move: advance };
 
   /**

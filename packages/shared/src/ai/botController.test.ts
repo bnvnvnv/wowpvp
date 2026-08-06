@@ -9,20 +9,28 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { mage, warrior } from '../data/index.js';
-import { CastKind, School } from '../types/enums.js';
+import { druid, hunter, mage, priest, warrior } from '../data/index.js';
+import type { AuraDef } from '../data/schema.js';
+import { CastKind, DispelType, DrCategory, School } from '../types/enums.js';
 import { asSkillId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
 import { vec3 } from '../math/vec3.js';
-import { createEntity } from '../sim/entity.js';
+import { createEntity, type CombatEntity } from '../sim/entity.js';
 import type { CastState, CastingStore } from '../sim/casting.js';
 import type { GroundArea } from '../sim/groundArea.js';
+import type { AuraInstance, AuraStore } from '../sim/aura.js';
+import { applyDr, createDrStore } from '../sim/dr.js';
 import { addEntity, allocEntityId, createWorld } from '../sim/world.js';
 import {
   burstDamageOf,
+  ccCategoryOf,
   decideBotAction,
   hasDamage,
+  isEscapeSkill,
+  isGapCloserSkill,
   isHealSkill,
   isInterruptSkill,
+  isSelfDefenseSkill,
+  isSpeedBurstSkill,
   toLocalMove,
   type BotPerception,
 } from './botController.js';
@@ -296,6 +304,253 @@ describe('P1b 风筝：**刻意不做**（规则不支持纯后退）', () => {
       world, casting: new Map(), self, foe, rng: seqRng(), difficulty: 'normal',
     });
     expect(a.move.forward).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ── P4：四类死键接通 ─────────────────────────────────────────────
+
+/** 任意职业对任意职业的通用夹具（P4 的场景常常不是法师打战士）*/
+const duel = (
+  selfClass: typeof mage, foeClass: typeof mage, foeDistance: number,
+): { world: ReturnType<typeof createWorld>; self: CombatEntity; foe: CombatEntity;
+     casting: CastingStore } => {
+  const world = createWorld();
+  const self = addEntity(world, createEntity(allocEntityId(world), selfClass, TEAM_RED, vec3(0, 0, 0)));
+  const foe = addEntity(
+    world, createEntity(allocEntityId(world), foeClass, TEAM_BLUE, vec3(0, 0, foeDistance)),
+  );
+  for (const e of [self, foe]) {
+    for (const [r, max] of e.maxResources) e.resources.set(r, max);
+  }
+  return { world, self, foe, casting: new Map() };
+};
+
+/** 手搓一条挂在 targetId 身上的光环实例（决策层只读 def 与归属）*/
+const auraOn = (targetId: CombatEntity['id'], def: Partial<AuraDef>): AuraInstance => ({
+  def: {
+    id: 'test.aura', name: '测试', kind: 'buff', duration: 10,
+    dispelType: DispelType.None, ...def,
+  } as AuraDef,
+  sourceId: targetId, targetId,
+  appliedAt: 0, expiresAt: 99, stacks: 1,
+  absorbRemaining: 0, absorbInitial: 0, damageAccumulated: 0,
+  nextTickAt: 0, actualDuration: 10,
+});
+
+const storeWith = (...auras: AuraInstance[]): AuraStore => {
+  const m: AuraStore = new Map();
+  for (const a of auras) {
+    const list = m.get(a.targetId) ?? [];
+    list.push(a);
+    m.set(a.targetId, list);
+  }
+  return m;
+};
+
+describe('P4 保命：血线告急开保命键', () => {
+  it('★★ 法师 30% 血 → 开出一个自我防御键（冰封庇护/寒冰护体一族）', () => {
+    const s = duel(mage, warrior, 20);
+    s.self.health = s.self.maxHealth * 0.3;
+    const a = decideBotAction(perceive(s, { difficulty: 'normal', auras: new Map() }));
+    const picked = mage.skills.find((sk) => sk.id === a.cast?.skillId);
+    expect(picked && isSelfDefenseSkill(picked), `实际选了 ${a.cast?.skillId}`).toBe(true);
+    expect(a.cast?.targetId).toBe(s.self.id);
+  });
+
+  it('★★ 身上已有保命增益 → 不叠盾（否则会把全部保命键一秒倒光）', () => {
+    const s = duel(mage, warrior, 20);
+    s.self.health = s.self.maxHealth * 0.3;
+    const auras = storeWith(auraOn(s.self.id, {
+      id: 'mage.ice_barrier', modifiers: {}, absorb: 150,
+    }));
+    const a = decideBotAction(perceive(s, { difficulty: 'normal', auras }));
+    const picked = mage.skills.find((sk) => sk.id === a.cast?.skillId);
+    expect(picked === undefined || !isSelfDefenseSkill(picked)).toBe(true);
+  });
+
+  it('★ easy 不开保命（新手对手挨打站桩，与不打断同源）', () => {
+    const s = duel(mage, warrior, 20);
+    s.self.health = s.self.maxHealth * 0.3;
+    const a = decideBotAction(perceive(s, { difficulty: 'easy', auras: new Map() }));
+    const picked = mage.skills.find((sk) => sk.id === a.cast?.skillId);
+    expect(picked === undefined || !isSelfDefenseSkill(picked)).toBe(true);
+  });
+
+  it('★ 血量健康时不开保命（保命键冷却长，交早了真要命时空窗）', () => {
+    const s = duel(mage, warrior, 20);
+    const a = decideBotAction(perceive(s, { difficulty: 'normal', auras: new Map() }));
+    const picked = mage.skills.find((sk) => sk.id === a.cast?.skillId);
+    expect(picked === undefined || !isSelfDefenseSkill(picked)).toBe(true);
+  });
+});
+
+describe('P4 控制：会用控制，且带递减/免疫判断', () => {
+  it('★★ 击杀窗口（对手 30% 血）→ 出控制锁杀', () => {
+    const s = duel(mage, warrior, 20);
+    s.foe.health = s.foe.maxHealth * 0.3;
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    const picked = mage.skills.find((sk) => sk.id === a.cast?.skillId);
+    expect(picked && ccCategoryOf(picked) !== undefined, `实际选了 ${a.cast?.skillId}`).toBe(true);
+  });
+
+  it('★★ 该类别递减到 25% → 不出这手控制（半衰以下不值一个公共冷却）', () => {
+    const s = duel(mage, warrior, 20);
+    s.foe.health = s.foe.maxHealth * 0.3;
+    const dr = createDrStore();
+    // 把法师控制会用到的两条链都打进半衰以下（变形术走 Incapacitate，新星走 Root）
+    for (const cat of [DrCategory.Incapacitate, DrCategory.Root]) {
+      applyDr(dr, s.foe.id, cat, 4, 0);
+      applyDr(dr, s.foe.id, cat, 4, 0);
+    }
+    const a = decideBotAction(perceive(s, { difficulty: 'normal', auras: new Map(), dr }));
+    const picked = mage.skills.find((sk) => sk.id === a.cast?.skillId);
+    expect(picked === undefined || ccCategoryOf(picked) === undefined,
+      `递减 25% 还在出控制：${a.cast?.skillId}`).toBe(true);
+  });
+
+  it('★★ 对手已被硬控 → 不控上叠控（浪费自己的递减预算）', () => {
+    const s = duel(mage, mage, 20); // 对手法师（远程武器）→ 不触发风筝，纯看出招
+    s.foe.health = s.foe.maxHealth * 0.3;
+    s.foe.flags.stunned = true;
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    const picked = mage.skills.find((sk) => sk.id === a.cast?.skillId);
+    expect(picked === undefined || ccCategoryOf(picked) === undefined).toBe(true);
+  });
+
+  it('★★ 对手开着完全免疫 → 控制绝不空放（8.4）', () => {
+    const s = duel(mage, warrior, 20);
+    s.foe.health = s.foe.maxHealth * 0.3;
+    s.foe.flags.immuneAll = true;
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    const picked = mage.skills.find((sk) => sk.id === a.cast?.skillId);
+    expect(picked === undefined || ccCategoryOf(picked) === undefined).toBe(true);
+  });
+
+  it('★ 牧师的「沉默」是打断混合体 —— 不当普通控制在击杀窗口花掉（踢留给读条）', () => {
+    const s = duel(priest, warrior, 20);
+    s.foe.health = s.foe.maxHealth * 0.3; // kill window，但对面没在读条
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    expect(a.cast?.skillId).not.toBe(asSkillId('priest.silence'));
+  });
+});
+
+describe('P4 驱散：按下去能清掉东西才按', () => {
+  it('★★ 自己身上有可驱散的魔法减益 → 对自己净化', () => {
+    const s = duel(priest, warrior, 20);
+    const auras = storeWith(auraOn(s.self.id, {
+      kind: 'debuff', dispelType: DispelType.Magic,
+    }));
+    const a = decideBotAction(perceive(s, { difficulty: 'normal', auras, dr: createDrStore() }));
+    expect(a.cast?.skillId).toBe(asSkillId('priest.dispel_magic'));
+    expect(a.cast?.targetId).toBe(s.self.id);
+  });
+
+  it('★★ 对手身上有可偷的魔法增益 → 偷掉它', () => {
+    const s = duel(priest, warrior, 20);
+    const auras = storeWith(auraOn(s.foe.id, {
+      kind: 'buff', dispelType: DispelType.Magic,
+    }));
+    const a = decideBotAction(perceive(s, { difficulty: 'normal', auras, dr: createDrStore() }));
+    expect(a.cast?.skillId).toBe(asSkillId('priest.dispel_magic'));
+    expect(a.cast?.targetId).toBe(s.foe.id);
+  });
+
+  it('★★ 没有可清目标 → 绝不按（不可驱散的减益不算目标）', () => {
+    const s = duel(priest, warrior, 20);
+    const auras = storeWith(auraOn(s.self.id, {
+      kind: 'debuff', dispelType: DispelType.None, // 流血一类，净化不掉
+    }));
+    const a = decideBotAction(perceive(s, { difficulty: 'normal', auras, dr: createDrStore() }));
+    expect(a.cast?.skillId).not.toBe(asSkillId('priest.dispel_magic'));
+  });
+});
+
+describe('P4 位移：远程拉开、近战贴上', () => {
+  it('★★ 猎人被贴脸 → 后撤跃', () => {
+    const s = duel(hunter, warrior, 3);
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    expect(a.cast?.skillId).toBe(asSkillId('hunter.disengage'));
+    expect(a.cast?.targetId).toBe(s.self.id);
+  });
+
+  it('★★ 战士够不着 → 冲锋贴上去', () => {
+    const s = duel(warrior, mage, 15);
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    expect(a.cast?.skillId).toBe(asSkillId('warrior.charge'));
+  });
+
+  it('★★ 先控再退：近战对手被定身且贴身 → 后退拉开（安全风筝）', () => {
+    const s = duel(mage, warrior, 3);
+    s.foe.flags.rooted = true;
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    expect(a.move.forward).toBeLessThan(0);
+  });
+
+  it('★★ 对手**没**被控住 → 绝不后退（P1b 回滚的 85.7pp 惨案钉在这）', () => {
+    const s = duel(mage, warrior, 3);
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    expect(a.move.forward, '纯后退风筝又回来了 —— 先看走位段注释里的基线数据')
+      .toBeGreaterThanOrEqual(0);
+  });
+
+  it('★ 对手拿远程武器 → 被控了也不退（对远程退换不来安全，只废自己读条）', () => {
+    const s = duel(mage, hunter, 8);
+    s.foe.flags.rooted = true;
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    expect(a.move.forward).toBeGreaterThanOrEqual(0);
+  });
+
+  it('★ 拉够 12 米就停（不是退满 standOff —— 分步归因抓过「用走路换输出」）', () => {
+    const s = duel(mage, warrior, 13);
+    s.foe.flags.rooted = true;
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    expect(a.move.forward).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('P4 分类器：形态切换与交易型保命的排除', () => {
+  it('★★ 迅猫/巨熊形态既不算加速键也不算保命键（变身会封死施法套件）', () => {
+    const catForm = druid.skills.find((sk) => (sk.id as string) === 'druid.cat_form')!;
+    const bearForm = druid.skills.find((sk) => (sk.id as string) === 'druid.bear_form')!;
+    expect(isSpeedBurstSkill(catForm)).toBe(false);
+    expect(isSelfDefenseSkill(bearForm)).toBe(false);
+  });
+
+  it('★ 龟甲护体不算常规保命（cannotAttack 交易键，只在对面读条时特批）', () => {
+    const turtle = hunter.skills.find((sk) => (sk.id as string) === 'hunter.turtle_guard'
+      || sk.effects.some((e) => e.kind === 'applyAura' && e.aura.flags?.cannotAttack === true))!;
+    expect(isSelfDefenseSkill(turtle)).toBe(false);
+  });
+
+  it('★ 分类器认得出各族代表', () => {
+    expect(hunter.skills.some(isEscapeSkill), '后撤跃').toBe(true);
+    expect(warrior.skills.some(isGapCloserSkill), '冲锋').toBe(true);
+    expect(hunter.skills.some(isSpeedBurstSkill), '猎豹守护').toBe(true);
+    expect(mage.skills.some(isSelfDefenseSkill), '冰封庇护').toBe(true);
+    expect(mage.skills.some((sk) => ccCategoryOf(sk) !== undefined), '变形/新星').toBe(true);
+    // 断招踢带 interrupt —— 不算控制（踢要留给打断步骤）
+    const kick = warrior.skills.find(isInterruptSkill)!;
+    expect(ccCategoryOf(kick)).toBeUndefined();
   });
 });
 

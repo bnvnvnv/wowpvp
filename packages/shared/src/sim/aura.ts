@@ -178,6 +178,35 @@ const isSlowAura = (def: AuraInstance['def']): boolean =>
   (def.modifiers?.moveSpeed ?? 1) < 1;
 
 /**
+ * 驱散**资格**判定（只读）：这个目标身上有哪些光环会被该口径的驱散移除。
+ *
+ * ★ 从 `dispel()` 里抽出来，是为了让 AI 能先问「按下去能清掉东西吗」再决定
+ *   按不按（没有可清目标就不按 —— 净化术/自由庇佑此前是 bot 的死键）。
+ *   资格规则**只有这一份**：`dispel()` 也调它 —— 分开写两套迟早漂移，
+ *   「面板显示的和生效的不一致」是这仓库点过名的老病。
+ */
+export const dispelEligible = (
+  store: AuraStore,
+  id: EntityId,
+  selector: DispelSelector,
+  kind: 'buff' | 'debuff',
+  canRemoveImmunity = false,
+): AuraInstance[] =>
+  (store.get(id) ?? []).filter((a) => {
+    if (a.def.kind !== kind) return false;
+    // ★ 「不可驱散」对两种口径都成立 —— 语义筛选不是绕过 None 的后门
+    if (a.def.dispelType === DispelType.None) return false;
+    if (selector.types && !selector.types.includes(a.def.dispelType)) return false;
+    if (selector.impairs) {
+      const impairing = isSlowAura(a.def)
+        || (selector.impairs === 'movement' && a.def.flags?.rooted === true);
+      if (!impairing) return false;
+    }
+    if (a.def.flags?.immuneAll && !canRemoveImmunity) return false;
+    return true;
+  });
+
+/**
  * 8.4 驱散：只移除技能说明允许的类别。
  * `canRemoveImmunity` 对应群体驱散「可解除部分完全免疫」。
  */
@@ -192,19 +221,7 @@ export const dispel = (
   const list = store.get(id);
   if (!list) return [];
 
-  const eligible = list.filter((a) => {
-    if (a.def.kind !== kind) return false;
-    // ★ 「不可驱散」对两种口径都成立 —— 语义筛选不是绕过 None 的后门
-    if (a.def.dispelType === DispelType.None) return false;
-    if (selector.types && !selector.types.includes(a.def.dispelType)) return false;
-    if (selector.impairs) {
-      const impairing = isSlowAura(a.def)
-        || (selector.impairs === 'movement' && a.def.flags?.rooted === true);
-      if (!impairing) return false;
-    }
-    if (a.def.flags?.immuneAll && !canRemoveImmunity) return false;
-    return true;
-  });
+  const eligible = dispelEligible(store, id, selector, kind, canRemoveImmunity);
 
   const limit = count === 'all' ? eligible.length : count;
   const victims = eligible.slice(0, limit);

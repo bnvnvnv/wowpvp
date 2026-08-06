@@ -167,7 +167,8 @@ const duel = (clsA: ClassDef, clsB: ClassDef, rng: () => number): DuelResult => 
   const think = (self: CombatEntity, foe: CombatEntity): BotAction =>
     // P1b：走位感知一并喂进去 —— 基线里的 AI 与生产里的是同一个
     // P3b：auras 也要喂 —— 少了它 bot 看不见自己挂的 DoT，会每个 GCD 重挂
-    decideBotAction({ world, casting, self, foe, rng, ground, projectiles, auras });
+    // P4：dr 同理 —— 少了它 bot 出控制不看递减，往免疫窗口里空放
+    decideBotAction({ world, casting, self, foe, rng, ground, projectiles, auras, dr });
 
 
   const maxTicks = Math.ceil(MAX_SECONDS / SIM.TICK_DT);

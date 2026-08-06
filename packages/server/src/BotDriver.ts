@@ -146,6 +146,8 @@ export class BotDriver {
         projectiles: m.projectiles,
         // P3b：让它看得见对手身上已经在跳的 DoT，别每个 GCD 重挂（只读）
         auras: m.auras,
+        // P4：控制递减仓（只读）—— 出控制前看递减层数，免疫不空放
+        dr: m.dr,
       });
 
       /**

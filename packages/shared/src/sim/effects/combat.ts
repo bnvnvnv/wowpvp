@@ -362,6 +362,21 @@ const CONTROL_SPECS = {
 type ControlKind = keyof typeof CONTROL_SPECS;
 
 /**
+ * 控制效果 kind → 递减类别。**从 `CONTROL_SPECS` 派生**，不是第二份表。
+ *
+ * ★ 给 AI 用的：bot 出控制前要查目标该类别的递减层数（半衰以下不浪费），
+ *   它需要知道「fear 走 Incapacitate 链」这类事实 —— 这类事实只能有一个
+ *   出处。缴械（disarm）不参与递减，映射里没有它，AI 侧按 undefined 处理。
+ */
+export const CONTROL_DR_CATEGORY: Readonly<
+  Partial<Record<ControlKind, DrCategory>>
+> = Object.fromEntries(
+  Object.entries(CONTROL_SPECS)
+    .filter(([, spec]) => spec.category !== undefined)
+    .map(([kind, spec]) => [kind, spec.category]),
+);
+
+/**
  * 施加一个控制效果。统一走递减（8.2）与免疫检查（8.4）。
  *
  * ★ 8.3：战斗意志能解除昏迷、恐惧、迷惑、变形、定身，
