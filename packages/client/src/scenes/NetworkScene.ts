@@ -30,6 +30,7 @@ import {
   TEAM_RED,
   Targeting,
   createMovementState,
+  getClass,
   getSkill,
   SPAWN_PROTECTION_AURA,
   TRINKET_COOLDOWN_KEY,
@@ -81,6 +82,9 @@ import type { MinimapBlip } from '../hud/ModeHud.js';
 import { nextSpectateTarget } from '../spectate/SpectateController.js';
 import { SettingsPanel, rebindableActions, prettyKey } from '../settings/SettingsPanel.js';
 import { makeRebindController } from '../settings/keybindings.js';
+import {
+  SKILL_BAR_SLOTS, assignSlot, loadSkillBar, saveSkillBar,
+} from '../settings/skillLoadout.js';
 import { MusicDirector, ambientTrackFor } from '../audio/MusicDirector.js';
 import { presetOf } from '../render/Environment.js';
 import { SnapshotCombatView, castStateFromStarted } from '../net/SnapshotCombatView.js';
@@ -216,6 +220,8 @@ export class NetworkScene {
   /** ★ 与试验场**同一个** HUD 类，喂的是快照视图而不是 CombatDirector */
   private readonly hud: CombatHud;
   private readonly view = new SnapshotCombatView();
+  /** P3c：自己的职业 id（第一份快照时由 `skillBarFor` 记下，供设置面板用）*/
+  private myClassId?: string;
   /** 打击感：顿帧 + 反馈编排 + 可访问性（此前联网侧从不加载设置）*/
   private readonly hitStop = new HitStop();
   private feedback!: HitFeedback;
@@ -446,7 +452,40 @@ export class NetworkScene {
       bindings: () => this.input.getBindings(),
       rebind: (action, code) => rebindCtl.rebind(action, code),
       resetBindings: () => rebindCtl.reset(),
+      /**
+       * P3c 技能栏自定义。职业在第一份快照到达前未知 —— pool 返回空数组，
+       * 面板对空池不渲染该区块（打开早了就是暂时看不到，不炸）。
+       */
+      skillBar: {
+        current: () => this.view.skills,
+        pool: () => (this.myClassId ? (getClass(this.myClassId as never)?.skills ?? []) : []),
+        assign: (slot, skillId) => {
+          if (!this.myClassId) return;
+          const next = assignSlot(this.view.skills.map((sk) => sk.id as string), slot, skillId);
+          saveSkillBar(globalThis.localStorage, this.myClassId, next);
+          this.view.setSkillBar(this.skillBarDefsFor(this.myClassId));
+        },
+        reset: () => {
+          if (!this.myClassId) return;
+          const cls = getClass(this.myClassId as never);
+          if (!cls) return;
+          saveSkillBar(
+            globalThis.localStorage, this.myClassId,
+            cls.skills.slice(0, SKILL_BAR_SLOTS).map((sk) => sk.id as string),
+          );
+          this.view.setSkillBar(this.skillBarDefsFor(this.myClassId));
+        },
+      },
     });
+    /**
+     * P3c：联网技能栏 = 玩家自定义的 9 格；无存档 → 本职业前 9 个技能，
+     * 即改动前数字键能按到的那 9 个（键位含义不变，w12 按 fire_blast 的
+     * 槽位照旧）。10 格之后原本只能鼠标点的技能进了自定义池。
+     */
+    this.view.skillBarFor = (classId) => {
+      this.myClassId = classId;
+      return this.skillBarDefsFor(classId);
+    };
     // W7：技能栏 <kbd> 读**实时**绑定 —— 换了技能键就跟着变，不再写死 1–9
     this.hud.skillKeyLabel = (i) =>
       prettyKey(this.input.getBindings()[`skill${i + 1}` as never] ?? String(i + 1));
@@ -1281,6 +1320,24 @@ export class NetworkScene {
    * ★ 与 `audioDistance` 同理：不在快照里就返回 undefined —— 不给
    *   看不见的人飘数字，那等于泄露他的位置（验收 #5）。
    */
+  /**
+   * P3c：某职业当前应显示的技能栏（玩家自定义 ∪ 默认前 9）。
+   * ★ 默认 = 本职业**前 9 个**技能 —— 改动前数字键能按到的正是这 9 个，
+   *   不自定义的玩家键位含义零变化。
+   */
+  private skillBarDefsFor(classId: string): SkillDef[] {
+    const cls = getClass(classId as never);
+    if (!cls) return [];
+    const defaults = cls.skills.slice(0, SKILL_BAR_SLOTS).map((sk) => sk.id as string);
+    const ids = loadSkillBar(
+      globalThis.localStorage, classId, defaults,
+      new Set(cls.skills.map((sk) => sk.id as string)),
+    );
+    return ids
+      .map((id) => cls.skills.find((sk) => (sk.id as string) === id))
+      .filter((sk): sk is SkillDef => sk !== undefined);
+  }
+
   private headOf(id: EntityId): { x: number; y: number; z: number } | undefined {
     if (id === this.selfId && this.predictor) {
       const p = this.predictor.position;

@@ -140,6 +140,13 @@ export class SnapshotCombatView implements CombatView {
   /** 点击姓名板时把选中意图发出去。★ 由 NetworkScene 注入，这里不认识连接 */
   onSelect?: (id: EntityId) => void;
 
+  /**
+   * P3c 技能栏自定义：由 NetworkScene 注入「职业 → 该显示哪 9 格」。
+   * 不注入 → 回落到全部技能（旧行为）。★ 这里不读 localStorage ——
+   * 视图层不认识存储，与 `onSelect` 由外部注入是同一条边界。
+   */
+  skillBarFor?: (classId: string) => readonly SkillDef[];
+
   ingest(snapshot: Snapshot, serverTime: number): void {
     this.snapshot = snapshot;
     this.now = serverTime;
@@ -148,7 +155,15 @@ export class SnapshotCombatView implements CombatView {
 
     // 自己的职业决定技能栏
     const me = snapshot.entities.find((e) => e.id === snapshot.you);
-    if (me && this.skills.length === 0) this.skills = getClass(me.classId)?.skills ?? [];
+    if (me && this.skills.length === 0) {
+      this.skills = this.skillBarFor?.(me.classId as string)
+        ?? getClass(me.classId)?.skills ?? [];
+    }
+  }
+
+  /** P3c：设置面板改完技能栏立即生效（下一帧 HUD 重渲染自然拿到新栏）*/
+  setSkillBar(defs: readonly SkillDef[]): void {
+    this.skills = defs;
   }
 
   push(text: string, kind: HudLogEntry['kind']): void {

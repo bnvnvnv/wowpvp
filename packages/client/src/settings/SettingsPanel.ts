@@ -26,8 +26,10 @@ import {
   type AccessibilitySettings,
 } from './accessibility.js';
 import type { QualityTier } from '../render/quality.js';
+import type { SkillDef } from '@wowpvp/shared';
 import { Action, DEFAULT_BINDINGS } from '../input/InputManager.js';
 import type { RebindOutcome } from './keybindings.js';
+import { skillIconHtml } from '../hud/skillIcon.js';
 
 export interface SettingsPanelHooks {
   /** 场景的无障碍唯一入口（应用 + 持久化）。大厅传「存盘 + 应用缩放」的自家实现 */
@@ -45,6 +47,21 @@ export interface SettingsPanelHooks {
   rebind?: (action: Action, code: string) => RebindOutcome;
   /** W7：恢复默认键位 */
   resetBindings?: () => void;
+  /**
+   * P3c 技能栏自定义。不传则不显示该区块（未选职业的大厅）。
+   * 交互与键位重绑同语法：点一格进入「挑选态」，再点技能池里的技能完成
+   * 指派；交换语义在数据层（`assignSlot`），面板不持技能栏状态。
+   */
+  skillBar?: {
+    /** 当前 9 格 */
+    current: () => readonly SkillDef[];
+    /** 本职业全部技能池 */
+    pool: () => readonly SkillDef[];
+    /** 把 skillId 指派到 slot 格（含交换）。调用方负责持久化与生效 */
+    assign: (slot: number, skillId: string) => void;
+    /** 恢复默认技能栏 */
+    reset: () => void;
+  };
 }
 
 const COLORBLIND_TEXT: Record<ColorblindMode, string> = {
@@ -125,6 +142,8 @@ export class SettingsPanel {
   private capturing: Action | null = null;
   /** W7：捕获态或冲突的一句话提示，渲染在键位表顶部 */
   private keyHint = '';
+  /** P3c：正在挑选技能的格子（点了技能栏某格后）。null = 不在挑选态 */
+  private pickingSlot: number | null = null;
 
   constructor(
     container: HTMLElement,
@@ -182,7 +201,8 @@ export class SettingsPanel {
     this.el.addEventListener('input', (e) => this.onControl(e));
     this.el.addEventListener('change', (e) => this.onControl(e));
     this.el.addEventListener('click', (e) => {
-      const el = (e.target as HTMLElement).closest<HTMLElement>('[data-close],[data-rebind],[data-reset-keys]');
+      const el = (e.target as HTMLElement).closest<HTMLElement>(
+        '[data-close],[data-rebind],[data-reset-keys],[data-bar-slot],[data-pool-skill],[data-reset-bar]');
       if (el?.dataset['close'] !== undefined) this.close();
       else if (el?.dataset['rebind'] !== undefined && this.hooks.rebind) {
         // 点一行键位 → 进入捕获态，等下一个按键。focus() 让后续 keydown 落到本面板
@@ -194,6 +214,22 @@ export class SettingsPanel {
         this.hooks.resetBindings();
         this.cancelCapture();
         this.keyHint = '已恢复默认键位';
+        this.rerender();
+      } else if (el?.dataset['barSlot'] !== undefined && this.hooks.skillBar) {
+        // P3c：点技能栏某格 → 挑选态（再点一次同格 = 取消）
+        const slot = Number(el.dataset['barSlot']);
+        this.pickingSlot = this.pickingSlot === slot ? null : slot;
+        this.rerender();
+      } else if (el?.dataset['poolSkill'] !== undefined && this.hooks.skillBar) {
+        // P3c：挑选态下点技能池 → 指派（交换语义在数据层）
+        if (this.pickingSlot !== null) {
+          this.hooks.skillBar.assign(this.pickingSlot, el.dataset['poolSkill']!);
+          this.pickingSlot = null;
+          this.rerender();
+        }
+      } else if (el?.dataset['resetBar'] !== undefined && this.hooks.skillBar) {
+        this.hooks.skillBar.reset();
+        this.pickingSlot = null;
         this.rerender();
       }
       e.stopPropagation();
@@ -237,9 +273,10 @@ export class SettingsPanel {
 
   /** 打开时整体重建 —— 面板不持有状态，每次都从数据层现读 */
   open(): void {
-    // 上次关面板时若停在捕获态，重开要清干净
+    // 上次关面板时若停在捕获态/挑选态，重开要清干净
     this.capturing = null;
     this.keyHint = '';
+    this.pickingSlot = null;
     this.el.innerHTML = this.html();
     this.el.style.display = '';
   }
@@ -296,6 +333,47 @@ export class SettingsPanel {
       ? `<button data-reset-keys style="margin-top:6px;background:#232a38;border:1px solid #3a4150;color:#cdd6e4;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:12px">恢复默认键位</button>`
       : '';
 
+    /**
+     * P3c 技能栏自定义。上排 = 当前 9 格（点选进入挑选态），
+     * 下面 = 本职业全部技能池（挑选态下点击完成指派）。
+     * ★ 已在栏上的池内技能加高亮点 —— 玩家一眼看出哪些还没用。
+     */
+    let skillBarSection = '';
+    // 空栏/空池不渲染 —— 联网场景在第一份快照到达前不知道自己的职业
+    if (this.hooks.skillBar &&
+        this.hooks.skillBar.current().length > 0 &&
+        this.hooks.skillBar.pool().length > 0) {
+      const bar = this.hooks.skillBar.current();
+      const pool = this.hooks.skillBar.pool();
+      const onBar = new Set(bar.map((s) => s.id as string));
+      const cell = (s: SkillDef, attr: string, extra: string): string =>
+        `<div ${attr} title="${esc(s.name)}" style="cursor:pointer;border-radius:6px;padding:2px;
+             display:flex;flex-direction:column;align-items:center;width:44px;${extra}">
+           ${skillIconHtml(s, 24)}
+           <span style="font-size:10px;opacity:.75;max-width:44px;overflow:hidden;white-space:nowrap">${esc(s.name)}</span>
+         </div>`;
+      const slotCells = bar
+        .map((s, i) => cell(s, `data-bar-slot="${i}"`,
+          this.pickingSlot === i
+            ? 'outline:2px solid #d8b45a;background:#3a2a12'
+            : 'background:#232a38'))
+        .join('');
+      const poolCells = pool
+        .map((s) => cell(s, `data-pool-skill="${esc(s.id as string)}"`,
+          onBar.has(s.id as string) ? 'opacity:.45' : 'background:#1b2230'))
+        .join('');
+      const hint = this.pickingSlot !== null
+        ? `<div style="opacity:.7;font-size:12px;margin:2px 0">点下方技能放入第 ${this.pickingSlot + 1} 格（再点该格取消）</div>`
+        : `<div style="opacity:.55;font-size:12px;margin:2px 0">点一格再点池中技能即可替换；数字键 1–9 的位置就是这里的顺序</div>`;
+      skillBarSection = `
+        ${head('技能栏（键 1–9）')}
+        ${hint}
+        <div style="display:flex;flex-wrap:wrap;gap:4px">${slotCells}</div>
+        <div style="margin:6px 0 2px;opacity:.7;font-size:12px">技能池（本职业全部）</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">${poolCells}</div>
+        <button data-reset-bar style="margin-top:6px;background:#232a38;border:1px solid #3a4150;color:#cdd6e4;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:12px">恢复默认技能栏</button>`;
+    }
+
     return `
       <div style="display:flex;justify-content:space-between;align-items:center">
         <b style="font-size:15px">设置</b>
@@ -321,6 +399,7 @@ export class SettingsPanel {
       ${row('屏幕闪烁', toggle('data-acc-toggle="screenFlash"', a.screenFlash))}
       ${row('武器粒子', toggle('data-acc-toggle="weaponParticles"', a.weaponParticles))}
       ${row('打击顿帧', toggle('data-acc-toggle="hitStop"', a.hitStop))}
+      ${skillBarSection}
       ${head(keyHead)}
       ${keyHintHtml}
       ${keyRows}

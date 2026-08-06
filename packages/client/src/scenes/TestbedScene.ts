@@ -19,6 +19,7 @@ import {
   separationVelocity,
   SPAWN_PROTECTION_AURA,
   teleportTo,
+  mage as mageClass,
   type Aabb,
   type CombatEvent,
   type EntityId,
@@ -26,7 +27,8 @@ import {
 } from '@wowpvp/shared';
 
 import { CameraController } from '../camera/CameraController.js';
-import { CombatDirector } from '../combat/CombatDirector.js';
+import { CombatDirector, PLAYER_SKILL_IDS } from '../combat/CombatDirector.js';
+import { assignSlot, loadSkillBar, saveSkillBar } from '../settings/skillLoadout.js';
 import { TESTBED_STAGE, type Stage } from './stages.js';
 import { TutorialDirector } from '../tutorial/TutorialDirector.js';
 import { TutorialHud } from '../tutorial/TutorialHud.js';
@@ -225,8 +227,14 @@ export class TestbedScene {
     this.move = createMovementState(stage.spawn.position, stage.spawn.yaw);
 
     // M2 战斗 + M3 瞄准。★ 假人布置由舞台决定（见 stage 字段的注释）
+    // P3c：技能栏读玩家存过的自定义；无存档（verify 脚本的全新上下文）
+    //   → loadSkillBar 原样返回 PLAYER_SKILL_IDS，默认路径逐字节不变
     this.combat = new CombatDirector(
       this.obstacles, stage.spawn.position, stage.map.bounds, stage.dummies,
+      loadSkillBar(
+        globalThis.localStorage, 'mage', PLAYER_SKILL_IDS,
+        new Set(mageClass.skills.map((sk) => sk.id as string)),
+      ),
     );
     // ★ 必须用玩家的**真实实体 id**。这里曾经写死 0，而实体 id 从 1 开始分配 ——
     //   结果玩家身上的控制标记永远不会更新（一直是构造时的 visible=false）。
@@ -394,6 +402,26 @@ export class TestbedScene {
       bindings: () => this.input.getBindings(),
       rebind: (action, code) => rebindCtl.rebind(action, code),
       resetBindings: () => rebindCtl.reset(),
+      /**
+       * P3c 技能栏自定义（试验场 = 法师）。assign/reset 三件事一步不能少：
+       * 存 localStorage → 换 CombatDirector 的栏（立即生效）→ 取消进行中的
+       * 瞄准（正瞄着的格子可能刚被换掉，按旧技能确认落点就是错的）。
+       */
+      skillBar: {
+        current: () => this.combat.skills,
+        pool: () => mageClass.skills,
+        assign: (slot, skillId) => {
+          const next = assignSlot(this.combat.skills.map((sk) => sk.id as string), slot, skillId);
+          saveSkillBar(globalThis.localStorage, 'mage', next);
+          this.combat.setSkillBar(next);
+          this.aim.reset();
+        },
+        reset: () => {
+          saveSkillBar(globalThis.localStorage, 'mage', PLAYER_SKILL_IDS);
+          this.combat.setSkillBar(PLAYER_SKILL_IDS);
+          this.aim.reset();
+        },
+      },
     });
     // W7：技能栏 <kbd> 读实时绑定（换了技能键跟着变）
     this.hud.skillKeyLabel = (i) =>

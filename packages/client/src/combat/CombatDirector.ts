@@ -104,7 +104,7 @@ const BLUE = asTeamId(1);
  * 由 projectile.test.ts 严格覆盖。闪现术（方向直线）为了给变形术腾位置移出了技能栏，
  * 它的规则由 effects.test.ts 与 aiming.test.ts 覆盖。
  */
-const PLAYER_SKILL_IDS = [
+export const PLAYER_SKILL_IDS = [
   'mage.frostbolt',
   'mage.fire_blast',
   'mage.counterspell',
@@ -254,6 +254,12 @@ export class CombatDirector {
      * 教学传自己的那一套（见 `dummyLayouts.ts` 的文件头：两边的约束天生冲突）。
      */
     layout: readonly DummySpot[] = VERIFY_DUMMIES,
+    /**
+     * P3c 技能栏自定义：玩家存过的 9 格。**默认 = `PLAYER_SKILL_IDS`** ——
+     * verify-m1..m4 跑在无 localStorage 的全新上下文里，走的就是默认，
+     * 与参数化之前逐字节相同（同上面 layout 参数的纪律）。
+     */
+    skillBarIds: readonly string[] = PLAYER_SKILL_IDS,
   ) {
     this.world = createWorld(obstacles);
 
@@ -283,7 +289,7 @@ export class CombatDirector {
       );
     }
 
-    this.skills = PLAYER_SKILL_IDS.map((id) => {
+    this.skills = skillBarIds.map((id) => {
       const s = getSkill(asSkillId(id));
       if (!s) throw new Error(`技能不存在：${id}`);
       return s;
@@ -636,6 +642,8 @@ export class CombatDirector {
         projectiles: this.projectiles,
         // P3b：看得见自己挂在玩家身上的 DoT，不再每个 GCD 重挂
         auras: this.auras,
+        // P4：控制递减仓 —— 假人对玩家出控制也讲递减，不空放
+        dr: this.dr,
       });
       this.frameInputs.set(e.id, action.move);
       if (action.cast) {
@@ -861,6 +869,24 @@ export class CombatDirector {
       return;
     }
     this.pendingTrinkets.add(this.player.id);
+  }
+
+  /**
+   * P3c：运行时换技能栏（设置面板改完立即生效）。
+   * ★ `skills` 是 readonly 字段但数组内容可换 —— 原地替换而不是换引用，
+   *   持有这个数组引用的地方（HUD 快照、瞄准回调）自然看到新栏。
+   * ★ 冷却不受影响：冷却记在 `player.cooldowns` 按技能 id 存，
+   *   与栏位无关 —— 把正在冷却的技能挪个格子，剩余冷却原样跟着走。
+   * ⚠️ 调用方负责取消进行中的瞄准（TestbedScene 持有 aim 状态）——
+   *   否则「瞄准着 7 格的陨星，7 格被换成了冰枪」会按旧技能落点确认。
+   */
+  setSkillBar(ids: readonly string[]): void {
+    const defs = ids.map((id) => {
+      const s = getSkill(asSkillId(id));
+      if (!s) throw new Error(`技能不存在：${id}`);
+      return s;
+    });
+    this.skills.splice(0, this.skills.length, ...defs);
   }
 
   castSlot(index: number, groundPoint?: Vec3, opts?: { selfCast?: boolean }): void {

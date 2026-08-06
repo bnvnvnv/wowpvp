@@ -31,6 +31,7 @@ import {
   type Room,
   type RoomPlayerView,
   type ServerMessage,
+  type SkillDef,
 } from '@wowpvp/shared';
 import { ArenaPreset, GameMode } from '@wowpvp/shared';
 
@@ -41,6 +42,9 @@ import { renderMatchSummary, type MatchSummaryData } from '../hud/MatchSummary.j
 import { NetworkScene } from '../scenes/NetworkScene.js';
 import { clampUiScale, loadAccessibility, saveAccessibility } from '../settings/accessibility.js';
 import { SettingsPanel } from '../settings/SettingsPanel.js';
+import {
+  SKILL_BAR_SLOTS, assignSlot, loadSkillBar, saveSkillBar,
+} from '../settings/skillLoadout.js';
 import { TUTORIAL_STORAGE_KEY } from '../tutorial/steps.js';
 import { artEnabled } from '../settings/artMode.js';
 import { ClassPreview } from './ClassPreview.js';
@@ -461,6 +465,36 @@ export class LobbyShell {
             saveAccessibility(globalThis.localStorage, next);
             this.root.style.setProperty('--ui-scale', String(clampUiScale(next.uiScale)));
           },
+          /**
+           * P3c：**开场前**配技能栏（用户原话就是「开场前可以让玩家选择
+           * 技能列表，重新排列技能顺序」）。大厅没有对局，只做「读盘 → 改 →
+           * 存盘」；进对局的场景在构造/首快照时读同一份存档生效。
+           * 未选职业时 pool 为空 → 面板不渲染该区块。
+           */
+          skillBar: {
+            current: () => this.lobbySkillBar(),
+            pool: () => {
+              const classId = this.self()?.classId as string | undefined;
+              return classId ? (getClass(classId as never)?.skills ?? []) : [];
+            },
+            assign: (slot, skillId) => {
+              const classId = this.self()?.classId as string | undefined;
+              if (!classId) return;
+              const next = assignSlot(
+                this.lobbySkillBar().map((sk) => sk.id as string), slot, skillId,
+              );
+              saveSkillBar(globalThis.localStorage, classId, next);
+            },
+            reset: () => {
+              const classId = this.self()?.classId as string | undefined;
+              const cls = classId ? getClass(classId as never) : undefined;
+              if (!classId || !cls) return;
+              saveSkillBar(
+                globalThis.localStorage, classId,
+                cls.skills.slice(0, SKILL_BAR_SLOTS).map((sk) => sk.id as string),
+              );
+            },
+          },
         });
         this.settingsPanel.toggle();
         break;
@@ -596,6 +630,21 @@ export class LobbyShell {
   }
 
   // ── 渲染 ──────────────────────────────────────────────────────
+
+  /** P3c：当前所选职业「存档 ∪ 默认前 9」的技能栏（与 NetworkScene 同口径）*/
+  private lobbySkillBar(): readonly SkillDef[] {
+    const classId = this.self()?.classId as string | undefined;
+    const cls = classId ? getClass(classId as never) : undefined;
+    if (!classId || !cls) return [];
+    const defaults = cls.skills.slice(0, SKILL_BAR_SLOTS).map((sk) => sk.id as string);
+    const ids = loadSkillBar(
+      globalThis.localStorage, classId, defaults,
+      new Set(cls.skills.map((sk) => sk.id as string)),
+    );
+    return ids
+      .map((id) => cls.skills.find((sk) => (sk.id as string) === id))
+      .filter((sk): sk is SkillDef => sk !== undefined);
+  }
 
   private self(): RoomPlayerView | undefined {
     return this.players.find((p) => p.id === this.playerId);
