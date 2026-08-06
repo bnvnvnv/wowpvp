@@ -127,8 +127,13 @@ describe('★ 15.3 战场装备栏（验收 #35）', () => {
     for (const line of diff) {
       expect(line, line).toMatch(/[↑↓⇄]/);
     }
-    // 15.3 第三条的重点是"不只显示复杂数值" —— 所以要短
-    expect(diff.length).toBeLessThanOrEqual(4);
+    // 15.3 第三条的重点是"不只显示复杂数值" —— 所以要短。
+    // ★ 上界随 P8 从 4 抬到 6：`compareWeapons` 补了 modifiers 差异行
+    //   （法杖 vs 法球在造成伤害/受到伤害/资源获取上都不同），而
+    //   `slice(0, 6)` 才是实现里真正的截断点。这里写 4 只是老实现的
+    //   巧合值，不是规格 —— 断言应该盯实现的上界，否则加一条合理的
+    //   差异行就要红一次。
+    expect(diff.length).toBeLessThanOrEqual(6);
   });
 
   it('同一件装备与自己比较时没有差异行', () => {

@@ -64,19 +64,64 @@ export const compareWeapons = (
 ): string[] => {
   if (!current) return [`新武器：${candidate.name}`];
   const out: string[] = [];
-  const cmp = (label: string, a: number, b: number, unit = '') => {
+  /**
+   * ★ P8 修正：箭头是**好坏方向**不是数值方向 —— 攻击间隔从 1.7s 涨到
+   *   2.4s 是攻速变慢（变差），显示 ↑ 就是对着玩家说反话。modifiers 侧
+   *   与护甲侧早就有 lowerIsBetter，三围这条老路径漏了（测试首轮钉出）。
+   */
+  const cmp = (label: string, a: number, b: number, unit = '', lowerIsBetter = false) => {
     if (Math.abs(a - b) < 1e-6) return;
-    const up = b > a;
-    out.push(`${up ? '↑' : '↓'} ${label} ${a}${unit} → ${b}${unit}`);
+    const better = lowerIsBetter ? b < a : b > a;
+    out.push(`${better ? '↑' : '↓'} ${label} ${a}${unit} → ${b}${unit}`);
   };
   cmp('攻击距离', current.reach, candidate.reach, 'm');
-  cmp('攻击间隔', current.swingInterval, candidate.swingInterval, 's');
+  cmp('攻击间隔', current.swingInterval, candidate.swingInterval, 's', true);
   // swingPercent 是武器伤害百分比（1.6 = 160%），换成百分数更好读
   cmp('单次伤害', Math.round(current.swingPercent * 100), Math.round(candidate.swingPercent * 100), '%');
   if (current.handedness !== candidate.handedness) {
     out.push(`⇄ 类型 ${HANDEDNESS_TEXT[current.handedness]} → ${HANDEDNESS_TEXT[candidate.handedness]}`);
   }
-  return out.slice(0, 4);
+  // P8：武器 modifiers 差异（暴击/输出/承伤…）—— 此前只比三围，
+  // P7 之后武器的取舍越来越多落在 modifiers 里，不比等于瞒着玩家
+  out.push(...modifierDiffLines(current.modifiers, candidate.modifiers));
+  return out.slice(0, 6);
+};
+
+/**
+ * P8：两份 AuraModifiers 的差异行（武器/护甲共用）。
+ * 只列真正变了的项 —— 15.3 第三条：直接比较，不堆全字段表。
+ */
+const modifierDiffLines = (
+  a: WeaponDef['modifiers'] | undefined,
+  b: WeaponDef['modifiers'] | undefined,
+): string[] => {
+  const out: string[] = [];
+  const pct = (v: number | undefined, base: number): number =>
+    Math.round((v ?? base) * 100);
+  /** 乘算类（基数 1 = 100%）*/
+  const mul = (label: string, ka?: number, kb?: number, lowerIsBetter = false): void => {
+    const av = pct(ka, 1);
+    const bv = pct(kb, 1);
+    if (av === bv) return;
+    const better = lowerIsBetter ? bv < av : bv > av;
+    out.push(`${better ? '↑' : '↓'} ${label} ${av}% → ${bv}%`);
+  };
+  /** 加算类（基数 0，闪避/招架/格挡/暴击几率）*/
+  const add = (label: string, ka?: number, kb?: number): void => {
+    const av = pct(ka, 0);
+    const bv = pct(kb, 0);
+    if (av === bv) return;
+    out.push(`${bv > av ? '↑' : '↓'} ${label} +${av}% → +${bv}%`);
+  };
+  mul('造成伤害', a?.damageDealt, b?.damageDealt);
+  mul('受到伤害', a?.damageTaken, b?.damageTaken, true);
+  mul('移动速度', a?.moveSpeed, b?.moveSpeed);
+  mul('资源获取', a?.resourceGain, b?.resourceGain);
+  mul('暴击伤害', a?.critDamage, b?.critDamage);
+  add('暴击几率', a?.critChance, b?.critChance);
+  add('格挡', a?.block, b?.block);
+  add('招架', a?.parry, b?.parry);
+  return out;
 };
 
 const HANDEDNESS_TEXT: Record<WeaponDef['handedness'], string> = {
@@ -144,7 +189,7 @@ export class LoadoutPanel {
   render(
     view: LoadoutView,
     now: number,
-    pickupCandidate?: { weapon?: WeaponDef; armor?: ArmorDef },
+    pickupCandidate?: { weapon?: WeaponDef; armor?: ArmorDef; foreignClass?: string },
   ): void {
     this.el.style.display = '';
 
@@ -213,14 +258,33 @@ const renderSection = <T extends { id: unknown; name: string }>(
 
 const renderCompare = (
   view: LoadoutView,
-  cand: { weapon?: WeaponDef; armor?: ArmorDef },
+  cand: { weapon?: WeaponDef; armor?: ArmorDef; foreignClass?: string },
 ): string => {
+  const item = cand.weapon ?? cand.armor;
+  if (!item) return '';
+  /**
+   * P8：职业不符 → 只给警示，不给差异行。跨职业装备根本装不上（10.2），
+   * 摆一排 ↑↓ 会诱导玩家以为能换 —— 比不了就别硬比。
+   */
+  if (cand.foreignClass) {
+    return `<div class="lp-compare">
+      <div class="lp-compare-label">地上：${esc(item.name)}</div>
+      <div class="lp-diff">⚠ ${esc(cand.foreignClass)}专用 —— 你不能使用</div>
+    </div>`;
+  }
   const lines: string[] = [];
   if (cand.weapon) lines.push(...compareWeapons(view.currentWeapon, cand.weapon));
   if (cand.armor) lines.push(...compareArmors(view.currentArmor, cand.armor));
   if (lines.length === 0) return '';
+  /**
+   * P8：横向取舍设计下「是否更优秀」的诚实答案是**取舍说明**，不是一个
+   * 总评分 —— advantage/cost 两行原文照登（P7 的暴击修正也写在里面）。
+   */
+  const tradeoff = `<div class="lp-diff lp-fine">优势：${esc(item.advantage)}</div>
+    <div class="lp-diff lp-fine">代价：${esc(item.cost)}</div>`;
   return `<div class="lp-compare">
-    <div class="lp-compare-label">与当前装备相比</div>
+    <div class="lp-compare-label">地上：${esc(item.name)} —— 与当前相比</div>
     ${lines.map((l) => `<div class="lp-diff">${esc(l)}</div>`).join('')}
+    ${tradeoff}
   </div>`;
 };

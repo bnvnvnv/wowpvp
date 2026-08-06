@@ -13,7 +13,7 @@ import { druid, hunter, mage, priest, warrior } from '../data/index.js';
 import type { AuraDef } from '../data/schema.js';
 import { CastKind, DispelType, DrCategory, School } from '../types/enums.js';
 import { asSkillId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
-import { vec3 } from '../math/vec3.js';
+import { dirToYaw, sub, vec3 } from '../math/vec3.js';
 import { createEntity, type CombatEntity } from '../sim/entity.js';
 import type { CastState, CastingStore } from '../sim/casting.js';
 import type { GroundArea } from '../sim/groundArea.js';
@@ -643,6 +643,100 @@ describe('P5 战斗意志：被硬控且要命时解控', () => {
     const s = setup(20);
     s.self.health = s.self.maxHealth * 0.4;
     expect(decideBotAction(perceive(s, { difficulty: 'normal' })).trinket).toBeFalsy();
+  });
+});
+
+/**
+ * ⚠️ 这一组与上面「P1b 风筝：**刻意不做**」并**不**矛盾，看之前先读
+ * `botController.ts` 里 `retreating` 的注释：被打回的是 `forward:-1` 的
+ * **倒走**（65% 速度追不掉近战）且无条件触发；这里是**转身满速跑**、hard 专属、
+ * 七道门全中才出手的残局动作。两者只在「离对手更远」这一点上像，机制不同。
+ */
+describe('B2 hard 苟住：弹尽粮绝时转身满速跑', () => {
+  /**
+   * 残局夹具：自己 25% 血（低于 RETREAT_HEALTH 0.3）、**保命键全部塞进冷却**。
+   * ★ 用 `cooldowns.set(id, 999)` 而不是清空蓝条：两者都由 validateCast 一并
+   *   判掉（这正是「结合魔法值与冷却」落地的地方），但冷却只影响指定的那几个
+   *   技能，不会顺带把别的键也废掉 —— 夹具意图更干净、失败时更好归因。
+   * ★ 法师**没有治疗技能**，「没有可用治疗」这道门天然成立（下面有一条测试
+   *   把这个前提钉住，将来给法师加了奶就会当场红）。
+   */
+  const cornered = (
+    s: ReturnType<typeof duel>, opts: { keepGuard?: boolean } = {},
+  ): void => {
+    s.self.health = s.self.maxHealth * 0.25;
+    const guards = mage.skills.filter(isSelfDefenseSkill);
+    // keepGuard：留下第一张保命牌可用 —— 用来钉「手里还有牌就先开牌，不跑」
+    for (const sk of guards.slice(opts.keepGuard === true ? 1 : 0)) {
+      s.self.cooldowns.set(sk.id, 999);
+    }
+  };
+
+  /** 背向对手的 yaw —— 与实现取同一个式子（自己 − 对手），不另抄一份约定 */
+  const awayYaw = (s: ReturnType<typeof duel>): number =>
+    dirToYaw(sub(s.self.position, s.foe.position));
+  /** 面向对手的 yaw（常规站位下的朝向）*/
+  const towardYaw = (s: ReturnType<typeof duel>): number =>
+    dirToYaw(sub(s.foe.position, s.self.position));
+
+  it('★ 夹具前提：法师没有治疗技能（将来加了奶，这条先红）', () => {
+    expect(mage.skills.some(isHealSkill)).toBe(false);
+  });
+
+  it('★★ hard + 25% 血 + 保命/治疗全不可用 + 近战对手满血 → 转身背对、满速跑', () => {
+    const s = duel(mage, warrior, 20);
+    cornered(s);
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'hard', auras: new Map(), dr: createDrStore(),
+    }));
+    expect(a.move.yaw, 'yaw 没转过来 —— 面向对手的后退就是被回滚的那版倒走')
+      .toBeCloseTo(awayYaw(s), 6);
+    expect(a.move.forward, '逃跑必须是 forward:1 的满速跑，不是 -1 的 65% 倒走')
+      .toBe(1);
+  });
+
+  it('★★ 同场景 normal 不逃（这笔账要判断力，难度分档调的正是判断力）', () => {
+    const s = duel(mage, warrior, 20);
+    cornered(s);
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    expect(a.move.forward).toBeGreaterThanOrEqual(0);
+    expect(a.move.yaw).toBeCloseTo(towardYaw(s), 6);
+  });
+
+  it('★★ 对手拿远程武器（法师）→ 不逃：转身跑等于送后背，只废掉自己输出', () => {
+    const s = duel(mage, mage, 20);
+    cornered(s);
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'hard', auras: new Map(), dr: createDrStore(),
+    }));
+    expect(a.move.forward).toBeGreaterThanOrEqual(0);
+    expect(a.move.yaw).toBeCloseTo(towardYaw(s), 6);
+  });
+
+  it('★★ 对手血比自己更低 → 不逃，拼掉他（互殁竞速里逃跑等于弃权）', () => {
+    const s = duel(mage, warrior, 20);
+    cornered(s);
+    s.foe.health = s.self.health - 1;
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'hard', auras: new Map(), dr: createDrStore(),
+    }));
+    expect(a.move.forward).toBeGreaterThanOrEqual(0);
+    expect(a.move.yaw).toBeCloseTo(towardYaw(s), 6);
+  });
+
+  it('★★ 还有一张可用保命键 → 不逃，先把牌打出去（决策链上保命步在前）', () => {
+    const s = duel(mage, warrior, 20);
+    cornered(s, { keepGuard: true });
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'hard', auras: new Map(), dr: createDrStore(),
+    }));
+    expect(a.move.forward).toBeGreaterThanOrEqual(0);
+    expect(a.move.yaw).toBeCloseTo(towardYaw(s), 6);
+    const picked = mage.skills.find((sk) => sk.id === a.cast?.skillId);
+    expect(picked !== undefined && isSelfDefenseSkill(picked),
+      `手里还有保命牌却选了 ${a.cast?.skillId}`).toBe(true);
   });
 });
 

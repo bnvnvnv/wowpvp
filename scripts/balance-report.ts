@@ -20,7 +20,7 @@
  *   而不是当「平衡性结论」。
  *
  * 用法：
- *   npx tsx scripts/balance-report.ts [--seed 1] [--rounds 3] [--json]
+ *   npx tsx scripts/balance-report.ts [--seed 1] [--rounds 3] [--json] [--difficulty normal|hard|easy]
  */
 
 import {
@@ -46,6 +46,20 @@ const arg = (name: string, fallback: number): number => {
 };
 const SEED = arg('seed', 1);
 const ROUNDS = arg('rounds', 3);
+/**
+ * bot 难度档。★ **默认 `normal` = 既有基线口径** —— 不传这个参数时，
+ * 这份报告逐位不变（`decideBotAction` 的 `difficulty?` 默认也是 normal，
+ * 显式传 'normal' 与不传走的是同一条分支）。
+ *
+ * 为什么要能选：P8 的集火/苟住是 **hard 专属**分支，normal 跑不到。
+ * 想给「hard 下谁被集火收割」做归因，就得能把同一个种子在 hard 下再跑一遍
+ * —— 但**归因跑不能污染回归网**，所以基线那条路径必须一字不动。
+ */
+const DIFFICULTY = (() => {
+  const i = process.argv.indexOf('--difficulty');
+  const v = i >= 0 ? process.argv[i + 1] : undefined;
+  return v === 'easy' || v === 'hard' ? v : 'normal';
+})();
 const AS_JSON = process.argv.includes('--json');
 /** 打印对阵矩阵（行视角的胜场/总场）。配平时定位「谁在收割谁」用 */
 const AS_MATRIX = process.argv.includes('--matrix');
@@ -169,7 +183,8 @@ const duel = (clsA: ClassDef, clsB: ClassDef, rng: () => number): DuelResult => 
     // P1b：走位感知一并喂进去 —— 基线里的 AI 与生产里的是同一个
     // P3b：auras 也要喂 —— 少了它 bot 看不见自己挂的 DoT，会每个 GCD 重挂
     // P4：dr 同理 —— 少了它 bot 出控制不看递减，往免疫窗口里空放
-    decideBotAction({ world, casting, self, foe, rng, ground, projectiles, auras, dr });
+    // P8：难度来自 --difficulty，默认 normal —— 与旧版（不传）同一条分支
+    decideBotAction({ world, casting, self, foe, rng, ground, projectiles, auras, dr, difficulty: DIFFICULTY });
 
 
   const maxTicks = Math.ceil(MAX_SECONDS / SIM.TICK_DT);
@@ -280,10 +295,21 @@ const rows = [...stats.entries()]
   }))
   .sort((x, y) => y.winRate - x.winRate);
 
+/**
+ * ★ 非 normal 才显示难度。**normal 下这里必须是空串** —— 头部文字一变，
+ *   下次有人 diff 报告会先怀疑基线动了，而不是怀疑自己加了参数。
+ *   （同理 JSON 里也只在非 normal 时多这个键。）
+ */
+const DIFF_TAG = DIFFICULTY === 'normal' ? '' : `　难度=${DIFFICULTY}`;
+
 if (AS_JSON) {
-  console.log(JSON.stringify({ seed: SEED, rounds: ROUNDS, duels, draws, rows }, null, 2));
+  console.log(JSON.stringify({
+    seed: SEED, rounds: ROUNDS,
+    ...(DIFFICULTY === 'normal' ? {} : { difficulty: DIFFICULTY }),
+    duels, draws, rows,
+  }, null, 2));
 } else {
-  console.log(`\n配平数据　种子=${SEED}　每对 ${ROUNDS} 场　共 ${duels} 场（平局 ${draws}）`);
+  console.log(`\n配平数据　种子=${SEED}　每对 ${ROUNDS} 场　共 ${duels} 场（平局 ${draws}）${DIFF_TAG}`);
   console.log('★ 同一种子必然得到同一份报告 —— shared 里没有 Math.random\n');
   console.log('职业'.padEnd(14) + '胜率'.padEnd(8) + '场均秒'.padEnd(9) + 'DPS'.padEnd(9) + 'HPS');
   console.log('─'.repeat(52));

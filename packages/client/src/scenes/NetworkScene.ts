@@ -26,12 +26,15 @@ import {
   FlagState,
   GEOMETRY,
   MAP_BY_ID,
+  RANGE,
   SIM,
   TEAM_RED,
   Targeting,
   createMovementState,
+  getArmor,
   getClass,
   getSkill,
+  getWeapon,
   SPAWN_PROTECTION_AURA,
   TRINKET_COOLDOWN_KEY,
   TargetFilter,
@@ -40,6 +43,7 @@ import {
   resolveGroundPlacement,
   usesNoTarget,
   type AllyEquipmentSnapshot,
+  type ArmorDef,
   type FlagView,
   type ArmorySnapshot,
   type AwardView,
@@ -57,6 +61,7 @@ import {
   TEAM_BLUE,
   type SkillDef,
   type TeamId,
+  type WeaponDef,
 } from '@wowpvp/shared';
 
 import { ArsenalView, type Interactable } from '../arsenal/ArsenalView.js';
@@ -1792,8 +1797,35 @@ export class NetworkScene {
     this.arsenalHud.render(near ? promptFor(near) : undefined, this.serverTime);
 
     const eq = this.selfEquipment();
-    if (eq) this.hud.loadout.render(loadoutViewFromSnapshot(eq, this.serverTime), this.serverTime);
-    else this.hud.loadout.hide();
+    if (eq) {
+      /**
+       * P8：站在武器/护甲掉落旁 → 15.3 第三条「拾取时新旧对比」。
+       * 对比卡 UI 早就在 LoadoutPanel 里（pickupCandidate 参数），此前
+       * **零调用方** —— 快照没带 itemId 想调也调不了。范围取交互距离的
+       * 两倍：走近就能预览，不必贴到脚下才知道值不值得按 G。
+       * ★ 职业不符（pickable=false）也传 —— 卡片显示「某职业专用」警示，
+       *   不显示差异行（比不了就别硬比，LoadoutPanel 侧判）。
+       */
+      let candidate: { weapon?: WeaponDef; armor?: ArmorDef; foreignClass?: string } | undefined;
+      if (me) {
+        const COMPARE_RANGE = RANGE.INTERACT * 2;
+        let bestD = COMPARE_RANGE;
+        for (const d of this.lastDrops) {
+          if (!d.itemId || (d.kind !== 'weapon' && d.kind !== 'armor')) continue;
+          const dist = Math.hypot(d.position.x - me.x, d.position.z - me.z);
+          if (dist >= bestD) continue;
+          bestD = dist;
+          const weapon = d.kind === 'weapon' ? getWeapon(d.itemId as never) : undefined;
+          const armor = d.kind === 'armor' ? getArmor(d.itemId as never) : undefined;
+          candidate = {
+            ...(weapon ? { weapon } : {}),
+            ...(armor ? { armor } : {}),
+            ...(d.pickable ? {} : { foreignClass: d.ownerClassName }),
+          };
+        }
+      }
+      this.hud.loadout.render(loadoutViewFromSnapshot(eq, this.serverTime), this.serverTime, candidate);
+    } else this.hud.loadout.hide();
   }
 
   /**

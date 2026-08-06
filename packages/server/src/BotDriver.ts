@@ -37,7 +37,9 @@ import {
   usesNoTarget,
   type BotDifficulty,
   type CombatEntity,
+  type EntityId,
   type Match,
+  type VisibilityContext,
 } from '@wowpvp/shared';
 import type { SessionSocket } from './room/Session.js';
 
@@ -131,7 +133,13 @@ export class BotDriver {
       const self = m.world.entities.get(entityId);
       if (!self || !self.alive) continue;
 
-      const foe = nearestFoe(m, self);
+      /**
+       * ★ 把**当前硬目标**喂回去 —— 粘性判定要它。读 `self.targets.hard`
+       *   而不是驱动器自己记一份：那是服务器 world 里真正生效的目标
+       *   （`SetTarget` 可能被服务器拒掉，比如目标已经隐身），自记的
+       *   影子状态会和它悄悄分叉。
+       */
+      const foe = pickFoe(m, self, seat.difficulty ?? 'normal', self.targets.hard);
       if (!foe) continue;
 
       const action = decideBotAction({
@@ -217,18 +225,100 @@ export class BotDriver {
  *
  * ⚠️ `decideBotAction` 本版**只支持单目标**。这里的「最近敌人」是调用方能
  *   给出的最合理的单目标，不是像样的选敌策略 —— 3v3 要用得先补决策层。
+ *
+ * ★ B1 起它不再是唯一的选目标逻辑：调用方走 `pickFoe`，本函数是 easy/normal
+ *   的实现（hard 走血量优先的集火评分）。保留独立导出是因为它有自己的
+ *   A4 回归测试，而且「最近敌人」是 hard 评分退化后的语义基准。
  */
 export const nearestFoe = (m: Match, self: CombatEntity): CombatEntity | undefined => {
   const ctx = m.ctf ? { ctf: m.ctf.state } : undefined;
   let best: CombatEntity | undefined;
   let bestD = Infinity;
   for (const e of listEntities(m.world)) {
-    if (!e.alive || e.isPet || isFriendly(e, self)) continue;
-    if (!isVisibleTo(e, self, ctx)) continue;
+    if (!isFoeCandidate(e, self, ctx)) continue;
     const d = distance2D(self.position, e.position);
     if (d < bestD) { bestD = d; best = e; }
   }
   return best;
+};
+
+/**
+ * 「谁能当人机的目标」**唯一**的判据。
+ *
+ * ★★ 提成函数而不是让 `pickFoe` 照抄一份 `nearestFoe` 的条件 —— 抄的那份
+ *   将来漏掉 `isVisibleTo` 就是 A4 红线（人机透视潜行者）无声复活，而且
+ *   只在 hard 档复活、只在有潜行者的局里复活，测试之外根本发现不了。
+ *   条件只有一处，两条选目标路径就不可能分叉。
+ */
+const isFoeCandidate = (
+  e: CombatEntity,
+  self: CombatEntity,
+  ctx: VisibilityContext | undefined,
+): boolean => {
+  if (!e.alive || e.isPet || isFriendly(e, self)) return false;
+  return isVisibleTo(e, self, ctx);
+};
+
+/**
+ * 换目标的**迟滞阈值**（分数）。占位值 20。
+ *
+ * ★ 取值理由：评分里 1 分 ≈ 1% 血 ≈ 0.5 米。20 分 = 「新目标至少要比当前
+ *   目标残 20% 血（或近 10 米）才值得转火」。转火不是免费的：要重新贴身、
+ *   丢掉当前目标身上已经铺好的 DoT/减益、近战还要吃一段跑路时间 ——
+ *   没有迟滞时两个血量相近的敌人会让整队每 tick 反复横跳，净收益为负。
+ * ⚠️ 没有实测数据支撑这个数，配平实测（战斗时长 / 集火成功率）后再定。
+ */
+const SWITCH_HYSTERESIS = 20;
+
+/**
+ * 选目标。easy/normal = 最近敌人（原样）；hard = 按血量优先的集火评分。
+ *
+ * ★★ 集火是**涌现**的，不是调度出来的：全队 hard 人机各自跑同一个确定性
+ *   评分函数、看同一份 world，于是自然会评出同一个残血目标 —— 不需要任何
+ *   队内通信，也就不需要一条「AI 才有、真人没有」的信息通道。
+ *
+ * ★ 评分 = 血量百分比 * 100 + 平面距离 * 2，**取最小**。
+ *   两项的量纲被有意拉到同一个数量级：50% 血 = 50 分 = 25 米。
+ *   也就是「残血但在半场外」不如「满血但在脸上」—— 够不着的残血是幻觉。
+ *   ⚠️ 系数 100 / 2 都是占位值（凭手感定的，未经配平实测）。
+ *
+ * ★ 候选集与 `nearestFoe` 共用 `isFoeCandidate` —— 尤其是 `isVisibleTo`：
+ *   hard 档也**不许**看见未被发现的潜行者（A4 红线）。
+ */
+export const pickFoe = (
+  m: Match,
+  self: CombatEntity,
+  difficulty: BotDifficulty,
+  currentTargetId?: EntityId,
+): CombatEntity | undefined => {
+  // ★ 只有 hard 改行为：easy/normal 走原路径，既有回归网一寸不动
+  if (difficulty !== 'hard') return nearestFoe(m, self);
+
+  const ctx = m.ctf ? { ctf: m.ctf.state } : undefined;
+  let best: CombatEntity | undefined;
+  let bestScore = Infinity;
+  let current: CombatEntity | undefined;
+  let currentScore = Infinity;
+
+  for (const e of listEntities(m.world)) {
+    if (!isFoeCandidate(e, self, ctx)) continue;
+    const score = foeScore(self, e);
+    if (score < bestScore) { bestScore = score; best = e; }
+    // ★ 当前目标的分数**在同一次遍历里**算 —— 它必须同样过候选集：
+    //   目标死了/隐身了/被治满了都该正常脱粘，而不是粘在一个非法目标上
+    if (e.id === currentTargetId) { current = e; currentScore = score; }
+  }
+
+  // 粘性：新目标没好出一个身位就不换（见 SWITCH_HYSTERESIS）
+  if (current && bestScore >= currentScore - SWITCH_HYSTERESIS) return current;
+  return best;
+};
+
+const foeScore = (self: CombatEntity, e: CombatEntity): number => {
+  // ⚠️ maxHealth 兜底：真实体不会是 0，但除零会产出 NaN，而 NaN 参与比较
+  //   永远为 false —— 那会让这个敌人**静默地**永远选不中，极难查
+  const hpPct = e.maxHealth > 0 ? e.health / e.maxHealth : 0;
+  return hpPct * 100 + distance2D(self.position, e.position) * 2;
 };
 
 /** 确定性 PRNG（mulberry32）。★ 与 sim 的按实体分流同一个理由，见 rngs 的注释 */

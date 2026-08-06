@@ -390,6 +390,14 @@ export interface DropSnapshot {
   itemName: string;
   /** 对**这个**接收者是否可拾取 */
   pickable: boolean;
+  /**
+   * P8：武器/护甲的定义 id（`getWeapon/getArmor` 可查回完整定义）。
+   * 消耗品不填。★ 没有它，15.3 第三条「拾取时新旧对比」在客户端根本
+   * 做不出来 —— 对比卡 UI 早就写好（`LoadoutPanel.pickupCandidate`），
+   * 因为快照只有名字字符串而零调用方，死了一整个里程碑。
+   * 泄露面为零：装备定义是公开数据，双方都看得到掉落物（10.2）。
+   */
+  itemId?: string;
 }
 
 /**
@@ -537,6 +545,7 @@ export const buildSnapshot = (deps: SnapshotDeps, viewer: CombatEntity): Snapsho
   const viewerLoadout = deps.loadouts.get(viewer.id);
   const drops: DropSnapshot[] = (deps.arsenal?.drops ?? []).map((d) => {
     const view = viewerLoadout ? dropViewFor(d, viewer, viewerLoadout) : undefined;
+    const itemId = d.weaponId ?? d.armorId;
     return {
       id: d.id,
       kind: d.kind,
@@ -545,6 +554,8 @@ export const buildSnapshot = (deps: SnapshotDeps, viewer: CombatEntity): Snapsho
       itemName: view?.itemName ?? '未知物品',
       // ★ 没有装备栏（观战者的跟随视角等）一律不可拾取 —— 保守的那一边
       pickable: view?.pickableByViewer ?? false,
+      // P8：武器/护甲带定义 id，客户端才能做 15.3 的新旧对比（消耗品不带）
+      ...(itemId !== undefined ? { itemId: itemId as string } : {}),
     };
   });
   const armories: ArmorySnapshot[] = (deps.arsenal?.armories ?? []).map((a) => ({

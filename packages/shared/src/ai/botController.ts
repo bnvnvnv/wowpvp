@@ -271,6 +271,13 @@ export const isSpeedBurstSkill = (sk: SkillDef): boolean =>
 const TACTICS = {
   /** 血量低于最大值的这个比例 → 开保命键（比半血治疗更晚：保命键 CD 长）*/
   SURVIVAL_HEALTH: 0.35,
+  /**
+   * B2：血量低于最大值的这个比例 → hard 档考虑「转身跑」。**占位值**。
+   * 取 0.3 的理由：必须**严格低于** SURVIVAL_HEALTH(0.35) —— 逃跑是
+   * 「保命键都交完了」之后的最后一步，先于它触发就会抢掉本该开的保命键，
+   * 变成「有盾不开、光顾着跑」。两条线之间的 0.05 是给保命步骤的出手余量。
+   */
+  RETREAT_HEALTH: 0.3,
   /** 对手血量低于此比例 → 控制值得用来锁杀 */
   CC_KILL_WINDOW: 0.35,
   /** 自己血量低于此比例 → 控制值得用来解围 */
@@ -524,7 +531,8 @@ export interface BotAction {
  * AI：面向对手、按站位保持距离、**看到读条就打断**、血线告急开保命键、
  * 会用控制（带递减/免疫判断）、会驱散、被贴脸会拉开、够不着会冲锋、
  * 半血治疗、用当前可用技能里最狠的一发输出。难度档决定会不会用这些技巧
- * （easy 全部不用，保持木桩手感）。
+ * （easy 全部不用，保持木桩手感）；**hard 还会在弹尽粮绝时转身拉扯** ——
+ * 治疗与保命键全在冷却、对手是近战且血比自己厚时，转身满速跑（见 `retreating`）。
  *
  * ★ 仍然不会的事（B1 余账，逐条有原因）：换目标/保队友（单目标感知）、
  *   选地面落点、德鲁伊形态轮换、盗贼潜行开场、瞬闪逃脱（yaw 模型）、
@@ -670,15 +678,62 @@ export const decideBotAction = (p: BotPerception): BotAction => {
     (foe.flags.stunned || foe.flags.rooted || foe.flags.feared) &&
     d < TACTICS.KITE_TO;
 
+  /**
+   * ★★ B2「苟住/逃跑」—— **弹尽粮绝时转身满速跑**，hard 专属。
+   *
+   *   ⚠️ 与上面回滚掉的那版纯风筝**不是同一件事**，差别必须写清楚，
+   *   免得下一个人看见「又后退了」就照 85.7pp 那笔账把它删掉：
+   *     · 被打回的那版是 `forward: -1` 的**倒走**，吃 65% 速度惩罚
+   *       （`BACKWARD_FACTOR`）→ 追不掉 100% 速度的近战；
+   *       这版把 yaw 转成背向对手、`forward: 1`，是**满速**跑 ——
+   *       速度乘积那一半根因在这里根本不成立。
+   *     · 那版是**无条件**的（远程被贴脸就退，normal 也退）；
+   *       这版 hard 专属 + 七道门全中才触发，是「已经要死了」的残局动作，
+   *       不是常规输出循环里的走位。
+   *   （移动断读条那一半根因仍然存在 —— 由 castableNow 处理，见下。）
+   *
+   *   七道门（缺一不可，每条都对应一次「这时候跑就是送」；列的顺序 = 代码里
+   *   短路求值的顺序，最便宜、最常否掉的判断排在前面）：
+   *   · `!dodgeDir` —— 站在火里跑路仍然是站在火里，躲圈优先级更高
+   *   · **hard 专属** —— 算清「治疗没了、保命没了、他血比我厚」这笔账是
+   *     判断力，不是手速；普通人不会算，难度分档调的正是判断力（同 P5 留踢）
+   *   · 自己血低于 RETREAT_HEALTH（残局才谈跑，见该常量注释）
+   *   · **没有任何可用治疗** —— `usableOn` 走 validateCast，冷却中/没蓝/
+   *     被沉默会**一并**判掉：用户要的「结合魔法值与技能冷却」就落在这里，
+   *     不需要决策层自己抄一份资源与冷却的镜像
+   *   · **没有任何可用保命键** —— 同上。手里还有一张牌就不该跑（而且保命
+   *     步骤排在前面，真有牌根本走不到这里）
+   *   · 对手拿**近战武器** —— 与 kiting 同一道门：对远程转身跑等于送后背，
+   *     距离换不来安全，只换来自己彻底不输出
+   *   · **对手血比我厚** —— 互殁竞速时逃跑等于弃权：他也快死了就该拼掉他，
+   *     跑掉的每一秒都是把已经打出的伤害白送回去
+   */
+  const retreating =
+    !dodgeDir &&
+    difficulty === 'hard' &&
+    self.health < self.maxHealth * TACTICS.RETREAT_HEALTH &&
+    !skills.some((sk) => isHealSkill(sk) && usableOn(sk, self)) &&
+    !skills.some((sk) => isSelfDefenseSkill(sk) && usableOn(sk, self)) &&
+    !(getWeapon(foe.weaponId)?.isRanged ?? false) &&
+    foe.health > self.health;
+
   const advance: MovementInput = dodgeDir
     ? { ...toLocalMove(dodgeDir, yaw), jump: false, yaw }
-    : kiting
-      ? { forward: -1, strafe: 0, jump: false, yaw }
-      : { forward: d > reach * 0.9 ? 1 : 0, strafe: 0, jump: false, yaw };
+    : retreating
+      // ★ 转身：yaw 取「对手 → 自己」方向，配 forward:1 = 满速跑离。
+      //   刻意**不**沿用面向对手的 yaw + forward:-1（那就是被打回的倒走）。
+      ? { forward: 1, strafe: 0, jump: false, yaw: dirToYaw(sub(self.position, foe.position)) }
+      : kiting
+        ? { forward: -1, strafe: 0, jump: false, yaw }
+        : { forward: d > reach * 0.9 ? 1 : 0, strafe: 0, jump: false, yaw };
 
-  /** 后撤窗口内只放瞬发 —— 移动会打断读条（7.3），别自己断自己 */
+  /**
+   * 后撤/逃跑窗口内只放瞬发 —— 移动会打断读条（7.3），别自己断自己。
+   * ★ 这是 85.7pp 惨案的**另一半**根因：边跑边读 = 读条永远完不成。
+   *   B2 的转身跑虽然解决了速度那一半，这一半照样成立，所以同样加这道闸。
+   */
   const castableNow = (sk: SkillDef): boolean =>
-    !kiting || sk.cast.kind === CastKind.Instant;
+    !(kiting || retreating) || sk.cast.kind === CastKind.Instant;
 
   /**
    * ★★ P4 保命：血线告急 → 开保命键（冰封庇护/神圣壁障/龟甲护体/防御架势/
