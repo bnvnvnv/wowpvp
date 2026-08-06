@@ -38,6 +38,7 @@
     "verify:w12": "tsx scripts/verify-w12.ts",
     "verify:hardening": "tsx scripts/verify-hardening.ts",
     "verify:stress": "node scripts/verify-stress.mjs",
+    "verify:p5": "tsx scripts/verify-p5.ts",
     "balance": "tsx scripts/balance-report.ts",
     "skill-audit": "tsx scripts/skill-audit.ts"
   },

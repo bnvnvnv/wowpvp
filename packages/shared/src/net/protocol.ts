@@ -116,6 +116,8 @@ export type ClientMessage =
   | { t: 'SetRoomMode'; mode: GameMode }
   /** docs/14 §16b 人机补位开关。**只有房主、只在开赛前**，默认关 */
   | { t: 'SetFillWithBots'; enabled: boolean }
+  /** P5（P1c）：补位人机难度。同上：只有房主、只在开赛前，默认 normal */
+  | { t: 'SetRoomBotDifficulty'; difficulty: 'easy' | 'normal' | 'hard' }
   /** 11.5 主动退出。★ 立即按淘汰处理，不能通过退出规避死亡统计 */
   | { t: 'LeaveMatch' }
   /** 17.3 重连：带上服务器给的令牌 */
@@ -166,7 +168,7 @@ export type ClientMessageKind = ClientMessage['t'];
  */
 export const ALL_CLIENT_MESSAGE_KINDS: readonly ClientMessageKind[] = [
   'JoinRoom', 'SelectTeam', 'SelectClass', 'SetReady', 'SetRoomPreset',
-  'SetRoomMode', 'SetFillWithBots', 'LeaveMatch', 'Reconnect',
+  'SetRoomMode', 'SetFillWithBots', 'SetRoomBotDifficulty', 'LeaveMatch', 'Reconnect',
   'Input', 'SetTarget', 'TabTarget', 'CastRequest', 'CancelCast', 'UseTrinket',
   'InteractStart', 'InteractCancel', 'SwapWeapon', 'SwapArmor', 'UseConsumable',
   'OpenArmory', 'ChooseArsenal',
@@ -289,7 +291,10 @@ export type ServerMessage =
        * ★ 客户端拿它只为**显示**能不能点 —— 权限判定在服务器的 `setPreset()`，
        *   把按钮画成可点也改不了别人的房间。
        */
-      hostId: string }
+      hostId: string
+      /** P5：人机补位与难度 —— 大厅要画出当前状态（此前 UI 连开关都没有）*/
+      fillWithBots: boolean
+      botDifficulty: 'easy' | 'normal' | 'hard' }
   | { t: 'MatchStart'; mapId: MapId; you: EntityId; startsAt: number
       /** 17.3 重连令牌。★ 断线后凭它恢复，见 server/room/reconnect.ts */
       reconnectToken: string }

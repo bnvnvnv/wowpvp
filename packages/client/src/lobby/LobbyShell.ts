@@ -100,6 +100,9 @@ export class LobbyShell {
   private mode: GameMode | undefined;
   private mapId: MapId | undefined;
   private preset: ArenaPreset = ArenaPreset.Classic;
+  /** P5：人机补位状态（由 RoomState 同步，房主可改）*/
+  private fillWithBots = false;
+  private botDifficulty: 'easy' | 'normal' | 'hard' = 'normal';
   /** 房主 id。只有他能改规则预设（服务器校验，这里只决定按钮亮不亮）*/
   private hostId: string | undefined;
   /** 16a 战后统计。★ 每局开始时清空 —— 否则第二局会显示上一局的数据 */
@@ -262,6 +265,24 @@ export class LobbyShell {
                       id="lb-preset-armed">武装竞技场</button>
               <span id="lb-preset-why" class="lb-fine"></span>
             </div>
+            <!--
+              P5（P1c）人机对局。★ SetFillWithBots 协议与服务器处理早就在，
+              但此前大厅**没有任何按钮发它** —— 玩家根本无法从界面开人机对局
+              （「写了没人调」的 UI 版）。开关 + 三档难度都只有房主能改，
+              校验在 sim 的 setFillWithBots / setBotDifficulty 里。
+            -->
+            <div class="lb-row">
+              <span class="lb-fine">人机补位：</span>
+              <button class="lb-btn lb-small" data-action="fill-bots" data-fill="on"
+                      id="lb-fill-on">开</button>
+              <button class="lb-btn lb-small" data-action="fill-bots" data-fill="off"
+                      id="lb-fill-off">关</button>
+              <span class="lb-fine">难度：</span>
+              <button class="lb-btn lb-small" data-action="bot-diff" data-diff="easy">简单</button>
+              <button class="lb-btn lb-small" data-action="bot-diff" data-diff="normal">普通</button>
+              <button class="lb-btn lb-small" data-action="bot-diff" data-diff="hard">困难</button>
+              <span id="lb-bots-state" class="lb-fine"></span>
+            </div>
             <div class="lb-row">
               <button class="lb-btn lb-primary" data-action="ready" id="lb-ready-btn">准备</button>
               <span id="lb-ready-why" class="lb-fine"></span>
@@ -341,6 +362,9 @@ export class LobbyShell {
         this.mapId = msg.mapId;
         this.preset = msg.preset;
         this.hostId = msg.hostId;
+        // P5：人机补位状态（房主改，全员看见）
+        this.fillWithBots = msg.fillWithBots;
+        this.botDifficulty = msg.botDifficulty;
         if (this.pendingJoin) {
           // JoinRoom 的成功答复就是第一条 RoomState（协议没有单独的 ack）
           this.pendingJoin = undefined;
@@ -509,6 +533,17 @@ export class LobbyShell {
           preset: btn?.dataset['preset'] === 'armed' ? ArenaPreset.Armed : ArenaPreset.Classic,
         });
         break;
+      case 'fill-bots':
+        // P5：同 preset —— 只发意图，房主/开赛前校验在服务器
+        this.conn.send({ t: 'SetFillWithBots', enabled: btn?.dataset['fill'] === 'on' });
+        break;
+      case 'bot-diff': {
+        const diff = btn?.dataset['diff'];
+        if (diff === 'easy' || diff === 'normal' || diff === 'hard') {
+          this.conn.send({ t: 'SetRoomBotDifficulty', difficulty: diff });
+        }
+        break;
+      }
       case 'mode': {
         // ★ 同 preset：只发意图。合法值由按钮的 data-mode 保证，
         //   服务器 codec 再验一遍白名单（不受信任输入的门在那边）
@@ -751,6 +786,23 @@ export class LobbyShell {
       : this.preset === ArenaPreset.Armed
         ? '场上会刷军械箱与掉落：G 交互、B 换武器、Z/X 用道具'
         : (isHost ? '纯职业对抗，不刷任何临时装备' : '由房主设置');
+
+    /**
+     * P5 人机补位与难度。与预设同一条显示规矩：非房主看得到、点不动。
+     * ★ 开关高亮当前档 —— 房主点了没反馈的话，「到底开没开」只能开局赌一把。
+     */
+    for (const el of this.root.querySelectorAll<HTMLButtonElement>('[data-action="fill-bots"]')) {
+      el.classList.toggle('lb-armed', (el.dataset['fill'] === 'on') === this.fillWithBots);
+      el.disabled = !isHost || this.roomStarted;
+    }
+    for (const el of this.root.querySelectorAll<HTMLButtonElement>('[data-action="bot-diff"]')) {
+      el.classList.toggle('lb-armed', el.dataset['diff'] === this.botDifficulty);
+      el.disabled = !isHost || this.roomStarted || !this.fillWithBots;
+    }
+    (this.root.querySelector('#lb-bots-state') as HTMLElement).textContent =
+      this.fillWithBots
+        ? '开局时人数不足的席位由人机补满'
+        : (isHost ? '开启后可单人开局练习' : '由房主设置');
 
     const blocker = readyBlocker(self);
     const readyBtn = this.root.querySelector('#lb-ready-btn') as HTMLButtonElement;

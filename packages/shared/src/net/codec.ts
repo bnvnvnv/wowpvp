@@ -190,6 +190,15 @@ export const parseClientMessage = (raw: string): ParseResult => {
       return { ok: true, msg: { t, enabled } };
     }
 
+    case 'SetRoomBotDifficulty': {
+      // P5：三值白名单 —— 不受信任输入的门在这里（与 preset/mode 同规矩）
+      const difficulty = v['difficulty'];
+      if (difficulty !== 'easy' && difficulty !== 'normal' && difficulty !== 'hard') {
+        return bad('difficulty 无效');
+      }
+      return { ok: true, msg: { t, difficulty } };
+    }
+
     case 'SetRoomPreset': {
       const preset = v['preset'];
       if (!(ALL_ARENA_PRESETS as readonly unknown[]).includes(preset)) return bad('preset 无效');

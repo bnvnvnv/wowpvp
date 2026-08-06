@@ -7,7 +7,7 @@
  * 战斗、目标选择、技能是 M2–M4，见 docs/PROGRESS.md。
  */
 
-import { GEOMETRY, MOVE, RANGE } from '@wowpvp/shared';
+import { GEOMETRY, MOVE, RANGE, getClass } from '@wowpvp/shared';
 import { probeIconAssets } from './hud/skillIcon.js';
 import { artEnabled } from './settings/artMode.js';
 import { TestbedScene, type DebugInfo } from './scenes/TestbedScene.js';
@@ -242,12 +242,25 @@ if (room !== null) {
   const stage = stressMode
     ? stressStage(Number(stressParam) > 0 ? Number(stressParam) : undefined)
     : tutorialMode ? TUTORIAL_STAGE : TESTBED_STAGE;
+  /**
+   * P5：`?class=<职业id>` 在试验场直接玩别的职业（`?class=warrior&bot=hard`）。
+   * 不带参数仍是法师 —— 与教学/压测同一条机制：默认路径一个字节没动。
+   * 非法职业 id 静默回落法师（拼错了不该白屏）。
+   * ★ 教学舞台不吃 class：课程以法师技能栏写死（docs/PROGRESS M15 已记）。
+   */
+  const classParam = params.get('class');
+  const playerClass = !tutorialMode && classParam
+    ? (getClass(classParam as never) ?? undefined) : undefined;
+  const botParam = params.get('bot');
+  const botDifficulty = botParam === 'easy' || botParam === 'hard' ? botParam : undefined;
   const scene = new TestbedScene(
     canvas,
     stressMode
       ? makePaintStress(document.getElementById('stats')!)
       : makePaintStats(document.getElementById('stats')!),
     stage,
+    playerClass,
+    botDifficulty,
   );
   // 压测要假人**真的在打**（站桩测不到特效负载）—— 与 K 键同一个开关
   if (stressMode) scene.combatMode = true;

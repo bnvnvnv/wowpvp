@@ -52,6 +52,12 @@ export interface RoomConfig {
    *   ★ 与试验场「实战模式默认关」是同一条教训，PROGRESS 里记着为什么。
    */
   fillWithBots: boolean;
+  /**
+   * P5（P1c）：补位人机的难度档。只影响 `fillBotSeats` 建出来的席位；
+   * 掉线接管固定 normal（见 `setBotDifficulty` 的注释）。
+   * ★ 可选字段 —— 老房间对象/老测试夹具没有它时按 'normal' 读。
+   */
+  botDifficulty?: 'easy' | 'normal' | 'hard';
 }
 
 export interface Room {
@@ -202,6 +208,22 @@ export const setFillWithBots = (
 };
 
 /**
+ * P5（P1c 落地）：人机难度。房主专属，开赛前 —— 与 `setFillWithBots` 同款守卫。
+ * ★ 只作用于**补位**的人机；掉线接管固定 normal（拍板过的语义：接管是替真人
+ *   打，不该因为房间开了 easy 就替真人演一个木桩）。
+ */
+export const setBotDifficulty = (
+  room: Room,
+  playerId: string,
+  difficulty: 'easy' | 'normal' | 'hard',
+): SelectResult => {
+  if (room.started) return { ok: false, reason: '比赛已开始，不能更改人机难度' };
+  if (room.hostId !== playerId) return { ok: false, reason: '只有房主能更改人机难度' };
+  room.config.botDifficulty = difficulty;
+  return { ok: true };
+};
+
+/**
  * 人机要补几个：每队缺多少补多少（3.1 的队伍容量由模式决定）。
  *
  * ★ 返回**名单**而不是直接建人机 —— 与 `takeExpired()` 只产出待淘汰名单
@@ -296,20 +318,35 @@ export const canStart = (room: Room): StartCheck => {
   const red = playersOn(room, Slot.Red);
   const blue = playersOn(room, Slot.Blue);
 
-  if (red.length === 0 || blue.length === 0) reasons.push('双方都需要至少一名玩家');
+  /**
+   * ★ P5：开了人机补位后，人数类检查交给补位去满足 ——
+   *   `fillBotSeats` 会把每队补到满编，「双方至少一人」「人数相等」
+   *   在开局那一刻必然成立。此前 canStart 不认识补位，于是**单人房间
+   *   永远开不了局**（红 1 蓝 0 被两条人数规则拦死），docs/14 §16b 的
+   *   补位实际只能救「两边都有人但不满编」的场子 —— 单人练习这个
+   *   最常见的用途反而不可达。
+   *   仍要求至少一名玩家在队伍里：全观战 + 纯人机的空局没有触发
+   *   「全员准备」的主体，也没有观众以外的任何人在玩。
+   */
+  const fill = room.config.fillWithBots === true;
+  if (!fill) {
+    if (red.length === 0 || blue.length === 0) reasons.push('双方都需要至少一名玩家');
+  } else if (red.length + blue.length === 0) {
+    reasons.push('至少需要一名玩家加入队伍');
+  }
 
   for (const p of [...red, ...blue]) {
     if (!p.classId) reasons.push(`${p.name} 尚未选择职业`);
     else if (!p.ready) reasons.push(`${p.name} 尚未准备`);
   }
 
-  // 3.2：标准竞技场要求双方人数相等
+  // 3.2：标准竞技场要求双方人数相等（补位开着时由补位保证，见上）
   const balanced = red.length === blue.length;
-  if (!balanced && !room.config.allowUnbalanced) {
+  if (!balanced && !room.config.allowUnbalanced && !fill) {
     reasons.push(`双方人数不等（${red.length} vs ${blue.length}），标准规则要求人数相等`);
   }
 
-  return { ok: reasons.length === 0, reasons, nonStandard: !balanced };
+  return { ok: reasons.length === 0, reasons, nonStandard: !balanced && !fill };
 };
 
 export const startMatch = (room: Room): SelectResult => {

@@ -21,6 +21,7 @@ import {
   teleportTo,
   mage as mageClass,
   type Aabb,
+  type ClassDef,
   type CombatEvent,
   type EntityId,
   type MovementState,
@@ -28,7 +29,7 @@ import {
 
 import { CameraController } from '../camera/CameraController.js';
 import { CombatDirector, PLAYER_SKILL_IDS } from '../combat/CombatDirector.js';
-import { assignSlot, loadSkillBar, saveSkillBar } from '../settings/skillLoadout.js';
+import { SKILL_BAR_SLOTS, assignSlot, loadSkillBar, saveSkillBar } from '../settings/skillLoadout.js';
 import { TESTBED_STAGE, type Stage } from './stages.js';
 import { TutorialDirector } from '../tutorial/TutorialDirector.js';
 import { TutorialHud } from '../tutorial/TutorialHud.js';
@@ -195,6 +196,13 @@ export class TestbedScene {
     private readonly onDebug: (info: DebugInfo) => void,
     /** 舞台。★ 默认是**验收用的试验场** —— 默认路径的行为逐字不变 */
     stage: Stage = TESTBED_STAGE,
+    /**
+     * P5：`?class=` 选的职业。缺省 = 法师（验收基线）。
+     * 非法师时技能栏默认 = 该职业前 9（与联网同口径），P3c 自定义照常生效。
+     */
+    private readonly playerClass?: ClassDef,
+    /** P5：`?bot=` 实战模式假人难度。缺省 normal（现状） */
+    botDifficulty?: 'easy' | 'hard',
   ) {
     this.stage = stage;
     this.musicDir = new MusicDirector(ambientTrackFor(stage.map.id as string));
@@ -228,13 +236,21 @@ export class TestbedScene {
 
     // M2 战斗 + M3 瞄准。★ 假人布置由舞台决定（见 stage 字段的注释）
     // P3c：技能栏读玩家存过的自定义；无存档（verify 脚本的全新上下文）
-    //   → loadSkillBar 原样返回 PLAYER_SKILL_IDS，默认路径逐字节不变
+    //   → loadSkillBar 原样返回默认，默认路径逐字节不变
+    // P5：`?class=` 换职业 —— 技能栏默认 = 该职业前 9（与联网同口径），
+    //   法师保持 PLAYER_SKILL_IDS（验收按数字键点名特定技能）
+    const cls = this.playerClass ?? mageClass;
+    const defaultBar: readonly string[] = this.playerClass
+      ? cls.skills.slice(0, SKILL_BAR_SLOTS).map((sk) => sk.id as string)
+      : PLAYER_SKILL_IDS;
     this.combat = new CombatDirector(
       this.obstacles, stage.spawn.position, stage.map.bounds, stage.dummies,
       loadSkillBar(
-        globalThis.localStorage, 'mage', PLAYER_SKILL_IDS,
-        new Set(mageClass.skills.map((sk) => sk.id as string)),
+        globalThis.localStorage, cls.id as string, defaultBar,
+        new Set(cls.skills.map((sk) => sk.id as string)),
       ),
+      this.playerClass,
+      botDifficulty,
     );
     // ★ 必须用玩家的**真实实体 id**。这里曾经写死 0，而实体 id 从 1 开始分配 ——
     //   结果玩家身上的控制标记永远不会更新（一直是构造时的 visible=false）。
@@ -403,22 +419,22 @@ export class TestbedScene {
       rebind: (action, code) => rebindCtl.rebind(action, code),
       resetBindings: () => rebindCtl.reset(),
       /**
-       * P3c 技能栏自定义（试验场 = 法师）。assign/reset 三件事一步不能少：
-       * 存 localStorage → 换 CombatDirector 的栏（立即生效）→ 取消进行中的
-       * 瞄准（正瞄着的格子可能刚被换掉，按旧技能确认落点就是错的）。
+       * P3c 技能栏自定义（P5 起跟随 `?class=` 的职业）。assign/reset 三件事
+       * 一步不能少：存 localStorage → 换 CombatDirector 的栏（立即生效）→
+       * 取消进行中的瞄准（正瞄着的格子可能刚被换掉，按旧技能确认落点就是错的）。
        */
       skillBar: {
         current: () => this.combat.skills,
-        pool: () => mageClass.skills,
+        pool: () => cls.skills,
         assign: (slot, skillId) => {
           const next = assignSlot(this.combat.skills.map((sk) => sk.id as string), slot, skillId);
-          saveSkillBar(globalThis.localStorage, 'mage', next);
+          saveSkillBar(globalThis.localStorage, cls.id as string, next);
           this.combat.setSkillBar(next);
           this.aim.reset();
         },
         reset: () => {
-          saveSkillBar(globalThis.localStorage, 'mage', PLAYER_SKILL_IDS);
-          this.combat.setSkillBar(PLAYER_SKILL_IDS);
+          saveSkillBar(globalThis.localStorage, cls.id as string, defaultBar);
+          this.combat.setSkillBar(defaultBar);
           this.aim.reset();
         },
       },

@@ -30,6 +30,7 @@ import {
   interruptLockSeconds,
   isCasting,
   isSelectableBy,
+  getClass,
   mage,
   priest,
   resolveSkillTarget,
@@ -52,6 +53,7 @@ import {
   listEntities,
   createMovementState,
   decideBotAction,
+  type ClassDef,
   dirToYaw,
   normalize2D,
   sub,
@@ -260,12 +262,21 @@ export class CombatDirector {
      * 与参数化之前逐字节相同（同上面 layout 参数的纪律）。
      */
     skillBarIds: readonly string[] = PLAYER_SKILL_IDS,
+    /**
+     * P5：`?class=` 选的玩家职业。缺省 = 法师（两百多项验收的初始条件，
+     * 默认路径逐字节不变 —— 与 layout/skillBarIds 同一条纪律）。
+     */
+    playerClass: ClassDef = mage,
+    /** P5：`?bot=` 实战模式假人难度。缺省 normal（P1a 起的现状） */
+    private readonly botDifficulty: 'easy' | 'normal' | 'hard' = 'normal',
   ) {
     this.world = createWorld(obstacles);
 
     this.player = addEntity(
       this.world,
-      createEntity(allocEntityId(this.world), mage, RED, playerSpawn, { name: '你（法师）' }),
+      createEntity(allocEntityId(this.world), playerClass, RED, playerSpawn, {
+        name: `你（${playerClass.name}）`,
+      }),
     );
 
     /**
@@ -310,7 +321,9 @@ export class CombatDirector {
    */
   private grantDemoLoadout(): void {
     const loadout = createLoadout(this.player.classId);
-    const spare = mage.weapons.find((w) => !w.isDefault);
+    // P5：备用武器取**玩家职业**的（此前写死法师 —— `?class=` 之后会给战士塞法刃）
+    const cls = getClass(this.player.classId);
+    const spare = cls?.weapons.find((w) => !w.isDefault);
     if (spare) addWeapon(loadout, spare.id);
     this.player.weaponId = loadout.defaultWeaponId;
     this.player.armorId = loadout.defaultArmorId;
@@ -644,8 +657,12 @@ export class CombatDirector {
         auras: this.auras,
         // P4：控制递减仓 —— 假人对玩家出控制也讲递减，不空放
         dr: this.dr,
+        // P5：`?bot=` 的难度直通决策层（easy 不打断不躲圈，hard 留踢）
+        difficulty: this.botDifficulty,
       });
       this.frameInputs.set(e.id, action.move);
+      // P5：假人也会交战斗意志 —— 与玩家的 requestTrinket 走同一条 tick 通道
+      if (action.trinket) this.pendingTrinkets.add(e.id);
       if (action.cast) {
         const s = getSkill(action.cast.skillId);
         // ★ 走同一个入口，不另开后门（见 requestCast 的注释）

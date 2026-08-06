@@ -35,6 +35,7 @@ import {
   botSeatsNeeded,
   selectClass,
   selectSlot,
+  setBotDifficulty,
   setFillWithBots,
   setMode,
   setPreset,
@@ -312,6 +313,8 @@ export class RoomServer {
         session, (sr) => setMode(sr.room, session.playerId, msg.mode), 'SetRoomMode');
       case 'SetFillWithBots': return this.onRoomMutation(
         session, (sr) => setFillWithBots(sr.room, session.playerId, msg.enabled), 'SetFillWithBots');
+      case 'SetRoomBotDifficulty': return this.onRoomMutation(
+        session, (sr) => setBotDifficulty(sr.room, session.playerId, msg.difficulty), 'SetRoomBotDifficulty');
       case 'LeaveMatch': return this.onLeave(session);
       case 'CastRequest': return this.onCastRequest(session, msg);
       case 'CancelCast': return this.enqueue(session, { t: 'CancelCast' });
@@ -683,7 +686,16 @@ export class RoomServer {
     session.phase = SessionPhase.Match;
     sr.sessions.add(session);
     sr.botSessions.set(playerId, session);
-    sr.bots.add({ playerId, reason });
+    /**
+     * P5（P1c）：**补位**人机吃房间的难度设置；**掉线接管固定 normal** ——
+     * 接管是替真人打，不该因为房主开了 easy 就替掉线的真人演一个木桩
+     * （拍板过的语义，docs/17 P1c 判据原文「掉线接管固定 normal」）。
+     */
+    sr.bots.add({
+      playerId, reason,
+      ...(reason === 'fill'
+        ? { difficulty: sr.room.config.botDifficulty ?? 'normal' } : {}),
+    });
   }
 
   /**
@@ -836,6 +848,9 @@ export class RoomServer {
       mapId: sr.room.config.mapId,
       started: sr.room.started,
       hostId: sr.room.hostId,
+      // P5：人机补位与难度 —— 大厅要画出当前状态
+      fillWithBots: sr.room.config.fillWithBots,
+      botDifficulty: sr.room.config.botDifficulty ?? 'normal',
     });
   }
 
@@ -863,6 +878,20 @@ export class RoomServer {
   /** 验收脚本用：某个房间当前的循环（用于单步推进） */
   loopOf(roomId: string): MatchLoop | undefined {
     return this.rooms.get(roomId)?.loop;
+  }
+
+  /**
+   * 验收脚本用（P5）：某房间人机席位的 `playerId → 难度` 快照。
+   * ★ 与 matchOf 同属白盒出口，生产路径零调用 —— 「房间难度设置真的
+   *   流进了每个补位席位」这条接线只有这里能黑盒外验证。
+   */
+  botSeatsOf(roomId: string): { playerId: string; difficulty: string }[] {
+    const sr = this.rooms.get(roomId);
+    if (!sr?.bots) return [];
+    return [...sr.botSessions.keys()].map((playerId) => ({
+      playerId,
+      difficulty: sr.bots?.seatOf(playerId)?.difficulty ?? 'normal',
+    }));
   }
 
   /**

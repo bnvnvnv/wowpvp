@@ -24,6 +24,7 @@ import {
   botSeatsNeeded,
   selectClass,
   selectSlot,
+  setBotDifficulty,
   setFillWithBots,
   setMode,
   setPreset,
@@ -376,6 +377,34 @@ describe('3.1 房间设置：规则预设与人机补位', () => {
 
     room.started = true;
     expect(setFillWithBots(room, 'host', false).ok).toBe(false);
+  });
+
+  it('★★ P5 单人 + 人机补位 → 能开局（此前被两条人数规则拦死，补位形同虚设）', () => {
+    setFillWithBots(room, 'host', true);
+    addReady('solo', Slot.Red, 'mage');
+    const check = canStart(room);
+    expect(check.ok, check.reasons.join('；')).toBe(true);
+    expect(check.nonStandard, '补位保证开局满编，不该标非标准').toBe(false);
+    // 3v3：红缺 2、蓝缺 3
+    expect(botSeatsNeeded(room).reduce((n, s) => n + s.count, 0)).toBe(5);
+  });
+
+  it('★ P5 补位开着也不允许零玩家开局（全观战的纯人机空局没有主体）', () => {
+    setFillWithBots(room, 'host', true);
+    joinRoom(room, 'watcher', '观众'); // 停在观战席
+    expect(canStart(room).ok).toBe(false);
+  });
+
+  it('★ P5 人机难度：房主专属、开赛前专属；缺省按 normal 读', () => {
+    expect(room.config.botDifficulty, '老房间对象没有该字段 → 读侧按 normal 兜底')
+      .toBeUndefined();
+    expect(setBotDifficulty(room, 'guest', 'easy').ok).toBe(false);
+    expect(setBotDifficulty(room, 'host', 'easy').ok).toBe(true);
+    expect(room.config.botDifficulty).toBe('easy');
+
+    room.started = true;
+    expect(setBotDifficulty(room, 'host', 'hard').ok).toBe(false);
+    expect(room.config.botDifficulty, '开赛后拒绝的写入不能落库').toBe('easy');
   });
 
   it('★★ 开启后按「每队缺多少补多少」产出席位', () => {
