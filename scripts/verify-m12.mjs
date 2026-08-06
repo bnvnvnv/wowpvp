@@ -290,7 +290,8 @@ const pollArt = async (page, pred, timeoutMs = 2500) => {
 
 // ═══ §3 验收 #10 重验：模型大小不改变碰撞体 ═══════════════════
 console.log('\n── §3 验收 #10 重验：真实模型不改变碰撞体（docs/13 点名）──');
-const { page, errors } = await open(BASE);
+// P6：试验场从默认路径迁到 ?testbed（主菜单占了默认位），测试内容零变化
+const { page, errors } = await open(`${BASE}?testbed`);
 {
   /**
    * ★★ **这里必须轮询，不能开页就采样一次。**
@@ -551,7 +552,7 @@ await page.close();
 // ═══ §5 回落路径：?art=off 精确回到 M11 ═══════════════════════
 console.log('\n── §5 回落路径：素材可选，游戏照常可玩 ──');
 {
-  const { page: p2, errors: e2 } = await open(`${BASE}?art=off`, 6000);
+  const { page: p2, errors: e2 } = await open(`${BASE}?testbed&art=off`, 6000);
   const st = await artStatus(p2);
   check('#12e', '★ ?art=off 完全不加载外部素材，角色回落程序化胶囊体',
     st?.art === false && st.charactersWithModel === 0 && st.envLoaded === false,

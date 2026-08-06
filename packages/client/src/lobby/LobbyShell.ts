@@ -50,6 +50,7 @@ import { artEnabled } from '../settings/artMode.js';
 import { ClassPreview } from './ClassPreview.js';
 import {
   escapeHtml,
+  isLocalDev,
   isJoinableCode,
   makeRoomCode,
   normalizeRoomCode,
@@ -103,6 +104,9 @@ export class LobbyShell {
   /** P5：人机补位状态（由 RoomState 同步，房主可改）*/
   private fillWithBots = false;
   private botDifficulty: 'easy' | 'normal' | 'hard' = 'normal';
+  /** P6：练习场配置（入口页点选，开始时拼进 ?testbed URL）*/
+  private practiceClass = 'mage';
+  private practiceDiff: 'easy' | 'normal' | 'hard' = 'normal';
   /** 房主 id。只有他能改规则预设（服务器校验，这里只决定按钮亮不亮）*/
   private hostId: string | undefined;
   /** 16a 战后统计。★ 每局开始时清空 —— 否则第二局会显示上一局的数据 */
@@ -202,12 +206,41 @@ export class LobbyShell {
             }</button>
           </div>
           <div class="lb-row">
-            <button class="lb-btn lb-ghost" data-action="practice">试验场（单机练习）</button>
+            <button class="lb-btn lb-ghost" data-action="practice">练习场（单机 · 选职业与人机难度）</button>
+          </div>
+          <!--
+            P6 练习场配置：点「练习场」展开。此前它直接跳裸试验场（固定法师、
+            假人站桩）—— 用户拍板要成体系的界面，职业与难度都在这里点选。
+          -->
+          <div id="lb-practice" class="lb-practice" hidden>
+            <div class="lb-fine" style="margin:6px 0 2px">选择职业：</div>
+            <div class="lb-row" id="lb-practice-classes" style="flex-wrap:wrap">
+              ${ALL_CLASSES.map((c) => `
+                <button class="lb-btn lb-small${(c.id as string) === this.practiceClass ? ' lb-armed' : ''}"
+                        data-action="practice-class"
+                        data-class="${c.id as string}">${c.name}</button>`).join('')}
+            </div>
+            <div class="lb-fine" style="margin:6px 0 2px">人机难度（实战模式，假人会打你）：</div>
+            <div class="lb-row">
+              <button class="lb-btn lb-small" data-action="practice-diff" data-diff="easy">简单</button>
+              <button class="lb-btn lb-small lb-armed" data-action="practice-diff" data-diff="normal">普通</button>
+              <button class="lb-btn lb-small" data-action="practice-diff" data-diff="hard">困难</button>
+            </div>
+            <div class="lb-row">
+              <button class="lb-btn lb-primary" data-action="practice-start">开始练习</button>
+            </div>
           </div>
           <div class="lb-row">
             <button class="lb-btn lb-ghost" data-action="settings">设置（音量 / 无障碍 / 键位）</button>
           </div>
-          <p class="lb-fine">对局需要另一位玩家：创建房间后把房间码或链接发给朋友。</p>
+          ${isLocalDev() ? `
+          <!-- P6 本地开发入口：只在 localhost/127.0.0.1 渲染（用户拍板：自测入口按本地判断）-->
+          <div class="lb-row lb-fine">
+            开发：
+            <button class="lb-btn lb-small lb-ghost" data-action="dev-testbed">验收试验场</button>
+            <button class="lb-btn lb-small lb-ghost" data-action="dev-stress">压测台</button>
+          </div>` : ''}
+          <p class="lb-fine">对局需要另一位玩家：创建房间后把房间码或链接发给朋友，或在房间里开人机补位单人开局。</p>
         </div>
       </section>
 
@@ -465,13 +498,42 @@ export class LobbyShell {
         this.join(code, false);
         break;
       }
-      case 'practice':
+      case 'practice': {
+        // P6：展开/收起练习场配置（职业 + 难度都在页面上点选）
+        const panel = this.root.querySelector('#lb-practice') as HTMLElement | null;
+        if (panel) panel.hidden = !panel.hidden;
+        break;
+      }
+      case 'practice-class': {
+        // 高亮所选职业（存在字段里，开始时拼 URL）
+        this.practiceClass = btn?.dataset['class'] ?? this.practiceClass;
+        for (const el of this.root.querySelectorAll<HTMLButtonElement>('[data-action="practice-class"]')) {
+          el.classList.toggle('lb-armed', el.dataset['class'] === this.practiceClass);
+        }
+        break;
+      }
+      case 'practice-diff': {
+        this.practiceDiff = (btn?.dataset['diff'] as 'easy' | 'normal' | 'hard') ?? this.practiceDiff;
+        for (const el of this.root.querySelectorAll<HTMLButtonElement>('[data-action="practice-diff"]')) {
+          el.classList.toggle('lb-armed', el.dataset['diff'] === this.practiceDiff);
+        }
+        break;
+      }
+      case 'practice-start':
         /**
-         * 试验场按钮 = 跳到 **URL 无参路径**（docs/14 §M13 交付物 3）。
-         * 试验场仍是默认路径的验收载体，大厅不内嵌它、只跳过去 ——
-         * 两条路径的启动代码因此零交集。
+         * 练习场 = 试验场实战模式（?combat 假人会打）+ 所选职业与难度。
+         * 大厅不内嵌它、只跳过去 —— 两条路径的启动代码零交集（M13 旧则）。
          */
-        location.href = location.pathname;
+        location.href = `${location.pathname}?testbed&combat`
+          + `&class=${encodeURIComponent(this.practiceClass)}`
+          + `&bot=${this.practiceDiff}`;
+        break;
+      case 'dev-testbed':
+        // P6 本地开发入口（isLocalDev 才渲染按钮）：原「验收试验场」无参语义
+        location.href = `${location.pathname}?testbed`;
+        break;
+      case 'dev-stress':
+        location.href = `${location.pathname}?stress`;
         break;
       case 'tutorial':
         // M15：同一个试验场，多一个 tutorial=on —— 教学是试验场上的旁听层

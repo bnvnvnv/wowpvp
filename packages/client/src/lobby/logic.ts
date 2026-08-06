@@ -93,6 +93,17 @@ export const teamLabel = (team: RoomPlayerView['team']): string =>
  * 直接拼进 innerHTML 等于让任何进房的人在你屏幕上执行脚本。
  * HUD 的姓名板用的是 textContent 所以没这个问题；大厅用模板串拼名单，必须过这里。
  */
+/**
+ * P6：是不是本地开发环境。用户拍板：「自测的可以根据 IP 判断，
+ * 比如本地 IP 才会展示这个窗口」—— 入口页的「验收试验场/压测台」
+ * 工具组只在本地渲染，生产域名下不出现。
+ * ★ 纯 hostname 判断，不是安全边界（?testbed 直敲仍可达）——
+ *   它挡的是**误导**（普通玩家不该看到验收工具），不是访问。
+ */
+export const isLocalDev = (hostname: string = location.hostname): boolean =>
+  hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' ||
+  hostname === '[::1]';
+
 export const escapeHtml = (raw: string): string =>
   raw
     .replaceAll('&', '&amp;')

@@ -77,6 +77,10 @@ const SWING_CLIPS = [
  * 不加冷却角色会永久踉跄 —— 破坏 13.4 的移动节奏可读性。
  */
 const HIT_REACT_COOLDOWN = 0.35;
+/** P6 程序化侧闪（闪避没有动画素材，见 playAvoidReact）：时长/横移/侧倾 */
+const DODGE_DURATION = 0.18;
+const DODGE_OFFSET = 0.3;
+const DODGE_TILT = 0.16;
 
 /**
  * 化形术的小动物。选 chicken_cow 不是审美偏好，是**测量诚实度**：
@@ -396,6 +400,85 @@ export class CharacterView {
   private hitReactOff: (() => void) | undefined;
 
   /**
+   * P6：规避反应 —— 此前闪避/招架/格挡只有浮字 + 音效，模型纹丝不动
+   * （用户实测「闪避未命中不知道做了没」）。
+   *
+   * · 招架/格挡 → `Block` 片段（八个玩家模型全都有，GLB 逐个验过）：
+   *   抬手格挡的读法对两者都成立
+   * · 闪避 → **没有素材**（上游包里没有 Dodge 片段），用程序化侧闪顶上：
+   *   0.18s 内往侧向偏 ~0.3m 再回位 + 轻微侧倾，左右交替免得读成循环贴图。
+   *   将来素材到位，换片段的落点就在这里。
+   *
+   * 守卫与 playHitReact 同一组（并共用冷却）：昏迷/落地/死亡状态不播
+   * （Hit_A/状态机正确性）、施法中不播 —— 施法中被规避看起来像被打断，
+   * 会误导 7.3 的「普通伤害不打断施法」。
+   */
+  playAvoidReact(kind: 'dodge' | 'parry' | 'block'): void {
+    if (
+      this.state === AnimState.Stunned ||
+      this.state === AnimState.Land ||
+      this.state === AnimState.Death
+    ) return;
+    if (this.casting || this.morphed) return;
+    if (this.hitReactCooldown > 0) return;
+    this.hitReactCooldown = HIT_REACT_COOLDOWN;
+
+    if (kind === 'dodge') {
+      const root = this.model?.root;
+      if (!root) return; // 胶囊兜底没有可位移的骨架 —— 浮字与音效通道仍在
+      this.dodgeElapsed = 0;
+      this.dodgeDir = this.dodgeFlip ? 1 : -1;
+      this.dodgeFlip = !this.dodgeFlip;
+      this.dodgeBaseX = root.position.x;
+      this.dodgeBaseTilt = root.rotation.z;
+      return;
+    }
+
+    // 招架/格挡：与 playHitReact 同构的一次性覆盖（Block 片段）
+    if (!this.mixer || !this.model) return;
+    const clip = THREE.AnimationClip.findByName(
+      this.model.clips as THREE.AnimationClip[], 'Block',
+    );
+    if (!clip) return;
+    this.avoidOff?.();
+
+    const react = this.mixer.clipAction(clip);
+    const current = this.actions.get(this.currentClip);
+    react.reset();
+    react.setLoop(THREE.LoopOnce, 1);
+    react.clampWhenFinished = false;
+    react.timeScale = 1.7; // 格挡要「弹」—— 抬手即回，拖长了像摆姿势
+    if (current && current !== react) current.fadeOut(0.05);
+    react.fadeIn(0.05);
+    react.play();
+
+    const onFinished = (e: { action: THREE.AnimationAction }): void => {
+      if (e.action !== react) return;
+      this.avoidOff?.();
+      react.fadeOut(0.08);
+      const back = this.actions.get(this.currentClip);
+      if (back) {
+        back.enabled = true;
+        back.paused = false;
+        back.play();
+        back.fadeIn(0.08);
+      }
+    };
+    this.avoidOff = () => {
+      this.mixer?.removeEventListener('finished', onFinished as never);
+      this.avoidOff = undefined;
+    };
+    this.mixer.addEventListener('finished', onFinished as never);
+  }
+  private avoidOff: (() => void) | undefined;
+  /** 程序化侧闪的进度（undefined = 不在闪）。基准值开闪时记录、闪完恢复 */
+  private dodgeElapsed: number | undefined;
+  private dodgeDir = 1;
+  private dodgeFlip = false;
+  private dodgeBaseX = 0;
+  private dodgeBaseTilt = 0;
+
+  /**
    * 近战挥砍：一次性覆盖动作，播完自动回到状态机当前片段。
    * ★ 素材缺片段时安静跳过 —— 刀光与伤害反馈不依赖它（M12 逐层兜底）。
    */
@@ -484,6 +567,23 @@ export class CharacterView {
   update(dt: number): void {
     this.mixer?.update(dt);
     if (this.hitReactCooldown > 0) this.hitReactCooldown -= dt;
+    // P6 程序化侧闪：sin 半波去-回，闪完恢复基准（模型根的 x/侧倾归位）
+    if (this.dodgeElapsed !== undefined) {
+      this.dodgeElapsed += dt;
+      const root = this.model?.root;
+      const t = this.dodgeElapsed / DODGE_DURATION;
+      if (!root || t >= 1) {
+        if (root) {
+          root.position.x = this.dodgeBaseX;
+          root.rotation.z = this.dodgeBaseTilt;
+        }
+        this.dodgeElapsed = undefined;
+      } else {
+        const k = Math.sin(Math.PI * t);
+        root.position.x = this.dodgeBaseX + this.dodgeDir * DODGE_OFFSET * k;
+        root.rotation.z = this.dodgeBaseTilt + this.dodgeDir * DODGE_TILT * k;
+      }
+    }
     if (this.flashLeft > 0) {
       this.flashLeft = Math.max(0, this.flashLeft - dt);
       const k = this.flashLeft / this.flashDuration; // 最后一步 k=0，恰好把 emissive 归零

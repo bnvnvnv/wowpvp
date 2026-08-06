@@ -17,7 +17,7 @@ const OTHER = asEntityId(3);
 
 const makeDeps = (access: Partial<AccessibilitySettings> = {}) => {
   const settings = { ...DEFAULT_ACCESSIBILITY, ...access };
-  const view = { flashHit: vi.fn(), playHitReact: vi.fn() };
+  const view = { flashHit: vi.fn(), playHitReact: vi.fn(), playAvoidReact: vi.fn() };
   const deps = {
     selfId: () => SELF,
     headOf: () => ({ x: 0, y: 1.8, z: 0 }),
@@ -93,12 +93,14 @@ describe('★★ 本地玩家筛选', () => {
 });
 
 describe('分档驱动的表现', () => {
-  it('★ 重击及以上触发受击动作，普通命中只闪白', () => {
+  it('★ P6：普通命中也踉跄（此前只有重击 —— 用户实测「感觉不到被击中」）；light 仍只闪白', () => {
     const { view, feedback } = makeDeps();
+    feedback.onHit(hit({ amount: 10 })); // light（刮痧/DoT 跳）
+    expect(view.playHitReact, 'light 档踉跄会把 DoT 目标抖成帕金森').not.toHaveBeenCalled();
     feedback.onHit(hit({ amount: 100 })); // normal
-    expect(view.playHitReact).not.toHaveBeenCalled();
+    expect(view.playHitReact).toHaveBeenCalledTimes(1);
     feedback.onHit(hit({ amount: 300 })); // heavy
-    expect(view.playHitReact).toHaveBeenCalled();
+    expect(view.playHitReact).toHaveBeenCalledTimes(2);
   });
 
   it('★ 暴击浮字带「!」后缀（字形是第三通道）且走 crit 类型', () => {
@@ -120,6 +122,16 @@ describe('分档驱动的表现', () => {
     expect(deps.audio.playVariant).toHaveBeenCalledWith('dodge', expect.anything());
     expect(view.flashHit).not.toHaveBeenCalled();
     expect(deps.addTrauma).not.toHaveBeenCalled();
+  });
+
+  it('★★ P6：规避有模型动作 —— 此前只有浮字+音效，模型纹丝不动（用户实测点名）', () => {
+    const { view, feedback } = makeDeps();
+    feedback.onHit(hit({ avoided: 'dodge', amount: 0 }));
+    expect(view.playAvoidReact).toHaveBeenCalledWith('dodge');
+    feedback.onHit(hit({ avoided: 'block', amount: 0 }));
+    expect(view.playAvoidReact).toHaveBeenCalledWith('block');
+    // 规避不该同时触发受击踉跄（挨打和躲开是互斥的两件事）
+    expect(view.playHitReact).not.toHaveBeenCalled();
   });
 
   it('★ 暴击音效层有 120ms 节流（AOE 暴击 3 人只响一声）', () => {

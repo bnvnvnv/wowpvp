@@ -177,14 +177,23 @@ const makePaintStress = (stats: HTMLElement): ((d: DebugInfo) => void) => {
 };
 
 /**
- * ★ 三条入口并存。`?net=<房间名>` 进联网场景（M10 老路，全部 verify 脚本
- *   靠它，**原样保留**）；`?lobby` 进大厅（M13，纯 UI 的建房/加房流程，
- *   `?lobby=<码>` 深链预填房间码）；不带参数进试验场 ——
- *   试验场是 M1–M9 共 141 项验收的载体，**默认路径不能变**（docs/14 §M13 红线）。
+ * ★ 三条入口并存（P6 起默认落**主菜单**）：
+ *   · `?net=<房间名>` 联网场景（M10 老路，verify 脚本靠它，原样保留）
+ *   · `?testbed` 试验场（M1–M9 共 141 项验收的载体；`?tutorial=on` 与
+ *     `?stress` 是它的子模式，带它们时可省 `testbed`）。其上再叠
+ *     `?class=`（P5 职业）/`?bot=`（难度）/`?combat`（实战模式）/`?art=`。
+ *   · **不带参数 = 主菜单（大厅入口页）** —— P6 用户拍板：「真正成体系的
+ *     游戏不能让用户通过不同 URL 进入」。大厅连接是惰性的（只在建房/加房
+ *     时连服务器），离线也能开；练习/教学从菜单点进去。
+ *     `?lobby=<码>` 深链预填房间码，照旧。
+ *
+ *   ⚠️ 试验场从「默认路径」改为 `?testbed`：m1–m4/m8/m12 的 URL 同步加了
+ *   前缀（**测试内容零变化**，docs/14 §M13 的「默认路径不变」红线自此
+ *   改述为「?testbed 路径不变」—— 见 PROGRESS P6）。
  *
  *   其余参数：`server`（默认 ws://<当前主机>:8080）、`team`、`class`、`name`。
- *   例：`?net=r1&team=blue&class=warrior`、`?lobby=K7XQ`
- *   `net=` 与 `lobby` 同时出现时 net= 优先 —— 老路的优先级不因新入口而变。
+ *   例：`?net=r1&team=blue&class=warrior`、`?testbed&class=warrior&bot=hard&combat`
+ *   `net=` 优先于一切 —— 老路的优先级不因新入口而变。
  */
 const params = new URLSearchParams(location.search);
 const room = params.get('net');
@@ -212,30 +221,20 @@ if (room !== null) {
   // ★ 暴露给验收脚本读联网状态。与试验场的 onDebug 是同一个用途
   (globalThis as Record<string, unknown>).__net = net;
   net.start();
-} else if (params.has('lobby')) {
-  const { LobbyShell } = await import('./lobby/LobbyShell.js');
-  const shell = new LobbyShell(app, {
-    serverUrl,
-    joinCode: params.get('lobby') || undefined,
-    // 分享链接只在 URL **显式**给过 server 时才带它 —— 默认地址是
-    // 「当前主机:8080」，对拿到链接的另一台机器未必成立
-    explicitServer: params.get('server') ?? undefined,
-  });
-  // ★ 暴露给 verify:m13 读大厅状态。与 `__scene` / `__net` 同一个用途
-  (globalThis as Record<string, unknown>).__lobby = shell;
-  shell.mount();
-} else {
+} else if (
+  params.has('testbed') || params.get('tutorial') === 'on' || params.has('stress')
+) {
   const canvas = mountSceneDom();
   /**
    * ★ `?tutorial=on` 走**教学舞台**（自己的地图 + 自己的假人布置），
-   *   不带参数仍是验收用的试验场 —— 默认路径一个字节都没变。
+   *   `?testbed` 是验收用的试验场 —— 场景行为与做默认路径时一个字节都没变。
    *   为什么两台戏不能共用一个舞台，见 `scenes/stages.ts` 的文件头。
    */
   const tutorialMode = params.get('tutorial') === 'on';
   /**
    * P2 压测台（`?stress` / `?stress=<人数>`）：24 个实体同屏开打，
    * 面板换成渲染负载读数。存在的理由是 X10 —— 12v12 的真机帧率从来没有
-   * 数据。★ 与教学同一条机制：**只换舞台数据**，默认路径一个字节没动。
+   * 数据。★ 与教学同一条机制：**只换舞台数据**。
    */
   const stressParam = params.get('stress');
   const stressMode = params.has('stress');
@@ -244,8 +243,7 @@ if (room !== null) {
     : tutorialMode ? TUTORIAL_STAGE : TESTBED_STAGE;
   /**
    * P5：`?class=<职业id>` 在试验场直接玩别的职业（`?class=warrior&bot=hard`）。
-   * 不带参数仍是法师 —— 与教学/压测同一条机制：默认路径一个字节没动。
-   * 非法职业 id 静默回落法师（拼错了不该白屏）。
+   * 不带 class 仍是法师（验收初始条件）。非法职业 id 静默回落法师。
    * ★ 教学舞台不吃 class：课程以法师技能栏写死（docs/PROGRESS M15 已记）。
    */
   const classParam = params.get('class');
@@ -262,12 +260,30 @@ if (room !== null) {
     playerClass,
     botDifficulty,
   );
-  // 压测要假人**真的在打**（站桩测不到特效负载）—— 与 K 键同一个开关
-  if (stressMode) scene.combatMode = true;
+  // 压测要假人**真的在打**（站桩测不到特效负载）—— 与 K 键同一个开关；
+  // P6：`?combat` 显式开实战（主菜单练习场走这里 —— 练习就是要有人打你）
+  if (stressMode || params.has('combat')) scene.combatMode = true;
   // ★ 暴露给验收脚本读场景状态（M12 的美术自检、M9 的观战与可访问性）。
   //   与联网场景的 `__net` 是同一个用途
   (globalThis as Record<string, unknown>).__scene = scene;
   scene.start();
+} else {
+  /**
+   * P6 默认入口 = 主菜单（大厅入口页）。用户拍板：「真正成体系的游戏，
+   * 不能让用户通过不同的 URL 进入」。大厅连接惰性（建房/加房才连服务器），
+   * 离线也能开 —— 练习场/教学从菜单里点。`?lobby=<码>` 深链照旧。
+   */
+  const { LobbyShell } = await import('./lobby/LobbyShell.js');
+  const shell = new LobbyShell(app, {
+    serverUrl,
+    joinCode: params.get('lobby') || undefined,
+    // 分享链接只在 URL **显式**给过 server 时才带它 —— 默认地址是
+    // 「当前主机:8080」，对拿到链接的另一台机器未必成立
+    explicitServer: params.get('server') ?? undefined,
+  });
+  // ★ 暴露给 verify:m13 读大厅状态。与 `__scene` / `__net` 同一个用途
+  (globalThis as Record<string, unknown>).__lobby = shell;
+  shell.mount();
 }
 
 /** 装配场景骨架并返回画布（试验场与 `?net=` 老路共用）*/

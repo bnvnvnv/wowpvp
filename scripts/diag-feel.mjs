@@ -37,7 +37,7 @@ const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 
-await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+await page.goto(`${BASE}?testbed`, { waitUntil: 'domcontentloaded' }); // P6：试验场迁到 ?testbed
 console.log('等待美术加载…');
 await page.waitForTimeout(12000);
 

@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url';
  *   `client/src/settings/artMode.ts`），于是这里的结论可以与
  *   M0–M11 的历史结果直接对比。**美术层本身由 `verify:m12` 负责。**
  */
-const URL = process.env.VERIFY_URL ?? 'http://localhost:5173/?art=off';
+const URL = process.env.VERIFY_URL ?? 'http://localhost:5173/?testbed&art=off';
 const results = [];
 const check = (id, name, pass, detail) => {
   results.push({ id, pass });

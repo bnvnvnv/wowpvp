@@ -61,7 +61,7 @@ try {
   console.log('\n── §1 试验场 ?class=warrior ──');
   {
     const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-    await page.goto(`${BASE}/?art=off&class=warrior`);
+    await page.goto(`${BASE}/?testbed&art=off&class=warrior`);
     await page.waitForFunction(() => !!(globalThis as never as { __scene?: { combat?: unknown } }).__scene?.combat, null, { timeout: 30000 });
     const st = (await page.evaluate(() => {
       const s = (globalThis as never as {

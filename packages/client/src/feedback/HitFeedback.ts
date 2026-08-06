@@ -45,6 +45,8 @@ export interface HitEvent {
 export interface TargetViewLike {
   flashHit(strength?: number, seconds?: number, color?: number): void;
   playHitReact?(): void;
+  /** P6：规避反应 —— 招架/格挡抬手（Block 片段），闪避程序化侧闪。可缺席同上 */
+  playAvoidReact?(kind: 'dodge' | 'parry' | 'block'): void;
 }
 
 /**
@@ -186,8 +188,23 @@ export class HitFeedback {
         if (ev.crit) view.flashHit(1.4, 0.2, color);
         else if (tier === 'heavy' || tier === 'kill') view.flashHit(1.1, 0.16, color);
         else view.flashHit(0.85, 0.12, color);
-        if (tier !== 'light' && tier !== 'normal') view.playHitReact?.();
+        /**
+         * ★ P6：受击踉跄下沉到 normal 档 —— 此前只有重击才踉跄，普通命中
+         *   只有 0.12s 的闪白，用户实测的原话是「被击中了有没有被击中的
+         *   动作」（感觉不到）。light 档（刮痧/DoT 跳）仍只闪白：每一跳
+         *   都踉跄的话 DoT 会把人抖成帕金森。
+         *   护栏都在 playHitReact 里：施法中不播（7.3 普通伤害不打断施法，
+         *   踉跄会误导）、昏迷/落地/死亡不播、冷却防刷屏。
+         */
+        if (tier !== 'light') view.playHitReact?.();
       }
+    }
+
+    // ── 4a. 规避的模型动作（P6）：招架/格挡抬手，闪避侧闪 ────────
+    // 此前规避只有浮字 + 音效，模型纹丝不动 —— 用户实测「闪避未命中
+    // 不知道做了没」。浮字/音效/动作三通道并存，色盲与小屏下都剩两条。
+    if (ev.avoided) {
+      d.viewOf(ev.targetId)?.playAvoidReact?.(ev.avoided);
     }
 
     /**
