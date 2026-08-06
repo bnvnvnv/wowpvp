@@ -19,6 +19,7 @@ import type { CastState, CastingStore } from '../sim/casting.js';
 import type { GroundArea } from '../sim/groundArea.js';
 import type { AuraInstance, AuraStore } from '../sim/aura.js';
 import { applyDr, createDrStore } from '../sim/dr.js';
+import { TRINKET_COOLDOWN_KEY } from '../sim/tick.js';
 import { addEntity, allocEntityId, createWorld } from '../sim/world.js';
 import {
   burstDamageOf,
@@ -551,6 +552,97 @@ describe('P4 分类器：形态切换与交易型保命的排除', () => {
     // 断招踢带 interrupt —— 不算控制（踢要留给打断步骤）
     const kick = warrior.skills.find(isInterruptSkill)!;
     expect(ccCategoryOf(kick)).toBeUndefined();
+  });
+});
+
+describe('P5 hard 留踢：打断只交给值得的读条', () => {
+  const HOLY_LIGHT = asSkillId('priest.holy_light');   // 治疗，1.2s
+  const SCORCH = asSkillId('mage.scorch');             // 伤害，0 读条？—— 用合成条控制时长
+
+  it('★★ hard 面对短读条伤害技能不踢（留踢）；normal 照踢', () => {
+    // 合成一条 0.8s 的伤害读条（skillId 指向灼烧 —— 非治疗、名义短读条）
+    const shortDamage = (s: ReturnType<typeof setup>): void => {
+      s.casting.set(s.foe.id, castOf({
+        skillId: SCORCH, startedAt: 0, endsAt: 0.8, school: School.Fire,
+      }));
+      s.world.time = 0.5;
+    };
+    const s1 = setup(20);
+    shortDamage(s1);
+    expect(decideBotAction(perceive(s1, { difficulty: 'hard' })).cast?.skillId,
+      'hard 把踢交给了 0.8s 的伤害读条').not.toBe(COUNTERSPELL);
+
+    const s2 = setup(20);
+    shortDamage(s2);
+    expect(decideBotAction(perceive(s2, { difficulty: 'normal' })).cast?.skillId,
+      'normal 应保持看条就踢').toBe(COUNTERSPELL);
+  });
+
+  it('★★ hard 面对治疗读条必踢 —— 不论读条多短', () => {
+    const s = setup(20);
+    s.casting.set(s.foe.id, castOf({
+      skillId: HOLY_LIGHT, startedAt: 0, endsAt: 0.9, school: School.Holy,
+    }));
+    s.world.time = 0.5;
+    expect(decideBotAction(perceive(s, { difficulty: 'hard' })).cast?.skillId)
+      .toBe(COUNTERSPELL);
+  });
+
+  it('★ hard 面对长读条伤害技能照踢（1.5s ≥ 门槛）', () => {
+    const s = setup(20);
+    s.casting.set(s.foe.id, castOf({ skillId: SCORCH, startedAt: 0, endsAt: 1.5 }));
+    s.world.time = 0.5;
+    expect(decideBotAction(perceive(s, { difficulty: 'hard' })).cast?.skillId)
+      .toBe(COUNTERSPELL);
+  });
+});
+
+describe('P5 战斗意志：被硬控且要命时解控', () => {
+  const controlled = (s: ReturnType<typeof setup>): void => {
+    s.self.flags.stunned = true;
+  };
+
+  it('★★ 被昏迷 + 自身半血 → 交饰品', () => {
+    const s = setup(20);
+    controlled(s);
+    s.self.health = s.self.maxHealth * 0.4;
+    const a = decideBotAction(perceive(s, { difficulty: 'normal' }));
+    expect(a.trinket).toBe(true);
+    expect(a.cast, '昏迷中不该同时出招').toBeUndefined();
+  });
+
+  it('★★ 被昏迷 + 对手进击杀窗口 → 交饰品（控住的每秒都在给他喘息）', () => {
+    const s = setup(20);
+    controlled(s);
+    s.foe.health = s.foe.maxHealth * 0.3;
+    expect(decideBotAction(perceive(s, { difficulty: 'hard' })).trinket).toBe(true);
+  });
+
+  it('★★ 满血互控的开场肾击不交（90 秒的解控不花在不要命的控上）', () => {
+    const s = setup(20);
+    controlled(s);
+    expect(decideBotAction(perceive(s, { difficulty: 'normal' })).trinket).toBeFalsy();
+  });
+
+  it('★ 饰品在冷却 → 不交', () => {
+    const s = setup(20);
+    controlled(s);
+    s.self.health = s.self.maxHealth * 0.4;
+    s.self.cooldowns.set(TRINKET_COOLDOWN_KEY, 999);
+    expect(decideBotAction(perceive(s, { difficulty: 'normal' })).trinket).toBeFalsy();
+  });
+
+  it('★ easy 不认识饰品栏（与不打断同源）', () => {
+    const s = setup(20);
+    controlled(s);
+    s.self.health = s.self.maxHealth * 0.4;
+    expect(decideBotAction(perceive(s, { difficulty: 'easy' })).trinket).toBeFalsy();
+  });
+
+  it('★ 没被控不交（它是解控键不是保命键）', () => {
+    const s = setup(20);
+    s.self.health = s.self.maxHealth * 0.4;
+    expect(decideBotAction(perceive(s, { difficulty: 'normal' })).trinket).toBeFalsy();
   });
 });
 

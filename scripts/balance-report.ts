@@ -153,10 +153,11 @@ const duel = (clsA: ClassDef, clsB: ClassDef, rng: () => number): DuelResult => 
   const deps = (
     inputs: Map<EntityId, { forward: number; strafe: number; jump: boolean; yaw: number }>,
     castRequests: Map<EntityId, CastIntent>,
+    trinketRequests: ReadonlySet<EntityId>,
   ): TickDeps => ({
     world, auras, dr, ground, projectiles, casting, loadouts, swings,
     swaps, pickups, arsenal,
-    movement, inputs, castRequests, getSkill,
+    movement, inputs, castRequests, trinketRequests, getSkill,
     arena,
   });
   /**
@@ -177,9 +178,12 @@ const duel = (clsA: ClassDef, clsB: ClassDef, rng: () => number): DuelResult => 
 
     const inputs = new Map<EntityId, { forward: number; strafe: number; jump: boolean; yaw: number }>();
     const requests = new Map<EntityId, CastIntent>();
+    // P5：bot 会交战斗意志了 —— 与 cast 同为意图，判定在 tick 第 1c 步
+    const trinkets = new Set<EntityId>();
     for (const [self, foe] of [[a, b], [b, a]] as const) {
       const r = think(self, foe);
       inputs.set(self.id, r.move);
+      if (r.trinket) trinkets.add(self.id);
       if (r.cast) {
         requests.set(self.id, r.cast);
         casts[sideOf(self.id)]++;
@@ -192,7 +196,7 @@ const duel = (clsA: ClassDef, clsB: ClassDef, rng: () => number): DuelResult => 
     // ★ beginSwing 幂等，不会刷新节奏；首击间隔与真实对局一致取武器值
     beginSwing(swings, a.id, world.time, getWeapon(a.weaponId)?.swingInterval ?? 2);
     beginSwing(swings, b.id, world.time, getWeapon(b.weaponId)?.swingInterval ?? 2);
-    const result = tickWorld(deps(inputs, requests), SIM.TICK_DT);
+    const result = tickWorld(deps(inputs, requests, trinkets), SIM.TICK_DT);
     for (const ev of result.events) {
       if (ev.t === 'damage') damage[sideOf(ev.sourceId)] += ev.amount;
       if (ev.t === 'heal') healing[sideOf(ev.sourceId)] += ev.amount;

@@ -22,7 +22,7 @@
 
 // ★ 逐模块 import 而不是从 `../index.js` —— index 现在也导出本文件，
 //   走 index 会形成循环依赖。
-import { ALL_CLASSES, getWeapon } from '../data/index.js';
+import { ALL_CLASSES, getSkill, getWeapon } from '../data/index.js';
 import type { AuraDef, SkillDef } from '../data/schema.js';
 import { CastFailure, CastKind, DrCategory } from '../types/enums.js';
 import { dirToYaw, distance2D, sub, yawToDir, type Vec3 } from '../math/vec3.js';
@@ -35,7 +35,7 @@ import type { EntityId } from '../types/ids.js';
 import type { GroundStore } from '../sim/groundArea.js';
 import type { MovementInput } from '../sim/movement.js';
 import type { ProjectileStore } from '../sim/projectile.js';
-import type { CastIntent } from '../sim/tick.js';
+import { TRINKET_COOLDOWN_KEY, type CastIntent } from '../sim/tick.js';
 import type { World } from '../sim/world.js';
 
 // ── 难度分档 ─────────────────────────────────────────────────────
@@ -292,6 +292,12 @@ const TACTICS = {
   KITE_TO: 12,
   /** 近战与对手拉开超过这个距离才动用冲锋（太近了冲锋有 minRange 也放不出）*/
   GAP_CLOSE_MIN_D: 8,
+  /**
+   * P5：hard 档「留踢」的门槛 —— 读条短于这个秒数的**伤害**技能不值得交打断
+   * （治疗不论长短都踢）。1.2s 取在填充核弹档（1.0–1.4）中间：短灼烧骗不走
+   * hard 的踢，而霜矢/圣光击这类主力读条仍然会被踢。
+   */
+  KICK_WORTH_CAST_SECONDS: 1.2,
 } as const;
 
 /**
@@ -502,10 +508,16 @@ export interface BotPerception {
   dr?: DrStore;
 }
 
-/** 一次决策的产出 —— 与真人的两条通道同构 */
+/** 一次决策的产出 —— 与真人的三条通道同构（移动 / 施法 / 战斗意志）*/
 export interface BotAction {
   move: MovementInput;
   cast?: CastIntent;
+  /**
+   * P5：这一 tick 要交战斗意志（8.3 通用解控）。调用方喂给
+   * `tickWorld.trinketRequests`（balance）/ `{t:'UseTrinket'}`（服务器）/
+   * `pendingTrinkets`（试验场）—— 与 cast 一样只是意图，判定在 tick。
+   */
+  trinket?: boolean;
 }
 
 /**
@@ -523,6 +535,36 @@ export const decideBotAction = (p: BotPerception): BotAction => {
   const difficulty = p.difficulty ?? 'normal';
   const yaw = dirToYaw(sub(foe.position, self.position));
   const d = distance2D(self.position, foe.position);
+
+  /**
+   * ★★ P5 战斗意志（8.3 通用解控）—— bot 此前对这整个系统零使用。
+   *
+   * 必须站在决策链**最顶**：被硬控时 validateCast 拒绝一切施法，后面每一步
+   * 都天然短路 —— 昏迷中唯一能按的键就是它，这也正是 8.3 造它的理由
+   * （「默认允许在昏迷中使用」，tick 第 1c 步刻意不查控制状态）。
+   *
+   * 不无脑交：只在**这口控真的要命**时用 ——
+   *   · 自己血线不稳（对面正拿这口昏迷打爆发）
+   *   · 或对手进击杀窗口（控住的每一秒都在给他喘息）
+   * 满血互控的开场肾击就让它昏着 —— 真人也不会把 90 秒的解控交在那。
+   * ★ easy 不用（新手不认识饰品栏，与不打断同源）。
+   */
+  if (
+    difficulty !== 'easy' &&
+    (self.flags.stunned || self.flags.feared) &&
+    (self.cooldowns.get(TRINKET_COOLDOWN_KEY) ?? 0) <= world.time &&
+    (self.health < self.maxHealth * TACTICS.CC_SELF_DANGER ||
+      foe.health < foe.maxHealth * TACTICS.CC_KILL_WINDOW)
+  ) {
+    /**
+     * ★ 阈值实测（P5 归因）：半血（CC_SELF_DANGER 0.5）83.3pp，
+     *   收紧到 0.35 反而 85.7pp —— 阈值不是杠杆，取半血。
+     *   盗贼 28.6→7.1 与牧师 →90.5 是**解控 meta 的结构性再分配**
+     *  （控内爆发被克制、治疗职业更难杀 —— 与真实 PVP 同向），
+     *   不是实现 bug；照胜率去禁用饰品 = balance-report 警告的那件事。
+     */
+    return { move: { forward: 0, strafe: 0, jump: false, yaw }, trinket: true };
+  }
 
   /**
    * ★★ **读条期间不出手。**
@@ -697,10 +739,27 @@ export const decideBotAction = (p: BotPerception): BotAction => {
       const elapsed = world.time - foeCast.startedAt;
       const remaining = (foeCast.channelEndsAt ?? foeCast.endsAt) - world.time;
       if (elapsed >= REACTION_SECONDS[difficulty] && remaining > 0.1) {
-        const kick = offensive.find(isInterruptSkill);
-        if (kick) return { move: advance, cast: { skillId: kick.id, targetId: foe.id } };
-        // 没踢可用但对面在读 —— 下面的控制步骤拿它当替补打断的触发条件
-        foeCastingUnkicked = true;
+        /**
+         * ★ P5 hard「留踢」：真人高手不把打断交给随便一条读条 —— 治疗
+         *   不论长短都踢（放走一发治疗 = 前面打的白打），但**短读条的
+         *   伤害技能不值一个打断冷却**（吃下 100 伤害换手里始终留着踢，
+         *   下一发治疗/大招才是它的战场）。normal 保持「看条就踢」——
+         *   两档的差别从「反应快慢」扩展到「判断好坏」，这正是难度该有的样子。
+         * ★ 判据用**实际读条时长**（endsAt-startedAt，含施法速度修正），
+         *   不是数据表里的名义值 —— bot 看到的和真人看到的是同一根条。
+         */
+        const beingCast = getSkill(foeCast.skillId);
+        const worthKicking =
+          difficulty !== 'hard' ||
+          beingCast === undefined ||
+          isHealSkill(beingCast) ||
+          foeCast.endsAt - foeCast.startedAt >= TACTICS.KICK_WORTH_CAST_SECONDS;
+        if (worthKicking) {
+          const kick = offensive.find(isInterruptSkill);
+          if (kick) return { move: advance, cast: { skillId: kick.id, targetId: foe.id } };
+          // 没踢可用但对面在读 —— 下面的控制步骤拿它当替补打断的触发条件
+          foeCastingUnkicked = true;
+        }
       }
     }
   }

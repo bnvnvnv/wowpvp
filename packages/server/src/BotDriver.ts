@@ -173,6 +173,11 @@ export class BotDriver {
         }));
       }
 
+      // P5：bot 会交战斗意志（被硬控且要命时）—— 走与真人相同的协议消息
+      if (action.trinket) {
+        this.feed(playerId, encodeClientMessage({ t: 'UseTrinket' }));
+      }
+
       const cast = action.cast;
       if (!cast) continue;
       const skill = getSkill(cast.skillId);
