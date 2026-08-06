@@ -213,7 +213,13 @@ export interface AuraDef {
    */
   casterScoped?: boolean;
   maxStacks?: number;
-  /** 客户端视觉键，映射到 packages/client/src/vfx 注册表 */
+  /**
+   * ⚠️ **目前是死数据 —— 全仓库没有任何代码读这个字段**（P4b 全文检索确认）。
+   *   实际的施法/命中表现走的是 `client/src/vfx/schools.ts` 的 `visualOf()`：
+   *   按技能**学派 + 形状**取八属性视觉，与本键无关。留着它是给 P3
+   *   「技能签名」（每技能专属特效/音效）当落点 —— 接线时这里就是那个键；
+   *   在那之前**不要**以为改这个字符串能改变任何画面。
+   */
   vfx?: string;
   /** 玩家可见的说明文本 */
   description: string;
@@ -420,7 +426,7 @@ export interface SkillDef {
   effects: EffectDef[];
   /** 玩家可见说明 */
   description: string;
-  /** 客户端表现键 */
+  /** ⚠️ 死数据，无消费方 —— 详见 AuraDef.vfx 的注释（P3 技能签名的落点）*/
   vfx?: string;
 }
 

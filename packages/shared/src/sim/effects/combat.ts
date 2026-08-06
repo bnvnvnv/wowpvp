@@ -474,14 +474,23 @@ registerEffect('healPercentMaxHealth', (ctx, e, targets) => {
   for (const t of targets) dealHeal(ctx, t, t.maxHealth * e.percent, { canCrit: !ctx.periodic });
 });
 
-registerEffect('healFromRecentDamage', (ctx, e, targets) => {
-  for (const t of targets) {
-    // 近期承受伤害由 world 记录（M4 暂用最大生命的固定比例近似），
-    // 上限由技能定义保证（死亡打击「治疗有上限」）
-    const cap = t.maxHealth * e.maxPercentOfMaxHealth;
-    const recent = Math.min(cap, (t.maxHealth - t.health) * e.percentOfDamageTaken);
-    dealHeal(ctx, t, Math.min(cap, recent), { canCrit: !ctx.periodic });
-  }
+registerEffect('healFromRecentDamage', (ctx, e) => {
+  /**
+   * ★★ 治疗对象是**施法者**，不是 targets —— 汲血斩「根据（自己）近期承受
+   *   的伤害恢复生命」。
+   *
+   * ⚠️ P4b 全量冒烟抓到的真 bug：此前这里 `for (const t of targets)`，
+   *   而汲血斩的 targets 是**被打的敌人** —— 效果变成了「按敌人的已损血量
+   *   给敌人回血」。对满血敌人回 0，所以自 M4 落地以来没人肉眼看出来；
+   *   对残血敌人则是死骑一刀反向奶对面。全仓库此前对这个效果零测试覆盖，
+   *   正是「规则写对了没人调」的又一例（这次是「调了但对象错了」）。
+   */
+  const t = ctx.source;
+  // 近期承受伤害由 world 记录（M4 暂用最大生命的固定比例近似），
+  // 上限由技能定义保证（死亡打击「治疗有上限」）
+  const cap = t.maxHealth * e.maxPercentOfMaxHealth;
+  const recent = Math.min(cap, (t.maxHealth - t.health) * e.percentOfDamageTaken);
+  dealHeal(ctx, t, Math.min(cap, recent), { canCrit: !ctx.periodic });
 });
 
 registerEffect('applyAura', (ctx, e, targets) => {
