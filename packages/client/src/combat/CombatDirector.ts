@@ -634,6 +634,8 @@ export class CombatDirector {
         // P1b：脚下的敌方区域与待落的陨星 —— 试验场假人也会躲圈了
         ground: this.ground,
         projectiles: this.projectiles,
+        // P3b：看得见自己挂在玩家身上的 DoT，不再每个 GCD 重挂
+        auras: this.auras,
       });
       this.frameInputs.set(e.id, action.move);
       if (action.cast) {

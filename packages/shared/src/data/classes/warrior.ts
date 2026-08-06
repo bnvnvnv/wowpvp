@@ -325,6 +325,87 @@ const skills: SkillDef[] = [
     effects: [{ kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.5 } }],
     description: '快速连续挥击目标。仅双持单手剑方案可用。',
   },
+
+  /**
+   * ★ P3b 扩充：战士补「怒气填充 / 反手抗爆 / 群体恐惧」。
+   *
+   *   审计里战士的问题不是伤害不够，而是**开场没怒气时无事可做**、
+   *   且缺一个能中断对方集火节奏的键。补的三条全部瞬发；
+   *   英勇打击刻意做成**低伤害的怒气消耗口**而不是新的爆发点。
+   */
+  {
+    id: asSkillId('warrior.heroic_strike'),
+    name: '英勇打击',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: RANGE.MELEE },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Physical,
+    cooldown: 0,
+    triggersGcd: true,
+    requiresFacing: true,
+    requiresLos: true,
+    cost: { resource: Resource.Rage, amount: 15 },
+    counters:
+      '**没有冷却但每次要 15 怒**：它是怒气溢出时的倾泻口，不是输出核心 —— 拿它当主手会让致死打击和风暴之锤按不出来；伤害低于所有带冷却的技能，被减伤吃掉后几乎无感；缴械期间不可用，且要贴脸面向。',
+    effects: [{ kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.85 } }],
+    description: '一次沉重的挥砍，造成 85% 武器伤害。无冷却，用来倾泻溢出的怒气。',
+    vfx: 'warrior_heroic_strike',
+  },
+  {
+    id: asSkillId('warrior.spell_reflection'),
+    name: '法术反射',
+    classId: CLASS_ID,
+    targeting: Targeting.Self,
+    targetFilter: TargetFilter.Self,
+    range: { min: 0, max: 0 },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Physical,
+    cooldown: 25,
+    triggersGcd: true,
+    cost: { resource: Resource.Rage, amount: 15 },
+    counters:
+      '**只减法术伤害，对物理毫无作用** —— 对手是近战时等于白按；只有 5 秒，对方看到就停手等它过期；25 秒冷却意味着一局里最多押中两三次爆发。',
+    effects: [
+      {
+        kind: 'applyAura',
+        target: 'self',
+        aura: {
+          id: 'warrior.spell_reflection',
+          name: '法术反射',
+          description: '受到的伤害降低 40%。',
+          kind: 'buff',
+          duration: 5,
+          dispelType: DispelType.Magic,
+          modifiers: { damageTaken: 0.6 },
+        },
+      },
+    ],
+    description: '举盾格挡法术，5 秒内受到伤害降低 40%。押对方读条的窗口。',
+    vfx: 'warrior_spell_reflection',
+  },
+  {
+    id: asSkillId('warrior.intimidating_shout'),
+    name: '破胆怒吼',
+    classId: CLASS_ID,
+    targeting: Targeting.SelfCenter,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: 8 },
+    shape: { kind: 'circle', radius: 8, maxTargets: 5 },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Physical,
+    cooldown: 90,
+    triggersGcd: true,
+    cost: { resource: Resource.Rage, amount: 20 },
+    counters:
+      '走「恐惧」递减链（8.2），与心灵尖啸、恐惧共用一条 —— 队伍里有牧师时第二次就只剩一半；**受到任意伤害立即解除**，自己的持续伤害会把它拆掉；把对手打散也意味着自己够不到人；90 秒冷却。',
+    effects: [{ kind: 'fear', duration: 4, breakDamage: 1 }],
+    description: '怒吼震慑周围最多 5 名敌人，恐惧 4 秒，受到伤害立即解除。用来打断对方的集火。',
+    vfx: 'warrior_intimidating_shout',
+  },
 ];
 
 // ── 武器方案（附录A#4：职业、攻击间隔、距离、优势、代价、改变的技能）──

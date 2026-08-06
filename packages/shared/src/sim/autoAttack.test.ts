@@ -6,7 +6,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { getSkill, warrior, mage } from '../data/index.js';
+import { getSkill, warrior, mage, hunter } from '../data/index.js';
 import { COMBAT_SWING } from '../constants/combat.js';
 import { Resource } from '../types/enums.js';
 import { TEAM_BLUE, TEAM_RED } from '../types/ids.js';
@@ -168,6 +168,83 @@ describe('★★ 挥击产生怒气 —— 战士唯一的资源来源', () => {
     beginSwing(swings, atk.id, 0, interval());
     const out = tickSwings(deps(), interval());
     const dmg = out[0]!.effects?.find((e) => e.kind === 'damage');
+    expect(dmg?.kind === 'damage' ? magnitudeOf(dmg.amount, atk) : NaN)
+      .toBeCloseTo(getWeapon(atk.weaponId)!.swingPercent * 100, 6);
+  });
+});
+
+/**
+ * 7.6 贴脸挥击：远程武器被近战贴上来就不再射击，改抡。
+ *
+ * ★★ 在这组测试之前，「猎人被近战贴身」在数值上**毫无代价** —— 弓的
+ *   reach 是 28m，2m 也在 28m 之内，于是战士骑脸时猎人以满额白字继续开弓。
+ *   自动射击从来没有被删（M14 只去掉了那个可连点的按钮，机制归入本挥击
+ *   系统）；缺的一直是「近身之后改成挥击」这一半，这里把它钉住。
+ */
+describe('★★ 7.6 远程武器贴脸改挥击', () => {
+  let hunt: CombatEntity;
+
+  const bow = () => getWeapon(hunt.weaponId)!;
+  /** 把猎人的挥击推进一发，返回结果 */
+  const swingOnce = () => {
+    beginSwing(swings, hunt.id, 0, bow().swingInterval);
+    return tickSwings(deps(), bow().swingInterval).find((s) => s.attackerId === hunt.id);
+  };
+  /** 把目标摆到离猎人 `d` 米（中心距），并让猎人面向它 */
+  const placeFoeAt = (d: number) => {
+    foe.position = vec3(0, 0, d);
+    hunt.yaw = dirToYaw(sub(foe.position, hunt.position));
+  };
+
+  beforeEach(() => {
+    hunt = addEntity(world, createEntity(allocEntityId(world), hunter, TEAM_RED, vec3(0, 0, 0)));
+    hunt.targets.hard = foe.id;
+    stopSwing(swings, atk.id);           // 只看猎人这一发
+    expect(bow().isRanged, '猎人默认武器不是远程，本组前提不成立').toBe(true);
+  });
+
+  it('★ 远处照常开弓：满额白字，不带贴脸标记', () => {
+    placeFoeAt(15);
+    const out = swingOnce();
+    expect(out?.miss, `落空了：${out?.miss}`).toBeUndefined();
+    expect(out?.pointBlank).toBeFalsy();
+    const dmg = out?.effects?.find((e) => e.kind === 'damage');
+    expect(dmg?.kind === 'damage' ? magnitudeOf(dmg.amount, hunt) : NaN)
+      .toBeCloseTo(bow().swingPercent * 100, 6);
+  });
+
+  it('★★ 被贴脸就改挥击：伤害按比例削减，并带上贴脸标记', () => {
+    placeFoeAt(2);
+    const out = swingOnce();
+    expect(out?.miss, `落空了：${out?.miss}`).toBeUndefined();
+    expect(out?.pointBlank, '贴脸了却仍在射击').toBe(true);
+    const dmg = out?.effects?.find((e) => e.kind === 'damage');
+    expect(dmg?.kind === 'damage' ? magnitudeOf(dmg.amount, hunt) : NaN)
+      .toBeCloseTo(bow().swingPercent * 100 * COMBAT_SWING.RANGED_MELEE_RATIO, 6);
+  });
+
+  it('★★ 贴脸挥击**要求朝向** —— 转身背对就打不到（挥击就得按挥击的规矩来）', () => {
+    placeFoeAt(2);
+    hunt.yaw = dirToYaw(sub(hunt.position, foe.position));   // 背对
+    expect(swingOnce()?.miss).toBe('wrongFacing');
+  });
+
+  it('★ 远处**不**要求朝向 —— 别把远程原本的规则一起改掉', () => {
+    placeFoeAt(15);
+    hunt.yaw = dirToYaw(sub(hunt.position, foe.position));   // 背对
+    const out = swingOnce();
+    expect(out?.miss, '远程背对被误判为落空').toBeUndefined();
+    expect(out?.pointBlank).toBeFalsy();
+  });
+
+  it('近战武器不受影响：贴脸不打折、也不带标记', () => {
+    // 战士本来就是挥击，2 米是它的正常工作距离
+    foe.position = vec3(0, 0, 2);
+    atk.yaw = dirToYaw(sub(foe.position, atk.position));
+    beginSwing(swings, atk.id, 0, interval());
+    const out = tickSwings(deps(), interval()).find((s) => s.attackerId === atk.id);
+    expect(out?.pointBlank).toBeFalsy();
+    const dmg = out?.effects?.find((e) => e.kind === 'damage');
     expect(dmg?.kind === 'damage' ? magnitudeOf(dmg.amount, atk) : NaN)
       .toBeCloseTo(getWeapon(atk.weaponId)!.swingPercent * 100, 6);
   });

@@ -422,6 +422,95 @@ const skills: SkillDef[] = [
     description: '射出一枚圣光弹造成神圣伤害并获得 1 点圣能。仅权杖+圣典方案可用。',
     vfx: 'paladin_holy_bolt',
   },
+
+  /**
+   * ★ P3b 扩充：圣骑士补「群体压制 / 反手救人 / 群体减伤」。
+   *
+   *   审计结论是圣骑士的**瞬发伤害够、但团队向工具偏少**，
+   *   与 9.x「团队增益、保护与救场」的定位对不上。补的三条全部瞬发，
+   *   且都有明确的代价（自身定身 / 极长冷却 / 只保一个人）。
+   */
+  {
+    id: asSkillId('paladin.consecration'),
+    name: '奉献',
+    classId: CLASS_ID,
+    targeting: Targeting.SelfCenter,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: 8 },
+    shape: { kind: 'circle', radius: 8 },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Holy,
+    cooldown: 12,
+    triggersGcd: true,
+    cost: { resource: Resource.Mana, amount: 60 },
+    counters:
+      '**地面区域固定在施放位置**，对手走出去就完全免疫 —— 它是控场与逼位的工具，不是输出手段；8 秒里分 8 跳给出，单跳伤害很低，遇到治疗基本白打；对被昏迷或定身按在里面的目标才真正兑现价值。',
+    effects: [
+      {
+        kind: 'spawnGroundArea',
+        areaId: 'paladin.consecration',
+        radius: 8,
+        duration: 8,
+        tickInterval: 1,
+        onTick: [{ kind: 'damage', school: School.Holy, amount: { flat: 32 } }],
+      },
+    ],
+    description: '在脚下的地面注入圣光，8 秒内每秒对区域内敌人造成神圣伤害。用来控场与逼位。',
+    vfx: 'paladin_consecration',
+  },
+  {
+    id: asSkillId('paladin.lay_on_hands'),
+    name: '圣疗术',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Ally,
+    range: { min: 0, max: RANGE.MEDIUM },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Holy,
+    cooldown: 300,
+    triggersGcd: true,
+    requiresLos: true,
+    cost: { resource: Resource.Mana, amount: 0 },
+    counters:
+      '**5 分钟冷却**：一局竞技场里只可能用一次，用错时机等于没有这个技能；瞬发但仍需视线，队友被拉进柱子后就够不到；治疗量按目标最大生命的百分比给出，对手只要在读条结束后立刻接爆发依然能秒穿。',
+    effects: [{ kind: 'healPercentMaxHealth', percent: 0.6 }],
+    description: '瞬发治疗一名队友 60% 最大生命，不消耗法力。5 分钟冷却 —— 一局一次的救场键。',
+    vfx: 'paladin_lay_on_hands',
+  },
+  {
+    id: asSkillId('paladin.devotion_aura'),
+    name: '虔诚光环',
+    classId: CLASS_ID,
+    targeting: Targeting.SelfCenter,
+    targetFilter: TargetFilter.Ally,
+    range: { min: 0, max: 30 },
+    shape: { kind: 'circle', radius: 30 },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Holy,
+    cooldown: 90,
+    triggersGcd: true,
+    cost: { resource: Resource.Mana, amount: 80 },
+    counters:
+      '**减伤只有 20% 且只持续 6 秒**，抵不住一轮完整爆发，必须押在对方开手的那一瞬；90 秒冷却，押错就要空窗一分半；按施放瞬间的 30 米范围结算，之后散开的队友不会被追加覆盖。',
+    effects: [
+      {
+        kind: 'applyAura',
+        target: 'allInShape',
+        aura: {
+          id: 'paladin.devotion_aura.buff',
+          name: '虔诚光环',
+          description: '受到的所有伤害降低 20%。',
+          kind: 'buff',
+          duration: 6,
+          dispelType: DispelType.Magic,
+          modifiers: { damageTaken: 0.8 },
+        },
+      },
+    ],
+    description: '为 30 米内所有队友降低 20% 承伤，持续 6 秒。押对方开手瞬间的团队减伤。',
+    vfx: 'paladin_devotion_aura',
+  },
 ];
 
 // ── 武器方案（附录A#4：职业、攻击间隔、距离、优势、代价、改变的技能）──

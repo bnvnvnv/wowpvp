@@ -311,6 +311,141 @@ const skills: SkillDef[] = [
     description: '装填 1 秒后射出一发穿透弩箭，贯穿路径上的所有敌人，各造成 130% 武器伤害。仅重弩方案可用。',
     vfx: 'hunter_piercing_bolt',
   },
+
+  /**
+   * ★ P3b 扩充：猎人补「贴脸自救 ×2 / 持续伤害 / 逃跑」。
+   *
+   *   9.x 写明猎人的弱点是「**被近战贴身**」，而此前他在 0 米处
+   *   一个能按的键都没有 —— 脱身术进冷却后只能干等着挨打，
+   *   这不是弱点，是空白。断筋和猛禽一击补的正是这段贴脸窗口：
+   *   都要求 5 米内，够不到就用不了，弱点仍然成立。
+   */
+  {
+    id: asSkillId('hunter.wing_clip'),
+    name: '断筋',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: RANGE.MELEE },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Physical,
+    cooldown: 0,
+    triggersGcd: true,
+    requiresFacing: true,
+    requiresLos: true,
+    cost: { resource: Resource.Focus, amount: 20 },
+    counters:
+      '**必须贴到 5 米内**才能按 —— 猎人主动贴脸本身就是劣势位；减速不叠乘，只取最强的一个，已经中了震荡射击时再补断筋没有额外收益；自由祝福、消失、逃脱、死亡脚步和驱散移动限制都能摆脱（8.3 的「战斗意志」不行）。',
+    effects: [
+      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.4 } },
+      {
+        kind: 'applyAura',
+        aura: {
+          id: 'hunter.wing_clip.slow',
+          name: '断筋',
+          description: '移动速度降低 50%。',
+          kind: 'debuff',
+          duration: 4,
+          // 与震荡射击一致：减速归 Movement 类，不参与控制递减（8.2 只管硬控）
+          dispelType: DispelType.Movement,
+          modifiers: { moveSpeed: 0.5 },
+        },
+      },
+    ],
+    description: '割伤贴身敌人的腿筋，减速 50% 持续 4 秒。近战距离的脱身起手。',
+    vfx: 'hunter_wing_clip',
+  },
+  {
+    id: asSkillId('hunter.raptor_strike'),
+    name: '猛禽一击',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: RANGE.MELEE },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Physical,
+    cooldown: 6,
+    triggersGcd: true,
+    requiresFacing: true,
+    requiresLos: true,
+    cost: { resource: Resource.Focus, amount: 25 },
+    counters:
+      '5 米内才能用，**而猎人的武器伤害本就低于任何近战职业** —— 拿它对拼战士是稳输的；缴械期间不可用；6 秒冷却，填不满贴脸的整段窗口。',
+    effects: [{ kind: 'damage', school: School.Physical, amount: { weaponPercent: 1.15 } }],
+    description: '近身挥出一记重击，造成 115% 武器伤害。被贴脸时的还手手段。',
+    vfx: 'hunter_raptor_strike',
+  },
+  {
+    id: asSkillId('hunter.serpent_sting'),
+    name: '毒蛇钉刺',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: RANGE.RANGED },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Nature,
+    cooldown: 0,
+    triggersGcd: true,
+    requiresLos: true,
+    cost: { resource: Resource.Focus, amount: 15 },
+    counters:
+      '中毒减益，**德鲁伊与圣骑士都能驱掉**；15 秒里分 5 跳给出，对爆发秒杀零贡献，只在长局的消耗里划算；无冷却但每次 15 专注，反复重铸会挤掉瞄准射击。',
+    effects: [
+      {
+        kind: 'applyAura',
+        aura: {
+          id: 'hunter.serpent_sting.poison',
+          name: '毒蛇钉刺',
+          description: '中毒，每 3 秒受到自然伤害。',
+          kind: 'debuff',
+          duration: 15,
+          dispelType: DispelType.Poison,
+          periodic: {
+            interval: 3,
+            effects: [{ kind: 'damage', school: School.Nature, amount: { flat: 36 } }],
+          },
+        },
+      },
+    ],
+    description: '射出一支淬毒之箭，15 秒内持续造成自然伤害。可被驱散中毒解除。',
+    vfx: 'hunter_serpent_sting',
+  },
+  {
+    id: asSkillId('hunter.aspect_of_the_cheetah'),
+    name: '猎豹守护',
+    classId: CLASS_ID,
+    targeting: Targeting.Self,
+    targetFilter: TargetFilter.Self,
+    range: { min: 0, max: 0 },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Nature,
+    cooldown: 30,
+    triggersGcd: true,
+    cost: { resource: Resource.Focus, amount: 0 },
+    counters:
+      '**只加速度、不解控**：被定身或减速时按下去几乎没用，必须先脱开才有价值；魔法增益，驱散魔法可剥；持旗时受旗手移动加成上限（12.3，最多 +10%）截断，抢旗局里几乎白按；30 秒冷却。',
+    effects: [
+      {
+        kind: 'applyAura',
+        target: 'self',
+        aura: {
+          id: 'hunter.aspect_of_the_cheetah.buff',
+          name: '猎豹守护',
+          description: '移动速度提高 30%，持续 6 秒。',
+          kind: 'buff',
+          duration: 6,
+          dispelType: DispelType.Magic,
+          modifiers: { moveSpeed: 1.3 },
+        },
+      },
+    ],
+    description: '化入猎豹的迅捷，6 秒内移动速度提高 30%。用来拉开与近战的距离。',
+    vfx: 'hunter_aspect_of_the_cheetah',
+  },
 ];
 
 // ── 武器方案（附录A#4：职业、攻击间隔、距离、优势、代价、改变的技能）──

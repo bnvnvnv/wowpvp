@@ -77,7 +77,33 @@ export interface SwingResult {
   /** 命中时带效果，交给调用方走统一结算 */
   effects?: EffectDef[];
   miss?: SwingMiss;
+  /**
+   * 这一发是**远程武器被贴脸后改出的近战挥击**（7.6）。
+   *
+   * ⚠️ 表现层**目前还没读它**，如实记在这里：客户端的 `onSwing` 对所有白字
+   *   一律播 `playMeleeSwing()`（近战动画），所以贴脸挥击碰巧看着是对的，
+   *   而**远处开弓播的也是挥砍动画** —— 那个错早于本次改动，属于「远程
+   *   射击动画」这件还没做的事。等射击动画补上时，这个标志就是那个分叉点：
+   *   `pointBlank` 为真播挥砍，为假播射击。
+   */
+  pointBlank?: boolean;
 }
+
+/**
+ * 7.6：这一发是不是「贴脸挥击」—— 拿远程武器的人被近战贴上来了。
+ *
+ * ★ 只对远程武器成立。近战武器本来就是挥击，不存在切换。
+ */
+export const isPointBlankSwing = (
+  attacker: CombatEntity, target: CombatEntity | undefined,
+): boolean => {
+  if (!target) return false;
+  const weapon = getWeapon(attacker.weaponId);
+  if (!weapon?.isRanged) return false;
+  return inRange(
+    hitCircleOf(attacker), hitCircleOf(target), COMBAT_SWING.RANGED_MELEE_RANGE, 0,
+  );
+};
 
 /**
  * 8.1：「只能被控制、缴械、失去目标/距离/视线阻止。」
@@ -100,8 +126,13 @@ const blockedReason = (
   const reach = weapon?.reach ?? 0;
   if (!inRange(hitCircleOf(attacker), hitCircleOf(target), reach, 0)) return 'outOfRange';
 
-  // 7.6：近战要求目标在前方。远程武器不要求（只要有视线）
-  if (!weapon?.isRanged && !isFacing(attacker.position, attacker.yaw, target.position)) {
+  /**
+   * 7.6：近战要求目标在前方。远程武器不要求（只要有视线）——
+   * ★ 但**贴脸挥击也是挥击**：切成近战的那一发同样要求目标在前方，
+   *   否则「转身背对就打不到」这条近战规则会被远程武器绕过去。
+   */
+  if ((!weapon?.isRanged || isPointBlankSwing(attacker, target)) &&
+      !isFacing(attacker.position, attacker.yaw, target.position)) {
     return 'wrongFacing';
   }
   if (!hasLineOfSight(hitCircleOf(attacker), hitCircleOf(target), world.obstacles)) {
@@ -146,18 +177,25 @@ export const tickSwings = (deps: SwingDeps, now: number): SwingResult[] => {
       continue;
     }
 
+    /**
+     * 7.6 贴脸挥击：远程武器被近战贴上来就不再射击，改抡。
+     * 详见 `COMBAT_SWING.RANGED_MELEE_RANGE` 的注释。
+     */
+    const pointBlank = isPointBlankSwing(attacker, target);
+
     const effects: EffectDef[] = [
       {
         kind: 'damage',
         school: School.Physical,
         /**
-         * ★ weaponPercent **必须是 1**：`magnitudeOf` 的基准值已经是
-         *   `swingPercent × 100`（「一次挥击」的定义就在那里），这里再传
-         *   swingPercent 会把它**平方** —— M14 配平时抓到：匕首（0.6）白字
-         *   被压到 36/击 而重剑（1.4）膨胀到 196/击，快慢武器的取舍
+         * ★ 正常一发的 weaponPercent **必须是 1**：`magnitudeOf` 的基准值
+         *   已经是 `swingPercent × 100`（「一次挥击」的定义就在那里），这里
+         *   再传 swingPercent 会把它**平方** —— M14 配平时抓到：匕首（0.6）
+         *   白字被压到 36/击 而重剑（1.4）膨胀到 196/击，快慢武器的取舍
          *   （验收 #31）被二次幂扭曲。一次挥击 = 100% 武器伤害，就这么多。
+         * ★ 贴脸挥击是这个基准的一个**比例**，同理不能再乘 swingPercent。
          */
-        amount: { weaponPercent: 1 },
+        amount: { weaponPercent: pointBlank ? COMBAT_SWING.RANGED_MELEE_RATIO : 1 },
       },
     ];
 
@@ -180,7 +218,10 @@ export const tickSwings = (deps: SwingDeps, now: number): SwingResult[] => {
       });
     }
 
-    out.push({ attackerId: attacker.id, targetId: target!.id, effects });
+    out.push({
+      attackerId: attacker.id, targetId: target!.id, effects,
+      ...(pointBlank ? { pointBlank: true } : {}),
+    });
   }
 
   return out;

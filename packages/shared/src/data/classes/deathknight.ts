@@ -394,6 +394,125 @@ const skills: SkillDef[] = [
     description: '骨盾上的符文亮起，6 秒内受到伤害降低 20% 并吸收 120 点伤害。仅骨盾方案可用。',
     vfx: 'deathknight_rune_ward',
   },
+
+  /**
+   * ★ P3b 扩充：死骑补「持续伤害 / 反治疗 / 群体减速」。
+   *
+   *   审计里死骑几乎全是单体瞬发点伤，缺**压制手段**。
+   *   补的三条都不提高爆发上限：疫病是慢性伤害，
+   *   凋零缠绕是治疗压制，冰霜之环是控场 —— 分别对应
+   *   9.x「持续压制、反治疗、限制走位」的定位。
+   */
+  {
+    id: asSkillId('deathknight.plague_strike'),
+    name: '暗影疫病',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: RANGE.MELEE },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Shadow,
+    cooldown: 0,
+    triggersGcd: true,
+    requiresFacing: true,
+    requiresLos: true,
+    cost: { resource: Resource.RunicPower, amount: 20 },
+    counters:
+      '疾病类减益，**牧师、圣骑士、德鲁伊都能驱掉**，对手带治疗时它是最先被清的一个；15 秒里分 5 跳给出，对爆发秒杀零贡献；要贴脸且面向，缴械期间不可用。',
+    effects: [
+      { kind: 'damage', school: School.Shadow, amount: { weaponPercent: 0.5 } },
+      {
+        kind: 'applyAura',
+        aura: {
+          id: 'deathknight.plague_strike.disease',
+          name: '暗影疫病',
+          description: '被疫病侵蚀，每 3 秒受到暗影伤害。',
+          kind: 'debuff',
+          duration: 15,
+          dispelType: DispelType.Disease,
+          periodic: {
+            interval: 3,
+            effects: [{ kind: 'damage', school: School.Shadow, amount: { flat: 38 } }],
+          },
+        },
+      },
+    ],
+    description: '以疫病侵蚀目标，立即造成伤害并在 15 秒内持续掉血。可被驱散疾病解除。',
+    vfx: 'deathknight_plague_strike',
+  },
+  {
+    id: asSkillId('deathknight.necrotic_strike'),
+    name: '凋零缠绕',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: RANGE.MELEE },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Shadow,
+    cooldown: 15,
+    triggersGcd: true,
+    requiresFacing: true,
+    requiresLos: true,
+    cost: { resource: Resource.RunicPower, amount: 30 },
+    counters:
+      '**本身伤害很低** —— 它的价值全在那个「受到治疗降低 50%」的减益上，对手没有治疗时几乎是空按一下；魔法减益，驱散魔法可解；8 秒窗口要队友同时跟上输出才兑现，单打独斗时收益有限。',
+    effects: [
+      { kind: 'damage', school: School.Shadow, amount: { weaponPercent: 0.6 } },
+      {
+        kind: 'applyAura',
+        aura: {
+          id: 'deathknight.necrotic_strike.wound',
+          name: '凋零缠绕',
+          description: '受到的治疗降低 50%。',
+          kind: 'debuff',
+          duration: 8,
+          dispelType: DispelType.Magic,
+          modifiers: { healingTaken: 0.5 },
+        },
+      },
+    ],
+    description: '腐蚀目标的伤口，8 秒内其受到的治疗降低 50%。开团前先手切掉对方奶量。',
+    vfx: 'deathknight_necrotic_strike',
+  },
+  {
+    id: asSkillId('deathknight.howling_blast'),
+    name: '凛冬号叫',
+    classId: CLASS_ID,
+    targeting: Targeting.SelfCenter,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: 10 },
+    shape: { kind: 'circle', radius: 10, maxTargets: 5 },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Frost,
+    cooldown: 8,
+    triggersGcd: true,
+    cost: { resource: Resource.RunicPower, amount: 25 },
+    counters:
+      '以自身为中心 10 米，**远程职业站在圈外完全不受影响** —— 想覆盖到他们就得先贴上去；单体伤害低于寒冰打击，只在多人重叠时划算；减速不叠乘（与寒冰锁链取最强的一个），自由祝福、消失、逃脱等驱散移动限制的手段都能摆脱。',
+    effects: [
+      { kind: 'damage', school: School.Frost, amount: { flat: 105 } },
+      {
+        kind: 'applyAura',
+        target: 'allInShape',
+        aura: {
+          id: 'deathknight.howling_blast.chill',
+          name: '凛冬',
+          description: '移动速度降低 40%。',
+          kind: 'debuff',
+          duration: 5,
+          // 与本职业的寒冰锁链同类：死骑的减速统一归 Movement，
+          // 让「驱散移动限制」这一手对死骑始终有效（法师的霜系减速走 Magic，
+          // 两边各自内部一致，玩家的心智模型才不会错乱）
+          dispelType: DispelType.Movement,
+          modifiers: { moveSpeed: 0.6 },
+        },
+      },
+    ],
+    description: '掀起一阵刺骨寒风，对 10 米内最多 5 名敌人造成冰霜伤害并减速 40%，持续 5 秒。',
+    vfx: 'deathknight_howling_blast',
+  },
 ];
 
 // ── 武器方案（附录A#4：职业、攻击间隔、距离、优势、代价、改变的技能）──

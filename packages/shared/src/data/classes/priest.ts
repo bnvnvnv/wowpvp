@@ -342,6 +342,87 @@ const skills: SkillDef[] = [
     description: '瞬发暗影冲击，造成中等暗影伤害。仅魔杖+圣物方案可用。',
     vfx: 'priest_mind_spike',
   },
+  /**
+   * ★ P3b 扩充（技能审计：牧师 27% 的技能在对抗中难放出，**瞬发输出只有
+   *   精神穿刺**，而它还是武器方案专属）。三个新键都**瞬发**，让牧师在
+   *   被压制、读条全被打断时仍有事可做 —— 但都不解决他「被贴身脆弱」
+   *   的弱点（9.x），那是他该有的代价。
+   */
+  {
+    id: asSkillId('priest.shadow_word_pain'),
+    name: '暗言术·痛',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: RANGE.RANGED },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Shadow,
+    cooldown: 0,
+    triggersGcd: true,
+    requiresLos: true,
+    cost: { resource: Resource.Mana, amount: 30 },
+    counters:
+      '持续伤害属于魔法减益，敌方驱散魔法一次就整段抹掉（8.4）；伤害分 6 跳给出，对爆发秒杀毫无帮助；暗影学派被锁或沉默期间不可用；不造成任何控制，阻止不了近战贴身。',
+    effects: [
+      {
+        kind: 'applyAura',
+        aura: {
+          id: 'priest.shadow_word_pain.dot',
+          name: '暗言术·痛',
+          description: '持续受到暗影伤害。',
+          kind: 'debuff',
+          duration: 12,
+          dispelType: DispelType.Magic,
+          periodic: {
+            interval: 2,
+            effects: [{ kind: 'damage', school: School.Shadow, amount: { flat: 45 } }],
+          },
+        },
+      },
+    ],
+    description: '瞬发施加暗影持续伤害，12 秒内每 2 秒造成一次伤害。可在移动中使用。',
+    vfx: 'priest_shadow_word_pain',
+  },
+  {
+    id: asSkillId('priest.mind_blast'),
+    name: '心灵爆破',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: RANGE.RANGED },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Shadow,
+    cooldown: 7,
+    triggersGcd: true,
+    requiresLos: true,
+    cost: { resource: Resource.Mana, amount: 50 },
+    counters:
+      '7 秒冷却决定它只是节奏键而不是爆发；暗影学派锁定与沉默都能封住（7.3）；纯伤害没有任何控制，被近战贴上时它救不了自己。',
+    effects: [{ kind: 'damage', school: School.Shadow, amount: { flat: 200 } }],
+    description: '瞬发一记精神冲击造成暗影伤害。读条被压制时的主要输出手段。',
+    vfx: 'priest_mind_blast',
+  },
+  {
+    id: asSkillId('priest.circle_of_healing'),
+    name: '治愈之环',
+    classId: CLASS_ID,
+    targeting: Targeting.SelfCenter,
+    targetFilter: TargetFilter.Ally,
+    range: { min: 0, max: 12 },
+    shape: { kind: 'circle', radius: 12 },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Holy,
+    cooldown: 12,
+    triggersGcd: true,
+    cost: { resource: Resource.Mana, amount: 85 },
+    counters:
+      '只覆盖自己周围 12 米：队友散开时可能一个都奶不到，而抱团又正好吃对手的范围技能；治疗量受降低治疗减益与竞技场战斗抑制（8.5）压制；12 秒冷却，无法应对连续爆发；神圣学派锁定期间不可用。',
+    effects: [{ kind: 'heal', amount: { flat: 180 } }],
+    description: '瞬发治疗周围 12 米内的所有友方单位。被打断压制时唯一还能用的群体治疗。',
+    vfx: 'priest_circle_of_healing',
+  },
 ];
 
 // ── 武器方案（附录A#4：职业、攻击间隔、距离、优势、代价、改变的技能）──

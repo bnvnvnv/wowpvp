@@ -144,6 +144,8 @@ export class BotDriver {
         // P1b 走位感知：脚下的敌方区域与待落的陨星（只读）
         ground: m.ground,
         projectiles: m.projectiles,
+        // P3b：让它看得见对手身上已经在跳的 DoT，别每个 GCD 重挂（只读）
+        auras: m.auras,
       });
 
       /**

@@ -431,6 +431,123 @@ const skills: SkillDef[] = [
     description: '半径 10 米内的友方移动速度提高 25%，持续 5 秒。持旗者自身最多获得 10%（12.3 旗手移动加成上限）。',
     vfx: 'druid_stampeding_roar',
   },
+
+  /**
+   * ★ P3b 扩充：德鲁伊补「无冷却填充 / 瞬发奥术 / 减伤增益」。
+   *
+   *   审计里德鲁伊的窟窿是**人形态下几乎只有月火术能按**，
+   *   一进战斗就只能切形态。愤怒是那个可以一直按的填充键。
+   *
+   *   ⚠️ 星涌术刻意用**奥术**而不是自然学派：打断会连带锁死一个学派
+   *   3 秒（7.2），德鲁伊其余伤害法术全是自然系，被自然锁住时它是唯一
+   *   还能按的伤害键 —— 这是德鲁伊对抗打断的唯一结构性手段，不能让
+   *   它们同属一系。（它必须瞬发，理由见技能内注释。）
+   */
+  {
+    id: asSkillId('druid.wrath'),
+    name: '愤怒',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: RANGE.RANGED },
+    shape: { kind: 'single' },
+    /**
+     * 读条 1.4s 而不是 9.x 的 1.5s —— 对齐本仓库既有的「填充核弹」档位：
+     * 法师霜矢 1.4、牧师圣光击 1.2、圣骑圣光弹 1.0，全部落在 1.0~1.4；
+     * 1.5s 那一档在本花名册里只给治疗和变形这类**功能性**长咒。
+     * 差 0.1 秒看着像凑数，但 `skill-audit` 正好卡在 1.5s：留在 1.5
+     * 会让德鲁伊成为唯一一个填充键被判「难放出」的施法职业 —— 那不是
+     * 职业特色，是漏调的数值。
+     */
+    cast: { kind: CastKind.Cast, time: 1.4, movable: false, interruptible: true },
+    school: School.Nature,
+    cooldown: 0,
+    triggersGcd: true,
+    requiresLos: true,
+    requires: [{ kind: 'notInForm', forms: ['bear', 'cat'] }],
+    cost: { resource: Resource.Mana, amount: 30 },
+    counters:
+      '**1.4 秒读条且必须原地**：被打断会连带锁死自然学派 3 秒，纠缠根须和治疗之触一起封掉（7.2）；沉默、硬控、击退和自己移动都会中止（7.3）；熊/猎豹形态下不可用，切形态就等于放弃它。',
+    effects: [{ kind: 'damage', school: School.Nature, amount: { flat: 100 } }],
+    description: '召唤自然之力打击目标，造成自然伤害。无冷却，人形态下的主力填充。',
+    vfx: 'druid_wrath',
+  },
+  {
+    id: asSkillId('druid.starsurge'),
+    name: '星涌术',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: RANGE.RANGED },
+    shape: { kind: 'single' },
+    /**
+     * ★ 这一格原本是 2.5 秒读条的「星火术」，推翻重做成瞬发的星涌术。
+     *
+     *   原因有二，而且第二条才是真正的理由：
+     *   1. 2.5s 是全花名册最长的读条，竞技场里对着清醒的对手放不出来 ——
+     *      三个新技能里搭进去一个死键，等于只补了两个。
+     *   2. 奥术学派的意义**恰恰要求它瞬发**：打断会连带锁死一个学派 3 秒
+     *      （7.2），德鲁伊除此之外全是自然系（月火/愤怒/根须/治疗之触/回春），
+     *      被自然锁住时这是唯一还能按的伤害键。可如果它自己是 2.5s 读条，
+     *      「锁不住我」就只是纸面上的 —— 刚被打断、正在被贴脸的那三秒，
+     *      谁也站不住 2.5 秒。瞬发才让这个结构性解法真的成立。
+     */
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Arcane,
+    cooldown: 10,
+    triggersGcd: true,
+    requiresLos: true,
+    requires: [{ kind: 'notInForm', forms: ['bear', 'cat'] }],
+    cost: { resource: Resource.Mana, amount: 45 },
+    counters:
+      '**10 秒冷却**，是月火术（6 秒）之外的第二个瞬发键而不是主力输出，单发伤害低于月火术首击；耗蓝 45 偏高，长局里连按会见底；熊/猎豹形态下不可用，切形态就等于放弃它。',
+    effects: [{ kind: 'damage', school: School.Arcane, amount: { flat: 175 } }],
+    description: '牵引星辰之力瞬间轰击目标，造成奥术伤害。自然学派被打断锁死时，这是唯一还能按出去的伤害技能。',
+    vfx: 'druid_starsurge',
+  },
+  {
+    id: asSkillId('druid.thorns'),
+    name: '荆棘术',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Ally,
+    range: { min: 0, max: RANGE.MEDIUM },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Nature,
+    cooldown: 25,
+    triggersGcd: true,
+    requiresLos: true,
+    cost: { resource: Resource.Mana, amount: 40 },
+    counters:
+      '**减伤只有 8%**，撑不过一轮爆发，它是消耗战里的省蓝手段而不是保命键；魔法增益，驱散魔法一下就剥掉；25 秒冷却下几乎可以常驻，因此对手往往优先驱散别的东西。',
+    /**
+     * ⚠️ 9.x 的荆棘术是「被击中时反伤攻击者」，但**规则引擎没有反伤机制**
+     *   （`AuraDef` 只有 modifiers / periodic / absorb，没有 onDamaged 回调）。
+     *
+     *   两条路：为它新加一套反伤管线，或者换一个引擎已支持的表达。
+     *   这里选后者 —— 做成小幅减伤增益，**并且技能描述与光环描述都
+     *   照实写「承伤降低」**。绝不能让数据描述写着反伤、实际什么都不做：
+     *   那就是本仓库反复吃过的亏（规格写了，没人实现，UI 却照着念）。
+     *   真要反伤，等引擎补 onDamaged 钩子时再回来改这一条。
+     */
+    effects: [
+      {
+        kind: 'applyAura',
+        aura: {
+          id: 'druid.thorns.buff',
+          name: '荆棘',
+          description: '树皮护体，受到的伤害降低 8%。',
+          kind: 'buff',
+          duration: 20,
+          dispelType: DispelType.Magic,
+          modifiers: { damageTaken: 0.92 },
+        },
+      },
+    ],
+    description: '为目标覆上尖刺护甲，20 秒内受到的伤害降低 8%。可被驱散魔法剥掉。',
+    vfx: 'druid_thorns',
+  },
 ];
 
 // ── 武器方案（附录A#4：职业、攻击间隔、距离、优势、代价、改变的技能）──

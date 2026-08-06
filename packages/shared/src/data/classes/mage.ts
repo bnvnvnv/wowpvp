@@ -336,6 +336,128 @@ const skills: SkillDef[] = [
     description: '在指定地面召唤陨石，1.5 秒后落地造成高额范围火焰伤害。落点与倒计时全程可见。',
     vfx: 'mage_meteor',
   },
+  /**
+   * ★★ **P3b 技能扩充：瞬发填充键**（技能审计 `pnpm skill-audit` 的头号缺口）。
+   *
+   *   审计发现法师 36% 的技能在对抗中「难放出」，而**瞬发输出只有烈焰爆
+   *   （8 秒冷却）** —— 空窗期只能读 1.4 秒的霜矢，被近战贴上就完全打不出
+   *   东西。冰枪是这个空窗的答案：**低伤害、无冷却、可移动**，边跑边点，
+   *   是 PVP 里真正一直在按的那个键。
+   *
+   * ★ 伤害刻意低（霜矢的 ~45%）：它换来的是「永远放得出」，不是数值。
+   *   规格 9.x 的法师弱点「生命低、被贴身压力大」因此没有被削弱 ——
+   *   贴脸时他能打出的总量仍远低于站桩读条。
+   */
+  {
+    id: asSkillId('mage.ice_lance'),
+    name: '冰枪术',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    // ★ 与霜矢同为 32 米（RANGED_LONG）：填充键的射程不该短于主力输出，
+    //   否则「边跑边打」在被拉开时又断了
+    range: { min: 0, max: RANGE.RANGED_LONG },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Frost,
+    cooldown: 0,
+    triggersGcd: true,
+    requiresLos: true,
+    cost: { resource: Resource.Mana, amount: 18 },
+    counters:
+      '伤害是法师技能里最低的一档，靠 GCD 节奏叠出来 —— 对手开减伤或吸收护盾就能大幅抵消；仍是冰霜魔法，沉默与冰霜学派锁定期间照样用不出来（7.3）；没有任何控制效果，单靠它无法阻止近战贴身。',
+    effects: [{ kind: 'damage', school: School.Frost, amount: { flat: 95 } }],
+    description: '瞬发投出一柄冰枪，造成少量冰霜伤害。无冷却、可在移动中使用 —— 被追击时的主要输出手段。',
+    vfx: 'mage_ice_lance',
+  },
+  /**
+   * ★★ 群体减速（总账 X13：法师**没有任何群体减速手段**，被多个近战围住时无解）。
+   * ★ 锥形而不是自身中心圆：要求**面向**才有效（6.5），于是它不是「按了就赢」——
+   *   被两个方向夹击时只能救一边，这正是规格 9.x「被贴身压力大」该保留的代价。
+   */
+  {
+    id: asSkillId('mage.cone_of_cold'),
+    name: '冰锥术',
+    classId: CLASS_ID,
+    targeting: Targeting.Cone,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: 10 },
+    shape: { kind: 'cone', angleDeg: 90, range: 10 },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Frost,
+    cooldown: 18,
+    triggersGcd: true,
+    cost: { resource: Resource.Mana, amount: 45 },
+    counters:
+      '只覆盖面前 90 度扇形 10 米：绕到背后或从两侧夹击就只能吃到一半（5.4 锥形技能）；减速属于移动限制，自由庇佑、消失、疾行步都能摆脱，也不与其他减速叠乘（8.4）；不阻止攻击与施法，被减速的近战照样能打你；18 秒冷却，交掉后有明显空窗。',
+    effects: [
+      { kind: 'damage', school: School.Frost, amount: { flat: 120 } },
+      {
+        kind: 'applyAura',
+        aura: {
+          id: 'mage.cone_of_cold.slow',
+          name: '冰锥减速',
+          description: '移动速度降低 50%。',
+          kind: 'debuff',
+          duration: 5,
+          dispelType: DispelType.Magic,
+          modifiers: { moveSpeed: 0.5 },
+        },
+      },
+    ],
+    description: '向面前扇形喷出寒气，造成冰霜伤害并使命中的敌人移动速度降低 50%，持续 5 秒。',
+    vfx: 'mage_cone_of_cold',
+  },
+  /**
+   * ★ 火系的瞬发填充（与冰枪同一定位，但**学派不同**）—— 这是刻意的：
+   *   7.2 的学派锁定只锁一个学派，被断法锁住冰霜后仍有火系可用。
+   *   「换个学派继续输出」正是 M15 教学第 9 环教的东西，此前法师手上
+   *   只有 8 秒冷却的烈焰爆能兑现它。
+   */
+  {
+    id: asSkillId('mage.scorch'),
+    name: '灼烧',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: RANGE.MEDIUM },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Fire,
+    cooldown: 3,
+    triggersGcd: true,
+    requiresLos: true,
+    cost: { resource: Resource.Mana, amount: 22 },
+    counters:
+      '伤害低于烈焰爆，3 秒冷却决定它只能当填充；火焰学派被锁（断法命中火系技能）时不可用，此时要换冰霜键；25 米射程在法师技能里偏短，被拉开就够不到。',
+    effects: [{ kind: 'damage', school: School.Fire, amount: { flat: 110 } }],
+    description: '瞬发灼烧目标造成少量火焰伤害。冷却短、可移动 —— 冰霜学派被锁时的备用输出。',
+    vfx: 'mage_scorch',
+  },
+  /**
+   * ★ 自身中心 AOE：被围住时的最后手段。
+   *   ⚠️ 刻意**不加控制**：法师已经有霜爆新星（定身）+ 冰锥（减速），
+   *   再给一个带控制的自身中心技能会让「被贴身压力大」这条弱点名存实亡。
+   */
+  {
+    id: asSkillId('mage.arcane_explosion'),
+    name: '奥术冲击',
+    classId: CLASS_ID,
+    targeting: Targeting.SelfCenter,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: 8 },
+    shape: { kind: 'circle', radius: 8 },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Arcane,
+    cooldown: 6,
+    triggersGcd: true,
+    cost: { resource: Resource.Mana, amount: 40 },
+    counters:
+      '只有 8 米半径且以自己为中心：站远就完全无效，而法师本来就不该让人靠近；不造成任何控制，打不断近战的连招；奥术学派被锁时不可用；对单个目标的伤害低于烈焰爆，围殴时才划算。',
+    effects: [{ kind: 'damage', school: School.Arcane, amount: { flat: 130 } }],
+    description: '以自身为中心爆发奥术能量，对周围 8 米内所有敌人造成伤害。被围住时的清场手段。',
+    vfx: 'mage_arcane_explosion',
+  },
   // 武器方案授予的技能
   {
     id: asSkillId('mage.elemental_slash'),

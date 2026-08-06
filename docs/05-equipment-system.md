@@ -30,7 +30,7 @@
 
 | 方案 | 类型 | 单击 | 攻击间隔 | 距离 | 优势 | 代价 | 改变的技能 |
 |---|---|---|---|---|---|---|---|
-| **单手剑 + 盾牌**（默认） | 单手 | 72% | 1.8s | 2.8m | 防御 +12%，可格挡 | 持续伤害较低 | 获得 paladin.shield_of_the_righteous；禁用 paladin.templar_strike, paladin.holy_bolt |
+| **单手剑 + 盾牌**（默认） | 单手 | 68% | 1.8s | 2.8m | 防御 +12%，可格挡 | 持续伤害较低 | 获得 paladin.shield_of_the_righteous；禁用 paladin.templar_strike, paladin.holy_bolt |
 | 双手战锤 | 双手 | 150% | 2.5s | 3.4m | 神圣爆发和范围压力高 | 防御 -10%，无格挡 | 获得 paladin.templar_strike；禁用 paladin.shield_of_the_righteous, paladin.holy_bolt |
 | 权杖 + 圣典 | 远程 | 50% | 1.6s | 25m | 治疗 +10%，读条时间 -15% | 物理防御 -12%，近战输出低 | 获得 paladin.holy_bolt；禁用 paladin.crusader_strike, paladin.shield_of_the_righteous, paladin.templar_strike |
 
@@ -46,8 +46,8 @@
 
 | 方案 | 类型 | 单击 | 攻击间隔 | 距离 | 优势 | 代价 | 改变的技能 |
 |---|---|---|---|---|---|---|---|
-| **双匕首**（默认） | 双持 | 25% | 0.7s | 2.4m | 背后爆发最高，能量循环快 | 距离最短，正面弱 | 禁用 rogue.blade_flurry, rogue.riposte；rogue.backstab: damageMultiplier=1.15；rogue.poisoned_blade: damageMultiplier=1.15 |
-| 双剑 | 双持 | 32% | 0.9s | 2.8m | 正面持续伤害稳定 | 背后加成降低，攻速慢 | 获得 rogue.blade_flurry；禁用 rogue.riposte；rogue.backstab: damageMultiplier=0.85 |
+| **双匕首**（默认） | 双持 | 45% | 0.7s | 2.4m | 背后爆发最高，能量循环快 | 距离最短，正面弱 | 禁用 rogue.blade_flurry, rogue.riposte；rogue.backstab: damageMultiplier=1.15；rogue.poisoned_blade: damageMultiplier=1.15 |
+| 双剑 | 双持 | 56% | 0.9s | 2.8m | 正面持续伤害稳定 | 背后加成降低，攻速慢 | 获得 rogue.blade_flurry；禁用 rogue.riposte；rogue.backstab: damageMultiplier=0.85 |
 | 匕首 + 格挡短刃 | 单手 | 29% | 0.85s | 2.5m | 招架 +15%，反击稳定 | 爆发 -15% | 获得 rogue.riposte；禁用 rogue.blade_flurry；rogue.kidney_shot: damageMultiplier=0.7；rogue.eviscerate: damageMultiplier=0.85；rogue.backstab: damageMultiplier=0.85 |
 
 ### 猎人

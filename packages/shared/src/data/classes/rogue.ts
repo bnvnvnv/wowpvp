@@ -408,6 +408,121 @@ const skills: SkillDef[] = [
     description: '成功招架后可用，反手刺出造成 100% 武器伤害并获得 1 个连击点。仅匕首 + 格挡短刃方案可用。',
     vfx: 'rogue_riposte',
   },
+
+  /**
+   * ★ P3b 扩充：盗贼补「先手控制 / 持续伤害 / 脱身控制」三条。
+   *
+   *   ⚠️ 刻意**不加**新的减伤或位移：9.x 的弱点「正面承伤低、被发现后
+   *   容错有限」是这个职业的定义性代价，补进去就等于抹掉他的短板。
+   *   补的三条全部瞄准审计里的缺口 —— 全瞬发、全在爆发窗口内可用。
+   */
+  {
+    id: asSkillId('rogue.cheap_shot'),
+    name: '偷袭',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: RANGE.DAGGER },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Physical,
+    cooldown: 20,
+    triggersGcd: true,
+    requiresFacing: true,
+    requiresLos: true,
+    /**
+     * ★ 用 `outOfCombat` 表达「潜行先手窗口」，而**不是**新增一个
+     *   `stealthed` 条件 —— `ConditionDef` 里没有它，新增一个 kind
+     *   就必须同步改 `validateCast()` 的判定分支，而漏改的后果是
+     *   **条件恒真**（静默失效，本仓库反复踩过的坑：规则写对了没人调）。
+     *   脱战 4 秒本就是进潜行的前提（与 `rogue.stealth` 同一条件），
+     *   语义等价且立刻生效。
+     */
+    requires: [{ kind: 'outOfCombat', seconds: 4 }],
+    cost: { resource: Resource.Energy, amount: 40 },
+    counters:
+      '**要求脱战 4 秒**（与潜行同一前提）：团战里基本按不出来，它是开场与脱战后的先手键；受昏迷递减链（100%→50%→25%→免疫，8.2），接在肾击后面会大幅缩短；「战斗意志」可直接解除（8.3）；2.4 米，被减速或击退就够不到。',
+    effects: [
+      { kind: 'stun', duration: 2 },
+      { kind: 'gainResource', resource: Resource.ComboPoints, amount: 2 },
+    ],
+    description: '偷袭目标，昏迷 2 秒并获得 2 个连击点。要求脱战 4 秒 —— 开场与脱战后的先手键。',
+    vfx: 'rogue_cheap_shot',
+  },
+  /**
+   * ⚠️ **`pnpm balance` 里盗贼因为这个技能从 21.4% 掉到 0.0%，但数值不动。**
+   *
+   *   P3b 精确定位过：把这里的 25 能量改成 0，盗贼**分毫不差**地回到 21.4%，
+   *   极差从 90.5pp 回到 73.8pp —— 代价就是这 25 点能量，不是伤害配错。
+   *
+   *   为什么不因此调低它：基线里的盗贼是个**残废盗贼**。bot 不会用连击点
+   *   终结技（`botController.ts` 的 `totalDamageOf` 里写着为什么：两版计入
+   *   都让盗贼直落 0% 且原因未定位，按纪律回滚，连击点至今是装饰）。
+   *   一个只会背刺的盗贼本来就在能量线上紧绷，再分走 25 点当然崩 ——
+   *   真人拿这 25 点换 6 跳流血是划算的，他后面还有终结技可接。
+   *
+   *   照胜率把它调到 0 就是 `balance-report` 结尾那句警告里说的
+   *   「照着胜率直接拉平」：修的是 bot 的残疾，赔进去的是技能的设计。
+   *   正账记在 B1 余账（让 bot 会用连击点），不是记在这里。
+   */
+  {
+    id: asSkillId('rogue.rupture'),
+    name: '割裂',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: RANGE.DAGGER },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Physical,
+    cooldown: 0,
+    triggersGcd: true,
+    requiresFacing: true,
+    requiresLos: true,
+    cost: { resource: Resource.Energy, amount: 25 },
+    counters:
+      '流血是**物理**减益，驱散魔法移除不掉 —— 代价是它也吃不到任何魔法增伤；6 跳给完 12 秒，对爆发秒杀毫无贡献，目标被治疗起来就白打；缴械期间不可用；要贴身 2.4 米且面向目标。',
+    effects: [
+      {
+        kind: 'applyAura',
+        aura: {
+          id: 'rogue.rupture.bleed',
+          name: '割裂',
+          description: '持续流血，每 2 秒受到物理伤害。',
+          kind: 'debuff',
+          duration: 12,
+          // 流血不属于魔法/诅咒/中毒/疾病任何一类 —— 谁也驱不掉，这是它的全部价值
+          dispelType: DispelType.None,
+          periodic: {
+            interval: 2,
+            effects: [{ kind: 'damage', school: School.Physical, amount: { flat: 42 } }],
+          },
+        },
+      },
+    ],
+    description: '撕裂目标，12 秒内每 2 秒造成物理流血伤害。物理减益，驱散不掉。',
+    vfx: 'rogue_rupture',
+  },
+  {
+    id: asSkillId('rogue.blind'),
+    name: '致盲',
+    classId: CLASS_ID,
+    targeting: Targeting.Direct,
+    targetFilter: TargetFilter.Enemy,
+    range: { min: 0, max: 10 },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Physical,
+    cooldown: 45,
+    triggersGcd: true,
+    requiresLos: true,
+    cost: { resource: Resource.Energy, amount: 30 },
+    counters:
+      '走「迷惑」递减链（8.2），与变形术、寒霜陷阱**共用一条链** —— 队伍里控制重复时会被砍到不足 1 秒；**受到任意伤害立即解除**，队友的持续伤害经常自己把它拆掉；「战斗意志」可解（8.3）；45 秒冷却是盗贼最贵的一个键。',
+    effects: [{ kind: 'incapacitate', duration: 4, breakDamage: 1 }],
+    description: '致盲目标 4 秒，期间无法行动，受到任何伤害立即解除。用来脱身或掐断对手的爆发。',
+    vfx: 'rogue_blind',
+  },
 ];
 
 // ── 武器方案（附录A#4：职业、攻击间隔、距离、优势、代价、改变的技能）──

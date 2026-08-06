@@ -31,6 +31,10 @@ export const SKILL_ICON_FILES: Readonly<Record<string, string>> = {
   'warrior.shield_slam': 'warrior/shield_slam',
   'warrior.cleave': 'warrior/cleave',
   'warrior.combo_storm': 'warrior/whirlwind', // ◆ 武器授予技：连续旋斩
+  // P3b 扩充：怒气倾泻口、抗法爆窗口、打断集火的群体恐惧
+  'warrior.heroic_strike': 'warrior/heroic_strike',
+  'warrior.spell_reflection': 'warrior/iron_resolve', // ◆ 硬守化解 —— 承伤锐减
+  'warrior.intimidating_shout': 'warrior/intimidating_shout',
 
   // ── 圣骑士 ────────────────────────────────────────────────────
   'paladin.crusader_strike': 'paladin/seal_of_righteousness', // ◆ 圣印蓄力的武器击
@@ -46,6 +50,11 @@ export const SKILL_ICON_FILES: Readonly<Record<string, string>> = {
   'paladin.shield_of_the_righteous': 'warrior/shield_slam', // ◆ 盾面撞击（跨职业复用）
   'paladin.templar_strike': 'warrior/heroic_strike', // ◆ 双手武器高举下劈
   'paladin.holy_bolt': 'paladin/exorcism', // ◆ 圣光轰击
+  // P3b 扩充：控场地面区域、一局一次的救场、押爆发的团队减伤
+  'paladin.consecration': 'paladin/consecration',
+  'paladin.lay_on_hands': 'paladin/lay_on_hands',
+  // ◆ 光环同族 —— `paladin/devotion_aura` 已被 blessing_of_protection 占用（同职业不得重复）
+  'paladin.devotion_aura': 'paladin/retribution_aura',
 
   // ── 死亡骑士（上游无此职业目录，按主题从邻近职业取）──────────
   'deathknight.obliterate': 'warrior/execute', // ◆ 处决式重斩
@@ -59,6 +68,10 @@ export const SKILL_ICON_FILES: Readonly<Record<string, string>> = {
   'deathknight.winter_domain': 'mage/rings_of_frost', // ◆ 以自身为心的霜环
   'deathknight.frost_strike_fast': 'mage/ice_lance', // ◆ 快速冰刺
   'deathknight.rune_ward': 'mage/rune_of_power', // ◆ 符文护体
+  // P3b 扩充：疫病持续伤害、治疗压制、群体减速
+  'deathknight.plague_strike': 'warlock/corruption', // ◆ 暗影腐蚀持续侵蚀
+  'deathknight.necrotic_strike': 'warlock/curse_of_agony', // ◆ 缠身不散的痛苦
+  'deathknight.howling_blast': 'mage/glacial_front', // ◆ 扑面推开的冰霜锋面
 
   // ── 盗贼 ──────────────────────────────────────────────────────
   'rogue.stealth': 'rogue/stealth',
@@ -73,6 +86,12 @@ export const SKILL_ICON_FILES: Readonly<Record<string, string>> = {
   'rogue.vanish': 'rogue/vanish',
   'rogue.blade_flurry': 'rogue/slice_and_dice', // ◆ 连环挥舞
   'rogue.riposte': 'rogue/sinister_strike', // ◆ 招架后的还刺
+  // P3b 扩充：脱战先手控制、物理流血、受伤即解的脱身控制
+  'rogue.cheap_shot': 'rogue/cheap_shot',
+  'rogue.rupture': 'rogue/rupture',
+  // ◆ 制服目标使其无法行动 —— 与致盲同为「受伤即解」的失能，
+  //   `rogue/blind` 已被 smoke_bomb 占用（同职业不得重复）
+  'rogue.blind': 'rogue/sap',
 
   // ── 猎人 ──────────────────────────────────────────────────────
   // hunter.auto_shot 已于 M14 删除 —— 自动射击回归 7.6 挥击系统，不再是按钮技能
@@ -86,6 +105,12 @@ export const SKILL_ICON_FILES: Readonly<Record<string, string>> = {
   'hunter.exhilaration': 'warrior/second_wind', // ◆ 回气自愈
   'hunter.aspect_of_the_turtle': 'warrior/iron_resolve', // ◆ 硬守化解
   'hunter.piercing_bolt': 'hunter/mongoose_bite', // ◆ 握持重矢 —— 武器授予技
+  // P3b 扩充：补上「被贴脸时无键可按」的空白 + 持续伤害 + 逃跑
+  'hunter.wing_clip': 'hunter/wing_clip',
+  'hunter.raptor_strike': 'hunter/raptor_strike',
+  // ◆ 淬毒之矢 —— `hunter/serpent_sting` 已被 counter_shot 占用（同职业不得重复）
+  'hunter.serpent_sting': 'rogue/instant_poison',
+  'hunter.aspect_of_the_cheetah': 'hunter/aspect_of_the_cheetah',
 
   // ── 法师 ──────────────────────────────────────────────────────
   'mage.frostbolt': 'mage/frostbolt',
@@ -99,6 +124,11 @@ export const SKILL_ICON_FILES: Readonly<Record<string, string>> = {
   'mage.blizzard': 'mage/blizzard',
   'mage.meteor': 'mage/meteor',
   'mage.elemental_slash': 'mage/arcane_surge', // ◆ 近身的奥能爆发 —— 武器授予技
+  // P3b 扩充：瞬发填充与群体减速（技能审计的头号缺口）
+  'mage.ice_lance': 'mage/ice_lance',
+  'mage.cone_of_cold': 'mage/flurry', // ◆ 扑面而来的碎冰 —— 锥形寒气
+  'mage.scorch': 'mage/scorch',
+  'mage.arcane_explosion': 'mage/arcane_explosion',
 
   // ── 牧师 ──────────────────────────────────────────────────────
   'priest.smite': 'priest/smite',
@@ -112,6 +142,11 @@ export const SKILL_ICON_FILES: Readonly<Record<string, string>> = {
   'priest.pain_suppression': 'mage/warded', // ◆ 结晶护盾 —— 承伤锐减
   'priest.mass_dispel': 'mage/collective_reversal', // ◆ 群体性的逆转法阵
   'priest.mind_spike': 'priest/mind_blast', // ◆ 精神轰击
+  // P3b 扩充：暗影持续伤害、瞬发爆发、群体治疗
+  'priest.shadow_word_pain': 'priest/shadow_word_pain',
+  // ◆ 一发暗影爆冲 —— `priest/mind_blast` 已被 mind_spike 占用（同职业不得重复）
+  'priest.mind_blast': 'warlock/shadow_bolt',
+  'priest.circle_of_healing': 'priest/lesser_heal', // ◆ 铺开的柔和治疗光
 
   // ── 德鲁伊 ────────────────────────────────────────────────────
   'druid.moonfire': 'druid/moonfire',
@@ -125,6 +160,12 @@ export const SKILL_ICON_FILES: Readonly<Record<string, string>> = {
   'druid.cat_form': 'druid/cat_form',
   'druid.wild_charge': 'druid/bear_charge', // ◆ 野性冲锋
   'druid.stampeding_roar': 'druid/demoralizing_roar', // ◆ 震场怒吼
+  // P3b 扩充：人形态下终于有了能一直按的填充键 + 控住后的重击 + 减伤
+  'druid.wrath': 'druid/wrath',
+  // ◆ 上游没有 starsurge 图标，沿用 starfire 的星辰爆发图 —— 同为「牵引星力」，
+  //   且原先占用它的星火术已被本技能取代，不构成同职业重复
+  'druid.starsurge': 'druid/starfire',
+  'druid.thorns': 'druid/thorns',
 };
 
 /** 技能图标 URL；没有映射时返回 undefined（回落程序化 SVG） */

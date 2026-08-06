@@ -98,18 +98,35 @@ console.log('\n── §1 素材许可与登记（附录A#5 / 验收 #51）─�
 }
 
 // ═══ §2 技能图标映射（15.2 / 17.2）════════════════════════════
-// ★ 90：M14 删掉了猎人「自动射击」按钮技能（91 → 90，机制归 7.6 挥击系统，
-//   见 PROGRESS M14 章节结构性 bug #1）—— 本期望值当时漏改，M15 回归补上
-console.log('\n── §2 技能图标：90 个技能全覆盖，无断链 ──');
+/**
+ * ★ 期望条数**从职业数据里数出来**，不再写死。
+ *
+ *   这个魔数过期过两次：M14 删掉猎人「自动射击」按钮技能（91→90）时漏改，
+ *   M15 回归才补上；P3b 给八职业补了 22 个技能，它又红了一次 —— 而两次
+ *   红灯都与「图标有没有断链」无关，纯粹是常量没跟上。写死的期望值在一个
+ *   还在加技能的仓库里，只会周期性地制造假红灯。
+ *
+ * ⚠️ 分工：「每个技能都有图标行」「同职业不重图标」由
+ *   `skillIconMap.test.ts` 用**真 import** 严格覆盖（那里才拿得到 SkillId
+ *   类型）。本脚本独有的价值是**图标文件在不在磁盘上** —— 单测碰不到
+ *   文件系统，断链只有这里能发现。
+ */
+console.log('\n── §2 技能图标：全职业技能全覆盖，无断链 ──');
 {
+  const CLASS_DIR = join(REPO, 'packages/shared/src/data/classes');
+  const expected = readdirSync(CLASS_DIR)
+    .filter((f) => f.endsWith('.ts') && !f.includes('.test.'))
+    .reduce((n, f) => n + [...readFileSync(join(CLASS_DIR, f), 'utf8')
+      .matchAll(/id:\s*asSkillId\('[a-z]+\.[a-z_0-9]+'\)/g)].length, 0);
+
   const mapSrc = readFileSync(join(REPO, 'packages/client/src/hud/skillIconMap.ts'), 'utf8');
   const pairs = [...mapSrc.matchAll(/'([a-z]+\.[a-z_0-9]+)':\s*'([^']+)'/g)];
   const broken = pairs.filter(
     ([, , file]) => !existsSync(join(ASSETS, 'art/ui/skills', `${file}.webp`)),
   );
   check('#12a', '★ 映射表里每个技能的图标文件都存在（无断链）',
-    pairs.length === 90 && broken.length === 0,
-    `映射 ${pairs.length} 条（应为 90），断链 ${broken.length} 条` +
+    pairs.length === expected && broken.length === 0,
+    `映射 ${pairs.length} 条（职业数据里共 ${expected} 个技能），断链 ${broken.length} 条` +
       (broken.length ? `：${broken.slice(0, 3).map((b) => b[1]).join(', ')}` : ''));
 }
 
@@ -275,7 +292,23 @@ const pollArt = async (page, pred, timeoutMs = 2500) => {
 console.log('\n── §3 验收 #10 重验：真实模型不改变碰撞体（docs/13 点名）──');
 const { page, errors } = await open(BASE);
 {
-  const st = await artStatus(page);
+  /**
+   * ★★ **这里必须轮询，不能开页就采样一次。**
+   *
+   *   角色模型是异步加载的：`--use-gl=swiftshader` 软件渲染下实测要 ~17 秒
+   *   才挂上第一个模型（8 个职业 GLB 各约 450KB，还要等 Vite 首次转译）。
+   *   开页即采样等于在测「页面加载有多快」，而这条要测的是
+   *   「**美术到底接没接进来**」—— 两回事。
+   *
+   *   代价是真实的：这条曾经在**干净的 HEAD 上三跑两红**，
+   *   #12b/#10-m12/#15a 一起假红。一个会对着无辜代码亮红灯的验收脚本，
+   *   下一次真回归来的时候没有人会信它。
+   *   ★ 本文件早就有 `pollArt` 了（下面 #14b 等都在用），这条只是漏用。
+   */
+  const MODEL_LOAD_MS = 30000;
+  const { st } = await pollArt(
+    page, (s) => s.art === true && (s.charactersWithModel ?? 0) > 0, MODEL_LOAD_MS,
+  );
 
   check('#12b', '美术已实际接入（不是占位图 —— 附录A#7）',
     st?.art === true && st.charactersWithModel > 0,
@@ -430,11 +463,22 @@ const { page, errors } = await open(BASE);
     wave.waves >= 1 ? `释放后 groundWaves 峰值 ${wave.waves}`
       : `2.5 秒窗口内 groundWaves 峰值仍为 0｜日志：${tail.join(' / ')}`);
 
-  // 地图装饰摆设（MapDef.decor）真的摆上了 —— 不是登记了数据没人画（附录A#7）
+  /**
+   * 地图装饰摆设（MapDef.decor）真的摆上了 —— 不是登记了数据没人画（附录A#7）。
+   *
+   * ★ 用**新采样**而不是复用上面那个 `st`：那一份是「第一个角色模型挂上」
+   *   那一刻的快照，装饰件比它晚load完（实测常停在 21/23）。复用旧快照
+   *   等于拿早了 20 秒的读数去判断「装饰加载完没有」—— 同 #12b 的病根。
+   */
+  const decorDone = await pollArt(
+    page, (s) => (s.decor?.placed ?? 0) > 0 && s.decor?.loaded === s.decor?.placed, 20000,
+  );
+  const dst = decorDone.st;
   check('#15a', '★ 地图装饰摆设已加载（sim 不读它，docs/06 §8.2 红线不变）',
-    (st?.decor?.placed ?? 0) > 0 && st?.decor?.loaded === st?.decor?.placed && st?.decor?.visible === true,
-    st?.decor
-      ? `登记 ${st.decor.placed} 件，加载 ${st.decor.loaded} 件，当前可见=${st.decor.visible}`
+    (dst?.decor?.placed ?? 0) > 0 && dst?.decor?.loaded === dst?.decor?.placed
+      && dst?.decor?.visible === true,
+    dst?.decor
+      ? `登记 ${dst.decor.placed} 件，加载 ${dst.decor.loaded} 件，当前可见=${dst.decor.visible}`
       : '读不到 __scene.artStatus.decor');
 }
 

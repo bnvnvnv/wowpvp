@@ -27,8 +27,10 @@ import type { SkillDef } from '../data/schema.js';
 import { CastFailure } from '../types/enums.js';
 import { dirToYaw, distance2D, sub, yawToDir, type Vec3 } from '../math/vec3.js';
 import { getCast, isCasting, validateCast, type CastingStore } from '../sim/casting.js';
+import { aurasOf, type AuraStore } from '../sim/aura.js';
 import { magnitudeOf } from '../sim/effects/combat.js';
 import { isFriendly, type CombatEntity } from '../sim/entity.js';
+import type { EntityId } from '../types/ids.js';
 import type { GroundStore } from '../sim/groundArea.js';
 import type { MovementInput } from '../sim/movement.js';
 import type { ProjectileStore } from '../sim/projectile.js';
@@ -71,7 +73,15 @@ const REACTION_SECONDS: Record<BotDifficulty, number> = {
  *   · `delayedGroundImpact.onImpact` —— 陨星（地面技能 bot 暂不放，但估值
  *     函数不该对形状撒谎 —— P1b 接落点时它就该直接是对的）
  */
-const totalDamageOf = (sk: SkillDef, self: CombatEntity): number => {
+const totalDamageOf = (
+  sk: SkillDef,
+  self: CombatEntity,
+  /**
+   * 目标身上**已经在跳**的 DoT 光环 id（见 `dotsAlreadyOn`）。不传 =
+   * 没有目标上下文（`nominalDps`/`standOff` 就是这样调的）→ 行为与旧版逐位一致。
+   */
+  tickingOnTarget?: ReadonlySet<string>,
+): number => {
   let sum = 0;
   for (const e of sk.effects) {
     if (e.kind === 'damage') sum += magnitudeOf(e.amount, self);
@@ -79,9 +89,30 @@ const totalDamageOf = (sk: SkillDef, self: CombatEntity): number => {
       for (const h of e.onHit) if (h.kind === 'damage') sum += magnitudeOf(h.amount, self);
     }
     if (e.kind === 'applyAura' && e.aura.periodic) {
-      const ticks = Math.floor(e.aura.duration / e.aura.periodic.interval);
-      for (const h of e.aura.periodic.effects) {
-        if (h.kind === 'damage') sum += magnitudeOf(h.amount, self) * ticks;
+      /**
+       * ★★ DoT 已经挂在目标身上就**不再计它的周期伤害** —— 重挂只是把
+       *   剩余时间刷回满，一秒也没多打出来，白扔一个公共冷却。
+       *
+       *   为什么现在才修：老版这里的取舍注释写着「AI 会在 DoT 未掉时覆盖
+       *   重挂 —— 普通玩家同款低效，不值得建模」。那句话成立有个**没写出来
+       *   的前提：当时所有 DoT 都带冷却**（月火 6s、凋零缠绕 15s），
+       *   重挂被冷却天然限流，最多浪费一两个 GCD。
+       *
+       *   P3b 给牧师/死骑/猎人/盗贼各补了一个**零冷却** DoT，前提当场失效：
+       *   零冷却 + 按「整段总量」计权 ⇒ 暗言术·痛（6 跳 ×45 = 270）永远是
+       *   牧师手里最大的那个数 ⇒ bot 每个 GCD 都在重挂它，一发别的都不放。
+       *   基线里牧师因此从 69.0% 掉到 **0.0%**（21 场一场没赢）。
+       *   —— 不是数据配错，是这条估值在零冷却 DoT 上彻底失真。
+       *
+       *   只扣周期部分：疫病打击那种「武器伤害 + 挂病」的技能，武器伤害
+       *   照算，所以 DoT 还在时它依然是个能按的攻击键，只是不再虚高。
+       */
+      const already = e.target !== 'self' && tickingOnTarget?.has(e.aura.id);
+      if (!already) {
+        const ticks = Math.floor(e.aura.duration / e.aura.periodic.interval);
+        for (const h of e.aura.periodic.effects) {
+          if (h.kind === 'damage') sum += magnitudeOf(h.amount, self) * ticks;
+        }
       }
     }
     if (e.kind === 'spawnGroundArea' && e.onTick && e.tickInterval) {
@@ -151,8 +182,37 @@ export const isInterruptSkill = (sk: SkillDef): boolean =>
  * ⚠️ 已知取舍：DoT/落区按整段总量计权 —— AI 会在 DoT 未掉时覆盖重挂，
  *   普通玩家同款低效，不值得为此建模 DoT 追踪。
  */
-export const burstDamageOf = (sk: SkillDef, self: CombatEntity): number =>
-  totalDamageOf(sk, self);
+export const burstDamageOf = (
+  sk: SkillDef,
+  self: CombatEntity,
+  tickingOnTarget?: ReadonlySet<string>,
+): number => totalDamageOf(sk, self, tickingOnTarget);
+
+/**
+ * 目标身上「**下个公共冷却之后还在跳**」的 DoT 光环 id 集合。
+ *
+ * ★ 判据用「剩余 > 1 个 GCD」而不是「存在即跳过」：快掉的 DoT 就该续，
+ *   否则 bot 会眼睁睁看它掉完再重挂，白丢一段 uptime。
+ *   反过来，如果我按下这一发时它还能跳过我的下一个决策点，那么现在按它
+ *   **一定**是纯亏 —— 这就是要剪掉的那个行为。
+ * ★ 不传 auras（老调用方）→ 空集 → 逐位退化成旧行为。
+ */
+const dotsAlreadyOn = (
+  auras: AuraStore | undefined,
+  targetId: EntityId,
+  now: number,
+): ReadonlySet<string> => {
+  if (!auras) return EMPTY_AURA_SET;
+  const out = new Set<string>();
+  for (const a of aurasOf(auras, targetId)) {
+    if (a.def.periodic && a.expiresAt - now > GCD_SECONDS) out.add(a.def.id);
+  }
+  return out;
+};
+
+/** 公共冷却，秒。只用于上面那条「续不续 DoT」的判据，不进任何结算 */
+const GCD_SECONDS = 1.5;
+const EMPTY_AURA_SET: ReadonlySet<string> = new Set<string>();
 
 /**
  * ★★ 站位：**保有至少六成火力的前提下站得越远越好。**
@@ -305,6 +365,12 @@ export interface BotPerception {
    */
   ground?: GroundStore;
   projectiles?: ProjectileStore;
+  /**
+   * 光环仓，用来看**对手身上已经在跳的 DoT**（`dotsAlreadyOn`）。
+   * 不传 → bot 退化成「看不见 DoT」，即旧的覆盖重挂行为。
+   * ★ 只读，与 ground/projectiles 同一条红线：决策层拿不到写入口。
+   */
+  auras?: AuraStore;
 }
 
 /** 一次决策的产出 —— 与真人的两条通道同构 */
@@ -451,11 +517,14 @@ export const decideBotAction = (p: BotPerception): BotAction => {
    *     冷却感知不需要显式建模：大招在冷却里就不在 `offensive`（validateCast
    *     已滤掉），一转好它的单发威力自然登顶被选中 —— 填充技能只在大招
    *     不可用时顶上。
-   *   ⚠️ 已知取舍：DoT 按整段总量计权，AI 会在 DoT 未掉时覆盖重挂（月火
-   *     CD 一转好就再挂）—— 普通玩家同款低效，不值得为此建模 DoT 追踪。
+   *   ★ 已在对手身上跳着的 DoT **不重复计权**（`dotsAlreadyOn`）——
+   *     否则零冷却 DoT 会永远登顶，bot 一个 GCD 都不放别的。
+   *     该行为的完整来龙去脉见 `totalDamageOf` 里的注释。
    */
+  const ticking = dotsAlreadyOn(p.auras, foe.id, world.time);
   const pick = difficulty === 'easy'
     ? pool[Math.floor(rng() * pool.length)]!
-    : pool.reduce((best, sk) => (burstDamageOf(sk, self) > burstDamageOf(best, self) ? sk : best));
+    : pool.reduce((best, sk) =>
+        burstDamageOf(sk, self, ticking) > burstDamageOf(best, self, ticking) ? sk : best);
   return { move: advance, cast: { skillId: pick.id, targetId: foe.id } };
 };
