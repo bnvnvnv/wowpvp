@@ -59,7 +59,6 @@ const skills: SkillDef[] = [
       { kind: 'gainResource', resource: Resource.RunicPower, amount: 15 },
     ],
     description: '造成 135% 武器伤害，消耗 2 枚符文并获得 15 点符文能量。',
-    vfx: 'deathknight_obliterate',
   },
   {
     id: asSkillId('deathknight.death_strike'),
@@ -92,7 +91,6 @@ const skills: SkillDef[] = [
     ],
     description:
       '造成 100% 武器伤害，并根据 5 秒内承受伤害的 25% 恢复生命，最多恢复最大生命的 10%。',
-    vfx: 'deathknight_death_strike',
   },
   {
     id: asSkillId('deathknight.death_grip'),
@@ -114,7 +112,6 @@ const skills: SkillDef[] = [
       { kind: 'pullTarget', toDistance: 3 },
     ],
     description: '把目标拉到自己身前约 3 米处。无法穿墙或跨越巨大高差。',
-    vfx: 'deathknight_death_grip',
   },
   {
     id: asSkillId('deathknight.chains_of_ice'),
@@ -156,12 +153,10 @@ const skills: SkillDef[] = [
            */
           decay: { field: 'moveSpeed', from: 0.4, to: 1.0, duration: 4 },
           description: '移动速度降低 60%，并在 4 秒内逐渐恢复。',
-          vfx: 'deathknight_chains_of_ice',
         },
       },
     ],
     description: '使目标移动速度降低 60%，减速在 4 秒内逐渐衰减至消失。',
-    vfx: 'deathknight_chains_of_ice',
   },
   {
     id: asSkillId('deathknight.strangulate'),
@@ -180,7 +175,6 @@ const skills: SkillDef[] = [
       '受昏迷递减，15 秒内连续昏迷 100%→50%→25%→免疫（8.2）；可被「战斗意志」解除（8.3）；抗控型护甲缩短持续时间；需要视线，墙后无法起手；魔法技能，沉默或暗影学派锁定期间不可用；完全免疫与法术免疫直接无效。',
     effects: [{ kind: 'stun', duration: 2 }],
     description: '扼住目标咽喉，使其昏迷 2 秒。',
-    vfx: 'deathknight_strangulate',
   },
   {
     id: asSkillId('deathknight.mind_freeze'),
@@ -200,7 +194,6 @@ const skills: SkillDef[] = [
       '目标未在施法、或施法带盾牌标记（不可打断）时仍会进入冷却（7.2）；假读条可以骗掉（7.5）；打断物理射击准备条只取消本次射击，不产生学派锁定；本身是冰霜魔法，被沉默或冰霜学派锁定时无法使用（7.3）；需要视线且射程只有 15 米。',
     effects: [{ kind: 'interrupt', schoolLockSeconds: 3 }],
     description: '打断法术、引导或射击准备，并封锁该系魔法技能 3 秒。不触发公共冷却。',
-    vfx: 'deathknight_mind_freeze',
   },
   {
     id: asSkillId('deathknight.anti_magic_shell'),
@@ -239,12 +232,10 @@ const skills: SkillDef[] = [
           absorbPercentMaxHealth: 0.25,
           absorbSchools: MAGIC_SCHOOLS_DK,
           description: '吸收 300 点（25% 最大生命）魔法伤害，并免疫新的魔法控制。',
-          vfx: 'deathknight_anti_magic_shell',
         },
       },
     ],
     description: '4 秒内吸收相当于 25% 最大生命的魔法伤害，并免疫新的魔法控制。',
-    vfx: 'deathknight_anti_magic_shell',
   },
   {
     id: asSkillId('deathknight.deaths_advance'),
@@ -278,12 +269,10 @@ const skills: SkillDef[] = [
            */
           modifiers: { knockbackTaken: 0.5, moveSpeedFloor: 0.8 },
           description: '移动速度不低于基础速度的 80%，受到的击退距离降低 50%。',
-          vfx: 'deathknight_deaths_advance',
         },
       },
     ],
     description: '6 秒内移动速度不低于基础速度的 80%，受到的击退距离降低 50%。',
-    vfx: 'deathknight_deaths_advance',
   },
   {
     id: asSkillId('deathknight.winter_domain'),
@@ -323,7 +312,6 @@ const skills: SkillDef[] = [
               clearableByTrinket: false,
               modifiers: { moveSpeed: 0.7 },
               description: '移动速度降低 30%。',
-              vfx: 'deathknight_winter_chill',
             },
           },
           // 每名目标各自累计，第 4 次命中时昏迷 1.5 秒
@@ -333,7 +321,6 @@ const skills: SkillDef[] = [
     ],
     description:
       '以自身为中心展开半径 6 米的凛冬领域，持续 6 秒，每秒造成寒冰伤害并减速；同一目标被命中 4 次后昏迷 1.5 秒。',
-    vfx: 'deathknight_winter_domain',
   },
   // 武器方案授予的技能
   {
@@ -357,7 +344,6 @@ const skills: SkillDef[] = [
     // M14：0.9→0.8 —— 同轮回调（符文能量出口）
     effects: [{ kind: 'damage', school: School.Frost, amount: { weaponPercent: 0.8 } }],
     description: '一次迅捷的符文刃斩击，造成 80% 武器伤害的冰霜伤害。仅双持符文刃方案可用。',
-    vfx: 'deathknight_frost_strike',
   },
   {
     id: asSkillId('deathknight.rune_ward'),
@@ -387,12 +373,10 @@ const skills: SkillDef[] = [
           modifiers: { damageTaken: 0.8 },
           absorb: 120,
           description: '受到伤害降低 20%，并吸收 120 点伤害。',
-          vfx: 'deathknight_rune_ward',
         },
       },
     ],
     description: '骨盾上的符文亮起，6 秒内受到伤害降低 20% 并吸收 120 点伤害。仅骨盾方案可用。',
-    vfx: 'deathknight_rune_ward',
   },
 
   /**
@@ -439,7 +423,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '以疫病侵蚀目标，立即造成伤害并在 15 秒内持续掉血。可被驱散疾病解除。',
-    vfx: 'deathknight_plague_strike',
   },
   {
     id: asSkillId('deathknight.necrotic_strike'),
@@ -474,7 +457,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '腐蚀目标的伤口，8 秒内其受到的治疗降低 50%。开团前先手切掉对方奶量。',
-    vfx: 'deathknight_necrotic_strike',
   },
   {
     id: asSkillId('deathknight.howling_blast'),
@@ -511,7 +493,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '掀起一阵刺骨寒风，对 10 米内最多 5 名敌人造成冰霜伤害并减速 40%，持续 5 秒。',
-    vfx: 'deathknight_howling_blast',
   },
 ];
 

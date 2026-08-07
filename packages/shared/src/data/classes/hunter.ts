@@ -66,7 +66,6 @@ const skills: SkillDef[] = [
     // M14：2.6→3.0 —— 1.6s 站桩准备 + 可被打断的风险溢价
     effects: [{ kind: 'damage', school: School.Physical, amount: { weaponPercent: 3 } }],
     description: '经过 1.6 秒瞄准后射出一发重箭，造成 300% 武器伤害。准备期间不能移动。',
-    vfx: 'hunter_aimed_shot',
   },
   {
     id: asSkillId('hunter.arcane_shot'),
@@ -88,7 +87,6 @@ const skills: SkillDef[] = [
     // M14：1.1→1.3 —— 焦点主要出口，机动填充
     effects: [{ kind: 'damage', school: School.Arcane, amount: { weaponPercent: 1.3 } }],
     description: '射出一发附魔箭，造成 130% 武器伤害的奥术伤害。可移动使用。',
-    vfx: 'hunter_arcane_shot',
   },
   {
     id: asSkillId('hunter.concussive_shot'),
@@ -119,12 +117,10 @@ const skills: SkillDef[] = [
           clearableByTrinket: false,
           modifiers: { moveSpeed: 0.6 },
           description: '移动速度降低 40%。',
-          vfx: 'hunter_concussive_shot',
         },
       },
     ],
     description: '使目标移动速度降低 40%，持续 5 秒。',
-    vfx: 'hunter_concussive_shot',
   },
   {
     id: asSkillId('hunter.freezing_trap'),
@@ -156,7 +152,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '在指定地面布置陷阱，0.8 秒后生效。首个进入 1.5 米范围的敌人被迷惑 3 秒，受到伤害后解除。',
-    vfx: 'hunter_freezing_trap',
   },
   {
     id: asSkillId('hunter.flare'),
@@ -186,7 +181,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '在指定地面点燃照明弹，8 秒内持续揭露半径 6 米内的潜行与隐身单位。',
-    vfx: 'hunter_flare',
   },
   {
     id: asSkillId('hunter.disengage'),
@@ -204,7 +198,6 @@ const skills: SkillDef[] = [
       '开始后方向固定，不能中途转向，对手可以预判落点接控制；只解除普通减速，**不解除定身与昏迷**，被定身时无法起跳；墙体、高差和非法落点会让跃出提前终止（13.5）。',
     effects: [{ kind: 'leapBackward', distance: 6, clearsSlow: true }],
     description: '向角色背后跃出 6 米，并解除普通减速。开始后方向固定。',
-    vfx: 'hunter_disengage',
   },
   {
     id: asSkillId('hunter.counter_shot'),
@@ -225,7 +218,6 @@ const skills: SkillDef[] = [
       '打断法术或引导时封锁该系魔法技能 3 秒；打断物理射击准备条（瞄准射击、装填）时只取消本次动作，**不锁武器、不产生学派锁定**（7.2 / 验收 #16）；目标未在施法、或施法带盾牌标记（不可打断）时仍然进入冷却；假读条可以骗掉（7.5）；本身是物理技能，不受沉默限制但会被缴械禁用。',
     effects: [{ kind: 'interrupt', schoolLockSeconds: 3 }],
     description: '射出一箭打断法术、引导或射击准备。打断魔法时封锁该系技能 3 秒。',
-    vfx: 'hunter_counter_shot',
   },
   {
     id: asSkillId('hunter.exhilaration'),
@@ -243,7 +235,6 @@ const skills: SkillDef[] = [
       '受竞技场战斗抑制影响（8.5），后期实际回复量会随抑制层数持续下降；属于自然学派的治疗，被自然学派锁定或降低治疗的减益（致死打击等）大幅削弱；瞬发但仍会被昏迷、变形和沉默期间的施法限制卡住，60 秒冷却让它无法应对连续爆发。',
     effects: [{ kind: 'healPercentMaxHealth', percent: 0.25 }],
     description: '立即恢复 25% 最大生命。受竞技场战斗抑制影响。',
-    vfx: 'hunter_exhilaration',
   },
   {
     id: asSkillId('hunter.aspect_of_the_turtle'),
@@ -272,12 +263,10 @@ const skills: SkillDef[] = [
           modifiers: { damageTaken: 0.65 },
           flags: { cannotAttack: true, deflectFrontProjectiles: true },
           description: '受到伤害降低 35%，偏转正面投射物，期间不能攻击或射击。',
-          vfx: 'hunter_aspect_of_the_turtle',
         },
       },
     ],
     description: '4 秒内受到伤害降低 35% 并偏转正面投射物，期间不能攻击或射击。',
-    vfx: 'hunter_aspect_of_the_turtle',
   },
   // 武器方案授予的技能
   {
@@ -309,7 +298,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '装填 1 秒后射出一发穿透弩箭，贯穿路径上的所有敌人，各造成 130% 武器伤害。仅重弩方案可用。',
-    vfx: 'hunter_piercing_bolt',
   },
 
   /**
@@ -354,7 +342,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '割伤贴身敌人的腿筋，减速 50% 持续 4 秒。近战距离的脱身起手。',
-    vfx: 'hunter_wing_clip',
   },
   {
     id: asSkillId('hunter.raptor_strike'),
@@ -375,7 +362,6 @@ const skills: SkillDef[] = [
       '5 米内才能用，**而猎人的武器伤害本就低于任何近战职业** —— 拿它对拼战士是稳输的；缴械期间不可用；6 秒冷却，填不满贴脸的整段窗口。',
     effects: [{ kind: 'damage', school: School.Physical, amount: { weaponPercent: 1.15 } }],
     description: '近身挥出一记重击，造成 115% 武器伤害。被贴脸时的还手手段。',
-    vfx: 'hunter_raptor_strike',
   },
   {
     id: asSkillId('hunter.serpent_sting'),
@@ -411,7 +397,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '射出一支淬毒之箭，15 秒内持续造成自然伤害。可被驱散中毒解除。',
-    vfx: 'hunter_serpent_sting',
   },
   {
     id: asSkillId('hunter.aspect_of_the_cheetah'),
@@ -444,7 +429,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '化入猎豹的迅捷，6 秒内移动速度提高 30%。用来拉开与近战的距离。',
-    vfx: 'hunter_aspect_of_the_cheetah',
   },
 ];
 

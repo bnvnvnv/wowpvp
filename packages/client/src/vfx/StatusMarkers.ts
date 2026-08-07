@@ -41,6 +41,22 @@ const SHIELD_FALLBACK_COLOR = 0xffd98a;
 /** W16 复活保护：亮金（语义近圣光，与护盾回落色同族但形态完全不同）*/
 const SPAWN_PROTECTION_COLOR = 0xffe9a0;
 
+/**
+ * X7：护盾**自然过期**的收束淡出时长，秒。
+ *
+ * ★★ 「过期」与「破裂」是两件事，这里只补前者 ——
+ *   · **破裂** = 被打穿。`flashBroken()` 已经有一整套表达（shatter 胀开 0.4 秒
+ *     + `SpellVfx` 从壳体半径炸出碎片），壳在那之后**该**干净地没有：
+ *     碎掉的东西不会「慢慢淡出」，那反而把「打穿了」削弱成「消散了」。
+ *   · **过期** = 时间到了，盾自己收了。此前它走的是同一条
+ *     `shell.visible = false` —— 一帧之内壳凭空消失，实测读作
+ *     「刚才那个盾是不是 bug」。0.3 秒的收束淡出把它读成「护罩收了」。
+ *
+ * ★ 0.3 秒的出处：比承伤闪光（0.15）长、比破裂（0.4）短 —— 三者在时间轴上
+ *   两两可分，玩家不必看形状就能从**长度**上把它们区分开。占位值，真机可调。
+ */
+const SHIELD_EXPIRE_FADE = 0.3;
+
 /** 按 CONTROL_VISUALS 的 shape 键造几何体 */
 const makeControlGeometry = (shape: string): THREE.BufferGeometry => {
   switch (shape) {
@@ -141,6 +157,30 @@ export class StatusMarkers {
   /** 壳体自转角（内外反向）与最近一帧的持续态，供 update() 推进 */
   private shellSpin = 0;
   private shownState: ShieldState | null = null;
+  /**
+   * X7：自然过期的收束淡出剩余秒数。> 0 时壳仍在场，由 `update()` 推进。
+   * ★ 与 `burstRemaining` 分开而不是复用：那个是「一次性反馈还剩多久」，
+   *   这个是「壳还剩多久才真的没了」，两者可以互不相干地并存
+   *   （盾在承伤闪光的中途到期是完全可能的）。
+   */
+  private expireRemaining = 0;
+  /**
+   * 淡出**起点**的三个值（内层/外层不透明度、壳体缩放）。
+   * ★★ 必须存起点再插值，不能每帧在当前值上乘一个衰减系数：
+   *   淡出期间 `setShield` 走的是早退分支，不再重写不透明度，
+   *   于是「每帧乘 (1-t)」会连乘成指数衰减 —— 0.3 秒的淡出实际
+   *   两三帧就黑了，参数写着 0.3 而画面上根本没有 0.3。
+   */
+  private expireFrom = { inner: 0, outer: 0, scale: 1 };
+  /**
+   * 最近一次消失是不是**破裂**导致的。
+   *
+   * ★★ 为什么需要这个闩：`flashBroken()` 的 burst 只活 0.4 秒，之后
+   *   `burstState` 归 null。此时场景仍在每帧喂 `setShield(0, …)`，
+   *   下面那条早退分支**分不出**「刚被打碎」和「时间到了」——
+   *   没有闩的话破裂的壳也会走 0.3 秒淡出，语义区分当场丢掉。
+   */
+  private brokenLatch = false;
 
   /**
    * W16（技术债总账）：复活保护（12.6）。
@@ -289,6 +329,29 @@ export class StatusMarkers {
     if (this.burstRemaining <= 0) this.burstState = null;
 
     /**
+     * X7：自然过期的**收束**淡出。
+     * ★ 「收束」= 一边缩一边淡（缩到**起点尺寸的 0.72 倍** —— 起点由四态的
+     *   motion 决定，衰减态本来就已经收薄到 0.88，收束是在它之上继续往里收），
+     *   不是单纯把 alpha 拉到 0：
+     *   只淡出读作「护罩变透明了」，缩起来才读作「护罩收回去了」——
+     *   与破裂的 `shatter`（1.35 胀开）在**方向上**正好相反，
+     *   哪怕玩家没看清也能从「往里收还是往外炸」分辨出发生了什么。
+     */
+    if (this.expireRemaining > 0) {
+      this.expireRemaining -= dt;
+      if (this.expireRemaining <= 0) {
+        this.expireRemaining = 0;
+        this.shell.visible = false;
+        this.shownState = null;
+      } else {
+        const t = 1 - this.expireRemaining / SHIELD_EXPIRE_FADE; // 0 → 1
+        this.shell.scale.setScalar(this.expireFrom.scale * (1 - 0.28 * t));
+        this.shieldInnerMat.opacity = this.expireFrom.inner * (1 - t);
+        this.shieldOuterMat.opacity = this.expireFrom.outer * (1 - t);
+      }
+    }
+
+    /**
      * 壳体内外**反向**缓转。★ 两层反转是「这是个在运转的护罩」最短的表达 ——
      * 静止的球读作贴图，转起来才读作力场。衰减态转速减半（快没劲了）。
      */
@@ -305,6 +368,8 @@ export class StatusMarkers {
    *
    * ★ 14.3 要求四种反馈，其中「承伤」和「破裂」是事件，
    *   由 `flashAbsorb()` / `flashBroken()` 触发，不走这里。
+   * ★ X7：盾**自然过期**（remaining 变成 undefined）时壳不再瞬间消失，
+   *   而是走 0.3 秒收束淡出，由 `update()` 推进 —— 见 `SHIELD_EXPIRE_FADE`。
    *
    * @param color 盾的学派色（由调用方从 auraId 解析）。★ 缺省退到中性金 ——
    *   此前这里写死金色，八职业的盾长得一模一样，冰盾也是金的。
@@ -313,9 +378,43 @@ export class StatusMarkers {
     remaining: number | undefined, initial: number, cameraDistance: number, color?: number,
   ): void {
     if (remaining === undefined || (remaining <= 0 && this.burstState !== ShieldState.Broken)) {
-      this.shell.visible = false;
-      this.shownState = null;
+      /**
+       * X7：盾没了。两条出路，按**原因**分：
+       *   · 破裂（`brokenLatch`）→ 立刻收掉，碎片表现已经演完（见 SHIELD_EXPIRE_FADE）
+       *   · 自然过期        → 起 0.3 秒收束淡出，由 `update()` 推进
+       * ★ 只在壳**当前还看得见**时起淡出：没有盾的角色每帧都会走到这一行
+       *   （`shieldOf` 返回 undefined），不加这道判断就是每帧重置计时器，
+       *   淡出永远走不完 —— 而它「看起来是对的」，因为壳确实不见了。
+       */
+      if (this.shell.visible && !this.brokenLatch && this.expireRemaining <= 0) {
+        this.expireRemaining = SHIELD_EXPIRE_FADE;
+        this.expireFrom = {
+          inner: this.shieldInnerMat.opacity,
+          outer: this.shieldOuterMat.opacity,
+          scale: this.shell.scale.x,
+        };
+      }
+      if (this.expireRemaining <= 0) {
+        this.shell.visible = false;
+        this.shownState = null;
+        this.brokenLatch = false;
+      }
       return;
+    }
+    /**
+     * 盾**真的还在**（remaining > 0，新的一层）：过期淡出与破裂闩一起作废。
+     *
+     * ⚠️ `remaining > 0` 这个条件不是多余的保险 —— 少了它就是一个 bug，
+     *   而且是单测抓出来的：破裂之后场景每帧仍喂 `setShield(0, …)`，
+     *   这一帧因为 `burstState === Broken` 会**走到这里**（不是上面的早退分支），
+     *   于是破裂闩在演出的第一帧就被自己清掉；等 0.4 秒的 shatter 结束、
+     *   `burstState` 归 null 之后，下一次 `setShield(0)` 就分不出
+     *   「刚被打碎」和「时间到了」，破裂的壳也跟着走 0.3 秒淡出 ——
+     *   X7 要保留的语义区分当场丢失，而画面上只是「碎得有点软」，没人会报。
+     */
+    if (remaining > 0) {
+      this.expireRemaining = 0;
+      this.brokenLatch = false;
     }
     const state = this.burstState ?? shieldStateFor(remaining, initial);
     const v = SHIELD_VISUALS[state];
@@ -353,9 +452,27 @@ export class StatusMarkers {
     return this.shell.visible;
   }
 
-  /** 当前护盾处于四态里的哪一态（自检用）*/
+  /** 当前护盾处于四态里的哪一态（自检用）。★ 过期淡出期间仍报最后那一态 */
   get shieldState(): ShieldState | null {
     return this.shell.visible ? this.shownState : null;
+  }
+
+  /**
+   * X7：当前是否正在走「自然过期」的收束淡出（自检 / 单测用）。
+   * ★ 破裂路径恒为 false —— 这个 getter 就是那条语义区分的观测口。
+   */
+  get shieldExpiring(): boolean {
+    return this.expireRemaining > 0;
+  }
+
+  /**
+   * 壳体当前缩放（自检 / 单测用）。
+   * ★ 四态的 `motion` 与 X7 的收束**都写在这一个通道上**（thin 0.88 /
+   *   flash 1.12 / shatter 1.35 / 过期收束一路缩到 0.72），
+   *   所以「往里收还是往外炸」这件事有一个可断言的出口。
+   */
+  get shieldShellScale(): number {
+    return this.shell.scale.x;
   }
 
   /** 14.3：护盾**承伤**——一次闪光。与「衰减」是两回事 */
@@ -368,6 +485,9 @@ export class StatusMarkers {
   flashBroken(): void {
     this.burstState = ShieldState.Broken;
     this.burstRemaining = SHIELD_VISUALS.broken.durationSeconds;
+    // X7：闩上「这次是被打碎的」。破裂不走过期淡出 —— 见 SHIELD_EXPIRE_FADE 的 ★★
+    this.brokenLatch = true;
+    this.expireRemaining = 0;
   }
 
   dispose(): void {

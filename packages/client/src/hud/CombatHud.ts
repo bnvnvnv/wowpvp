@@ -475,6 +475,8 @@ export class CombatHud {
    * 15.2 施法条：技能名称、剩余时间、学派、可打断状态。
    * ★ 不可打断带**盾牌标记**（7.5：避免玩家浪费打断后误以为系统失效）
    * ★ 物理射击准备用**独立颜色**，因为它的反制方式与法术不同（缴械有效、沉默无效）
+   * ★ 引导段的方向、秒数与「引导」标记全部来自 `castBarProgress`（见文件末尾）——
+   *   玩家条、目标框、姓名板三处共用同一个函数，口径不会分叉。
    */
   private castBarHtml(cast: CastState, dir: CombatView): string {
     /**
@@ -491,10 +493,7 @@ export class CombatHud {
     const skill = getSkill(cast.skillId)
       ?? dir.skills.find((s) => s.id === cast.skillId)
       ?? { name: String(cast.skillId), school: cast.school };
-    const total = Math.max(0.01, cast.endsAt - cast.startedAt);
-    const remaining = Math.max(0, cast.endsAt - dir.now);
-    const elapsed = total - remaining;
-    const pct = Math.min(100, (elapsed / total) * 100);
+    const p = castBarProgress(cast, dir.now);
 
     const isPhysicalShot = cast.kind === CastKind.AimedShot;
     const cls = isPhysicalShot ? 'shot' : cast.interruptible ? 'castable' : 'shielded';
@@ -504,17 +503,29 @@ export class CombatHud {
      * ★★ 用**负 delay** 把 CSS 动画拨到当前进度（详见 index.html 的注释）。
      *   `width` 仍然写着 —— 动画没生效时（reduce-motion、旧浏览器）
      *   它就是回落值，进度信息不会消失。
+     *
+     * ★★ 引导段追加 `animation-direction:reverse` —— 让同一条 `cast-fill`
+     *   关键帧**倒着播**，条就从满往下缩（WoW 口径）。
+     *   为什么复用而不是加一条 `@keyframes channel-drain`：
+     *     · 反向播放 + 负 delay 与「从 100% 走到 0%」在语义上完全等价，
+     *       多一条关键帧只是多一处将来会和 `cast-fill` 分叉的定义；
+     *     · 行内 style 的优先级高于样式表里那条 `animation` 简写，
+     *       所以覆盖是确定的，不依赖规则顺序。
+     *   `width` 回落值同样已经是**剩余**比例，动画不生效时方向也不会说谎。
      */
-    const anim = `animation-duration:${total.toFixed(2)}s;animation-delay:-${elapsed.toFixed(2)}s`;
+    const anim =
+      `animation-duration:${p.total.toFixed(2)}s;animation-delay:-${p.elapsed.toFixed(2)}s`
+      + (p.channeling ? ';animation-direction:reverse' : '');
 
     return `
-      <div class="bar cast ${cls}" style="--school:${color}">
-        <i class="anim" style="width:${pct}%;${anim}"></i>
+      <div class="bar cast ${cls}${p.channeling ? ' channeling' : ''}" style="--school:${color}">
+        <i class="anim" style="width:${p.pct}%;${anim}"></i>
         <span>
           ${cast.interruptible ? '' : '<b class="shield" title="不可打断">🛡</b>'}
+          ${p.channeling ? '<b class="chan" title="引导中：条从满往下缩">引导</b>' : ''}
           ${esc(skill.name)}
           <em>${SCHOOL_TEXT[cast.school]}${isPhysicalShot ? '·射击准备' : ''}</em>
-          ${remaining.toFixed(1)}s
+          ${p.remaining.toFixed(1)}s
         </span>
       </div>
     `;
@@ -807,12 +818,18 @@ export class CombatHud {
 
       const hpPct = Math.max(0, (e.health / e.maxHealth) * 100);
       const cast = dir.castOf(e);
+      /**
+       * ★ 姓名板施法条与玩家条/目标框**同一个** `castBarProgress` ——
+       *   姓名板上没有文字，方向就是它唯一能表达「这是引导」的通道，
+       *   三处口径分叉的话玩家会在两个控件上看到互相矛盾的进度。
+       */
+      const castP = cast ? castBarProgress(cast, dir.now) : undefined;
       el.innerHTML = `
         <div class="np-name" style="color:${teamColor}">${esc(e.name)}</div>
         <div class="np-hp"><i style="width:${hpPct}%;background:${teamColor}"></i></div>
-        ${cast ? `<div class="np-cast ${cast.interruptible ? '' : 'shielded'}"
+        ${cast && castP ? `<div class="np-cast ${cast.interruptible ? '' : 'shielded'}${castP.channeling ? ' channeling' : ''}"
              style="--school:${SCHOOL_COLOR[cast.school] ?? '#ccc'}">
-             <i style="width:${castPct(cast, dir.now)}%"></i>
+             <i style="width:${castP.pct}%"></i>
            </div>` : ''}
       `;
     }
@@ -828,9 +845,75 @@ export class CombatHud {
   }
 }
 
-const castPct = (cast: CastState, now: number): number => {
+/** 施法条的一次进度快照。字段全部是**当前这一段**的口径，不跨段累计 */
+export interface CastBarProgress {
+  /** 是否处在引导段（读条段与引导段是两条独立时间轴，见下方 ★★） */
+  channeling: boolean;
+  /** 本段总时长，秒。钳到 ≥0.01 避免除零 */
+  total: number;
+  /** 本段已过秒数 */
+  elapsed: number;
+  /** 本段剩余秒数 —— 条上印的就是它 */
+  remaining: number;
+  /** 条的填充百分比 0..100。★ 读条 = 已过比例，引导 = **剩余**比例 */
+  pct: number;
+}
+
+/**
+ * 施法条进度。玩家条、目标/焦点框、姓名板三处共用 —— 「三处同口径」
+ * 这句承诺只有在**只有一个实现**的时候才是真的（X6 老账就是三处各写一遍
+ * `endsAt - startedAt` 攒出来的）。
+ *
+ * ★★ **引导条从满往下缩，读条从零往上涨**（WoW 口径）。
+ *   在此之前引导技能走的是读条那套 `endsAt - startedAt`：冰霜风暴
+ *   （0.8s 读条 + 4s 引导）会在第 0.8 秒把条涨满，然后**顶着 100% 一动不动
+ *   站 4 秒**，而条上的秒数早已归零 —— HUD 在骗人，玩家读不出引导还剩多久，
+ *   7.5 的打断博弈（要不要为这 4 秒交出打断）失去唯一的信息来源。
+ *
+ * ★★ 读条段与引导段是**两条独立时间轴**，不是一条连续进度。这条判断不是
+ *   本文件发明的：`vfx/castVfx.ts` 的 `windupPlanFor` 从 M12 起就是这么切的
+ *   （'bar' → 'channel' 两段各算各的 progress），3D 蓄力法阵一直走对，
+ *   只有 HUD 掉队。本次把 HUD 对齐到法阵，而不是反过来。
+ *
+ * ★ **引导判据的数据来源**：`CastState.kind` + `CastState.channelEndsAt`，
+ *   两个都是一手字段，不需要回查技能表：
+ *     · 试验场 —— `shared/sim/casting.ts` 起手时 `kind: skill.cast.kind`，
+ *       并在 `kind === Channel` 时补 `channelEndsAt = endsAt + channelDuration`；
+ *     · 联网   —— `net/SnapshotCombatView.castStateFromStarted` 由协议的
+ *       `castKind` 直抄 `kind`，`channelEndsAt` 用 `getSkill()` 从共享数据
+ *       补回来（协议里没有引导段这个字段）。
+ * ⚠️ 万一 `kind === Channel` 却没有 `channelEndsAt`（两个生产方都不会产生
+ *   这种状态，但类型上可空），退回读条口径 = **老行为**，不崩不假算。
+ *
+ * ⚠️ 普通读条分支的三行算式与改造前**逐字变量不变**（total/remaining/elapsed/pct
+ *   的钳位位置都没动）—— 引导是新增的一个分支，不是对读条的重写。
+ */
+export const castBarProgress = (cast: CastState, now: number): CastBarProgress => {
+  const channelEnd = cast.kind === CastKind.Channel ? cast.channelEndsAt : undefined;
+  // 引导段从 endsAt 才开始 —— 前摇那 0.8 秒仍然是一根正常的读条
+  if (channelEnd !== undefined && now >= cast.endsAt) {
+    const total = Math.max(0.01, channelEnd - cast.endsAt);
+    const remaining = Math.max(0, channelEnd - now);
+    return {
+      channeling: true,
+      total,
+      elapsed: total - remaining,
+      remaining,
+      // ★ 剩余比例 —— 这一行就是「向左缩」的全部实现
+      pct: Math.min(100, (remaining / total) * 100),
+    };
+  }
+  // 读条 / 瞄准准备 / 引导技能的前摇段：与改造前逐字不变
   const total = Math.max(0.01, cast.endsAt - cast.startedAt);
-  return Math.min(100, ((total - Math.max(0, cast.endsAt - now)) / total) * 100);
+  const remaining = Math.max(0, cast.endsAt - now);
+  const elapsed = total - remaining;
+  return {
+    channeling: false,
+    total,
+    elapsed,
+    remaining,
+    pct: Math.min(100, (elapsed / total) * 100),
+  };
 };
 
 // ★ 转义实现已收拢到 skillTooltip.ts 的 `escHtml`（本文件按 `esc` 别名导入）——

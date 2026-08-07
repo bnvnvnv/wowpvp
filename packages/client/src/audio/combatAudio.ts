@@ -13,6 +13,7 @@
 import type { CombatEvent, EntityId, SkillDef, Vec3 } from '@wowpvp/shared';
 import { CastKind, distance2D } from '@wowpvp/shared';
 import type { AudioManager } from './AudioManager.js';
+import { resolveSignature } from '../av/skillSignature.js';
 
 export interface CombatAudioDeps {
   /** 听者（玩家）的位置，用于距离衰减 */
@@ -102,8 +103,27 @@ export const playCombatEvent = (
       audio.playVariant('jump', { distance: distanceFor(deps, ev.targetId) ?? 0, volume: 0.5 });
       break;
 
+    case 'auraRemoved':
+      /**
+       * P3：**只有饰品解控**发声，其余 auraRemoved 保持刻意留空（见 default）。
+       * ★ 为什么值得开这个口子：P5 起「什么时候交饰品」是每回合最重的决策
+       *   之一，而它此前完全无声 —— 按了有没有生效只能盯图标。声音走
+       *   common.ts 的 'trinket' 签名（buff_apply 变速），改音色只动那张表。
+       */
+      if (ev.reason === 'trinket') {
+        const sig = resolveSignature('trinket');
+        if (sig.castSound) {
+          audio.play(sig.castSound, {
+            rate: sig.castRate,
+            distance: distanceFor(deps, ev.targetId) ?? 0,
+            volume: 0.9,
+          });
+        }
+      }
+      break;
+
     default:
-      // resource / immune / auraRemoved / custom 没有专属音效 —— 刻意留空。
+      // resource / immune / custom 没有专属音效 —— 刻意留空。
       // ★ 不给「每个事件都得有声音」让步：无差别的音效反而盖住有信息量的那些
       break;
   }
@@ -146,11 +166,20 @@ export const playCastActivity = (
       // ★ 只有读条/引导有「起手」声。瞬发技能在 resolved 时才响，
       //   否则一个瞬发会响两声（起手 + 命中），听上去像卡了一下
       if (skill.cast.kind !== CastKind.Instant) {
-        audio.playCast(skill.school, { ...opts, volume: 0.7 });
+        audio.playCastFor(skill, { ...opts, volume: 0.7 });
       }
       break;
     case 'resolved':
-      audio.playCast(skill.school, opts);
+      /**
+       * ★ P3：`playCast(school)` → `playCastFor(skill)`。
+       *   试验场这条路径**本来就握着完整的 `SkillDef`**（`onCastActivity` 的
+       *   第三个参数），此前却只把 `school` 一个字段递下去 —— 于是同一个学派的
+       *   十几个技能共用一声。这里不需要给任何上游加参数：id 一直在手里。
+       * ⚠️ `interrupted` / `failed` 两支刻意仍走 `play('ui_error')`：
+       *   它们说的是「这次施法没成」，不是「这是什么技能」，给它们签名
+       *   等于让失败提示随技能变声，玩家反而学不会这一声。
+       */
+      audio.playCastFor(skill, opts);
       break;
     case 'interrupted':
       audio.play('ui_error', { group: 'ui', volume: isSelf ? 0.9 : 0.5, ...opts });

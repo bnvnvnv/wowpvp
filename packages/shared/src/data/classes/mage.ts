@@ -60,12 +60,10 @@ const skills: SkillDef[] = [
           clearableByTrinket: false,
           modifiers: { moveSpeed: 0.7 },
           description: '移动速度降低 30%。',
-          vfx: 'mage_chill',
         },
       },
     ],
     description: '造成冰霜伤害，并使目标移动速度降低 30%，持续 3 秒。',
-    vfx: 'mage_frostbolt',
   },
   {
     id: asSkillId('mage.fire_blast'),
@@ -87,7 +85,6 @@ const skills: SkillDef[] = [
     // M14：150→225 —— 瞬发爆发件，8s 冷却
     effects: [{ kind: 'damage', school: School.Fire, amount: { flat: 225 } }],
     description: '瞬发造成中等火焰伤害，可在移动中使用。',
-    vfx: 'mage_fire_blast',
   },
   {
     id: asSkillId('mage.polymorph'),
@@ -111,7 +108,6 @@ const skills: SkillDef[] = [
       { kind: 'incapacitate', duration: 4, breakDamage: 100 },
     ],
     description: '将目标变为无害生物 4 秒，期间无法行动，受到伤害会提前解除。',
-    vfx: 'mage_polymorph',
   },
   {
     id: asSkillId('mage.frost_nova'),
@@ -132,7 +128,6 @@ const skills: SkillDef[] = [
     // 8.2 定身：走 DrCategory.Root 递减链，与普通减速分开计算
     effects: [{ kind: 'root', duration: 2, breakDamage: 200 }],
     description: '冻结身边 5 米内的敌人，定身 2 秒，受到较高伤害后解除。',
-    vfx: 'mage_frost_nova',
   },
   {
     id: asSkillId('mage.blink'),
@@ -152,7 +147,6 @@ const skills: SkillDef[] = [
       '不能穿墙或越过非法高差（13.5 / 验收 #46），贴墙释放会被压缩到很短的一段；只解除定身，普通减速依然保留（8.3）；昏迷、变形、恐惧期间无法使用；只走面向方向，转身不及时就闪进对方怀里。',
     effects: [{ kind: 'blinkForward', distance: 8, clearsRoot: true }],
     description: '沿面向瞬间移动 8 米，并解除定身效果。',
-    vfx: 'mage_blink',
   },
   {
     id: asSkillId('mage.counterspell'),
@@ -176,7 +170,6 @@ const skills: SkillDef[] = [
       { kind: 'interrupt', schoolLockSeconds: 4 },
     ],
     description: '打断法术、引导或射击准备。打断魔法时额外封锁该系技能 4 秒；打断物理射击只取消本次动作。',
-    vfx: 'mage_counterspell',
   },
   {
     id: asSkillId('mage.ice_barrier'),
@@ -207,12 +200,10 @@ const skills: SkillDef[] = [
           // M14：220→400 —— 吸收盾是法系对近战冲脸唯一的结构性抗性（bot 不会风筝，真人只会更强）
           absorb: 400,
           description: '吸收 220 点伤害，持续 8 秒。',
-          vfx: 'mage_ice_barrier',
         },
       },
     ],
     description: '获得持续 8 秒的吸收护盾。',
-    vfx: 'mage_ice_barrier',
   },
   {
     id: asSkillId('mage.ice_block'),
@@ -245,12 +236,10 @@ const skills: SkillDef[] = [
           // 完全免疫 + 无法行动：immuneAll 挡下全部伤害与控制，stunned 同时封住自己的一切动作
           flags: { immuneAll: true, stunned: true },
           description: '完全免疫一切伤害与效果，但无法移动、攻击或施法。',
-          vfx: 'mage_ice_block',
         },
       },
     ],
     description: '将自己冻结在寒冰中 4 秒，完全免疫但无法行动。使用时立即掉旗，可被群体驱散解除。',
-    vfx: 'mage_ice_block',
   },
   {
     id: asSkillId('mage.blizzard'),
@@ -298,14 +287,12 @@ const skills: SkillDef[] = [
               clearableByTrinket: false,
               modifiers: { moveSpeed: 0.7 },
               description: '移动速度降低 30%。',
-              vfx: 'mage_chill',
             },
           },
         ],
       },
     ],
     description: '在指定地面召唤持续 4 秒的暴风雪，每 0.5 秒造成冰霜伤害并减速 30%。',
-    vfx: 'mage_blizzard',
   },
   {
     id: asSkillId('mage.meteor'),
@@ -334,7 +321,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '在指定地面召唤陨石，1.5 秒后落地造成高额范围火焰伤害。落点与倒计时全程可见。',
-    vfx: 'mage_meteor',
   },
   /**
    * ★★ **P3b 技能扩充：瞬发填充键**（技能审计 `pnpm skill-audit` 的头号缺口）。
@@ -368,7 +354,6 @@ const skills: SkillDef[] = [
       '伤害是法师技能里最低的一档，靠 GCD 节奏叠出来 —— 对手开减伤或吸收护盾就能大幅抵消；仍是冰霜魔法，沉默与冰霜学派锁定期间照样用不出来（7.3）；没有任何控制效果，单靠它无法阻止近战贴身。',
     effects: [{ kind: 'damage', school: School.Frost, amount: { flat: 95 } }],
     description: '瞬发投出一柄冰枪，造成少量冰霜伤害。无冷却、可在移动中使用 —— 被追击时的主要输出手段。',
-    vfx: 'mage_ice_lance',
   },
   /**
    * ★★ 群体减速（总账 X13：法师**没有任何群体减速手段**，被多个近战围住时无解）。
@@ -406,7 +391,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '向面前扇形喷出寒气，造成冰霜伤害并使命中的敌人移动速度降低 50%，持续 5 秒。',
-    vfx: 'mage_cone_of_cold',
   },
   /**
    * ★ 火系的瞬发填充（与冰枪同一定位，但**学派不同**）—— 这是刻意的：
@@ -432,7 +416,6 @@ const skills: SkillDef[] = [
       '伤害低于烈焰爆，3 秒冷却决定它只能当填充；火焰学派被锁（断法命中火系技能）时不可用，此时要换冰霜键；25 米射程在法师技能里偏短，被拉开就够不到。',
     effects: [{ kind: 'damage', school: School.Fire, amount: { flat: 110 } }],
     description: '瞬发灼烧目标造成少量火焰伤害。冷却短、可移动 —— 冰霜系被封锁时的备用输出。',
-    vfx: 'mage_scorch',
   },
   /**
    * ★ 自身中心 AOE：被围住时的最后手段。
@@ -456,7 +439,6 @@ const skills: SkillDef[] = [
       '只有 8 米半径且以自己为中心：站远就完全无效，而法师本来就不该让人靠近；不造成任何控制，打不断近战的连招；奥术学派被锁时不可用；对单个目标的伤害低于烈焰爆，围殴时才划算。',
     effects: [{ kind: 'damage', school: School.Arcane, amount: { flat: 130 } }],
     description: '以自身为中心爆发奥术能量，对周围 8 米内所有敌人造成伤害。被围住时的清场手段。',
-    vfx: 'mage_arcane_explosion',
   },
   // 武器方案授予的技能
   {
@@ -478,7 +460,6 @@ const skills: SkillDef[] = [
       '仅「法刃 + 元素焦点」方案可用；要求贴身并面向目标，被风筝就完全打不到；属于魔法技能，沉默和奥术学派锁定都能封住（8.2）。',
     effects: [{ kind: 'damage', school: School.Arcane, amount: { weaponPercent: 1.1 } }],
     description: '以附着元素能量的法刃劈砍目标，造成 110% 武器伤害。仅法刃方案可用。',
-    vfx: 'mage_elemental_slash',
   },
 ];
 

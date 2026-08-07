@@ -105,9 +105,9 @@
 | X3 | **死亡回顾无技能名**：协议 `Damage` 只带 school，需加 `skillId`（与 S7 的泄露口径一起拍板） | `Damage` 加 `skillId?`（`CombatEvent` damage 加 `skillId`，`dealDamage` 三处带 `ctx.skillId`）；死亡回顾用 `getSkill(skillId).name`（`autoAttack`→「普通攻击」，查不到退学派）。**泄露口径**：来源不可见时 `redactFor` 连 skillId 一起抹 | 协议债 | ✅ 批次四（2026-08-05，m13 #24 回顾显示技能名 + m10 #1e 抹除断言） |
 | X4 | 结算面板无夺旗专属列（携旗距离/护送时长 sim 里都有）；连杀播报无「终结连杀」提示（数据够 UI 没做） | 夺旗列已清：`MatchStatsRow` 补夺旗/归还/截旗三列，面板按模式开关（15.4 否定式反向断言）。**余账**：携旗距离/护送时长等深度列、「终结连杀」提示 | 夺旗列 ✅；终结连杀仍欠 | 🔧 上半批次三 3.5（2026-08-05） |
 | X5 | 装备满槽无「选哪件换掉」对比 UI（10.5 后半，M16 已知不足） | `hud/ArsenalHud.ts` | 武装竞技场体验 | ⛔ |
-| X6 | 引导条 HUD 仍是读条口径（4 秒满格）——3D 法阵已按引导独立时间轴走，HUD 没跟 | `hud/CombatHud.ts` `endsAt - startedAt` 口径 | 引导技能读条骗人 | ⛔ |
-| X7 | 盾自然过期无收束动作（过期不是破裂，是对的；但壳直接消失没有淡出） | 特效二期已知不足 | 小 | ⛔ |
-| X8 | 音效无技能级分化：91 技能共用 7 组学派音；盘里 `cast_chain_heal`/`cast_lightning_bolt` 等专用音零使用 | `audio/AudioManager.ts` `CAST_SOUND`/`IMPACT_SOUND` | 大招没有专属声音签名 | ⛔ |
+| X6 | 引导条 HUD 仍是读条口径（4 秒满格）——3D 法阵已按引导独立时间轴走，HUD 没跟 | 引导条按剩余时间**向左缩**（WoW 口径）+「引导」标记，玩家/目标/姓名板三处同源；普通读条逐字节不变。⚠️ 实现靠 index.html 的 `@keyframes cast-fill` 保形（测试只锁名字，锁不住内容 —— 改那条关键帧前先看 CombatHud 引导段注释） | 引导技能读条骗人 | ✅ P3（2026-08-07，hud 单测钉方向） |
+| X7 | 盾自然过期无收束动作（过期不是破裂，是对的；但壳直接消失没有淡出） | 自然过期 0.3s 收束淡出（破裂仍是破裂动作，语义分开） | 小 | ✅ P3（2026-08-07） |
+| X8 | 音效无技能级分化：91 技能共用 7 组学派音；盘里 `cast_chain_heal`/`cast_lightning_bolt` 等专用音零使用 | P3 签名系统：`av/skillSignature.ts` 双层（推导散列 + 八职业手写表 100% 覆盖），playCastFor/playImpactFor 换文件/变速/叠层；磁盘断链逐键测试 + 全局唯一性零例外门禁 + main.ts 入口源码锁。⚠️ 数值全是占位判断，听感校准归 **X23** | 大招没有专属声音签名 | ✅ P3（2026-08-07，11 agent） |
 | X9 | 粒子次级动作（同爆发内各层错开 40-80ms）未做；池饱和度断言未补（三期已知不足） | `vfx/ParticleBurst.ts`；`SpellVfx.ts`（≈:464）注释 | 观感上限 | ⛔ |
 | X10 | **真 GPU 上从未验证观感与帧率**：全部验收跑在 swiftshader 软渲染（空闲 4 FPS）下，「够不够炫」「掉不掉帧」都没有真机数据 | **压测台已就绪**（P2）：`?stress[=n]` 24 实体同屏 + 帧时间分布面板（平均/p95/最差 + drawcall/三角面/画质档），`verify:stress` 6/6 自检。**余下的是人跑一轮** —— 步骤见 docs/17 末「P2 真机压测：怎么跑」 | 12v12 帧率是未知数 | 🔧 台子✅（P2，2026-08-05）／真机数据仍缺 |
 | X11 | 多语言未做（HUD/大厅/教学全中文硬编码，无 i18n 层） | M13/M15 已知不足 | 发布范围决定 | ⛔ |
@@ -121,6 +121,9 @@
 | X19 | **走进另一个角色被彻底顶住**，与代码自称的「软推开…可以穿过」相反：`SEPARATION_STRENGTH: 8` > `MOVE.BASE_SPEED: 7`，高重叠时分离推力恒压过自走速度（实测按 W 三秒只前进 2.9m 后卡死）。⚠️ **平衡敏感刻意未动**：分离度改动会波及所有近战 bot 缠斗，必须走「单独一步 + balance 归因 + 恶化回滚」的流程，不混 UX 批 | `sim/movement.ts:36`；修法候选：降到 3–4，或去掉玩家 wish 方向分量只留侧滑 | 近战贴身手感 | ⛔ **需单独归因批** |
 | X20 | **新手教学固定法师**：教学分支不吃 `?class=`，选了战士进教学还是法师（P10 已在按钮文案标注） | `main.ts` 教学分支 | 教学与所选职业脱节 | ⛔ |
 | X21 | **排队窗过期无反馈**：0.4s 排队窗（P10）过期后按键仍是静默消失 —— 迟到 0.4 秒的失败提示可能比沉默更误导，**要不要提示、提示什么需拍板**，不是漏做 | `sim/casting.ts` 排队消费处注释 | 「按了没反应」残留的最后一角 | ⛔ **待拍板** |
+| X22 | **命中爆发的视觉签名未穿线**：P3 的 tint/scale/form 生效在释放爆发/弹道/落地三处，**命中**爆发退回纯学派色 —— `SpellVfxEvent.damage` 不带 skillId（协议 Damage 与 sim damage 事件里都有，X3 起），穿线即可；⚠️ 来源不可见时协议抹 skillId，回落学派是正确行为（音频侧同口径已实现，照抄 HitFeedback 的写法） | `vfx/SpellVfx.ts` damage 分支；喂数据两场景各一处 | 命中一瞬的技能识别度 | ⛔ |
+| X23 | **P3 签名的听感校准轮从未有人耳听过**：全部 castRate/impactRate/音色选择都是按文件名语义推的占位判断（各表已逐条标注）。最高风险三类：mob_* 吼叫的原始时长（死骑凛冬领域/凛冬号叫/缚魂拽三条 bark 压速后可能拖尾）、ui_* 取材的出戏风险（猎人 ui_weapon_unsheathe 绞盘、德鲁伊 ui_sheep 风笼、盗贼 ui_craft_* 两条）、foley 音量基准（德鲁伊 move_land 形态落地可能被战斗混音压没）。与 X10 真机轮合并跑最省 —— 一边看帧率一边听签名 | 八张 `av/signatures/*.ts` 的 ⚠️ 注释就是校准清单 | 签名批的真正验收 | ⛔ **需真机 + 人耳** |
+| X24 | **联网 CastResolved 不响施法音**：试验场 resolved 时响一声签名施法音、联网只播近战 swing —— 两场景不对称（P3 之前就存在，P3 只穿线没改行为）。补的话在 NetworkScene CastResolved 分支用 playCastFor | `scenes/NetworkScene.ts` CastResolved | 联网瞬发技能比试验场「哑」 | ⛔ |
 
 ## P. 性能
 
@@ -147,7 +150,7 @@
 | G3a | **盘点结果（3.3 中步产出，删除前需逐项过引用方式）**：`ui/` 1451 文件仅 skills 表 ~88 + 光标 3 被引用，**~27MB 死**（daily-rewards/deeds/dungeons/mobs/professions/ranks/store 等整目录是上游包搬来的无关功能；skills/ 未引用图标是未来选图的调色板，**不删**）；`music/` 987 文件按文件名反查仅 91 个基名被引用，**死重上限 ~147MB**（⚠️ 音频常见 `${base}_${n}` 变体拼名，删除前必须核对 sfx 表的拼接方式）；另发现零引用小件：`*_backdrop*.webp` ×6、`space_galaxy.jpg`（CREDITS 里登记过用途但代码从未接） | 本轮全仓 grep（2026-08-05）；引用面：`skillIconMap.ts`、`index.html` 光标、`AudioManager.ts` `/music/${kind}/${name}.mp3` | 死重继续膨胀历史 | ⛔ |
 | G4 | **试验场与联网场景是 2779 行平行实现**：~24 个同名字段、`syncWeapon()` 逐字节重复（含同一句注释）、控制标记优先级逻辑写了两遍（联网侧注释声称「不会两条路各写一遍」但确实写了）。已有 `CombatView`/`loadoutViewFromSnapshot` 证明抽共享层可行 —— 这是「护盾判据分叉」类 bug 的持续温床 | `TestbedScene.ts`（1263 行）vs `NetworkScene.ts`（1516 行）；`:619-623` vs `:1455-1459`；`:755-766` vs `:1414-1425` | 每加一个表现都要写两遍、漏一边 | 🔧 批次三 3.4 第一铲（2026-08-05）：`SceneShell` 收走 renderer/画质/环境/镜头/输入/resize 构造 + 画质应用链（四处逐字重复→一份）+ NDC 换算（四处→一份），场景侧 getter 转发、壳唯一持有；八支浏览器验收全绿证零行为变化。**第二铲余账**：实体渲染循环（marker/护盾/化形 5 行×2）、`syncWeapon()`、控制标记优先级 —— 灯光两边数值刻意不同，**不属于**重复面。P10 又添一处：**射线拾取/悬停光标**两场景各写一份（联网侧补「点 3D 模型选中」时按任务范围本地实现，统一成可拾取注册表归本铲） |
 | G5 | **债务不可 grep**：~150 处欠账以中文散文注释存在，无机器标记 → 无法统计、无法收敛。**本表即解法**；新债照登记规矩挂 `// DEBT(ID):` | 全仓 0 处 TODO/FIXME/HACK | 判断不了「还欠多少」 | 🔧 本表建立即开始清偿 |
-| G6 | verify 脚本靠硬编码 sleep：14 支脚本静态累计 126.8 秒固定等待（m15 一支 27.4s/38 处） | `scripts/verify-*.{mjs,ts}` | 手跑成本高、偶发脆弱 | ⛔ |
+| G6 | verify 脚本靠硬编码 sleep：14 支脚本静态累计 126.8 秒固定等待（m15 一支 27.4s/38 处）。**实测数据点**（P3 收口，2026-08-07）：m4 的控制递减段在 17 支连跑的高负载下偶发失败（递减窗口 15s 与固定 sleep 序列 ~14.8s 只差 0.2s 余量），单独跑 5/6 绿 —— 修的时候从这支下手 | `scripts/verify-*.{mjs,ts}`；`verify-m4.mjs` 递减段 | 手跑成本高、偶发脆弱 | ⛔ |
 | G7 | `vite build` 无 `manualChunks`（three ~600KB 进首 chunk）；动态 import 只有 2 处（NetworkScene/LobbyShell），TestbedScene 静态打包 | `packages/client/vite.config.ts` 无 build 配置 | 首屏体积 | ⛔ |
 | G8 | 小项：`exactOptionalPropertyTypes` 关闭（代码里大量 `...(x!==undefined?{x}:{})` 说明本可以开）；`ws` 版本两处不一致（^8.21.1 / ^8.18.1） | `tsconfig.base.json`；两处 package.json | 低 | ⛔ |
 

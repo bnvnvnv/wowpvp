@@ -8,6 +8,12 @@
  */
 
 import { GEOMETRY, MOVE, RANGE, getClass } from '@wowpvp/shared';
+/**
+ * ★ P3 技能签名注册（纯副作用 import）。放在入口最顶部是刻意的：
+ *   任何场景创建之前注册表必须已灌满 —— 漏掉这行不会报错，
+ *   只会让全部手写签名静默退回推导层（integrity.test 有源码锁盯着这行）。
+ */
+import './av/signatures/index.js';
 import { probeIconAssets } from './hud/skillIcon.js';
 import { artEnabled } from './settings/artMode.js';
 import { TestbedScene, type DebugInfo } from './scenes/TestbedScene.js';

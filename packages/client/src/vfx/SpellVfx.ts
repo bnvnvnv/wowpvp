@@ -55,11 +55,18 @@ import {
 } from './particleTextures.js';
 import {
   ATTRIBUTE_VISUALS,
+  tintedVisual,
   visualForAuraId,
   visualForSchool,
   visualOf,
   type AttributeVisual,
 } from './schools.js';
+import {
+  SignatureForm,
+  resolveSignature,
+  signatureOf,
+  type ResolvedSignature,
+} from '../av/skillSignature.js';
 import { QualityTier, decorativeDensity, isVisible } from '../render/quality.js';
 import { MOTION, boltOrientation, trailPlanFor } from './boltVfx.js';
 import { fizzlePlanFor, windupPlanFor, windupStyleOf, type WindupStyle } from './castVfx.js';
@@ -275,6 +282,141 @@ export const burstPlanFor = (
   };
 };
 
+// ── P3 技能签名：规模乘数与二级形态（纯函数，vitest 里不用 WebGL 就能测）──
+
+/**
+ * 事件池单格粒子上限。★ 必须与 `ParticleBurst` 的 `MAX_PARTICLES` 同值 ——
+ * 那边 `Burst.emit` 会把超出的 count **静默钳掉**，而静默正是问题：
+ * 签名 scale 一旦把申请量顶穿，画面上是「大招反而没有小技能密」，
+ * 没有任何日志、没有任何断言。所以这一层显式截断并由测试盯住。
+ */
+export const EVENT_PARTICLE_CAP = 48;
+/** 细流池单格粒子上限（本类构造的 `new BurstPool(48, 32)` 的第二个参数）*/
+export const STREAM_PARTICLE_CAP = 32;
+
+/**
+ * 一次签名编排最多占用的**事件池格数**，且是**每帧**上限而不是每次调用上限。
+ *
+ * ★★ 每帧而不是每次：一发 8 目标的群体光环技能会在同一帧触发 8 次到位表现，
+ *   按「每次 ≤ 3 格」算就是 24 格 —— 事件池总共才 40 格，剩下的 16 格
+ *   连这一发自己的命中爆发都装不下。这正是 X9「粒子池饱和」的复发形状：
+ *   单点看每个数字都合理，乘上目标数就顶穿。
+ * ★ 3 的出处：事件池 40 格里，一发 8 目标 AOE 的主爆发 + 碎屑已占 16 格
+ *   （见 `pool` 字段注释），签名是**装饰层**，不该拿走同一量级的份额。
+ *   占位值，真机 12v12 观察 `activeBursts` 后可调。
+ */
+export const MAX_FORM_SLOTS_PER_FRAME = 3;
+
+/**
+ * 规模乘数下的粒子申请量。**先乘后截断**，截断到池的单格上限。
+ * ★ 下限 1：`scale` 最低 0.6，小技能被收着但不能被收没 ——
+ *   「这个技能没有特效」和「这个技能特效小」是两种完全不同的反馈。
+ */
+export const scaledCount = (base: number, scale: number, cap = EVENT_PARTICLE_CAP): number =>
+  Math.max(1, Math.min(cap, Math.round(base * scale)));
+
+/** 二级形态的一段编排。★ 纯数据 —— `emitForm` 只负责把它翻译成 emit */
+export interface FormStep {
+  /**
+   * 生成高度偏移（米）。`ground` 为 true 时相对**地面**，否则相对爆发中心。
+   * ★ 分两种锚点是因为形态的语义就分两种：光柱/落雨/扩散环读的是「地面」，
+   *   碎片放射读的是「打中的那一点」。全部锚在爆发中心的话，
+   *   胸口高度炸出来的「光柱」会从半空开始，读作一段悬空的光。
+   */
+  dy: number;
+  ground: boolean;
+  count: number;
+  speed: number;
+  size: number;
+  life: number;
+  gravity: number;
+  drag: number;
+  spread: 'sphere' | 'disc';
+  originRadius: number;
+  /** 切向初速（绕竖直轴）。螺旋/轨道靠它，其余形态给 0 */
+  swirl: number;
+}
+
+/**
+ * 七种二级形态的基准编排。语义逐条对应 `skillSignature.ts` 的 `SignatureForm` 注释。
+ *
+ * ★★ **全部复用 `ParticleBurst` 现成的属性主粒子贴图，零新增资产** ——
+ *   形态的识别特征做在**运动**上（生成半径、初速方向、重力符号、切向速度），
+ *   不做在贴图上。这一点是刻意的：贴图会被属性占满（火用火球、冰用雪花…），
+ *   八属性 × 七形态 = 56 张贴图是不可能的；而运动是与属性**正交**的通道，
+ *   同一朵雪花绕着人转和从天上落下来，玩家一眼分得开。
+ *
+ * ★ 每种形态最多 2 步 —— 上限由 `MAX_FORM_SLOTS_PER_FRAME` 兜底，但表本身
+ *   就写在预算里，不靠兜底救。
+ */
+const FORM_STEPS: Record<Exclude<SignatureForm, 'none'>, readonly FormStep[]> = {
+  // 水平扩散环：贴地起、横着冲出去、很快被阻力刹住 —— 新星/震荡的读法
+  ring: [
+    { dy: 0.12, ground: true, count: 20, speed: 7.4, size: 0.5, life: 0.42,
+      gravity: 0.4, drag: 2.6, spread: 'disc', originRadius: 0.35, swirl: 0 },
+  ],
+  // 上升螺旋：两层高度 + 强切向速度 + 正重力，绕着人往上拧 —— 增益/蓄力
+  spiral: [
+    { dy: 0.15, ground: true, count: 14, speed: 0.5, size: 0.46, life: 0.9,
+      gravity: 3.4, drag: 0.7, spread: 'disc', originRadius: 0.8, swirl: 3.2 },
+    { dy: 1.15, ground: true, count: 10, speed: 0.45, size: 0.4, life: 0.75,
+      gravity: 3.0, drag: 0.7, spread: 'disc', originRadius: 0.5, swirl: 3.8 },
+  ],
+  // 锐利碎片：从命中点球面爆出，快、小、短命、往下坠 —— 物理暴发/斩杀
+  shards: [
+    { dy: 0, ground: false, count: 22, speed: 9.6, size: 0.34, life: 0.34,
+      gravity: -6.5, drag: 0.9, spread: 'sphere', originRadius: 0.12, swirl: 0 },
+  ],
+  // 自上而下的落雨：高处大范围生成、几乎零初速、负重力拉下来 —— 持续区域
+  rain: [
+    { dy: 3.4, ground: true, count: 18, speed: 0.3, size: 0.44, life: 1.0,
+      gravity: -7.5, drag: 0.35, spread: 'sphere', originRadius: 1.6, swirl: 0 },
+  ],
+  // 垂直光柱：窄生成半径 + 极小初速 + 强正重力 = 一根往上抽的柱子 —— 审判/惩击
+  pillar: [
+    { dy: 0.1, ground: true, count: 16, speed: 0.35, size: 0.5, life: 0.7,
+      gravity: 11, drag: 0.5, spread: 'disc', originRadius: 0.3, swirl: 0.5 },
+    { dy: 1.6, ground: true, count: 10, speed: 0.3, size: 0.42, life: 0.55,
+      gravity: 9, drag: 0.5, spread: 'disc', originRadius: 0.22, swirl: 0.5 },
+  ],
+  // 环绕轨道：腰高一圈、零重力、低阻力 + 大切向速度，粒子留在轨道上 —— 护盾/光环
+  orbit: [
+    { dy: 0.95, ground: true, count: 16, speed: 0.25, size: 0.4, life: 1.1,
+      gravity: 0, drag: 0.25, spread: 'disc', originRadius: 1.05, swirl: 5 },
+  ],
+};
+
+/**
+ * 解析一段二级形态编排。
+ *
+ * ★★ **17.2 特效密度的取舍：低密度档（`decorativeDensity` = 0，即 low）
+ *   整体跳过二级形态；中密度档（0.5）整体减量。**
+ *   如实说明为什么选「跳过」而不是「减量到 1 粒」：low 档已经把拖尾、
+ *   地面填充、命中碎屑全砍光（14.4 的「可以减少」五项），二级形态是
+ *   **同一类装饰** —— 唯独留下它，low 档反而会变成「只有签名形态在冒粒子」
+ *   的怪样子，而且它会成为 low 档下唯一还在吃事件池的装饰源。
+ *   ★ 被砍掉的只有**形态**：属性色、命中爆发、边界环、控制标记一个不少，
+ *     没有任何关键信息（14.4 第二条八项）经由本函数消失。
+ *
+ * @param scale 已解析（已钳位）的签名规模乘数
+ * @param density `decorativeDensity(quality)` 的返回值
+ */
+export const formPlanFor = (
+  form: SignatureForm,
+  scale: number,
+  density: number,
+): FormStep[] => {
+  if (form === SignatureForm.None || density <= 0) return [];
+  const base = FORM_STEPS[form];
+  return base.slice(0, MAX_FORM_SLOTS_PER_FRAME).map((s) => ({
+    ...s,
+    // ★ 只乘 count 与 size：life/生成半径这些是形态的**识别特征**，
+    //   跟着 scale 缩放会让大招的「环」变成「面」，形态就不是同一个符号了
+    count: scaledCount(s.count * density, scale),
+    size: s.size * scale,
+  }));
+};
+
 /** 每帧驱动所需的全部外部状态。一次传齐，见 `frame()` */
 export interface SpellVfxFrame {
   quality: QualityTier;
@@ -301,6 +443,11 @@ export interface SpellVfxFrame {
 interface ProjBody {
   group: THREE.Group;
   visual: AttributeVisual;
+  /**
+   * 这一发的技能签名。★ 与 `visual` 一样**创建时解析一次**存起来 ——
+   * 拖尾密度每 0.07 秒就要读它一次，每次重解析是纯白做（技能不会中途变）。
+   */
+  sig: ResolvedSignature;
   /** ★ 复用同一个对象，不每帧新建（12v12 下这是每秒上千次分配）*/
   lastPos: { x: number; y: number; z: number };
   /** 刚创建、还没有位置：第一帧直接落位，不做平滑 */
@@ -347,8 +494,16 @@ interface RingEntry {
 interface VisualBolt {
   group: THREE.Group;
   visual: AttributeVisual;
+  /** 这一发的技能签名：尾迹密度按 scale，抵达爆发按 scale + form */
+  sig: ResolvedSignature;
   /** 当前追踪的终点（有 track 时每帧刷新）*/
   to: Vec3Like;
+  /**
+   * 终点处的**地面**高度。★ 抵达时的二级形态（光柱/落雨/扩散环）要锚在脚下，
+   *   而 `to` 是躯干高度 —— 释放那一刻目标的 `position.y` 是唯一没有猜测成分
+   *   的地面高度，所以在这里存下来，不在抵达时拿躯干高度反推。
+   */
+  groundY: number;
   track?: (() => Vec3Like | undefined) | undefined;
   /** 已飞行秒数。超过上限强制抵达 —— 别让弹体追一个反复闪现的人追到天荒地老 */
   age: number;
@@ -504,6 +659,21 @@ export class SpellVfx {
   /** 上一帧场上还在的投射物 id，用于检出「消失 → 补一发命中爆发」*/
   private seenProjectiles = new Set<number>();
 
+  /**
+   * 技能 id → 已做过色相偏移的属性视觉（P3 签名的颜色身份）。
+   *
+   * ★ 缓存不是性能优化而是**结构保证**：同一个技能在一局里永远是同一个颜色。
+   *   签名是身份，不是随机装饰（`skillSignature.ts` 用确定性散列而非
+   *   `Math.random` 是同一条理由）。117 个技能封顶，内存可忽略。
+   */
+  private readonly tintedVisuals = new Map<string, AttributeVisual>();
+
+  /**
+   * 本帧二级形态已经吃掉的事件池格数。★ 在 `frame()` 里清零 ——
+   * 见 `MAX_FORM_SLOTS_PER_FRAME` 的 ★★（8 目标群体技能同帧 8 次触发）。
+   */
+  private formSlotsThisFrame = 0;
+
   private trailTimer = 0;
   private fillTimer = 0;
   private cameraDistance = 8;
@@ -543,13 +713,66 @@ export class SpellVfx {
     return this.particleTex.get(particle) ?? null;
   }
 
+  // ── P3 技能签名的消费 ─────────────────────────────────────────
+
+  /**
+   * 这个技能的属性视觉，**已叠加签名色相偏移**。
+   *
+   * ★★ 唯一入口：本类里所有**手里有 SkillDef** 的地方都走它，
+   *   `visualOf(skill)` 不再被直接调用。理由是一致性 ——
+   *   蓄力法阵、释放爆发、飞行体、命中爆发是同一个技能的四个瞬间，
+   *   其中一处没偏移就成了「读条是这个色、放出来是另一个色」，
+   *   玩家会读成 bug 而不是签名。
+   *
+   * ⚠️ 与之相对，**按学派兜底的那条路（`visualForSchool`）保持原样** ——
+   *   见 `onCombatEvent` 的 damage 分支注释：那里根本没有 skillId。
+   */
+  private visualFor(skill: SkillDef): AttributeVisual {
+    const key = skill.id as string;
+    let av = this.tintedVisuals.get(key);
+    if (!av) {
+      av = tintedVisual(visualOf(skill), signatureOf(skill).tintShift);
+      this.tintedVisuals.set(key, av);
+    }
+    return av;
+  }
+
+  /**
+   * 叠一段二级形态（`SignatureForm` 的七种之一）在既有爆发之上。
+   *
+   * @param anchor  爆发中心（手部 / 命中点）
+   * @param groundY 该处的地面高度 —— `ground` 类形态锚在它上面
+   *
+   * ★ 三道闸门，缺一不可：
+   *   1. `form === none` 或低密度档 → `formPlanFor` 返回空表（17.2）
+   *   2. 本帧形态格数超预算 → 直接不发（X9 前科，见 MAX_FORM_SLOTS_PER_FRAME）
+   *   3. 单步 count 已由 `scaledCount` 截断在事件池单格容量内
+   */
+  private emitForm(anchor: Vec3Like, groundY: number, av: AttributeVisual, sig: ResolvedSignature): void {
+    const steps = formPlanFor(sig.form, sig.scale, decorativeDensity(this.quality));
+    for (const s of steps) {
+      if (this.formSlotsThisFrame >= MAX_FORM_SLOTS_PER_FRAME) return;
+      this.formSlotsThisFrame += 1;
+      this.emitBurst(
+        { x: anchor.x, y: (s.ground ? groundY : anchor.y) + s.dy, z: anchor.z },
+        av,
+        {
+          count: s.count, speed: s.speed, size: s.size, life: s.life,
+          gravity: s.gravity, drag: s.drag, spread: s.spread,
+          originRadius: s.originRadius, swirl: s.swirl,
+        },
+      );
+    }
+  }
+
   // ── 表现钩子 ──────────────────────────────────────────────────
 
   /**
    * 施法生命周期。
    *   `started`  读条期间的手部蓄力
    *   `resolved` 出手 pop + **表现用弹体**射向每个目标
-   * ★ 属性走 `visualOf(skill)`（毒感知：毒刃是 physical 学派但显示黄绿）。
+   * ★ 属性走 `visualFor(skill)`（毒感知：毒刃是 physical 学派但显示黄绿；
+   *   P3 起还叠了该技能的签名色相偏移）。
    */
   onCast(
     kind: 'started' | 'resolved' | 'interrupted' | 'failed',
@@ -567,7 +790,9 @@ export class SpellVfx {
     }[] = [],
   ): void {
     if (!skill) return;
-    const av = visualOf(skill);
+    // P3：属性基座 + 技能签名（色相偏移已在 visualFor 里叠好）
+    const av = this.visualFor(skill);
+    const sig = signatureOf(skill);
     /**
      * ★ 释放点**前移半米**（沿角色朝向），不贴在躯干正中 ——
      *   粒子开加法混合但仍做深度测试，埋在身体里会被自己的模型挡掉大半。
@@ -614,10 +839,21 @@ export class SpellVfx {
      *   所以小技能是被**收着**的（下限 0.85），不是被削弱。
      */
     const ws = vfxScaleOf(skill);
+    /**
+     * ★★ 分量（`ws`）与签名规模（`sig.scale`）是**两个不同的量，故意相乘**：
+     *   `ws` 说的是「这个技能在数据上有多大」（冷却/耗蓝/伤害推导出来的），
+     *   `sig.scale` 说的是「这个技能的表现该有多张扬」（手写的表达意图）。
+     *   合成之后仍由 `scaledCount` 截在事件池单格容量内 —— 两个乘数叠起来
+     *   最坏是 1.5 × 1.8 = 2.7 倍，正是 X9 那种「每个数字都合理、乘起来顶穿」
+     *   的形状，所以截断放在这里而不是指望上游自觉。
+     * ★ `speed` 不乘 scale：速度变了粒子会飞出爆发该有的体积，
+     *   读作「另一种技能」而不是「同一种技能更大一号」。
+     */
     this.emitBurst(hand, av, {
-      count: Math.round(16 * ws), speed: 3.0 * ws, size: 0.72 * ws, life: 0.55,
+      count: scaledCount(16 * ws, sig.scale), speed: 3.0 * ws,
+      size: 0.72 * ws * sig.scale, life: 0.55,
     });
-    this.emitAccent(hand, 'glow', av.secondary, 1.4 * ws);
+    this.emitAccent(hand, 'glow', av.secondary, 1.4 * ws * sig.scale);
     /**
      * 大招额外一记**定向爆闪** + 广告牌环。
      * ★ 门槛 1.25 ≈ 分量 0.62，实测落在「60 秒以上冷却」那一档
@@ -649,6 +885,16 @@ export class SpellVfx {
       this.spawnWave(caster.position, skill.shape.radius, av);
     }
 
+    /**
+     * P3 二级形态：**释放点发一次，不按目标发**。
+     * ★ 形态是「这个技能是什么」的签名，一次释放就是一次签名 ——
+     *   按目标发的话，8 目标群体技能会把同一个符号画 8 遍，
+     *   既顶穿事件池（X9），读起来也不是「一个大招」而是「八个小技能」。
+     * ★ 锚在**施法者脚下**（`caster.position`）而不是手上：七种形态里
+     *   五种（环/螺旋/落雨/光柱/轨道）的语义都是从地面或绕身体读的。
+     */
+    this.emitForm(caster.position, caster.position.y, av, sig);
+
     if (this.flies(skill)) {
       for (const t of targets) {
         const to: Vec3Like = {
@@ -658,7 +904,7 @@ export class SpellVfx {
         };
         const d = Math.hypot(to.x - hand.x, to.y - hand.y, to.z - hand.z);
         if (d < 1.5) continue; // 自身/贴脸：没有可看的飞行段
-        this.spawnBolt(hand, to, av, t.track);
+        this.spawnBolt(hand, to, av, sig, t.position.y, t.track);
       }
       return;
     }
@@ -677,7 +923,10 @@ export class SpellVfx {
         z: t.position.z,
       };
       if (Math.hypot(at.x - hand.x, at.z - hand.z) < 0.6) continue; // 自己那份 pop 已经有了
-      this.emitBurst(at, av, { count: 12, speed: 2.2, size: 0.6, life: 0.55 });
+      // ★ 到位爆发吃 scale（数量/尺寸），但**不**再发一遍形态 —— 见上面那条 ★
+      this.emitBurst(at, av, {
+        count: scaledCount(12, sig.scale), speed: 2.2, size: 0.6 * sig.scale, life: 0.55,
+      });
     }
   }
 
@@ -702,6 +951,17 @@ export class SpellVfx {
   /**
    * 战斗事件 → 命中反馈。
    * ★ 伤害按**学派**取属性（事件不带 skillId，取舍说明见 `visualForSchool`）。
+   *
+   * ⚠️ **P3 技能签名在这条路上不生效，这是如实的取舍不是遗漏。**
+   *   `SpellVfxEvent.damage` 里根本没有 skillId —— 多目标瞬发伤害在 sim 里是
+   *   「一次结算多个目标」，事件里没有技能引用可查（联网侧 redact 之后
+   *   连 sourceId 都没有）。没有 id 就没有签名，色相偏移/规模/形态三样全不生效，
+   *   命中爆发退回**纯学派色**。
+   *   ★ 签名真正落在有 id 的三条路上：释放爆发（`onCast`）、
+   *     弹道抵达（`updateBolts`）、真投射物消失（`syncProjectiles`）——
+   *     而「飞过去再炸」的技能正好走后两条，玩家最容易注意签名的也是它们。
+   *   ★ 想让这条路也有签名，得先给 `damage` 事件加 skillId ——
+   *     那是协议改动，不是表现层能自己决定的，也不在本批范围内。
    */
   onCombatEvent(ev: SpellVfxEvent, posOf: (id: EntityId) => Vec3Like | undefined): void {
     switch (ev.t) {
@@ -828,9 +1088,21 @@ export class SpellVfx {
         if (!at) return;
         const skill = getSkill(asSkillId(ev.auraId.split('.').slice(0, 2).join('.')));
         if (!skill || skill.effects.some((e) => e.kind === 'damage')) return;
-        const av = visualOf(skill);
-        this.emitBurst(at, av, { count: 14, speed: 2.4, size: 0.65, life: 0.6 });
-        this.emitAccent(at, 'sparkle', av.secondary, 0.9);
+        // ★ 这条路**查回了技能**，所以签名生效（与 damage 分支的区别就在这一行）
+        const av = this.visualFor(skill);
+        const sig = signatureOf(skill);
+        this.emitBurst(at, av, {
+          count: scaledCount(14, sig.scale), speed: 2.4, size: 0.65 * sig.scale, life: 0.6,
+        });
+        this.emitAccent(at, 'sparkle', av.secondary, 0.9 * sig.scale);
+        /**
+         * ★ 光环类技能是 `orbit` / `spiral` 形态的主要归宿（护盾、嗜血…）。
+         *   锚点用**脚下** —— `at` 是躯干高度，减 HITBOX_HEIGHT 的一半。
+         *   ⚠️ 这里没有真实地面高度可用（`posOf` 只给一个点），
+         *     `GEOMETRY.HITBOX_HEIGHT / 2` 是这个信息缺口下最诚实的近似：
+         *     它就是站立角色躯干到脚的距离，斜坡上会差几厘米。
+         */
+        this.emitForm(at, at.y - GEOMETRY.HITBOX_HEIGHT / 2, av, sig);
         break;
       }
       case 'heal': {
@@ -892,6 +1164,13 @@ export class SpellVfx {
     this.cameraDistance = ctx.cameraDistance;
     // 缓存画质给 onCombatEvent 的碎屑门禁用（事件不在 frame 里到达）
     this.quality = ctx.quality;
+    /**
+     * ★ 签名形态的每帧预算在这里清零。
+     *   放在 frame 开头而不是结尾：事件（onCast/onCombatEvent）是在两次 frame
+     *   **之间**到达的，清在结尾会把「本帧刚发的形态」算进下一帧的额度里，
+     *   预算就漏了一帧 —— 与 `trailTimer` 在遍历后清零是同一类顺序讲究。
+     */
+    this.formSlotsThisFrame = 0;
     this.pool.setScale(ctx.pointScale);
     this.streams.setScale(ctx.pointScale);
     this.syncCasts(ctx.casts ?? [], ctx.quality, dt, ctx.now, ctx.cameraPosition);
@@ -1034,7 +1313,8 @@ export class SpellVfx {
     for (const c of casts) {
       present.add(c.id);
       const skill = getSkill(asSkillId(c.skillId));
-      const av = skill ? visualOf(skill) : ATTRIBUTE_VISUALS.arcane;
+      // ★ 蓄力也用签名色 —— 读条和放出来必须是同一个颜色，见 visualFor 的 ★★
+      const av = skill ? this.visualFor(skill) : ATTRIBUTE_VISUALS.arcane;
       const plan = windupPlanFor({
         now,
         startedAt: c.startedAt,
@@ -1250,8 +1530,17 @@ export class SpellVfx {
         b.trailTimer += dt;
         if (b.trailTimer < plan.cadence) continue;
         b.trailTimer = 0;
+        /**
+         * ★★ P3：签名规模影响**尾迹密度**，而且只能影响 `count`。
+         *   `cadence` 与 `life` 是细流池预算不等式 `ceil(life/cadence) ≤ 6` 的两端，
+         *   已经顶死（0.42/0.07 = 6，见 boltVfx.ts 的注释与 vfxPlans.test.ts:246）——
+         *   乘上 scale 会让 1.8 倍的大招弹体一发吃掉 11 格，把另外两发的尾巴挤没。
+         *   `count` 则只受细流池**单格容量 32** 约束（11 × 1.8 = 20，仍有余量），
+         *   所以它是加密度唯一不撞预算的旋钮，截断按 `STREAM_PARTICLE_CAP`。
+         */
         this.emitBurst(g, b.visual, {
-          count: plan.count, speed: 0.7, size: plan.size, life: plan.life,
+          count: scaledCount(plan.count, b.sig.scale, STREAM_PARTICLE_CAP),
+          speed: 0.7, size: plan.size, life: plan.life,
           gravity: plan.gravity, drag: plan.drag, opacity: plan.opacity,
           stream: true,
         });
@@ -1260,8 +1549,12 @@ export class SpellVfx {
 
       // 抵达（或超龄强制抵达）：命中爆发在目标**当前**位置炸开 ——
       // 命中资格早在释放瞬间定死（6.6），这里只是把它演在人身上而不是空地上
-      this.emitBurst(b.to, b.visual, { count: 18, speed: 4.4, size: 0.75, life: 0.55 });
-      this.emitAccent(b.to, 'debris', b.visual.secondary, 0.95);
+      this.emitBurst(b.to, b.visual, {
+        count: scaledCount(18, b.sig.scale), speed: 4.4, size: 0.75 * b.sig.scale, life: 0.55,
+      });
+      this.emitAccent(b.to, 'debris', b.visual.secondary, 0.95 * b.sig.scale);
+      // ★ 命中侧的二级形态：地面锚点用释放时存下的目标脚下高度（见 VisualBolt.groundY）
+      this.emitForm(b.to, b.groundY, b.visual, b.sig);
       this.disposeNode(b.group);
       this.bolts.splice(i, 1);
     }
@@ -1291,6 +1584,8 @@ export class SpellVfx {
     from: Vec3Like,
     to: Vec3Like,
     av: AttributeVisual,
+    sig: ResolvedSignature,
+    groundY: number,
     track?: () => Vec3Like | undefined,
   ): void {
     // 同时在飞的弹体设个上限：12v12 混战里这是唯一会无界增长的东西
@@ -1301,7 +1596,9 @@ export class SpellVfx {
     const group = this.makeBoltNode(av);
     group.position.set(from.x, from.y, from.z);
     this.group.add(group);
-    this.bolts.push({ group, visual: av, to: { ...to }, track, age: 0, trailTimer: 0 });
+    this.bolts.push({
+      group, visual: av, sig, to: { ...to }, groundY, track, age: 0, trailTimer: 0,
+    });
   }
 
   // ── 每帧：真实投射物（本地 sim 或服务器快照，都收 ProjectileView）──
@@ -1329,7 +1626,7 @@ export class SpellVfx {
         const skill = getSkill(asSkillId(p.skillId));
         const entry = this.ensureRing(
           key, p.position, p.radius ?? 1,
-          (skill ? visualOf(skill) : ATTRIBUTE_VISUALS.fire).primary,
+          (skill ? this.visualFor(skill) : ATTRIBUTE_VISUALS.fire).primary,
         );
         // 14.3：落点边界 + **倒计时**。剩余秒数向上取整（「还有 2 秒」比 1.7 可读）
         if (p.impactAt !== undefined) {
@@ -1372,8 +1669,10 @@ export class SpellVfx {
       const plan = trailPlanFor(body.visual.particle, density);
       if (showTrail && plan.count > 0 && this.trailTimer >= plan.cadence) {
         // 真投射物（弩箭）的拖尾用轨迹条贴图 trace_05，与法术弹体的属性粒子区分
+        // ★ 与表现弹体同一条规矩：签名 scale 只乘 count，不碰 cadence/life
         this.emitBurst(body.lastPos, body.visual, {
-          count: plan.count, speed: 0.6, size: plan.size, life: plan.life,
+          count: scaledCount(plan.count, body.sig.scale, STREAM_PARTICLE_CAP),
+          speed: 0.6, size: plan.size, life: plan.life,
           gravity: plan.gravity, drag: plan.drag, opacity: plan.opacity,
           texture: this.accentTex.get('trail') ?? this.texFor(body.visual.particle),
           stream: true,
@@ -1389,8 +1688,20 @@ export class SpellVfx {
       if (present.has(id)) continue;
       const body = this.projBodies.get(id);
       if (!body) continue;
-      this.emitBurst(body.lastPos, body.visual, { count: 14, speed: 3.8, size: 0.55, life: 0.5 });
-      this.emitAccent(body.lastPos, 'debris', body.visual.secondary, 0.7);
+      this.emitBurst(body.lastPos, body.visual, {
+        count: scaledCount(14, body.sig.scale), speed: 3.8,
+        size: 0.55 * body.sig.scale, life: 0.5,
+      });
+      this.emitAccent(body.lastPos, 'debris', body.visual.secondary, 0.7 * body.sig.scale);
+      /**
+       * ⚠️ 地面锚点在这条路上只能近似：`ProjectileView` 不带地面高度
+       *   （它是投射物的**当前位置**，弩箭可能停在半空）。取躯干到脚的
+       *   固定距离 `HITBOX_HEIGHT / 2` —— 与 auraApplied 同一个占位理由，
+       *   两处保持同一个值，别一处 0.9 一处 1.0。
+       */
+      this.emitForm(
+        body.lastPos, body.lastPos.y - GEOMETRY.HITBOX_HEIGHT / 2, body.visual, body.sig,
+      );
       this.removeProjBody(id);
     }
     this.seenProjectiles = present;
@@ -1429,7 +1740,7 @@ export class SpellVfx {
       const key = `g${a.id}`;
       present.add(key);
       const skill = getSkill(asSkillId(a.skillId));
-      const av = skill ? visualOf(skill) : ATTRIBUTE_VISUALS.frost;
+      const av = skill ? this.visualFor(skill) : ATTRIBUTE_VISUALS.frost;
       const entry = this.ensureRing(key, a.center, a.radius, av.primary);
       const plan = groundFillPlanFor(av.particle, a.radius, density);
 
@@ -1576,6 +1887,13 @@ export class SpellVfx {
       drag?: number;
       spread?: 'sphere' | 'disc';
       opacity?: number;
+      /**
+       * 覆盖属性默认的切向初速（`MOTION[particle].swirl`）。
+       * ★ P3 二级形态的 `spiral` / `orbit` 靠它 —— 「绕着转」是运动通道上的
+       *   形状信号，而属性表里的 swirl 是**属性**的固有倾向（符文旋绕、
+       *   叶片打旋），两者是不同的量，所以是覆盖而不是相加。
+       */
+      swirl?: number;
       /** 覆盖默认的属性主粒子贴图（拖尾用轨迹条时传）。null = 程序化软圆点 */
       texture?: THREE.Texture | null;
       /** 水平生成半径（天气类填充传区域半径，一次铺满整片）*/
@@ -1600,7 +1918,7 @@ export class SpellVfx {
       size: opts.size,
       life: opts.life,
       gravity: opts.gravity ?? motion.gravity,
-      swirl: motion.swirl,
+      swirl: opts.swirl ?? motion.swirl,
       drag: opts.drag,
       spread: opts.spread,
       opacity: (opts.opacity ?? 1) * closeFade,
@@ -1763,10 +2081,13 @@ export class SpellVfx {
     let body = this.projBodies.get(id);
     if (body) return body;
     const skill = getSkill(asSkillId(skillId));
-    const av = skill ? visualOf(skill) : ATTRIBUTE_VISUALS.arcane;
+    const av = skill ? this.visualFor(skill) : ATTRIBUTE_VISUALS.arcane;
+    // ★ 查不回技能时用推导层兜底：`resolveSignature` 对任何 id 都有结果
+    //   （见 skillSignature.ts 的两层结构），所以这里不需要 undefined 分支
+    const sig = resolveSignature(skillId);
     const group = this.makeBoltNode(av);
     this.group.add(group);
-    body = { group, visual: av, lastPos: { x: 0, y: 0, z: 0 }, fresh: true };
+    body = { group, visual: av, sig, lastPos: { x: 0, y: 0, z: 0 }, fresh: true };
     this.projBodies.set(id, body);
     return body;
   }

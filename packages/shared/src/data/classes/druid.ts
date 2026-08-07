@@ -73,12 +73,10 @@ const skills: SkillDef[] = [
             effects: [{ kind: 'damage', school: School.Nature, amount: { flat: 55, powerCoef: 0.1 } }],
           },
           description: '每 3 秒受到一次自然伤害，持续 12 秒。',
-          vfx: 'druid_moonfire_dot',
         },
       },
     ],
     description: '造成初始自然伤害，并附加 12 秒持续伤害。',
-    vfx: 'druid_moonfire',
   },
   {
     id: asSkillId('druid.healing_touch'),
@@ -112,12 +110,10 @@ const skills: SkillDef[] = [
             effects: [{ kind: 'heal', amount: { flat: 35, powerCoef: 0.1 } }],
           },
           description: '4 秒内每 2 秒恢复少量生命。',
-          vfx: 'druid_healing_touch_hot',
         },
       },
     ],
     description: '立即治疗友方目标，并附加 4 秒短时持续治疗。',
-    vfx: 'druid_healing_touch',
   },
   {
     id: asSkillId('druid.rejuvenation'),
@@ -148,12 +144,10 @@ const skills: SkillDef[] = [
             effects: [{ kind: 'heal', amount: { flat: 55, powerCoef: 0.15 } }],
           },
           description: '6 秒内每 1.5 秒恢复生命。',
-          vfx: 'druid_rejuvenation',
         },
       },
     ],
     description: '为友方目标附加 6 秒持续治疗。',
-    vfx: 'druid_rejuvenation',
   },
   {
     id: asSkillId('druid.entangling_roots'),
@@ -175,7 +169,6 @@ const skills: SkillDef[] = [
       { kind: 'root', duration: 3, breakDamage: 300 },
     ],
     description: '将目标定身 3 秒，受到较高伤害后提前解除。',
-    vfx: 'druid_entangling_roots',
   },
   {
     id: asSkillId('druid.cyclone'),
@@ -206,12 +199,10 @@ const skills: SkillDef[] = [
           // untargetable：不能被选中、攻击或治疗；stunned：无法行动
           flags: { untargetable: true, stunned: true },
           description: '被卷入旋风，2.5 秒内无法行动，也无法被攻击或治疗。',
-          vfx: 'druid_cyclone',
         },
       },
     ],
     description: '将目标卷入旋风 2.5 秒，期间目标无法行动，也无法被攻击或治疗。受控制递减影响。',
-    vfx: 'druid_cyclone',
   },
   {
     id: asSkillId('druid.skull_bash'),
@@ -234,7 +225,6 @@ const skills: SkillDef[] = [
       { kind: 'interrupt', schoolLockSeconds: 3 },
     ],
     description: '短距离冲向目标并打断其施法，封锁该系魔法技能 3 秒。不触发公共冷却。',
-    vfx: 'druid_skull_bash',
   },
   {
     id: asSkillId('druid.barkskin'),
@@ -263,12 +253,10 @@ const skills: SkillDef[] = [
           dispelType: DispelType.Magic,
           modifiers: { damageTaken: 0.75 },
           description: '受到的伤害降低 25%。',
-          vfx: 'druid_barkskin',
         },
       },
     ],
     description: '4 秒内受到的伤害降低 25%。可在昏迷中使用。',
-    vfx: 'druid_barkskin',
   },
   {
     id: asSkillId('druid.bear_form'),
@@ -299,12 +287,10 @@ const skills: SkillDef[] = [
           clearableByTrinket: false,
           modifiers: { maxHealth: 1.2, damageTaken: 0.85, damageDealt: 0.8 },
           description: '最大生命提高 20%，受到的伤害降低 15%，造成的伤害降低 20%。可携带旗帜。',
-          vfx: 'druid_bear_form',
         },
       },
     ],
     description: '变为熊形态：最大生命提高 20%、承受伤害降低，自身伤害降低 20%。使用怒气，可携带旗帜。',
-    vfx: 'druid_bear_form',
   },
   {
     id: asSkillId('druid.cat_form'),
@@ -334,7 +320,6 @@ const skills: SkillDef[] = [
           clearableByTrinket: false,
           modifiers: { moveSpeed: 1.15 },
           description: '移动速度提高 15%，脱离战斗后可进入潜行。携带旗帜时不能潜行。',
-          vfx: 'druid_cat_form',
         },
       },
       /**
@@ -353,7 +338,6 @@ const skills: SkillDef[] = [
        */
     ],
     description: '变为猎豹形态：移动速度提高 15%，脱离战斗后可潜行。使用能量。携带旗帜时不能潜行。',
-    vfx: 'druid_cat_form',
   },
   {
     id: asSkillId('druid.wild_charge'),
@@ -392,7 +376,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '按当前形态位移 10 米：熊形态冲向敌人，猎豹形态跃向目标，人形向友方移动。必须落在合法位置。',
-    vfx: 'druid_wild_charge',
   },
   {
     id: asSkillId('druid.stampeding_roar'),
@@ -424,12 +407,10 @@ const skills: SkillDef[] = [
            */
           modifiers: { moveSpeed: 1.25 },
           description: '移动速度提高 25%，持续 5 秒。持旗者受旗手移动加成上限限制，最多提高 10%。',
-          vfx: 'druid_stampeding_roar',
         },
       },
     ],
     description: '半径 10 米内的友方移动速度提高 25%，持续 5 秒。持旗者自身最多获得 10%（12.3 旗手移动加成上限）。',
-    vfx: 'druid_stampeding_roar',
   },
 
   /**
@@ -470,7 +451,6 @@ const skills: SkillDef[] = [
       '**1.4 秒读条且必须原地**：被打断会连带锁死自然学派 3 秒，纠缠根须和治疗之触一起封掉（7.2）；沉默、硬控、击退和自己移动都会中止（7.3）；熊/猎豹形态下不可用，切形态就等于放弃它。',
     effects: [{ kind: 'damage', school: School.Nature, amount: { flat: 100 } }],
     description: '召唤自然之力打击目标，造成自然伤害。无冷却，人形态下的主力填充。',
-    vfx: 'druid_wrath',
   },
   {
     id: asSkillId('druid.starsurge'),
@@ -503,7 +483,6 @@ const skills: SkillDef[] = [
       '**10 秒冷却**，是月火术（6 秒）之外的第二个瞬发键而不是主力输出，单发伤害低于月火术首击；耗蓝 45 偏高，长局里连按会见底；熊/猎豹形态下不可用，切形态就等于放弃它。',
     effects: [{ kind: 'damage', school: School.Arcane, amount: { flat: 175 } }],
     description: '牵引星辰之力瞬间轰击目标，造成奥术伤害。自然系被打断封锁时，这是唯一还能按出去的伤害技能。',
-    vfx: 'druid_starsurge',
   },
   {
     id: asSkillId('druid.thorns'),
@@ -546,7 +525,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '为目标覆上尖刺护甲，20 秒内受到的伤害降低 8%。可被驱散魔法剥掉。',
-    vfx: 'druid_thorns',
   },
 ];
 

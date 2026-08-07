@@ -423,6 +423,8 @@ export class TestbedScene {
           amount: ev.amount, absorbed: ev.absorbed, immune: ev.immune,
           avoided: ev.avoided, crit: ev.crit === true, overkill: ev.overkill,
           school: ev.school,
+          skillId: ev.skillId, // P3 签名命中音（X3 起 damage 事件必带）
+
           targetMaxHealth: this.combat.allEntities().find((e) => e.id === ev.targetId)?.maxHealth,
         });
         return;

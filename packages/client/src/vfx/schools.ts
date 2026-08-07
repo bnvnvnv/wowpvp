@@ -181,6 +181,91 @@ export const visualForAuraId = (auraId: string): AttributeVisual | undefined => 
 export const visualForSchool = (school: School): AttributeVisual =>
   ATTRIBUTE_VISUALS[SCHOOL_TO_VISUAL[school]];
 
+// ── P3 技能签名：色相偏移 ──────────────────────────────────────
+
+/**
+ * 0xRRGGBB → 色环位置（0..1）。灰度色（S=0）返回 0。
+ * ★ 导出是为了让测试能直接钉「偏移量恰好等于 tintShift」——
+ *   不导出的话只能拿 RGB 反推，断言会变成一句约等于。
+ */
+export const hueOf = (color: number): number => {
+  const r = ((color >> 16) & 0xff) / 255;
+  const g = ((color >> 8) & 0xff) / 255;
+  const b = (color & 0xff) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  if (d === 0) return 0;
+  const h =
+    max === r ? ((g - b) / d + (g < b ? 6 : 0))
+      : max === g ? (b - r) / d + 2
+        : (r - g) / d + 4;
+  return h / 6;
+};
+
+/** 色环上两点的最短距离（0..0.5）。0.98 与 0.02 相差 0.04 而不是 0.96 */
+export const hueDistance = (a: number, b: number): number => {
+  const d = Math.abs(((a % 1) + 1) % 1 - ((b % 1) + 1) % 1);
+  return Math.min(d, 1 - d);
+};
+
+/**
+ * 沿色环旋转一个颜色，**只动色相，饱和度与明度逐位不变**。
+ *
+ * ★★ 「只动 H」不是实现偷懒，是 14.2「八属性一眼可辨」的守门规则：
+ *   八属性里有两对基色的**色相几乎相同**（神圣 40.5° vs 物理 38.3°、
+ *   奥术 264° vs 暗影 273°），把它们分开的从来不是色相而是
+ *   **饱和度与明度**（物理是低饱和的沙色、神圣是高明度的暖金）。
+ *   所以签名偏移一旦碰 S/L，代价不是「颜色变了一点」，而是
+ *   **神圣技能可能褪成物理色** —— 那是打穿 14.2 的硬承诺。
+ *   色相则是各属性内部富余的通道：转 ±28.8°（TINT_CLAMP ±0.08 色环）
+ *   仍在自己那一族的色域里，够 117 个技能各自不同。
+ *
+ * ⚠️ 本函数**不做钳位** —— `resolveSignature` 已经把 tintShift 夹进
+ *   ±TINT_CLAMP 了，这里再夹一次会让「地基钳位失效」这种 bug 藏起来。
+ *   调用方必须传已解析的签名值。
+ */
+export const hueShifted = (color: number, shift: number): number => {
+  if (shift === 0) return color;
+  const r = ((color >> 16) & 0xff) / 255;
+  const g = ((color >> 8) & 0xff) / 255;
+  const b = (color & 0xff) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  if (d === 0) return color; // 灰度色没有色相可转
+  const l = (max + min) / 2;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  const h = (((hueOf(color) + shift) % 1) + 1) % 1;
+
+  // HSL → RGB（标准公式，逐通道）
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const chan = (t: number): number => {
+    const x = ((t % 1) + 1) % 1;
+    const v =
+      x < 1 / 6 ? p + (q - p) * 6 * x
+        : x < 1 / 2 ? q
+          : x < 2 / 3 ? p + (q - p) * (2 / 3 - x) * 6
+            : p;
+    return Math.min(255, Math.max(0, Math.round(v * 255)));
+  };
+  return (chan(h + 1 / 3) << 16) | (chan(h) << 8) | chan(h - 1 / 3);
+};
+
+/**
+ * 把一套属性视觉整体做色相偏移 —— P3 技能签名的**颜色身份**。
+ *
+ * ★ 主色与辅色转**同一个角度**：两者的色相差是这套属性的内部结构
+ *   （火的橙核 + 黄边），分别转会把结构拧坏。
+ * ★ `particle` / `glyph` / `motion` 一位不动 —— 17.2 的「不能只靠颜色」
+ *   靠的就是这三条非颜色通道，签名不许动它们。
+ */
+export const tintedVisual = (av: AttributeVisual, shift: number): AttributeVisual =>
+  shift === 0
+    ? av
+    : { ...av, primary: hueShifted(av.primary, shift), secondary: hueShifted(av.secondary, shift) };
+
 /** 转成 CSS 颜色串，供 HUD 使用。HUD 与 3D 特效共用同一张表 */
 export const cssColor = (c: number): string => `#${c.toString(16).padStart(6, '0')}`;
 

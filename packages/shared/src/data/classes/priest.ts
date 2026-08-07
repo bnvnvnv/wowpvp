@@ -50,7 +50,6 @@ const skills: SkillDef[] = [
     //   窄差竞速，175 不足以翻回，再抬一档
     effects: [{ kind: 'damage', school: School.Holy, amount: { flat: 195 } }],
     description: '造成基础神圣伤害。1.2 秒读条，原地施放。',
-    vfx: 'priest_smite',
   },
   {
     id: asSkillId('priest.flash_heal'),
@@ -71,7 +70,6 @@ const skills: SkillDef[] = [
       '读条可被专用打断并锁神圣学派 3 秒，也可被移动、控制、强制位移和失去视线终止（7.1 / 7.3）；受降低治疗的减益（如致死创伤）压制；受竞技场战斗抑制影响（8.5），比赛越久单次治疗量越低。',
     effects: [{ kind: 'heal', amount: { flat: 320 } }],
     description: '为友方恢复大量生命。1.1 秒读条，原地施放，可被打断。',
-    vfx: 'priest_flash_heal',
   },
   {
     id: asSkillId('priest.renew'),
@@ -104,12 +102,10 @@ const skills: SkillDef[] = [
             effects: [{ kind: 'heal', amount: { flat: 90 } }],
           },
           description: '每 2 秒恢复一次生命，持续 6 秒。',
-          vfx: 'priest_renew',
         },
       },
     ],
     description: '使友方在 6 秒内持续恢复生命。',
-    vfx: 'priest_renew',
   },
   {
     id: asSkillId('priest.power_word_shield'),
@@ -141,12 +137,10 @@ const skills: SkillDef[] = [
           // M14：260→330 —— 盾在近战贴脸时机上价值最高；与法师冰盾同一轮定值
           absorb: 330,
           description: '吸收一定伤害，持续 6 秒。',
-          vfx: 'priest_power_word_shield',
         },
       },
     ],
     description: '为友方套上持续 6 秒的吸收护盾。',
-    vfx: 'priest_power_word_shield',
   },
   {
     id: asSkillId('priest.dispel_magic'),
@@ -174,7 +168,6 @@ const skills: SkillDef[] = [
       { kind: 'dispel', types: [DispelType.Magic], count: 1, from: 'enemy' },
     ],
     description: '移除友方一个可驱散魔法负面，或敌方一个可驱散增益。',
-    vfx: 'priest_dispel_magic',
   },
   {
     id: asSkillId('priest.psychic_scream'),
@@ -192,7 +185,6 @@ const skills: SkillDef[] = [
       '受恐惧/迷惑/变形递减（100%→50%→25%→免疫，8.2）；受到较高伤害会提前解除，队友的 AOE 经常自己拆掉它；可被「战斗意志」直接解除（8.3）；自身中心范围不会穿过完整墙体（6.4），贴墙或拉开 6 米即可躲开。',
     effects: [{ kind: 'fear', duration: 2.5, breakDamage: 220 }],
     description: '恐惧周围 6 米内的敌人 2.5 秒，受到较高伤害可解除。',
-    vfx: 'priest_psychic_scream',
   },
   {
     id: asSkillId('priest.silence'),
@@ -221,7 +213,6 @@ const skills: SkillDef[] = [
       { kind: 'silence', duration: 3 },
     ],
     description: '停止目标当前的魔法施法并沉默 3 秒；不阻止物理射击和纯武器技能。',
-    vfx: 'priest_silence',
   },
   {
     id: asSkillId('priest.leap_of_faith'),
@@ -251,7 +242,6 @@ const skills: SkillDef[] = [
       { kind: 'pullTarget', toDistance: 2 },
     ],
     description: '把友方拉到自己附近的合法位置；不能穿墙或拉入复活区。',
-    vfx: 'priest_leap_of_faith',
   },
   {
     id: asSkillId('priest.pain_suppression'),
@@ -281,12 +271,10 @@ const skills: SkillDef[] = [
           clearableByTrinket: false,
           modifiers: { damageTaken: 0.6 },
           description: '受到的伤害降低 40%，持续 5 秒。',
-          vfx: 'priest_pain_suppression',
         },
       },
     ],
     description: '使友方在 5 秒内受到的伤害降低 40%。',
-    vfx: 'priest_pain_suppression',
   },
   {
     id: asSkillId('priest.mass_dispel'),
@@ -318,7 +306,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '对地面范围内最多 5 个单位各移除一个强力魔法效果，可解除部分完全免疫。',
-    vfx: 'priest_mass_dispel',
   },
   // 武器方案授予的技能
   {
@@ -340,7 +327,6 @@ const skills: SkillDef[] = [
       '仅魔杖+圣物方案可用，换回法杖即失效；瞬发但走暗影学派，被暗影学派锁定或沉默期间不可用；选这套方案的代价是治疗与护盾 -10%，输出换生存。',
     effects: [{ kind: 'damage', school: School.Shadow, amount: { flat: 175 } }],
     description: '瞬发暗影冲击，造成中等暗影伤害。仅魔杖+圣物方案可用。',
-    vfx: 'priest_mind_spike',
   },
   /**
    * ★ P3b 扩充（技能审计：牧师 27% 的技能在对抗中难放出，**瞬发输出只有
@@ -382,7 +368,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '瞬发施加暗影持续伤害，12 秒内每 2 秒造成一次伤害。可在移动中使用。',
-    vfx: 'priest_shadow_word_pain',
   },
   {
     id: asSkillId('priest.mind_blast'),
@@ -402,7 +387,6 @@ const skills: SkillDef[] = [
       '7 秒冷却决定它只是节奏键而不是爆发；暗影学派锁定与沉默都能封住（7.3）；纯伤害没有任何控制，被近战贴上时它救不了自己。',
     effects: [{ kind: 'damage', school: School.Shadow, amount: { flat: 200 } }],
     description: '瞬发一记精神冲击造成暗影伤害。读条被压制时的主要输出手段。',
-    vfx: 'priest_mind_blast',
   },
   {
     id: asSkillId('priest.circle_of_healing'),
@@ -421,7 +405,6 @@ const skills: SkillDef[] = [
       '只覆盖自己周围 12 米：队友散开时可能一个都奶不到，而抱团又正好吃对手的范围技能；治疗量受降低治疗减益与竞技场战斗抑制（8.5）压制；12 秒冷却，无法应对连续爆发；神圣学派锁定期间不可用。',
     effects: [{ kind: 'heal', amount: { flat: 180 } }],
     description: '瞬发治疗周围 12 米内的所有友方单位。被打断压制时唯一还能用的群体治疗。',
-    vfx: 'priest_circle_of_healing',
   },
 ];
 

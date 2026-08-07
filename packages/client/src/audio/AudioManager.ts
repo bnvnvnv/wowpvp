@@ -19,7 +19,8 @@
  *   任何一条缺失（关掉音量、关掉伤害数字）都不影响另外两条。
  */
 
-import { School } from '@wowpvp/shared';
+import { School, type SkillId } from '@wowpvp/shared';
+import { signatureOf } from '../av/skillSignature.js';
 import {
   DEFAULT_VOLUMES, loadAudioSettings, saveAudioSettings, type AudioVolumes,
 } from '../settings/audioSettings.js';
@@ -29,8 +30,15 @@ export { DEFAULT_VOLUMES, type AudioVolumes } from '../settings/audioSettings.js
 
 type Group = keyof Omit<AudioVolumes, 'master'>;
 
-/** 七个伤害学派 → 施法音。physical 没有「咏唱」，走挥砍 */
-const CAST_SOUND: Record<School, string> = {
+/**
+ * 七个伤害学派 → 施法音。physical 没有「咏唱」，走挥砍。
+ *
+ * ★ P3 起**导出**：`playCastFor` 在技能签名没写 `castSound` 时回落到这张表，
+ *   而 `av/signatures/integrity.test.ts` 的全局唯一性判据必须算的是
+ *   **实际会响的那个文件名**（回落后的），不是签名里的 `undefined` ——
+ *   否则「两个不同学派的技能都没写 castSound」会被误判成撞车。
+ */
+export const CAST_SOUND: Record<School, string> = {
   arcane: 'cast_arcane',
   fire: 'cast_fire',
   frost: 'cast_frost',
@@ -40,8 +48,14 @@ const CAST_SOUND: Record<School, string> = {
   physical: 'melee_swing_light_1',
 };
 
-/** 学派 → 命中音。physical 打在肉上 */
-const IMPACT_SOUND: Record<School, string> = {
+/**
+ * 学派 → 命中音。physical 打在肉上。
+ * ★ 导出理由同 `CAST_SOUND`。
+ * ⚠️ `physical` 这一项在 `playImpact` 里**走不到** —— 那条分支转去
+ *   `playVariant('flesh')` 轮换四个文件，本表的 `impact_flesh_1` 只是该组的
+ *   第一个成员，留在这里是给回落判据一个确定的代表值。
+ */
+export const IMPACT_SOUND: Record<School, string> = {
   arcane: 'impact_arcane',
   fire: 'impact_fire',
   frost: 'impact_frost',
@@ -95,6 +109,14 @@ export interface PlayOptions {
 
 /** 超过这个距离完全听不见。RANGE.MAX_SELECT 是 45 米，取略大一点 */
 const MAX_AUDIBLE = 55;
+
+/**
+ * 签名 `impactLayer` 相对基础命中层的音量。
+ * ★ 占位值 0.7：与既有分层（`bone` 0.7 / `crit` 0.75–0.85 / `metal` 0.5）同一个
+ *   量级。层是**修饰**不是主体 —— 与基础层等响会把命中听成两次命中。
+ *   真机听感后可调，改这一个常量即可。
+ */
+const IMPACT_LAYER_VOLUME = 0.7;
 
 export class AudioManager {
   private ctx: AudioContext | undefined;
@@ -232,6 +254,55 @@ export class AudioManager {
       return;
     }
     this.play(IMPACT_SOUND[school] ?? 'impact_arcane', opts);
+  }
+
+  /**
+   * ★★ P3 技能签名施法音 —— **技能语境下应当调这一个，而不是 `playCast`。**
+   *
+   *   `playCast(school)` 只认得七个学派，于是 117 个技能共用 7 个施法音：
+   *   奥术冲击、冰霜新星、变形术在耳朵里是同一件事。这里先过
+   *   `signatureOf`：签名写了 `castSound` 就用它，没写就仍回落学派表 ——
+   *   **回落不是失败**，八成的技能本来就该是「一听就知道是冰系」，
+   *   个性由 `castRate` 的微音高承担（推导层保证同学派内不同音）。
+   *
+   * ★ `rate` 是**相乘**不是覆盖：调用方传的 rate 有它自己的语义
+   *   （如打断音的加速、护盾破裂的 1.25），签名的 rate 是技能身份。
+   *   谁覆盖谁都会丢掉一半信息，乘起来两者都还在。
+   *
+   * ⚠️ `playCast` 保留：环境/UI/非技能语境的调用方还在用它，
+   *   而它们手里根本没有 skillId（见 `combatAudio.ts` 的 ui_error 一路）。
+   */
+  playCastFor(skill: { id: string; school: School }, opts: PlayOptions = {}): void {
+    const sig = signatureOf({ id: skill.id as SkillId, school: skill.school });
+    const rate = (opts.rate ?? 1) * sig.castRate;
+    if (sig.castSound) this.play(sig.castSound, { ...opts, rate });
+    else this.playCast(skill.school, { ...opts, rate });
+  }
+
+  /**
+   * ★★ P3 技能签名命中音。结构与 `playCastFor` 对称，多一件事：**叠层**。
+   *
+   * ⚠️ `impactLayer` 必须与实际响的基础层**不同名** —— `play()` 的 40ms 同名
+   *   去重会把同名的第二声整个吃掉（见 :195 与 VARIANTS 的分层注释）。
+   *   这里再加一道运行时同名短路：签名写错了是**没有第二声**，
+   *   而不是「看上去播了其实没响」这种查半天的假象。
+   *   静态那一道在 `av/signatures/integrity.test.ts`（逐条断言层 ≠ 基础层）。
+   *
+   * ⚠️ 物理命中回落到 `playVariant('flesh')` 时，本方法传下去的 rate 会
+   *   **盖掉**变体组自带的 ±6% 随机音高（`playVariant` 里 opts 后展开）。
+   *   这是有意的取舍：签名 rate 是「这个技能听起来是什么」，
+   *   变体抖动只是「别听出循环」，前者优先级更高。
+   */
+  playImpactFor(skill: { id: string; school: School }, opts: PlayOptions = {}): void {
+    const sig = signatureOf({ id: skill.id as SkillId, school: skill.school });
+    const rate = (opts.rate ?? 1) * sig.impactRate;
+    if (sig.impactSound) this.play(sig.impactSound, { ...opts, rate });
+    else this.playImpact(skill.school, { ...opts, rate });
+    if (sig.impactLayer && sig.impactLayer !== sig.impactSound) {
+      this.play(sig.impactLayer, {
+        ...opts, rate, volume: (opts.volume ?? 1) * IMPACT_LAYER_VOLUME,
+      });
+    }
   }
 
   /**

@@ -934,6 +934,8 @@ export class NetworkScene {
           targetId: msg.targetId, sourceId: msg.sourceId,
           amount: msg.amount, absorbed: msg.absorbed, immune: msg.immune,
           crit: msg.crit === true, overkill: msg.overkill, school: msg.school,
+          // P3 签名命中音的钥匙；来源不可见时协议已抹（回落学派音是正确行为）
+          skillId: msg.skillId,
           ...(msg.avoided ? { avoided: msg.avoided } : {}),
           targetMaxHealth: this.lastEntities.find((e) => e.id === msg.targetId)?.maxHealth,
         });
@@ -1009,7 +1011,16 @@ export class NetworkScene {
         break;
       }
       case 'CastStarted': {
-        audio.playCast(msg.school, { ...this.audioDistance(msg.casterId), volume: 0.7 });
+        /**
+         * ★ P3 技能签名：`playCast(school)` → `playCastFor({id, school})`。
+         *   `CastStarted` 消息里 `skillId` 是**必填**的（协议 :304），
+         *   与 `school` 同源同帧，穿过来零代价 —— 此前只递 school，
+         *   联网侧和试验场一样落在「七个学派音」上。
+         */
+        audio.playCastFor(
+          { id: msg.skillId, school: msg.school },
+          { ...this.audioDistance(msg.casterId), volume: 0.7 },
+        );
         // ★ 施法注册表：HUD 的四条施法条与 14.1「预备」阶段的蓄力法阵同吃这一份
         this.view.beginCast(msg.casterId, castStateFromStarted(msg, this.serverTime));
         // 14.1 预备：读条起手 pop（持续蓄力由 frame() 的 casts 驱动）

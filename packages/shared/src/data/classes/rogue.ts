@@ -42,7 +42,6 @@ const stealthAura = (): AuraDef => ({
   flags: { stealthed: true },
   modifiers: { moveSpeed: 0.85 },
   description: '隐藏姓名板与选中，移动速度降低 15%。攻击、受到伤害或被近距离发现会解除。',
-  vfx: 'rogue_stealth',
 });
 
 // ── 技能 ─────────────────────────────────────────────────────────
@@ -78,7 +77,6 @@ const skills: SkillDef[] = [
       { kind: 'applyAura', target: 'self', aura: stealthAura() },
     ],
     description: '脱战 4 秒后可用，1 秒进入潜行。未被发现时隐藏姓名板与选中，移动速度降低 15%。持旗时不可进入。',
-    vfx: 'rogue_stealth',
   },
   {
     id: asSkillId('rogue.backstab'),
@@ -107,7 +105,6 @@ const skills: SkillDef[] = [
       { kind: 'gainResource', resource: Resource.ComboPoints, amount: 1 },
     ],
     description: '造成 90% 武器伤害并获得 1 个连击点。从背后攻击时伤害提高 50%。',
-    vfx: 'rogue_backstab',
   },
   {
     id: asSkillId('rogue.eviscerate'),
@@ -139,7 +136,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '消耗全部连击点造成终结伤害，每点 48% 武器伤害（5 点约 240%）。',
-    vfx: 'rogue_eviscerate',
   },
   {
     id: asSkillId('rogue.kidney_shot'),
@@ -170,7 +166,6 @@ const skills: SkillDef[] = [
       { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.4 } },
     ],
     description: '消耗全部连击点昏迷目标，每点 0.6 秒（5 点 3 秒），并造成少量伤害。受昏迷递减影响。',
-    vfx: 'rogue_kidney_shot',
   },
   {
     id: asSkillId('rogue.shadowstep'),
@@ -191,7 +186,6 @@ const skills: SkillDef[] = [
       '需要视线，柱子和封闭门直接封掉起手（6.4）；目标背后是墙、禁区或非法落点时会失败或被推到最近合法位置（13.5 / 验收 #46）；不能穿墙，绕柱子拉扯依然有效；落点固定在背后 1.5 米，对手可以预判转身把盗贼甩到正面；持旗时完全不可使用（12.3）；20 秒冷却，交掉之后一段时间内没有近身手段。',
     effects: [{ kind: 'teleportBehindTarget', offset: 1.5 }],
     description: '瞬移到目标背后 1.5 米的合法位置。不能穿越墙体或禁区，持旗时不可使用。',
-    vfx: 'rogue_shadowstep',
   },
   {
     id: asSkillId('rogue.kick'),
@@ -212,7 +206,6 @@ const skills: SkillDef[] = [
       '目标未在施法、或施法带盾牌标记（不可打断）时仍然进入 15 秒冷却（7.2）；假读条可以骗掉（7.5）；缴械状态下无法使用；不能打断已经完成的普通自动攻击（7.6）；也可取消物理射击准备，但物理射击不产生学派锁定，猎人下一秒就能重新抬手（7.2 / 验收 #16）。',
     effects: [{ kind: 'interrupt', schoolLockSeconds: 3 }],
     description: '打断法术、引导或射击准备。被打断的是魔法时封锁该系技能 3 秒；打断物理射击只取消本次动作。不触发公共冷却。',
-    vfx: 'rogue_kick',
   },
   {
     id: asSkillId('rogue.poisoned_blade'),
@@ -245,12 +238,10 @@ const skills: SkillDef[] = [
           clearableByTrinket: false,
           modifiers: { moveSpeed: 0.5, healingTaken: 0.8 },
           description: '移动速度降低 50%，受到的治疗降低 20%。',
-          vfx: 'rogue_poison',
         },
       },
     ],
     description: '涂毒一击，使目标移动速度降低 50%、受到的治疗降低 20%，持续 4 秒。',
-    vfx: 'rogue_poisoned_blade',
   },
   {
     id: asSkillId('rogue.smoke_bomb'),
@@ -280,7 +271,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '在地面制造持续 5 秒的烟雾。区域外的单位不能直接选中区域内目标；进入区域或使用范围技能仍可攻击。',
-    vfx: 'rogue_smoke_bomb',
   },
   {
     id: asSkillId('rogue.evasion'),
@@ -310,12 +300,10 @@ const skills: SkillDef[] = [
           // M14：0.5→0.35 —— 五成正面闪避在 bot 无法绕后的基线里近乎半免伤窗口
           modifiers: { dodgeFront: 0.35 },
           description: '正面闪避几率提高 35%。法术不受影响。',
-          vfx: 'rogue_evasion',
         },
       },
     ],
     description: '5 秒内正面闪避几率提高 35%。法术不受影响。',
-    vfx: 'rogue_evasion',
   },
   {
     id: asSkillId('rogue.vanish'),
@@ -346,7 +334,6 @@ const skills: SkillDef[] = [
       { kind: 'applyAura', target: 'self', aura: stealthAura() },
     ],
     description: '立即解除所有减速和定身并进入潜行，3 秒内不因近距离自动暴露。使用时立即掉旗。',
-    vfx: 'rogue_vanish',
   },
   // 武器方案授予的技能
   {
@@ -372,7 +359,6 @@ const skills: SkillDef[] = [
       { kind: 'gainResource', resource: Resource.ComboPoints, amount: 1 },
     ],
     description: '双剑快速连斩两下，共 110% 武器伤害并获得 1 个连击点。仅双剑方案可用。',
-    vfx: 'rogue_blade_flurry',
   },
   {
     id: asSkillId('rogue.riposte'),
@@ -406,7 +392,6 @@ const skills: SkillDef[] = [
       { kind: 'gainResource', resource: Resource.ComboPoints, amount: 1 },
     ],
     description: '成功招架后可用，反手刺出造成 100% 武器伤害并获得 1 个连击点。仅匕首 + 格挡短刃方案可用。',
-    vfx: 'rogue_riposte',
   },
 
   /**
@@ -447,7 +432,6 @@ const skills: SkillDef[] = [
       { kind: 'gainResource', resource: Resource.ComboPoints, amount: 2 },
     ],
     description: '偷袭目标，昏迷 2 秒并获得 2 个连击点。要求脱战 4 秒 —— 开场与脱战后的先手键。',
-    vfx: 'rogue_cheap_shot',
   },
   /**
    * ⚠️ **`pnpm balance` 里盗贼因为这个技能从 21.4% 掉到 0.0%，但数值不动。**
@@ -501,7 +485,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '撕裂目标，12 秒内每 2 秒造成物理流血伤害。物理减益，驱散不掉。',
-    vfx: 'rogue_rupture',
   },
   {
     id: asSkillId('rogue.blind'),
@@ -521,7 +504,6 @@ const skills: SkillDef[] = [
       '走「迷惑」递减链（8.2），与变形术、寒霜陷阱**共用一条链** —— 队伍里控制重复时会被砍到不足 1 秒；**受到任意伤害立即解除**，队友的持续伤害经常自己把它拆掉；「战斗意志」可解（8.3）；45 秒冷却是盗贼最贵的一个键。',
     effects: [{ kind: 'incapacitate', duration: 4, breakDamage: 1 }],
     description: '致盲目标 4 秒，期间无法行动，受到任何伤害立即解除。用来脱身或掐断对手的爆发。',
-    vfx: 'rogue_blind',
   },
 
   /**
@@ -589,12 +571,10 @@ const skills: SkillDef[] = [
            */
           modifiers: { moveSpeed: 1.7 },
           description: '移动速度提高 70%，持续 8 秒。',
-          vfx: 'rogue_sprint',
         },
       },
     ],
     description: '8 秒内移动速度提高 70%。追击与撤离两用，一回合只有一次。',
-    vfx: 'rogue_sprint',
   },
 ];
 

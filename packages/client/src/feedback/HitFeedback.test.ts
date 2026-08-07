@@ -28,7 +28,9 @@ const makeDeps = (access: Partial<AccessibilitySettings> = {}) => {
     vfxDamage: vi.fn(),
     addTrauma: vi.fn(),
     hitStop: { trigger: vi.fn() },
-    audio: { play: vi.fn(), playVariant: vi.fn(), playImpact: vi.fn() },
+    // P3 起命中音走 playImpactFor（签名层）；playImpact 保留在假对象里是
+    // 因为 deps 类型仍然要求它（非技能语境的兜底通道）
+    audio: { play: vi.fn(), playVariant: vi.fn(), playImpact: vi.fn(), playImpactFor: vi.fn() },
     access: () => settings,
   };
   return { deps, view, feedback: new HitFeedback(deps) };
@@ -50,7 +52,7 @@ describe('★★ 通道独立性', () => {
     const { deps, feedback } = makeDeps({ damageNumbers: false });
     feedback.onHit(hit({ crit: true, amount: 300 }));
     // 浮字开关在 FloatingNumbers 内部 —— HitFeedback 这层甚至不该少调 push
-    expect(deps.audio.playImpact).toHaveBeenCalled();
+    expect(deps.audio.playImpactFor).toHaveBeenCalled();
     expect(deps.flashScreen).toHaveBeenCalled();
     expect(deps.addTrauma).toHaveBeenCalled();
     expect(deps.vfxDamage).toHaveBeenCalled();

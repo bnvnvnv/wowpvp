@@ -12,15 +12,19 @@ import { describe, expect, it } from 'vitest';
 import {
   ALL_SKILLS,
   CastFailure,
+  CastKind,
   FlagState,
   RANGE,
+  School,
   TEAM_BLUE,
   TEAM_RED,
   asSkillId,
   getSkill,
   mage,
+  type CastState,
   type WeaponDef,
 } from '@wowpvp/shared';
+import { castBarProgress } from './CombatHud.js';
 import {
   isFlagBlip,
   type ArenaBlip,
@@ -436,6 +440,181 @@ describe('★ 目标框与姓名板的收尾', () => {
     expect(COMBAT_HUD_SRC).toContain('onAimConfirm: (() => void) | undefined');
     // 探针为真时**先 return**，不落到 selectById
     expect(COMBAT_HUD_SRC).toMatch(/if \(this\.aimActiveProbe\?\.\(\)\) \{\s*\n\s*this\.onAimConfirm\?\.\(\);\s*\n\s*return;/);
+  });
+});
+
+/**
+ * X6 老账：引导条曾经走读条口径。
+ *
+ * ★★ 这一组钉的是**方向**，不是数值好不好看：读条向右涨、引导向左缩
+ *   （WoW 口径）。老实现把冰霜风暴（0.8s 读条 + 4s 引导）在第 0.8 秒
+ *   涨满，然后顶着 100% 站 4 秒、秒数读数常驻 0.0 —— 玩家读不出引导
+ *   还剩多久，7.5 的打断博弈失去唯一信息来源。
+ */
+describe('★★ X6：引导条向左缩，普通读条向右涨', () => {
+  /** 一条读条状态。`sim/casting.ts` 起手时填的就是这些字段 */
+  const castState = (over: Partial<CastState> = {}): CastState => ({
+    skillId: asSkillId('mage.frostbolt'),
+    kind: CastKind.Cast,
+    startedAt: 100,
+    endsAt: 101.4,
+    facing: 0,
+    startPosition: { x: 0, y: 0, z: 0 },
+    school: School.Frost,
+    interruptible: true,
+    requiresStationary: true,
+    ...over,
+  });
+
+  /** 冰霜风暴：0.8 秒读条 + 4 秒引导，`channelEndsAt = endsAt + 4` */
+  const blizzard = (): CastState => castState({
+    skillId: asSkillId('mage.blizzard'),
+    kind: CastKind.Channel,
+    startedAt: 100,
+    endsAt: 100.8,
+    channelEndsAt: 104.8,
+  });
+
+  /**
+   * 改造**之前**那三行算式，原样抄在这里。
+   * ★ 它是普通读条的回归基准 —— 新实现在读条分支上必须逐点等于它。
+   */
+  const legacyPct = (cast: CastState, now: number): number => {
+    const total = Math.max(0.01, cast.endsAt - cast.startedAt);
+    const remaining = Math.max(0, cast.endsAt - now);
+    return Math.min(100, ((total - remaining) / total) * 100);
+  };
+
+  it('★ 数据前提：冰霜风暴确实是 channel，且引导段 4 秒（改了就一起改）', () => {
+    const s = getSkill(asSkillId('mage.blizzard'));
+    expect(s).toBeDefined();
+    expect(s!.cast.kind).toBe(CastKind.Channel);
+    expect(s!.cast.time).toBe(0.8);
+    expect(s!.cast.channelDuration).toBe(4);
+  });
+
+  it('★★ 普通读条不回归：逐点等于改造前的公式，且严格单调上升', () => {
+    const c = castState();
+    let prev = -1;
+    for (let t = 99.5; t <= 102; t += 0.05) {
+      const p = castBarProgress(c, t);
+      expect(p.channeling, `t=${t}`).toBe(false);
+      expect(p.pct, `t=${t}`).toBeCloseTo(legacyPct(c, t), 10);
+      // 条上的秒数也不能变：老实现印的是 max(0, endsAt - now)
+      expect(p.remaining, `t=${t}`).toBeCloseTo(Math.max(0, c.endsAt - t), 10);
+      if (t >= 100 && t <= 101.4) expect(p.pct, `t=${t}`).toBeGreaterThan(prev);
+      prev = p.pct;
+    }
+    expect(castBarProgress(c, 100).pct).toBe(0);
+    expect(castBarProgress(c, 101.4).pct).toBe(100);
+  });
+
+  it('★ 引导技能的**前摇段**仍是一根正常读条（两条独立时间轴的第一条）', () => {
+    const c = blizzard();
+    expect(castBarProgress(c, 100).channeling).toBe(false);
+    expect(castBarProgress(c, 100.4).channeling).toBe(false);
+    // 前摇段逐点等于老公式：0.8 秒那一段的行为没有被这次改动碰过
+    for (const t of [100, 100.2, 100.4, 100.6]) {
+      expect(castBarProgress(c, t).pct, `t=${t}`).toBeCloseTo(legacyPct(c, t), 10);
+    }
+    expect(castBarProgress(c, 100.4).pct).toBeCloseTo(50, 6);
+  });
+
+  it('★★ 引导段方向与读条**相反**：从 100% 单调下降到 0', () => {
+    const c = blizzard();
+    expect(castBarProgress(c, 100.8).channeling).toBe(true);
+    expect(castBarProgress(c, 100.8).pct).toBeCloseTo(100, 6);
+    expect(castBarProgress(c, 102.8).pct).toBeCloseTo(50, 6);
+    expect(castBarProgress(c, 104.8).pct).toBeCloseTo(0, 6);
+
+    let prev = 101;
+    for (let t = 100.8; t <= 104.8; t += 0.1) {
+      const p = castBarProgress(c, t);
+      expect(p.channeling, `t=${t}`).toBe(true);
+      expect(p.pct, `t=${t}`).toBeLessThan(prev);
+      prev = p.pct;
+    }
+  });
+
+  it('★★ 同一时刻：引导条在缩、读条在涨 —— 两者方向必须是反的', () => {
+    const chan = blizzard();
+    const bar = castState({ startedAt: 100, endsAt: 104 });
+    // 走完各自 25% 的时刻
+    const chanPct = castBarProgress(chan, 100.8 + 1).pct; // 引导过了 1/4
+    const barPct = castBarProgress(bar, 101).pct;         // 读条过了 1/4
+    expect(chanPct).toBeCloseTo(75, 6);
+    expect(barPct).toBeCloseTo(25, 6);
+    expect(chanPct + barPct).toBeCloseTo(100, 6);
+  });
+
+  it('★★ 引导条上的秒数是**引导剩余**，不是老实现里常驻的 0.0', () => {
+    const c = blizzard();
+    // 老实现：remaining = max(0, endsAt - now)，第 0.8 秒之后恒为 0
+    expect(legacyPct(c, 102.8)).toBe(100);
+    expect(Math.max(0, c.endsAt - 102.8)).toBe(0);
+    // 新实现：还剩 2 秒
+    expect(castBarProgress(c, 102.8).remaining).toBeCloseTo(2, 6);
+    expect(castBarProgress(c, 102.8).remaining.toFixed(1)).toBe('2.0');
+    // 引导段总时长是引导那一段，不是 0.8 也不是 4.8
+    expect(castBarProgress(c, 102.8).total).toBeCloseTo(4, 6);
+  });
+
+  it('★ 引导结束之后不越界：pct 钳在 0，秒数钳在 0', () => {
+    const c = blizzard();
+    const p = castBarProgress(c, 106);
+    expect(p.pct).toBe(0);
+    expect(p.remaining).toBe(0);
+  });
+
+  it('⚠️ kind 是 channel 但缺 channelEndsAt：退回读条口径 = 老行为，不假算', () => {
+    const c = castState({ kind: CastKind.Channel, startedAt: 100, endsAt: 100.8 });
+    const p = castBarProgress(c, 102);
+    expect(p.channeling).toBe(false);
+    expect(p.pct).toBeCloseTo(legacyPct(c, 102), 10);
+  });
+
+  it('⚠️ 判据看的是 kind，不是「有没有 channelEndsAt」—— 读条技能不会被误判成引导', () => {
+    // 理论上不该出现的脏状态：读条却带着 channelEndsAt。判据必须以 kind 为准
+    const dirty = castState({ channelEndsAt: 110 });
+    expect(castBarProgress(dirty, 102).channeling).toBe(false);
+    expect(castBarProgress(dirty, 102).pct).toBeCloseTo(legacyPct(dirty, 102), 10);
+  });
+
+  it('★★ 三处施法条同口径：玩家条/目标框与姓名板都调同一个函数', () => {
+    // 目标框与玩家条共用 castBarHtml，姓名板是另一条渲染路径 —— 两条都要走它
+    const barFn = /private castBarHtml[\s\S]*?\n {2}\}/.exec(COMBAT_HUD_SRC)?.[0] ?? '';
+    expect(barFn.length).toBeGreaterThan(0);
+    expect(barFn).toContain('castBarProgress(cast, dir.now)');
+    const plates = /private renderNameplates[\s\S]*?\n {2}\}/.exec(COMBAT_HUD_SRC)?.[0] ?? '';
+    expect(plates.length).toBeGreaterThan(0);
+    expect(plates).toContain('castBarProgress(cast, dir.now)');
+    /**
+     * ★★ 「同口径」只有在**只有一个实现**时才是真的。老账正是三处各写一遍
+     *   `endsAt - startedAt` 攒出来的，所以这里锁死：这个减法在全文件
+     *   只许出现一次，就是 `castBarProgress` 里的读条分支。
+     */
+    const dup = COMBAT_HUD_SRC.match(/endsAt - cast\.startedAt/g) ?? [];
+    expect(dup).toHaveLength(1);
+    // 老的姓名板专用算法必须已经消失
+    expect(COMBAT_HUD_SRC).not.toContain('castPct(');
+  });
+
+  it('★★ 引导条的 CSS 方向真的反了 —— reverse 只在引导段出现', () => {
+    const barFn = /private castBarHtml[\s\S]*?\n {2}\}/.exec(COMBAT_HUD_SRC)?.[0] ?? '';
+    // 反向播放同一条 cast-fill 关键帧（没有另加 @keyframes，index.html 不归本批改）
+    expect(barFn).toContain("animation-direction:reverse");
+    expect(barFn).toMatch(/p\.channeling \? ';animation-direction:reverse' : ''/);
+    expect(INDEX_HTML).toContain('@keyframes cast-fill');
+    // 动画不生效时的回落值也必须是**剩余**比例，方向不会在 reduce-motion 下说谎
+    expect(barFn).toContain('width:${p.pct}%');
+  });
+
+  it('★ 条上标「引导」二字 + 剩余秒数（15.2：施法条要显示剩余时间）', () => {
+    const barFn = /private castBarHtml[\s\S]*?\n {2}\}/.exec(COMBAT_HUD_SRC)?.[0] ?? '';
+    expect(barFn).toContain('引导');
+    expect(barFn).toContain('${p.remaining.toFixed(1)}s');
+    // 引导标记与不可打断盾牌一样是**条上的标记**，不是只写在 tooltip 里
+    expect(barFn).toMatch(/p\.channeling \? '<b class="chan"/);
   });
 });
 

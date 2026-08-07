@@ -44,7 +44,6 @@ const skills: SkillDef[] = [
       { kind: 'gainResource', resource: Resource.Rage, amount: 15 },
     ],
     description: '沿合法路线冲向目标并昏迷 0.75 秒。',
-    vfx: 'warrior_charge',
   },
   {
     id: asSkillId('warrior.mortal_strike'),
@@ -76,7 +75,6 @@ const skills: SkillDef[] = [
           clearableByTrinket: false,
           modifiers: { healingTaken: 0.75 },
           description: '受到的治疗降低 25%。',
-          vfx: 'mortal_wounds',
         },
       },
     ],
@@ -110,7 +108,6 @@ const skills: SkillDef[] = [
           clearableByTrinket: false,
           modifiers: { moveSpeed: 0.6 },
           description: '移动速度降低 40%。',
-          vfx: 'hamstring',
         },
       },
     ],
@@ -137,7 +134,6 @@ const skills: SkillDef[] = [
       { kind: 'stun', duration: 2 },
     ],
     description: '投出战锤造成少量伤害并昏迷 2 秒。释放后目标移动不会自然躲开。',
-    vfx: 'warrior_storm_bolt',
   },
   {
     id: asSkillId('warrior.pummel'),
@@ -157,7 +153,6 @@ const skills: SkillDef[] = [
     counters: '目标未在施法、或施法带盾牌标记（不可打断）时仍会进入冷却（7.2）；缴械状态下无法使用；假读条可以骗掉。',
     effects: [{ kind: 'interrupt', schoolLockSeconds: 3 }],
     description: '打断法术、引导或射击准备，并封锁该系魔法技能 3 秒。',
-    vfx: 'warrior_pummel',
   },
   {
     id: asSkillId('warrior.intervene'),
@@ -178,7 +173,6 @@ const skills: SkillDef[] = [
       { kind: 'interveneGuard', duration: 3 },
     ],
     description: '冲向友方，并在 3 秒内替其承受下一次直接攻击。',
-    vfx: 'warrior_intervene',
   },
   {
     id: asSkillId('warrior.defensive_stance'),
@@ -205,7 +199,6 @@ const skills: SkillDef[] = [
           dispelType: DispelType.None,
           modifiers: { damageTaken: 0.7, damageDealt: 0.85 },
           description: '受到伤害降低 30%，自身伤害降低 15%。',
-          vfx: 'warrior_defensive_stance',
         },
       },
     ],
@@ -261,12 +254,10 @@ const skills: SkillDef[] = [
           dispelType: DispelType.None,
           flags: { immuneSlowAndRoot: true },
           description: '持续旋转攻击周围敌人，免疫减速和定身。',
-          vfx: 'warrior_bladestorm',
         },
       },
     ],
     description: '在原地掀起持续 4 秒的旋刃风暴，期间免疫减速和定身。区域不随移动。',
-    vfx: 'warrior_bladestorm',
   },
   // 武器方案授予的技能
   {
@@ -352,7 +343,6 @@ const skills: SkillDef[] = [
       '**没有冷却但每次要 15 怒**：它是怒气溢出时的倾泻口，不是输出核心 —— 拿它当主手会让致死打击和风暴之锤按不出来；伤害低于所有带冷却的技能，被减伤吃掉后几乎无感；缴械期间不可用，且要贴脸面向。',
     effects: [{ kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.85 } }],
     description: '一次沉重的挥砍，造成 85% 武器伤害。无冷却，用来倾泻溢出的怒气。',
-    vfx: 'warrior_heroic_strike',
   },
   {
     id: asSkillId('warrior.spell_reflection'),
@@ -385,7 +375,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '举盾格挡法术，5 秒内受到伤害降低 40%。押对方读条的窗口。',
-    vfx: 'warrior_spell_reflection',
   },
   {
     id: asSkillId('warrior.intimidating_shout'),
@@ -404,7 +393,6 @@ const skills: SkillDef[] = [
       '走「恐惧」递减链（8.2），与心灵尖啸、恐惧共用一条 —— 队伍里有牧师时第二次就只剩一半；**受到任意伤害立即解除**，自己的持续伤害会把它拆掉；把对手打散也意味着自己够不到人；90 秒冷却。',
     effects: [{ kind: 'fear', duration: 4, breakDamage: 1 }],
     description: '怒吼震慑周围最多 5 名敌人，恐惧 4 秒，受到伤害立即解除。用来打断对方的集火。',
-    vfx: 'warrior_intimidating_shout',
   },
 ];
 

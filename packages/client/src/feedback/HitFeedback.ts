@@ -37,6 +37,12 @@ export interface HitEvent {
   /** >0 = 这一发就是致命一击 */
   overkill: number;
   school: School;
+  /**
+   * P3 签名音的钥匙。⚠️ 可缺：联网侧来源不可见时 skillId 随 sourceId 一起
+   * 被 redactFor 抹掉（协议注释明写）—— 缺席时回落 'autoAttack' 走学派音
+   * 是**正确**行为不是降级（隐身者的技能签名不该替他自报家门）。
+   */
+  skillId?: string | undefined;
   /** 目标最大生命（重击的比例判据）。联网侧从快照查，查不到就走绝对值兜底 */
   targetMaxHealth?: number | undefined;
 }
@@ -103,6 +109,10 @@ export interface HitFeedbackDeps {
     play(name: string, opts?: { group?: 'sfx' | 'music' | 'ui'; volume?: number; rate?: number; distance?: number }): void;
     playVariant(group: string, opts?: { volume?: number; rate?: number; distance?: number }): void;
     playImpact(school: School, opts?: { volume?: number; distance?: number }): void;
+    playImpactFor(
+      skill: { id: string; school: School },
+      opts?: { volume?: number; distance?: number },
+    ): void;
   };
   access: () => AccessibilitySettings;
 }
@@ -231,7 +241,8 @@ export class HitFeedback {
       d.audio.playVariant('block', opts);
       d.audio.playVariant('metal', { ...opts, volume: 0.5 });
     } else if (ev.amount > 0 || ev.absorbed > 0) {
-      d.audio.playImpact(ev.school, opts);
+      // P3 签名命中音：有 skillId 走技能签名，缺席回落 autoAttack（见 HitEvent 注释）
+      d.audio.playImpactFor({ id: ev.skillId ?? 'autoAttack', school: ev.school }, opts);
       if (onSelf) d.audio.playVariant('hurt', { volume: 0.85 });
       // 重击的低频骨感层（物理才有「骨」可言）
       if (

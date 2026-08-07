@@ -34,12 +34,10 @@ export const CONSUMABLES: readonly ConsumableDef[] = [
           // 占位值：+10% 输出。配平时重调
           modifiers: { damageDealt: 1.1 },
           description: '造成的伤害提高 10%。',
-          vfx: 'consumable_battle_draught',
         },
       },
     ],
     description: '15 秒内造成的伤害提高 10%。',
-    vfx: 'consumable_battle_draught',
   },
   {
     id: asConsumableId('consumable.mending_salve'),
@@ -60,12 +58,10 @@ export const CONSUMABLES: readonly ConsumableDef[] = [
           dispelType: DispelType.Magic,
           modifiers: { healingTaken: 1.15 },
           description: '受到的治疗提高 15%。',
-          vfx: 'consumable_mending_salve',
         },
       },
     ],
     description: '立即恢复少量生命，并在 12 秒内受到的治疗提高 15%。',
-    vfx: 'consumable_mending_salve',
   },
   {
     id: asConsumableId('consumable.warding_powder'),
@@ -89,12 +85,10 @@ export const CONSUMABLES: readonly ConsumableDef[] = [
               .reduce<Partial<Record<School, number>>>((a, x) => ((a[x] = 0.85), a), {}),
           },
           description: '受到的法术伤害降低 15%。',
-          vfx: 'consumable_warding_powder',
         },
       },
     ],
     description: '10 秒内受到的法术伤害降低 15%。',
-    vfx: 'consumable_warding_powder',
   },
 ];
 

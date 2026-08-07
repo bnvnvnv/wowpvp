@@ -48,7 +48,6 @@ const skills: SkillDef[] = [
       { kind: 'gainResource', resource: Resource.HolyPower, amount: 1 },
     ],
     description: '造成 72% 武器伤害并获得 1 点圣能。',
-    vfx: 'paladin_crusader_strike',
   },
   {
     id: asSkillId('paladin.judgement'),
@@ -88,12 +87,10 @@ const skills: SkillDef[] = [
           modifiers: { damageTaken: 1.1 },
           casterScoped: true,
           description: '受到该圣骑士造成的伤害提高 10%。',
-          vfx: 'paladin_judgement',
         },
       },
     ],
     description: '投出神圣审判造成伤害，并使目标 4 秒内额外承受 10% 来自你的伤害。',
-    vfx: 'paladin_judgement',
   },
   {
     id: asSkillId('paladin.holy_light'),
@@ -116,7 +113,6 @@ const skills: SkillDef[] = [
     //   续航是他每一轮的胜因（场均 24~27s 的消耗局），逐步压到位
     effects: [{ kind: 'heal', amount: { flat: 140 } }],
     description: '为友方恢复大量生命。1.5 秒读条，必须原地，可被打断。',
-    vfx: 'paladin_holy_light',
   },
   {
     id: asSkillId('paladin.word_of_glory'),
@@ -137,7 +133,6 @@ const skills: SkillDef[] = [
     // M14：260→155 —— 圣能修复后荣耀圣言真的会被施放了，数值按「瞬发不可打断」折价
     effects: [{ kind: 'heal', amount: { flat: 155 } }],
     description: '消耗 3 点圣能，立刻为友方恢复中等生命。',
-    vfx: 'paladin_word_of_glory',
   },
   {
     id: asSkillId('paladin.hammer_of_justice'),
@@ -156,7 +151,6 @@ const skills: SkillDef[] = [
     counters: '受昏迷递减 100%→50%→25%→免疫（8.2），一轮控制链后基本无效；「战斗意志」可直接解除（8.3）；圣盾术、保护祝福以外的法术免疫和抗控型护甲（控制时间 -25%）都能削弱；魔法技能，沉默或神圣系被封锁期间无法使用（7.3），10 米距离也要求先贴上去。',
     effects: [{ kind: 'stun', duration: 2.5 }],
     description: '昏迷目标 2.5 秒，受昏迷递减影响。',
-    vfx: 'paladin_hammer_of_justice',
   },
   {
     id: asSkillId('paladin.rebuke'),
@@ -177,7 +171,6 @@ const skills: SkillDef[] = [
     counters: '目标未在施法、或施法条带盾牌标记（不可打断）时依然进入 15 秒冷却（7.2）；假读条可以骗掉（7.5）；缴械期间不可用（7.3）；只有 3 米，把施法位置拉到近战距离外就打不到；打断物理射击准备条时不会封锁技能（7.2）。',
     effects: [{ kind: 'interrupt', schoolLockSeconds: 3 }],
     description: '打断法术、引导或射击准备，并封锁该系魔法技能 3 秒。脱离公共冷却。',
-    vfx: 'paladin_rebuke',
   },
   {
     id: asSkillId('paladin.blessing_of_freedom'),
@@ -214,12 +207,10 @@ const skills: SkillDef[] = [
           dispelType: DispelType.Magic,
           flags: { immuneMovementImpair: true },
           description: '免疫新的减速与定身。',
-          vfx: 'paladin_blessing_of_freedom',
         },
       },
     ],
     description: '解除友方身上的减速和定身，并在 3 秒内免疫新的减速和定身。',
-    vfx: 'paladin_blessing_of_freedom',
   },
   {
     id: asSkillId('paladin.blessing_of_protection'),
@@ -252,7 +243,6 @@ const skills: SkillDef[] = [
           clearableByTrinket: false,
           flags: { immunePhysical: true, disarmed: true },
           description: '免疫物理伤害，但自身无法进行物理攻击。',
-          vfx: 'paladin_blessing_of_protection',
         },
       },
       /**
@@ -267,7 +257,6 @@ const skills: SkillDef[] = [
       { kind: 'dropFlag', target: 'target' },
     ],
     description: '使友方 4 秒内免疫物理伤害，期间无法进行物理攻击。旗手获得时立即掉旗。',
-    vfx: 'paladin_blessing_of_protection',
   },
   {
     id: asSkillId('paladin.divine_shield'),
@@ -300,12 +289,10 @@ const skills: SkillDef[] = [
           flags: { immuneAll: true },
           modifiers: { damageDealt: 0.5, healingDone: 0.5 },
           description: '完全免疫，但造成的伤害与治疗降低 50%。',
-          vfx: 'paladin_divine_shield',
         },
       },
     ],
     description: '4 秒内完全免疫，期间输出和治疗降低 50%。使用时立即掉旗，可被群体驱散。',
-    vfx: 'paladin_divine_shield',
   },
   {
     id: asSkillId('paladin.avenging_wrath'),
@@ -334,12 +321,10 @@ const skills: SkillDef[] = [
           // P7 暴击轴：第一个「爆发窗口」—— 开翅膀期间伤害治疗都爱暴
           modifiers: { damageDealt: 1.2, healingDone: 1.2, critChance: 0.15 },
           description: '造成的伤害与治疗提高 20%，暴击几率提高 15%。',
-          vfx: 'paladin_avenging_wrath',
         },
       },
     ],
     description: '10 秒内伤害和治疗提高 20%、暴击几率提高 15%，拥有高可读性的金色视觉。',
-    vfx: 'paladin_avenging_wrath',
   },
   // 武器方案授予的技能
   {
@@ -371,7 +356,6 @@ const skills: SkillDef[] = [
           dispelType: DispelType.None,
           modifiers: { damageTaken: 0.9 },
           description: '受到的伤害降低 10%。',
-          vfx: 'paladin_shield_of_the_righteous',
         },
       },
     ],
@@ -421,7 +405,6 @@ const skills: SkillDef[] = [
       { kind: 'gainResource', resource: Resource.HolyPower, amount: 1 },
     ],
     description: '射出一枚圣光弹造成神圣伤害并获得 1 点圣能。仅权杖+圣典方案可用。',
-    vfx: 'paladin_holy_bolt',
   },
 
   /**
@@ -457,7 +440,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '在脚下的地面注入圣光，8 秒内每秒对区域内敌人造成神圣伤害。用来控场与逼位。',
-    vfx: 'paladin_consecration',
   },
   {
     id: asSkillId('paladin.lay_on_hands'),
@@ -477,7 +459,6 @@ const skills: SkillDef[] = [
       '**5 分钟冷却**：一局竞技场里只可能用一次，用错时机等于没有这个技能；瞬发但仍需视线，队友被拉进柱子后就够不到；治疗量按目标最大生命的百分比给出，对手只要在读条结束后立刻接爆发依然能秒穿。',
     effects: [{ kind: 'healPercentMaxHealth', percent: 0.6 }],
     description: '瞬发治疗一名队友 60% 最大生命，不消耗法力。5 分钟冷却 —— 一局一次的救场键。',
-    vfx: 'paladin_lay_on_hands',
   },
   {
     id: asSkillId('paladin.devotion_aura'),
@@ -510,7 +491,6 @@ const skills: SkillDef[] = [
       },
     ],
     description: '为 30 米内所有队友降低 20% 承伤，持续 6 秒。押对方开手瞬间的团队减伤。',
-    vfx: 'paladin_devotion_aura',
   },
 ];
 

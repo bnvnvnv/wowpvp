@@ -224,13 +224,15 @@ export interface AuraDef {
   casterScoped?: boolean;
   maxStacks?: number;
   /**
-   * ⚠️ **目前是死数据 —— 全仓库没有任何代码读这个字段**（P4b 全文检索确认）。
-   *   实际的施法/命中表现走的是 `client/src/vfx/schools.ts` 的 `visualOf()`：
-   *   按技能**学派 + 形状**取八属性视觉，与本键无关。留着它是给 P3
-   *   「技能签名」（每技能专属特效/音效）当落点 —— 接线时这里就是那个键；
-   *   在那之前**不要**以为改这个字符串能改变任何画面。
+   * ⚠️ 这里曾经有一个 `vfx?: string`（AuraDef 一份、SkillDef 一份，
+   *   共 148 处数据值）。**P3 技能签名批把它们删掉了** ——
+   *   它自 P4b 起零读取，而 P3 落地时签名并没有落在这个键上：
+   *   签名引用的是**盘上音效文件名**与**客户端特效形态**，
+   *   全是表现层资产的坐标，落点是 `client/src/av/skillSignature.ts`。
+   *   ★ 分层的先例是 `skillIconMap.ts`（图标 → 磁盘路径，含断链测试）：
+   *     **shared 说这个技能是什么，client 说它长什么样、什么声音。**
+   *     塞回 shared 会让规则层背上「资产存不存在」的校验责任。
    */
-  vfx?: string;
   /** 玩家可见的说明文本 */
   description: string;
 }
@@ -436,8 +438,7 @@ export interface SkillDef {
   effects: EffectDef[];
   /** 玩家可见说明 */
   description: string;
-  /** ⚠️ 死数据，无消费方 —— 详见 AuraDef.vfx 的注释（P3 技能签名的落点）*/
-  vfx?: string;
+  // ⚠️ 这里曾经有 `vfx?: string` —— 与 AuraDef 的那个一起随 P3 删除，理由见那边
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -537,7 +538,8 @@ export interface ConsumableDef {
   /** 使用后进入的冷却，秒。0 表示不进冷却 */
   cooldown: number;
   description: string;
-  vfx?: string;
+  // ⚠️ 这里曾经有 `vfx?: string` —— 三处死字段（SkillDef/AuraDef/本处）随
+  //   P3 一并删除：技能签名落在 client/src/av/（与技能图标同一分层先例）
 }
 
 export interface ArmorDef {

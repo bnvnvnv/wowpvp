@@ -14,7 +14,11 @@ import { CastKind, School, asSkillId, type CombatEvent, type EntityId, type Skil
 import type { AudioManager } from './AudioManager.js';
 import { playCastActivity, playCombatEvent } from './combatAudio.js';
 
-/** 记下播了什么的假音频层。★ 只记录，不发声 —— 与真 AudioManager 的接口同形 */
+/**
+ * 记下播了什么的假音频层。★ 只记录，不发声 —— 与真 AudioManager 的接口同形。
+ * ★ P3：多了 `playCastFor` / `playImpactFor` 两支，且**记的是 skillId 而不是学派** ——
+ *   「同一学派的十几个技能共用一声」这件事，只有把 id 记进调用串才验得出来。
+ */
 const makeAudio = () => {
   const calls: string[] = [];
   const stub = {
@@ -22,6 +26,8 @@ const makeAudio = () => {
     playVariant: (group: string) => { calls.push(`variant:${group}`); },
     playCast: (school: School) => { calls.push(`cast:${school}`); },
     playImpact: (school: School) => { calls.push(`impact:${school}`); },
+    playCastFor: (s: { id: string }) => { calls.push(`castFor:${s.id}`); },
+    playImpactFor: (s: { id: string }) => { calls.push(`impactFor:${s.id}`); },
   };
   return { calls, audio: stub as unknown as AudioManager };
 };
@@ -126,6 +132,63 @@ describe('自身施法失败的提示音节流（~300ms）', () => {
     playCastActivity(audio, deps, 'failed', SELF, skill);
     playCastActivity(audio, deps, 'resolved', SELF, skill);
     playCastActivity(audio, deps, 'resolved', SELF, skill);
-    expect(calls.filter((c) => c.startsWith('cast:')).length).toBe(2);
+    expect(calls.filter((c) => c.startsWith('castFor:')).length).toBe(2);
+  });
+});
+
+/**
+ * P3：施法音改走技能签名（`playCastFor`）之后，P10 那套「三件语义相反的事
+ * 三种声音」必须原样还在。
+ *
+ * ★★ 这一支存在的理由很具体：P3 的改法是把 `playCast(school)` 换成
+ *   `playCastFor(skill)`，最容易顺手做过头的一件事就是**把失败/被打断也一起
+ *   签名化** —— 那会让「我按了没放出来」这一声随技能变调，
+ *   而 P10 花了一整批才把它固定成一个玩家学得会的常量。
+ */
+describe('P3 重构后：P10 的打断三分法与失败提示音没有回退', () => {
+  it('★★ 打断成功 / 落空 / 被打断，三条仍是三种互不相同的声音', () => {
+    const ok = makeAudio();
+    const miss = makeAudio();
+    const mine = makeAudio();
+    playCombatEvent(ok.audio, deps, interruptEvent(true));
+    playCombatEvent(miss.audio, deps, interruptEvent(false));
+    playCastActivity(mine.audio, deps, 'interrupted', SELF, skill);
+    expect(ok.calls).toEqual(['variant:metal']);
+    expect(miss.calls).toEqual(['variant:swing']);
+    expect(mine.calls).toEqual(['play:ui_error']);
+  });
+
+  it('★★ 失败/被打断**不**走签名 —— 它们说的是「没成」，不是「这是什么技能」', () => {
+    const { calls, audio } = makeAudio();
+    playCastActivity(audio, deps, 'interrupted', SELF, skill);
+    expect(calls.some((c) => c.startsWith('castFor:'))).toBe(false);
+  });
+});
+
+describe('★★ P3：施法音携带 skillId（同学派的十几个技能不再共用一声）', () => {
+  it('★★ resolved 递下去的是技能本身，不是它的学派', () => {
+    const { calls, audio } = makeAudio();
+    playCastActivity(audio, deps, 'resolved', SELF, skill);
+    expect(calls).toEqual(['castFor:mage.frostbolt']);
+    // 老的学派入口在技能语境里彻底不再出现（回落发生在 AudioManager 内部）
+    expect(calls.some((c) => c.startsWith('cast:'))).toBe(false);
+  });
+
+  it('★ 同学派的两个技能给出两条不同的调用（此前两者完全同声）', () => {
+    const iceLance = { ...skill, id: asSkillId('mage.ice_lance') } as SkillDef;
+    const a = makeAudio();
+    const b = makeAudio();
+    playCastActivity(a.audio, deps, 'resolved', SELF, skill);
+    playCastActivity(b.audio, deps, 'resolved', SELF, iceLance);
+    expect(a.calls).not.toEqual(b.calls);
+  });
+
+  it('⚠️ 起手声仍只给读条/引导 —— 瞬发不许响两声（P10 结论未变）', () => {
+    const instant = {
+      ...skill, cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    } as SkillDef;
+    const { calls, audio } = makeAudio();
+    playCastActivity(audio, deps, 'started', SELF, instant);
+    expect(calls).toEqual([]);
   });
 });
