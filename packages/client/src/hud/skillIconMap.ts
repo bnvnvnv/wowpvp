@@ -92,6 +92,9 @@ export const SKILL_ICON_FILES: Readonly<Record<string, string>> = {
   // ◆ 制服目标使其无法行动 —— 与致盲同为「受伤即解」的失能，
   //   `rogue/blind` 已被 smoke_bomb 占用（同职业不得重复）
   'rogue.blind': 'rogue/sap',
+  // P9 扩充：唯一没有速度爆发的近战补上机动键
+  //（`rogue/sprint` 同时被 deathknight.deaths_advance 借用 —— 跨职业复用是允许的）
+  'rogue.sprint': 'rogue/sprint',
 
   // ── 猎人 ──────────────────────────────────────────────────────
   // hunter.auto_shot 已于 M14 删除 —— 自动射击回归 7.6 挥击系统，不再是按钮技能

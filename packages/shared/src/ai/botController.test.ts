@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { druid, hunter, mage, priest, warrior } from '../data/index.js';
+import { druid, hunter, mage, priest, rogue, warrior } from '../data/index.js';
 import type { AuraDef } from '../data/schema.js';
 import { CastKind, DispelType, DrCategory, School } from '../types/enums.js';
 import { asSkillId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
@@ -474,7 +474,7 @@ describe('P4 驱散：按下去能清掉东西才按', () => {
   });
 });
 
-describe('P4 位移：远程拉开、近战贴上', () => {
+describe('P4 位移：远程拉开、近战贴上（贴不上就加速追）', () => {
   it('★★ 猎人被贴脸 → 后撤跃', () => {
     const s = duel(hunter, warrior, 3);
     const a = decideBotAction(perceive(s, {
@@ -526,6 +526,81 @@ describe('P4 位移：远程拉开、近战贴上', () => {
       difficulty: 'normal', auras: new Map(), dr: createDrStore(),
     }));
     expect(a.move.forward).toBeGreaterThanOrEqual(0);
+  });
+
+  // ── 近战追击两级：gap closer → 加速（E：让加速类技能对近战不再是死键）──
+
+  /**
+   * ★ 不依赖新数据的那一条：战士**没有**加速键，冲锋是他追人的唯一手段。
+   *   它守的是「加了第二级之后第一级没被挤掉」——「有突进时不选加速」的
+   *   完整优先级由下面盗贼那条钉（盗贼两样都有）。
+   */
+  it('★★ 战士 15m 外冲锋可用 → 仍然出冲锋（近战第一级没被新分支挤掉）', () => {
+    const s = duel(warrior, mage, 15);
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    const picked = warrior.skills.find((sk) => sk.id === a.cast?.skillId);
+    expect(picked !== undefined && isGapCloserSkill(picked),
+      `实际选了 ${a.cast?.skillId}`).toBe(true);
+    expect(a.cast?.targetId).toBe(s.foe.id);
+  });
+
+  /**
+   * 盗贼是全花名册**唯一**同时握着突进（影袭步 18m/CD20）与加速（疾跑
+   * moveSpeed 1.7/8s/CD120，对齐 WoW 疾跑口径）的近战 —— 两级次序只有拿他才测得全。
+   * ★ 疾跑由另一条并行任务加进 rogue.ts；这里先把夹具前提钉住，数据要是
+   *   被回滚，红的是这条前提而不是下面两条行为断言（失败时好归因）。
+   */
+  const ROGUE_DASH = rogue.skills.find(isSpeedBurstSkill);
+
+  it('★ 夹具前提：盗贼有加速键（疾跑）与突进键（影袭步）', () => {
+    expect(ROGUE_DASH, '盗贼没有加速键 —— rogue.sprint 被回滚了？').toBeDefined();
+    expect(rogue.skills.some(isGapCloserSkill), '影袭步').toBe(true);
+  });
+
+  it('★★ 盗贼 15m 外两样都可用 → 出影袭步，不开疾跑（瞬间到位 > 跑过去）', () => {
+    const s = duel(rogue, mage, 15);
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    const picked = rogue.skills.find((sk) => sk.id === a.cast?.skillId);
+    expect(picked !== undefined && isGapCloserSkill(picked),
+      `次序反了：有影袭步却选了 ${a.cast?.skillId}`).toBe(true);
+    expect(a.cast?.skillId).not.toBe(ROGUE_DASH?.id);
+  });
+
+  it('★★ 盗贼 15m 外、影袭步进冷却 → 开疾跑追（近战加速此前是死键）', () => {
+    const s = duel(rogue, mage, 15);
+    // 把全部突进键塞冷却（影袭步 CD20）—— 逼出第二级；用冷却而不是清能量，
+    // 免得顺带把别的键也废掉（同 B2 夹具的理由）
+    for (const sk of rogue.skills.filter(isGapCloserSkill)) s.self.cooldowns.set(sk.id, 999);
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    expect(a.cast?.skillId, `突进全在冷却里却选了 ${a.cast?.skillId}`).toBe(ROGUE_DASH?.id);
+    // ★ 加速是自身增益 —— 目标必须是自己（冲锋才指对手）
+    expect(a.cast?.targetId).toBe(s.self.id);
+  });
+
+  it('★ 近战贴身（d=2）→ 不走位移支，照常输出（追击只在 d > GAP_CLOSE_MIN_D 触发）', () => {
+    const s = duel(rogue, mage, 2);
+    for (const sk of rogue.skills.filter(isGapCloserSkill)) s.self.cooldowns.set(sk.id, 999);
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    const picked = rogue.skills.find((sk) => sk.id === a.cast?.skillId);
+    expect(picked !== undefined && isSpeedBurstSkill(picked),
+      `贴脸还开加速 —— 追击分支的距离门破了（实际选了 ${a.cast?.skillId}）`).toBe(false);
+    expect(picked !== undefined && isGapCloserSkill(picked)).toBe(false);
+    /**
+     * 落到常规出招步骤 → 目标是**对手**（位移两支一个指自己[加速]、一个指
+     * 对手[冲锋]，所以只看 targetId 不够，上面两条分类器断言才是主判据）。
+     * ⚠️ 这里刻意**不**断言「选中的技能有伤害」：开局无连击点、不在背后的
+     *   盗贼此刻实际选的是隐匿（能量满，但剜刺/割裂要连击点、背袭要绕后，
+     *   validateCast 全判掉）—— 那是盗贼技能组的资源前提，不是追击分支的事。
+     */
+    expect(a.cast?.targetId).toBe(s.foe.id);
   });
 });
 

@@ -912,12 +912,24 @@ export const decideBotAction = (p: BotPerception): BotAction => {
    * ★★ P4 位移：6 个位移键此前从未被按。分两种打法，方向相反：
    *   · **远程被贴脸** → 后撤跃（瞬间拉开 6 米）；没有就开加速爆发。
    *     与上面的 kiting 是同一套「拉开」棋路的两枚子。
-   *   · **近战够不着** → 突进/背刺传送贴上去。方向与 advance 一致，
-   *     只是把「跑 12 米」换成「一瞬到位」—— 多出来的全是输出时间，
-   *     这也是四类位移里风险最低的一条。
+   *   · **近战够不着** → 突进/背刺传送贴上去；都在冷却里就开加速追。
+   *     方向与 advance 一致，只是把「跑 12 米」换成「一瞬到位」——
+   *     多出来的全是输出时间，这也是四类位移里风险最低的一条。
    * ★ 后撤跃/加速目标是自己，冲锋目标是对手 —— usableOn 分别验。
    */
   if (difficulty !== 'easy') {
+    /**
+     * ★ P9 补全：**逃跑的人自己也要开加速**。retreating（hard 苟住）的
+     *   转身满速跑与追击者同速 —— 对面一个冲锋就贴回来了。开着疾跑跑路
+     *   才真的拉得开；这也是疾跑「追击与撤离两用」里撤离那一半的兑现。
+     *   放在 peel/chase 之前：正在逃命时别的位移棋都不成立。
+     */
+    if (retreating) {
+      const burst = skills.find(
+        (sk) => isSpeedBurstSkill(sk) && castableNow(sk) && usableOn(sk, self),
+      );
+      if (burst) return { move: advance, cast: { skillId: burst.id, targetId: self.id } };
+    }
     if (d <= TACTICS.PEEL_RANGE && reach >= TACTICS.RANGED_REACH_MIN) {
       const out =
         skills.find((sk) => isEscapeSkill(sk) && castableNow(sk) && usableOn(sk, self)) ??
@@ -925,8 +937,24 @@ export const decideBotAction = (p: BotPerception): BotAction => {
       if (out) return { move: advance, cast: { skillId: out.id, targetId: self.id } };
     }
     if (d > TACTICS.GAP_CLOSE_MIN_D && reach < TACTICS.RANGED_REACH_MIN) {
+      /**
+       * ★★ 两级，次序不能反：**瞬间到位永远优于跑过去。**
+       *   冲锋/背刺传送是一个 tick 内贴上去，之后每一秒都在输出；加速只是
+       *   把追击那几秒从 100% 变成 160%，路还是要跑的（何况对手也在跑）。
+       *   gap closer 可用时开加速 = 白扔一个长冷却换一段本可以省掉的路。
+       * ⚠️ 背景：此前这里**只有** gap closer 一支 —— 冲锋/影袭步一进冷却，
+       *   近战手里的加速键就是**死键**，对着会跑的人干瞪眼。P8 hard 的
+       *   「苟住」（B2 转身满速跑）恰恰把这一幕变成常态：追不上就等于
+       *   对面白嫖一整段回血/拉扯时间。加速正是这条残局的解，bot 得会按。
+       * ★ 目标是自己（加速是自身增益），与上面远程那支同理 —— usableOn 验 self；
+       *   也因此它不在 `offensive`（那份是按对手验的）里找，得回 `skills` 全集。
+       */
       const closer = offensive.find((sk) => isGapCloserSkill(sk) && castableNow(sk));
       if (closer) return { move: advance, cast: { skillId: closer.id, targetId: foe.id } };
+      const dash = skills.find(
+        (sk) => isSpeedBurstSkill(sk) && castableNow(sk) && usableOn(sk, self),
+      );
+      if (dash) return { move: advance, cast: { skillId: dash.id, targetId: self.id } };
     }
   }
 

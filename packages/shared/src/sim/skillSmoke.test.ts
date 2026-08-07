@@ -1,5 +1,5 @@
 /**
- * 全量技能冒烟：**116 个技能逐一真实施放，逐效果断言可观测变化**。
+ * 全量技能冒烟：**117 个技能逐一真实施放，逐效果断言可观测变化**。
  *
  * ★★ 起因是用户的一句灵魂拷问：「所有技能都逐一验证过了吗？都是生效的吗？」
  *   诚实回答是没有 —— 数据体检验形状、单测验规则、balance 只走 bot 按得到的
@@ -394,7 +394,9 @@ for (const cls of ALL_CLASSES) {
 describe('冒烟覆盖面', () => {
   it('全部职业全部技能都进了冒烟循环', () => {
     const total = ALL_CLASSES.reduce((n, c) => n + c.skills.length, 0);
-    expect(total).toBeGreaterThanOrEqual(116);
+    // P9：116 → 117（盗贼疾跑）。这是**下限**，加技能时随实际数量抬高，
+    // 这样删掉一个技能才会红 —— 停在旧值等于给「悄悄少一个」开了口子
+    expect(total).toBeGreaterThanOrEqual(117);
   });
 
   it('偷袭这类脱战技能在夹具里真的放得出去（lastCombatAt 门禁被喂到）', () => {
