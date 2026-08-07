@@ -114,8 +114,12 @@ import {
 import { HitStop } from '../render/HitStop.js';
 import { HitFeedback } from '../feedback/HitFeedback.js';
 
-/** 技能栏槽位数。快捷键只有 1–8，职业技能多于 8 个时其余仅在 HUD 里可见 */
-const SKILL_SLOT_COUNT = 8;
+/**
+ * 底部一行键位提示（合同 C7 的内容）。
+ * ★ 只列**主路径上真的会用到**的键，不抄一份完整键位表 —— 完整表在 F10。
+ */
+const NET_HINT_TEXT =
+  'Tab 选目标 · 点模型选中 · F 焦点 · 1–9 技能 · Esc 取消读条 · G 交互 · R 解控 · O 记分板 · F10 设置与键位重绑';
 
 /** 8.2「迷惑」链的光环 id（`control.${kind}`，见 shared/sim/effects/combat.ts）*/
 const MORPH_AURA_ID = 'control.incapacitate';
@@ -243,6 +247,8 @@ export class NetworkScene {
   private readonly selfAnim = new AnimationController();
   /** M12：当前目标的脚下指示环 */
   private readonly targetRing = new TargetRing();
+  /** 5.1 焦点目标的脚下指示环。★ 与试验场同一个类、同一套语义色 */
+  private readonly focusRing = new TargetRing();
   /** 远端角色的可视化与动作状态机，按实体 id */
   private readonly views = new Map<number, CharacterView>();
   private readonly anims = new Map<number, AnimationController>();
@@ -337,7 +343,7 @@ export class NetworkScene {
     this.selfView.setClass(opts.classId);
 
     this.scene.add(this.selfView.group);
-    this.scene.add(this.targetRing.group);
+    this.scene.add(this.targetRing.group, this.focusRing.group);
     // 5.5 瞄准指示器（关键 UI，不受 art 门禁）
     this.scene.add(this.groundIndicator.group, this.directionIndicator.group);
     /**
@@ -357,7 +363,8 @@ export class NetworkScene {
       this.spellVfx = new SpellVfx();
       this.scene.add(this.spellVfx.group);
     }
-    canvas.addEventListener('mousemove', this.onCanvasMouseMove);
+    // ⚠️ mousemove 挂 window（见处理器注释：挂 canvas 会让 NDC 冻在 UI 边缘）
+    window.addEventListener('mousemove', this.onWindowMouseMove);
     canvas.addEventListener('mousedown', this.onCanvasMouseDown);
     this.addLights();
     if (this.art) this.env.apply(this.quality.current, { preset: 'day' });
@@ -418,16 +425,13 @@ export class NetworkScene {
      * W10：一行键位提示。新玩家的主路径（大厅 → 开局）此前**恰好是唯一
      * 没有任何键位提示的路径** —— 第一局不知道 G 是交互、Esc 能假读条。
      * 完整键位表在 F10 设置面板里，这一行只解决「知道去哪看」。
+     *
+     * ★ 合同 C7：本场景原本自己建一个 `#net-hint`，试验场则完全没有提示条。
+     *   现在两场景共用 `SceneShell.showHintBar()` 那一条 —— 本地那份删掉，
+     *   否则屏幕底部会同时出现两条（双条比没有更糟）。
+     *   F 键与「点模型」是本轮才接通的两条（此前写进提示就是在撒谎）。
      */
-    const hint = document.createElement('div');
-    hint.id = 'net-hint';
-    Object.assign(hint.style, {
-      position: 'absolute', left: '10px', bottom: '8px',
-      color: '#c8d2e0', font: '500 11px system-ui, sans-serif',
-      pointerEvents: 'none', zIndex: '20', opacity: '.62',
-    } as Partial<CSSStyleDeclaration>);
-    hint.textContent = 'Tab 选目标 · 1–9 技能 · Esc 取消读条 · G 交互 · R 解控 · O 记分板 · F10 设置与键位重绑';
-    (canvas.parentElement ?? document.body).appendChild(hint);
+    this.shell.showHintBar(NET_HINT_TEXT);
 
     // W6：延迟指示。小、常驻、不抢注意力 —— 有异常时颜色先说话
     this.rttLabel = document.createElement('div');
@@ -539,6 +543,9 @@ export class NetworkScene {
       this.view.targetId = id;
       this.conn.send({ t: 'SetTarget', slot: 'hard', entityId: id });
     };
+    // 6.5 朝向提示用**本地预测**的角色 yaw（快照的 yaw 晚一个单程延迟）
+    this.view.selfYaw = () => this.characterYaw;
+    this.wireHudInteractions();
 
     if (opts.link) {
       // M13 大厅流程：借用大厅的连接，消息经 deliver() 进来
@@ -570,6 +577,23 @@ export class NetworkScene {
 
   }
 
+  /**
+   * 合同 C2 / C4 的接线：瞄准期间点姓名板 = 确认落点；点队伍框成员 = 选中他。
+   *
+   * ★★ 为什么要 C2：姓名板与队伍框是**盖在画面上的 DOM**，瞄准时想把落点
+   *   放在某个人身上，鼠标必然经过他的姓名板 —— 那一下此前被当成「换目标」，
+   *   于是瞄准被打断、落点丢失。现在瞄准期间那一下改为**确认落点**且不改目标。
+   * ★ 判定与动作分离：HUD 只问「现在在瞄准吗」，怎么算瞄准、确认之后干什么
+   *   全在场景这边 —— HUD 因此不需要认识 `AimingController`。
+   */
+  private wireHudInteractions(): void {
+    this.hud.aimActiveProbe = () => this.aim.isAiming;
+    // ★ 与 canvas 左键走**同一个**标志位：瞄准状态机只认识 clickFlags
+    this.hud.onAimConfirm = () => { this.clickFlags.left = true; };
+    // C4：点队伍框成员 → 与点姓名板同一条路径（发 SetTarget，服务器仍复核）
+    this.hud.party.onSelectMember = (entityId) => this.view.selectById(entityId);
+  }
+
   start(): void {
     audio.install();
     this.ownConn?.connect();
@@ -592,22 +616,99 @@ export class NetworkScene {
   dispose(): void {
     this.loop.stop();
     this.ownConn?.close();
-    this.canvas.removeEventListener('mousemove', this.onCanvasMouseMove);
+    window.removeEventListener('mousemove', this.onWindowMouseMove);
     this.canvas.removeEventListener('mousedown', this.onCanvasMouseDown);
     this.spellVfx?.dispose();
     this.flagMarkers.dispose();
     this.shell.dispose();
   }
 
-  private onCanvasMouseMove = (ev: MouseEvent): void => {
+  /**
+   * ⚠️⚠️ **挂在 window 上，不是 canvas 上**（与试验场同根的一个坑）。
+   *
+   *   HUD 覆盖层里有可点的部分（姓名板、技能格、面板）—— 它们 `pointer-events`
+   *   是打开的，指针划过去时 canvas 就**收不到 mousemove 了**。挂 canvas 的
+   *   后果是 NDC 停在「进入那块 UI 之前的最后一个点」：地面指示器冻在原地，
+   *   玩家以为落点选好了，实际按下去落在别处。
+   * ★ 换成 window 之后坐标换算不变 —— `ndcFromMouse` 本来就是按 canvas 的
+   *   矩形算的，指针在 canvas 外时算出来的 NDC 超出 [-1,1]，射线自然打不中东西。
+   */
+  private onWindowMouseMove = (ev: MouseEvent): void => {
     this.shell.ndcFromMouse(ev, this.ndc);
+    this.updateHoverCursor();
   };
 
+  /**
+   * 5.2：左键点角色模型设为硬目标 + 5.5 瞄准的左右键。
+   *
+   * ★★ P10：射线选中此前**联网侧独缺** —— 试验场有（`TestbedScene`
+   *   的同名方法），联网侧这个处理器只喂瞄准状态机。于是联网对局里
+   *   点人只能点姓名板那一小块，点模型没有任何反应。
+   * ⚠️ `ev.target` 守卫：这个处理器挂在 canvas 上，但（与 mousemove 同一个
+   *   原因）冒泡上来的 UI 点击不该被当成「点空地/点人」—— 尤其不能把
+   *   点技能格的那一下算成一次瞄准确认。
+   */
   private onCanvasMouseDown = (ev: MouseEvent): void => {
+    if (ev.target !== this.canvas) return;
     // 5.5：左键确认落点、右键取消 —— 只喂给瞄准状态机
     if (ev.button === 0) this.clickFlags.left = true;
     if (ev.button === 2) this.clickFlags.right = true;
+
+    // 瞄准期间左键只用于确认落点，不改变目标（与试验场同一条守卫）
+    if (ev.button !== 0 || this.aim.isAiming) return;
+    const hit = this.pickEntityAt(this.shell.ndcFromMouse(ev, new THREE.Vector2()));
+    // 5.1：点空地**不清除**硬目标 —— 硬目标持续保留
+    if (hit !== undefined) this.view.selectById(hit);
   };
+
+  /**
+   * 屏幕坐标 → 命中的实体 id（最近的一个）。没打中人返回 undefined。
+   *
+   * ★ 只对**远端**角色组做射线：自己的模型挡在镜头前时不该把自己选中，
+   *   而联网侧选自己走的是队伍框（15.1）与 Alt 自我施法两条路。
+   * ⚠️ 与试验场是两份**平行**实现（那边遍历 `dummyViews`，这边遍历 `views`）——
+   *   统一成一个「可拾取角色注册表」是 G4 那类共用地基的活，不在本轮范围内。
+   */
+  private pickEntityAt(ndc: THREE.Vector2): number | undefined {
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(ndc, this.cam.camera);
+    let best: { id: number; dist: number } | undefined;
+    for (const [id, view] of this.views) {
+      /**
+       * ★ 尸体不参与拾取：服务器的 `setHardTarget` 会因 `isSelectableBy`
+       *   为假而拒绝，这里放行只会造出「本地选中了、服务器没有」的分叉。
+       *   ⚠️ 客户端只判得了「死没死」—— `untargetable`（剑刃风暴）不在
+       *   `DisplayFlags` 里，那一条仍然只有服务器判得了。
+       */
+      if (!this.lastEntities.find((e) => (e.id as number) === id)?.alive) continue;
+      const hits = ray.intersectObject(view.group, true);
+      if (hits.length && (!best || hits[0]!.distance < best.dist)) {
+        best = { id, dist: hits[0]!.distance };
+      }
+    }
+    return best?.id;
+  }
+
+  /**
+   * M12：光标随悬停对象变化（敌对=剑、友方=盾、其余=手）。
+   * ★ 5.2「点击选中」的预告：按下之前就知道会点到谁。
+   * ★ 只在鼠标移动时算一次射线，不进每帧循环 —— 12v12 下逐帧对 23 个
+   *   角色组做 raycast 是白扔掉的帧（与试验场同一条理由）。
+   */
+  private updateHoverCursor(): void {
+    const cls = this.canvas.classList;
+    // 瞄准期间光标语义由地面指示器承担
+    if (this.aim.isAiming || !this.started) {
+      cls.remove('cursor-attack', 'cursor-friendly');
+      return;
+    }
+    const id = this.pickEntityAt(this.ndc);
+    const team = id === undefined
+      ? undefined
+      : this.lastEntities.find((e) => (e.id as number) === id)?.team;
+    cls.toggle('cursor-attack', team !== undefined && team !== this.selfTeam);
+    cls.toggle('cursor-friendly', team !== undefined && team === this.selfTeam);
+  }
 
   get status(): NetStatus {
     const p = this.predictor?.position ?? { x: 0, y: 0, z: 0 };
@@ -756,6 +857,12 @@ export class NetworkScene {
         this.lastArmories = msg.armories;
         this.lastMatch = msg.match;
         this.selfTeam = msg.entities.find((e) => e.id === msg.you)?.team ?? this.selfTeam;
+        /**
+         * 5.1 焦点回读。★ 服务器是切换语义的唯一实现处，所以焦点**只从快照来**
+         *   （字段只发给自己、且焦点不可见时不发 —— 见 visibility.ts）。
+         *   焦点离场/潜行遁走时字段自然消失，客户端不需要一条「清焦点」的逻辑。
+         */
+        this.view.focusId = msg.entities.find((e) => e.id === msg.you)?.focusId;
         this.view.ingest(
           {
             tick: msg.tick, you: msg.you, entities: msg.entities,
@@ -888,10 +995,19 @@ export class NetworkScene {
         if (msg.entityId === this.selfId) this.killFeed.showRecap(this.serverTime);
         break;
       }
-      case 'CastFailed':
+      case 'CastFailed': {
         audio.play('ui_error', { group: 'ui', volume: 0.5 });
-        this.view.push(`施法失败：${FAIL_TEXT[msg.reason] ?? msg.reason}`, 'fail');
+        const text = `施法失败：${FAIL_TEXT[msg.reason] ?? msg.reason}`;
+        this.view.push(text, 'fail');
+        /**
+         * 合同 C2：**同一句话**也送到屏幕中部。战斗日志在左下角，而玩家此刻
+         * 正盯着准星 —— 「按了没反应」这类问题的根因就是失败原因只走了日志。
+         * ★ 与试验场同一条纪律（`CombatDirector.selfFail`）：中部提示与日志
+         *   说同一句，玩家不必在两处之间做翻译。
+         */
+        this.hud.showCenterNotice(text);
         break;
+      }
       case 'CastStarted': {
         audio.playCast(msg.school, { ...this.audioDistance(msg.casterId), volume: 0.7 });
         // ★ 施法注册表：HUD 的四条施法条与 14.1「预备」阶段的蓄力法阵同吃这一份
@@ -948,6 +1064,24 @@ export class NetworkScene {
         const st = this.view.castOfId(msg.casterId);
         const caster = this.casterLike(msg.casterId);
         if (st && caster) this.spellVfx?.onCast('interrupted', caster, getSkill(st.skillId));
+        /**
+         * 合同 C2：自己被打断要在**屏幕上**说话 —— 此前联网侧这条消息只播了
+         * 一声 ui_error，日志里一个字都没有：读条没了而玩家不知道发生过什么。
+         *
+         * ⚠️ 刻意**不译 `msg.source`**（专用打断/沉默/移动…）：那张标签表是
+         *   `CombatDirector` 的模块私有常量 `INTERRUPT_TEXT`，在这里照抄一份
+         *   就是给两个场景的措辞留一条分叉缝。技能名 + 学派锁定都是消息里
+         *   直接有的事实，先如实说这些；把那张表导出来是 B2 侧的一行后续。
+         */
+        if (msg.casterId === this.selfId) {
+          const skillName = st ? getSkill(st.skillId)?.name ?? '施法' : '施法';
+          const lock = msg.schoolLock
+            ? `，${SCHOOL_NAMES[msg.schoolLock.school] ?? msg.schoolLock.school}系被锁定`
+            : '';
+          const text = `你的${skillName}被打断了${lock}`;
+          this.view.push(text, 'interrupt');
+          this.hud.showCenterNotice(text);
+        }
         this.view.endCast(msg.casterId);
         break;
       }
@@ -1092,10 +1226,19 @@ export class NetworkScene {
     // 5.3：Tab 正序、Shift+Tab 反序
     if (input.pressed.has(Action.TargetNext)) this.tabTarget(false);
     if (input.pressed.has(Action.TargetPrev)) this.tabTarget(true);
+    // 5.1 焦点目标（F）。★ 整条链路此前只差这一发，见 setFocusToCurrent()
+    if (input.pressed.has(Action.SetFocus)) this.setFocusToCurrent();
 
-    // ── 施法（1–8 键 + 5.5 瞄准流程）。★ 只发**意图**，结算全在服务器 ──
+    /**
+     * ── 施法（技能键 + 5.5 瞄准流程）。★ 只发**意图**，结算全在服务器 ──
+     *
+     * ★★ P10：循环上界必须是 `SKILL_BAR_SLOTS`（技能栏真实格数），而不是
+     *   本文件此前自己写的那个 8 —— 两个常量各写各的，结果是**第 9 格
+     *   永远按不出来**：HUD 画着它、`skillBarDefsFor` 也确实取了 9 个、
+     *   `Action.skill9` 也绑着键，只有这里的循环少转一圈。
+     */
     let pressedSlot: number | null = null;
-    for (let i = 0; i < SKILL_SLOT_COUNT; i++) {
+    for (let i = 0; i < SKILL_BAR_SLOTS; i++) {
       if (input.pressed.has(`skill${i + 1}` as Action)) pressedSlot = i;
     }
     // 鼠标点技能格：与数字键**走同一条**瞄准流程（地面技能同样要选落点）
@@ -1433,6 +1576,28 @@ export class NetworkScene {
       });
     }
     return out;
+  }
+
+  /**
+   * 5.1 焦点目标：把当前硬目标设为焦点（再按一次清除，切换语义在服务器）。
+   *
+   * ★★ P10：这条链路**协议与服务器早就齐了**（`SetTarget slot:'focus'` +
+   *   `MatchLoop` 的 `toggleFocus`），只有客户端从来没发过这条消息 ——
+   *   于是联网对局里 F 键、焦点框、焦点环三样一起是死的。
+   * ★ 不在本地记账「焦点现在是谁」：切换的权威在服务器（目标不可选中时它会
+   *   静默不设），本地猜一份迟早分叉。焦点从快照的 `focusId` 回读（见
+   *   `visibility.ts` 的字段注释）。
+   */
+  private setFocusToCurrent(): void {
+    if (!this.started) return;
+    /**
+     * 没有硬目标时发 null = 清除焦点。⚠️ 这与「没选人就按 F」的玩家意图一致：
+     * 他要么想设、要么想清，而设不出来时清掉比什么都不做更可预期。
+     */
+    this.conn.send({
+      t: 'SetTarget', slot: 'focus',
+      entityId: this.currentTargetId ?? null,
+    });
   }
 
   private tabTarget(reverse: boolean): void {
@@ -2026,22 +2191,38 @@ export class NetworkScene {
    *   而角色是平滑的，看上去像环没跟上人。
    */
   private updateTargetRing(): void {
+    const p = paletteFor(this.hud.accessibility.colorblind);
     const id = this.currentTargetId;
     if (id === undefined) {
       this.targetRing.update(undefined, 'hostile', this.serverTime, '#fff');
-      return;
+    } else {
+      const snap = this.lastEntities.find((e) => e.id === id);
+      const friendly = snap !== undefined && snap.team === this.selfTeam;
+      this.targetRing.update(
+        this.renderedPositionOf(id) ?? snap?.position,
+        friendly ? 'friendly' : 'hostile',
+        this.serverTime,
+        friendly ? p.friendly : p.hostile,
+      );
     }
-    const snap = this.lastEntities.find((e) => e.id === id);
-    const rendered = this.views.get(id as number)?.group.position;
-    const at = rendered ?? snap?.position;
-    const p = paletteFor(this.hud.accessibility.colorblind);
-    const friendly = snap !== undefined && snap.team === this.selfTeam;
-    this.targetRing.update(
-      at,
-      friendly ? 'friendly' : 'hostile',
-      this.serverTime,
-      friendly ? p.friendly : p.hostile,
+    /**
+     * 5.1 焦点环。★ 与试验场同一套：中性色 + `focus` 环形，与硬目标一眼可分。
+     * 焦点不在快照里（离场/遁形）时 `focusId` 本来就没了 —— 环自然消失。
+     */
+    const fid = this.view.focusId;
+    const fSnap = fid === undefined
+      ? undefined
+      : this.lastEntities.find((e) => e.id === fid);
+    this.focusRing.update(
+      fid === undefined ? undefined : (this.renderedPositionOf(fid) ?? fSnap?.position),
+      'focus', this.serverTime, p.neutral,
     );
+  }
+
+  /** 某实体**渲染中**的位置（远端走插值后的视图，自己走预测）。不在场返回 undefined */
+  private renderedPositionOf(id: EntityId): { x: number; y: number; z: number } | undefined {
+    if (id === this.selfId) return this.predictor?.position;
+    return this.views.get(id as number)?.group.position;
   }
 
   /** M12：武器变化才触发挂载（setWeapon 是异步的，不能每帧调） */

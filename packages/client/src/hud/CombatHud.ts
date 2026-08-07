@@ -19,14 +19,25 @@ import * as THREE from 'three';
 import {
   CastFailure,
   CastKind,
-  School,
+  RANGE,
   distance2D,
   getClass,
+  getSkill,
   type CastState,
 } from '@wowpvp/shared';
-import { FAIL_TEXT, SCHOOL_TEXT } from '../combat/CombatDirector.js';
+import { SCHOOL_TEXT } from '../combat/CombatDirector.js';
 import type { CombatView, HudSkillSlot, HudUnit } from './CombatView.js';
 import { skillIconHtml } from './skillIcon.js';
+import { SCHOOL_COLOR } from './schoolColor.js';
+import {
+  BLOCKER_GLYPH,
+  blockerCategory,
+  blockerText,
+  escHtml as esc,
+  pickBlocker,
+  skillAriaLabel,
+  skillTooltipHtml,
+} from './skillTooltip.js';
 import { CONTROL_VISUALS } from '../vfx/status.js';
 import { Minimap } from './Minimap.js';
 import { ModeHud } from './ModeHud.js';
@@ -42,23 +53,27 @@ import {
   type AccessibilitySettings,
 } from '../settings/accessibility.js';
 
-/** 14.2 八属性视觉语言的颜色。HUD 与特效共用同一张表 */
-export const SCHOOL_COLOR: Record<School, string> = {
-  physical: '#d8cbb4',
-  holy: '#ffe9a8',
-  fire: '#ff8a4c',
-  frost: '#8fd4ff',
-  arcane: '#c39bff',
-  shadow: '#a172c9',
-  nature: '#8fe08a',
-  // 上面七项已覆盖 School 全部成员
-} as Record<School, string>;
+/**
+ * 14.2 八属性视觉语言的颜色。
+ * ★ 实体已挪到 `schoolColor.ts`（tooltip 也要用，留在这里会形成循环 import），
+ *   这里再导出一次，老的 `from './CombatHud.js'` 导入路径不受影响。
+ */
+export { SCHOOL_COLOR } from './schoolColor.js';
 
 /** HUD 完整重建的间隔。20Hz 与服务器 tick 同频，视觉上察觉不到 */
 const HUD_UPDATE_INTERVAL_MS = 50;
 
 /** 受击闪烁的持续时间，秒 */
 const FLASH_DURATION = 0.26;
+
+/**
+ * 屏幕中部提示的停留时长，毫秒（合同 C2）。
+ *
+ * ★ **占位值 1600ms**：没有出处。选它的理由是「够读完一句 10 字以内的
+ *   中文提示（约 1.2s）再留一点余量」，同时短到不会盖住下一次事件 ——
+ *   死亡/打断这类提示经常连着来两条。淡出另计 0.3s，见 index.html。
+ */
+const CENTER_NOTICE_MS = 1600;
 
 export class CombatHud {
   private readonly root: HTMLElement;
@@ -78,6 +93,16 @@ export class CombatHud {
    *   与姓名板点击选目标同一手法（那条早就在了，技能栏一直缺）。
    */
   onSkillClick: ((slotIndex: number) => void) | undefined;
+  /**
+   * 合同 C2：地面指示器是否正处于「等待左键确认」状态。
+   *
+   * ★ HUD 自己**不知道**瞄准状态在谁手里（试验场在 CombatDirector、
+   *   联网在 NetworkScene），所以只留一个探针由场景注入。
+   * ⚠️ 没接线时恒为 undefined ⇒ 姓名板行为与从前逐字节一致。
+   */
+  aimActiveProbe: (() => boolean) | undefined;
+  /** 合同 C2：瞄准期间点姓名板 = 就地确认落点，**不换目标** */
+  onAimConfirm: (() => void) | undefined;
   private readonly logBox: HTMLElement;
   private readonly aimHint: HTMLElement;
   private readonly nameplateLayer: HTMLElement;
@@ -102,6 +127,30 @@ export class CombatHud {
   private readonly screenFlash!: HTMLElement;
   /** 受击闪烁的剩余秒数 */
   private flashLeft = 0;
+  /** 合同 C2：屏幕中部短提示 */
+  private readonly centerNotice!: HTMLElement;
+  private noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  /** 技能 tooltip 的浮层，以及它当前锚在第几格（-1 = 没显示）*/
+  private readonly skillTip!: HTMLElement;
+  private tipIndex = -1;
+  /** ⚠️ 连下标一起记：换武器方案会让同一格换成另一个技能（附录A#4）*/
+  private tipSkillId = '';
+  /**
+   * 最近一次鼠标位置（视口坐标，-1 = 还没动过鼠标）。
+   *
+   * ★★ tooltip 的锚点靠它 + `elementFromPoint` **现场命中测试**得出，
+   *   而不是靠 `:hover` 或 mouseover/mouseout 记账。理由是技能栏每 50ms
+   *   整块重建 innerHTML，这让另外两条路都不可靠（两次真机复验各抓到一条）：
+   *     · `querySelector('.slot:hover')` 在刚换完 DOM 的那一帧**恒为 null**
+   *       —— 浏览器要到下一次输入/帧更新才重算命中 ⇒ tooltip 永远不出现。
+   *     · 鼠标底下那个格子被删掉之后再移开，`mouseout/mouseleave` 是从
+   *       **已经脱离文档的节点**上发出来的，冒泡不到技能栏 ⇒ tooltip 收不回去。
+   *   `elementFromPoint` 每次都问当前这一棵真实的 DOM，没有任何跨帧状态。
+   */
+  private pointerX = -1;
+  private pointerY = -1;
+  /** 最近一次渲染用的技能槽，tooltip 要按下标反查技能 */
+  private lastSlots: readonly HudSkillSlot[] = [];
 
   constructor(container: HTMLElement) {
     this.root = document.createElement('div');
@@ -114,9 +163,19 @@ export class CombatHud {
       <div id="aim-hint"></div>
       <div id="player-cast"></div>
       <div id="skill-bar"></div>
+      <div id="skill-tip" hidden></div>
+      <div id="center-notice"></div>
       <div id="combat-log"></div>
     `;
     container.appendChild(this.root);
+
+    /**
+     * HUD 区域内屏蔽浏览器右键菜单。
+     * ⚠️ 画布上的那条早就在 `InputManager`（右键拖拽=转镜头）里，但它挂在
+     *   canvas 上 —— 而技能栏、姓名板、装备栏都浮在 canvas **之上**，
+     *   在它们上面右键会弹出系统菜单并同时吃掉一次转镜头。
+     */
+    this.root.addEventListener('contextmenu', (ev) => ev.preventDefault());
 
     this.nameplateLayer = this.root.querySelector('#nameplates')!;
     this.screenFlash = this.root.querySelector('#screen-flash')!;
@@ -134,13 +193,60 @@ export class CombatHud {
      * ★ `stopPropagation`：别让这一次点击穿透到画布，被当成瞄准确认。
      */
     this.skillBar.addEventListener('mousedown', (ev) => {
-      const slot = (ev.target as HTMLElement).closest<HTMLElement>('.slot');
-      if (!slot?.parentElement) return;
-      const index = [...slot.parentElement.children].indexOf(slot);
+      /**
+       * ⚠️ **只认左键。** 之前没判 button，实测中键/右键按在技能格上
+       *   都会施法 —— 而右键在这个游戏里是「按住转镜头」，玩家把光标停在
+       *   技能栏上转视角就会莫名其妙放出一个技能。
+       */
+      if (ev.button !== 0) return;
+      const index = this.slotIndexOf(ev.target as HTMLElement);
       if (index >= 0) this.onSkillClick?.(index);
+      ev.stopPropagation();
+      /**
+       * ★ `preventDefault` 本该顺带压住「点击把焦点抢到技能格上」。
+       */
+      ev.preventDefault();
+      /**
+       * ⚠️⚠️ **但实测它压不住**（真机复验抓到：点完一格后
+       *   `document.activeElement` 就是那个 `.slot`）。焦点赖在格子上有
+       *   两个后果，都很难联想到「因为点了一下技能」：
+       *     · tooltip 收不回去 —— 鼠标早移开了，焦点还锚在那儿
+       *     · **Space 不再跳跃** —— 被下面的键盘激活处理器吃掉了
+       *   所以点完显式退焦：鼠标操作不该产生键盘焦点。用 `setTimeout(0)`
+       *   而不是微任务 —— 聚焦是本次事件的**默认动作**，在整个派发结束后
+       *   才发生，微任务可能跑在它前面，那就白退了。
+       */
+      setTimeout(() => {
+        const a = document.activeElement as HTMLElement | null;
+        if (a && this.skillBar.contains(a)) a.blur();
+      }, 0);
+    });
+    /**
+     * 键盘激活。格子对外声明了 `role="button"`，那就必须真的能按 ——
+     * ★ Enter 与 Space 都收（ARIA 对 button 的要求），并且 `stopPropagation`
+     *   把这次按键**吃掉**：window 上的 InputManager 也监听 Space（跳跃），
+     *   不吃掉就会「放一个技能顺便跳一下」。
+     */
+    this.skillBar.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Enter' && ev.key !== ' ' && ev.code !== 'Space') return;
+      const index = this.slotIndexOf(ev.target as HTMLElement);
+      if (index < 0) return;
+      this.onSkillClick?.(index);
       ev.stopPropagation();
       ev.preventDefault();
     });
+    /**
+     * 鼠标位置只**记坐标**，命中测试留到 20Hz 的 `syncSkillTip` 里做 ——
+     * 拖镜头时 mousemove 能到 100Hz+，每一次都做一遍 `elementFromPoint`
+     * （会强制样式与布局刷新）是白花钱。20Hz ⇒ 最多 50ms 延迟，感觉不出来。
+     * ★ 挂在**容器**上而不是 window：HUD 随容器一起消失，不留全局监听。
+     */
+    container.addEventListener('mousemove', (ev) => {
+      this.pointerX = ev.clientX;
+      this.pointerY = ev.clientY;
+    }, { passive: true });
+    this.skillTip = this.root.querySelector('#skill-tip')!;
+    this.centerNotice = this.root.querySelector('#center-notice')!;
     this.logBox = this.root.querySelector('#combat-log')!;
     this.aimHint = this.root.querySelector('#aim-hint')!;
 
@@ -201,6 +307,33 @@ export class CombatHud {
     el.classList.remove('pressed');
     void el.offsetWidth; // 强制重排，让同一格连按两次也能重放动画
     el.classList.add('pressed');
+  }
+
+  /** 事件目标 → 技能格下标。命中不了返回 -1 */
+  private slotIndexOf(target: HTMLElement | null): number {
+    const slot = target?.closest<HTMLElement>('.slot');
+    if (!slot?.parentElement || slot.parentElement !== this.skillBar) return -1;
+    return [...this.skillBar.children].indexOf(slot);
+  }
+
+  /**
+   * 合同 C2：屏幕中部一条短提示，约 1.6 秒后淡出。
+   *
+   * ★★ 为什么不复用战斗日志：日志在**左下角**，而玩家的视线在准星上。
+   *   「你被打断了」「超出距离」这种要求立刻改变操作的信息，放在
+   *   眼睛不看的地方等于没说 —— 真机审计里「失败了但不知道为什么」
+   *   的根因就是它们只走了日志那一条通道。
+   * ⚠️ 这里**只管显示**，什么值得提示由调用方（合同 C3 的四个回调）决定 ——
+   *   HUD 一旦自己判断「这条重要」就会开始和战斗逻辑抢真相。
+   */
+  showCenterNotice(text: string): void {
+    const el = this.centerNotice;
+    el.textContent = text;
+    el.classList.remove('show');
+    void el.offsetWidth; // 强制重排：同一条提示连发两次也要重放淡入
+    el.classList.add('show');
+    if (this.noticeTimer !== undefined) clearTimeout(this.noticeTimer);
+    this.noticeTimer = setTimeout(() => el.classList.remove('show'), CENTER_NOTICE_MS);
   }
 
   /**
@@ -279,6 +412,10 @@ export class CombatHud {
   ): void {
     if (!unit) {
       el.style.display = 'none';
+      // ⚠️ 只藏不清会留下**幽灵数据**：任何读 innerText 判断状态的代码
+      //   （验收脚本、以后的自动化）会读到上一个目标的血量。
+      //   `renderPlayerCast` 早就这么做了，两处对齐。
+      el.innerHTML = '';
       return;
     }
     el.style.display = '';
@@ -287,6 +424,22 @@ export class CombatHud {
     const cast = dir.castOf(unit);
     const cls = getClass(unit.classId);
     const weapon = cls?.weapons.find((w) => w.id === unit.weaponId);
+
+    /**
+     * ★★ 敌我区分（规格 777，与姓名板同一条）。
+     *
+     *   在此之前目标框**不分敌我**：选队友和选敌人长得一模一样，血条恒绿。
+     *   而 15.2 的目标框是治疗与集火共用的同一个控件 —— 分不清就会
+     *   「对着队友读了两秒火球」。
+     * ★ 复用姓名板那套 `paletteFor(colorblind)` 语义色 + ▲/◆ 字形，
+     *   两个控件同色同形，玩家只需要学一次（17.2 不能只靠颜色）。
+     */
+    const friendly = unit.team === dir.player.team;
+    el.classList.toggle('uf-friendly', friendly);
+    el.classList.toggle('uf-hostile', !friendly);
+    const teamColor = friendly
+      ? paletteFor(this.access.colorblind).friendly
+      : paletteFor(this.access.colorblind).hostile;
 
     // 15.2：目标框显示职业、生命、资源、当前武器、旗手状态
     const primary = cls?.resources[0]?.resource;
@@ -301,13 +454,13 @@ export class CombatHud {
           })();
 
     el.innerHTML = `
-      <div class="uf-label">${label}</div>
-      <div class="uf-name">
+      <div class="uf-label">${label} · <span class="uf-team">${friendly ? '友方' : '敌方'}</span></div>
+      <div class="uf-name" style="color:${teamColor}">
         ${esc(unit.name)}
         <span class="uf-class">${esc(cls?.name ?? '')}</span>
         ${unit.flags.carryingFlag ? '<span class="flag">🚩旗手</span>' : ''}
       </div>
-      <div class="bar hp"><i style="width:${hpPct}%"></i><span>${unit.health} / ${unit.maxHealth}</span></div>
+      <div class="bar hp"><i style="width:${hpPct}%;background:${teamColor}"></i><span>${unit.health} / ${unit.maxHealth}</span></div>
       ${resourceHtml}
       <div class="uf-meta">
         <span>${dist.toFixed(1)} m</span>
@@ -324,7 +477,19 @@ export class CombatHud {
    * ★ 物理射击准备用**独立颜色**，因为它的反制方式与法术不同（缴械有效、沉默无效）
    */
   private castBarHtml(cast: CastState, dir: CombatView): string {
-    const skill = dir.skills.find((s) => s.id === cast.skillId)
+    /**
+     * ★★ **敌方施法条必须查全局技能表。**
+     *
+     *   原来这里查的是 `dir.skills` —— 那是**玩家自己那 9 格**。
+     *   于是牧师读闪现治疗时，法师玩家看到的是 `priest.flash_heal`
+     *   这样一个内部 id（真机审计实测），而 7.5 的打断博弈全靠这一行：
+     *   要不要把唯一的打断交出去，取决于对面读的是治疗还是伤害。
+     *   显示内部 id 等于把这条博弈的信息通道关掉。
+     * ★ 玩家栏留作兜底：将来若出现「不在全局表里的临时技能」，
+     *   至少还有一次机会查到名字；两条都miss才退回 id。
+     */
+    const skill = getSkill(cast.skillId)
+      ?? dir.skills.find((s) => s.id === cast.skillId)
       ?? { name: String(cast.skillId), school: cast.school };
     const total = Math.max(0.01, cast.endsAt - cast.startedAt);
     const remaining = Math.max(0, cast.endsAt - dir.now);
@@ -371,15 +536,40 @@ export class CombatHud {
   // ── 15.2 技能栏 ─────────────────────────────────────────────
 
   private renderSkillBar(slots: readonly HudSkillSlot[]): void {
+    this.lastSlots = slots;
+    /**
+     * ⚠️ 重建 innerHTML 会把焦点打飞：被删掉的元素上的焦点直接回到 body。
+     *   格子对外声明了 `role="button"` + `tabindex`，如果每 50ms 自己毁一次
+     *   焦点，这个声明就是假的。原本焦点就在某一格上时把它还回去 ——
+     * ★ 只在焦点**本来就在技能栏里**时才还，绝不主动抢焦点。
+     */
+    const active = document.activeElement as HTMLElement | null;
+    const refocus = active && this.skillBar.contains(active) ? this.slotIndexOf(active) : -1;
     this.skillBar.innerHTML = slots
       .map((s, i) => {
-        const usable = s.blocker === CastFailure.Ok && s.cooldownRemaining <= 0;
-        const reason =
-          s.cooldownRemaining > 0
-            ? `${s.cooldownRemaining.toFixed(1)}s`
-            : s.blocker === CastFailure.Ok
-              ? ''
-              : FAIL_TEXT[s.blocker];
+        /**
+         * 合同 C1：`blockers[]` 有值时按「位置→视线→朝向→资源→冷却→状态」
+         * 挑首个显示（`pickBlocker`）。⚠️ 生产方没填时退回单个 `blocker`，
+         * 与改造前逐字节一致 —— 可选字段的意义就在这里。
+         */
+        const blocker = s.blockers && s.blockers.length > 0
+          ? pickBlocker(s.blockers)
+          : s.blocker;
+        const usable = blocker === CastFailure.Ok && s.cooldownRemaining <= 0;
+        // 冷却读数优先：自身冷却时「还剩几秒」比「冷却中」三个字有用
+        const onOwnCd = s.cooldownRemaining > 0;
+        const category = onOwnCd
+          ? 'cooldown'
+          : blocker === CastFailure.Ok ? undefined : blockerCategory(blocker);
+        const reason = onOwnCd
+          ? `${s.cooldownRemaining.toFixed(1)}s`
+          : blocker === CastFailure.Ok
+            ? ''
+            // GCD 是**所有格子共享**的一条冷却，把秒数带上才知道该等还是该换招
+            : blockerText(
+                blocker,
+                blocker === CastFailure.OnGlobalCooldown ? s.gcdRemaining : undefined,
+              );
         const color = SCHOOL_COLOR[s.skill.school] ?? '#ccc';
         /**
          * M12 冷却扫层。★ 它是**第二**通道 —— 下面 `.sk-block` 里的
@@ -391,19 +581,102 @@ export class CombatHud {
           s.cooldownRemaining > 0 && cdTotal > 0
             ? `<div class="sk-cd" style="--cd-deg:${((s.cooldownRemaining / cdTotal) * 360).toFixed(1)}deg"></div>`
             : '';
+        /**
+         * 合同 C1 的 GCD 扫层。
+         *
+         * ★★ GCD 期间 7 个格子只显示静态的「公共冷却」四个字，**没有任何
+         *   动的东西** —— 玩家读不出「还有多久」，只知道现在按不了。
+         *   这里复用同一个 conic-gradient，但**颜色更浅**：它和自身冷却
+         *   必须一眼能分（一个 1.5 秒后全好，一个只有这格要等 30 秒）。
+         * ⚠️ 数据没填（生产方未跟上）就什么都不画，保持老样子 ——
+         *   宁可少一层，不能画一个停在 0 度的假扫层。
+         */
+        const gcdSweep =
+          s.gcdRemaining !== undefined && s.gcdRemaining > 0
+            && s.gcdTotal !== undefined && s.gcdTotal > 0
+            ? `<div class="sk-gcd" style="--gcd-deg:${((s.gcdRemaining / s.gcdTotal) * 360).toFixed(1)}deg"></div>`
+            : '';
+        const glyph = category ? BLOCKER_GLYPH[category] : '';
+        /**
+         * 无障碍：格子对外是一个按钮。`role` + `tabindex` + `aria-label` 三件套，
+         * 键盘激活见构造函数里的 keydown（Enter/Space 都真的能放技能）。
+         * ⚠️ 游戏里 Tab 被 5.3 的切目标占用且 `InputManager` 会 preventDefault，
+         *   所以实际到达这里的焦点来自辅助技术或程序调用，不是 Tab 键。
+         */
+        const aria = skillAriaLabel(s.skill, this.skillKeyLabel(i), reason);
         return `
-          <div class="slot ${usable ? 'usable' : 'blocked'}" style="--school:${color}">
+          <div class="slot ${usable ? 'usable' : 'blocked'}" style="--school:${color}"
+               role="button" tabindex="0" aria-label="${esc(aria)}">
             <kbd>${esc(this.skillKeyLabel(i))}</kbd>
-            <div class="sk-head">${skillIconHtml(s.skill, 26)}${sweep}<div class="sk-name">${esc(s.skill.name)}</div></div>
+            <div class="sk-head">${skillIconHtml(s.skill, 26)}${sweep}${gcdSweep}<div class="sk-name">${esc(s.skill.name)}</div></div>
             <div class="sk-meta">
               ${s.skill.cast.kind === CastKind.Instant ? '瞬发' : `${s.skill.cast.time}s`}
               · ${s.skill.range.max === 0 ? '自身' : `${s.skill.range.max}m`}
-              ${s.skill.triggersGcd ? '' : ' · <span title="脱离公共冷却">脱GCD</span>'}
+              ${s.skill.triggersGcd ? '' : ' · <span class="sk-nogcd">脱GCD</span>'}
             </div>
-            ${reason ? `<div class="sk-block">${reason}</div>` : ''}
+            ${reason ? `<div class="sk-block" data-blk="${category ?? ''}">${glyph} ${esc(reason)}</div>` : ''}
           </div>`;
       })
       .join('');
+    if (refocus >= 0) {
+      (this.skillBar.children[refocus] as HTMLElement | undefined)?.focus({ preventScroll: true });
+    }
+    this.syncSkillTip();
+  }
+
+  /**
+   * 技能 tooltip 的显隐与定位。
+   *
+   * ⚠️⚠️ **锚点每次现场重算，不跨帧记账。** 技能栏每 50ms 整块重建，
+   *   握着的元素句柄立刻就是野的、`:hover` 与 mouseout 也都不可靠
+   *   （两条都在真机复验里翻过车，详见 `pointerX` 的注释）。
+   *   这里只用两个**当下就能问清楚**的事实：鼠标在哪（命中测试）、
+   *   焦点在哪（`document.activeElement`）。
+   * ★ 鼠标优先于焦点：手上正在指的那一格才是玩家在问的那一格。
+   */
+  private syncSkillTip(): void {
+    const children = [...this.skillBar.children];
+    const under = this.pointerX >= 0
+      ? this.slotIndexOf(document.elementFromPoint(this.pointerX, this.pointerY) as HTMLElement)
+      : -1;
+    const active = document.activeElement as HTMLElement | null;
+    const focused = active && this.skillBar.contains(active) ? this.slotIndexOf(active) : -1;
+    const index = under >= 0 ? under : focused;
+    const anchor = index >= 0 ? (children[index] as HTMLElement | undefined) : undefined;
+    const slot = index >= 0 ? this.lastSlots[index] : undefined;
+    if (!anchor || !slot) {
+      if (this.tipIndex !== -1) {
+        this.tipIndex = -1;
+        this.tipSkillId = '';
+        this.skillTip.hidden = true;
+      }
+      return;
+    }
+    const skillId = String(slot.skill.id);
+    // 同一格同一技能：内容与位置都不用重算（每 50ms 重排一次浮层会闪）
+    if (index === this.tipIndex && skillId === this.tipSkillId) return;
+    this.tipIndex = index;
+    this.tipSkillId = skillId;
+    this.skillTip.innerHTML = skillTooltipHtml(slot.skill);
+    this.skillTip.hidden = false;
+
+    /**
+     * 定位：格子**上方**居中，视口内钳位。
+     * ⚠️ `#combat-hud > *` 上有 `zoom: var(--ui-scale)`，而
+     *   `getBoundingClientRect()` 返回的是**已缩放**的视口坐标 ——
+     *   直接把它写回 `style.left` 会在 uiScale≠1 时偏移一倍缩放。
+     *   所以先在视口坐标里算好，再除以缩放换回本地坐标。
+     */
+    const z = clampUiScale(this.access.uiScale) || 1;
+    const a = anchor.getBoundingClientRect();
+    const t = this.skillTip.getBoundingClientRect();
+    const margin = 8;
+    let x = a.left + a.width / 2 - t.width / 2;
+    x = Math.max(margin, Math.min(x, window.innerWidth - t.width - margin));
+    let y = a.top - t.height - margin;
+    if (y < margin) y = a.bottom + margin; // 上面放不下就翻到下面
+    this.skillTip.style.left = `${x / z}px`;
+    this.skillTip.style.top = `${y / z}px`;
   }
 
   private renderLog(dir: CombatView): void {
@@ -432,8 +705,20 @@ export class CombatHud {
     const h = canvas.clientHeight;
     const v = new THREE.Vector3();
 
+    /**
+     * ★★ **超出最大选中距离的姓名板一律不画。**
+     *
+     *   真机审计实测：306 米外的敌人姓名板照样是**原尺寸**、照样能点，
+     *   点了服务器不认（5.3/6.1：Tab 与点击都只到 45 米），于是玩家
+     *   得到一个「选上了但打不到」的假目标。姓名板没有做任何透视缩小，
+     *   所以远近在屏幕上根本看不出来。
+     * ★ 口径与 `RANGE.MAX_SELECT` 对齐 —— 与合同 C6 的服务器侧校验
+     *   是同一个常量，客户端不自己定一套。
+     * ⚠️ 剔除放在**密度排序之前**：够不着的人不该占用 17.2 的密度名额。
+     */
+    const entities = dir.visibleUnits()
+      .filter((e) => distance2D(e.position, dir.player.position) <= RANGE.MAX_SELECT);
     // 17.2 姓名板密度需要「按距离排第几」——远处的姓名板才是造成拥挤的那些
-    const entities = dir.visibleUnits();
     const nameplateRank = new Map<number, number>();
     [...entities]
       .sort((a, b) =>
@@ -474,6 +759,18 @@ export class CombatHud {
         el.className = 'nameplate';
         el.addEventListener('mousedown', (ev) => {
           ev.stopPropagation();
+          /**
+           * 合同 C2：地面技能瞄准中点姓名板 = **就地确认落点**，不换目标。
+           *
+           * ★★ 这条来自真机审计里最难受的一次交互：举着暴风雪的指示器
+           *   想砸在对面那堆人身上，一点下去 —— 姓名板把这次点击吃了，
+           *   变成「换了个目标」，指示器还举着。玩家会以为技能坏了。
+           * ⚠️ 探针没接线（undefined）时行为与从前完全一致。
+           */
+          if (this.aimActiveProbe?.()) {
+            this.onAimConfirm?.();
+            return;
+          }
           dir.selectById(key);
         });
         this.nameplateLayer.appendChild(el);
@@ -536,8 +833,8 @@ const castPct = (cast: CastState, now: number): number => {
   return Math.min(100, ((total - Math.max(0, cast.endsAt - now)) / total) * 100);
 };
 
-const esc = (s: string): string =>
-  s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+// ★ 转义实现已收拢到 skillTooltip.ts 的 `escHtml`（本文件按 `esc` 别名导入）——
+//   HUD 里曾经有两份一模一样的转义表，两份迟早会分叉。
 
 /**
  * 15.2：「当前目标框显示……主要控制递减」。

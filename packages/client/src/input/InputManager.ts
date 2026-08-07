@@ -139,6 +139,26 @@ export interface FrameInput {
   pressed: ReadonlySet<Action>;
 }
 
+/**
+ * 绑定串里可用的修饰键前缀。
+ * ★ 目前只有 Shift（默认表里唯一的组合键是 `ShiftTab`）。列成数组而不是写死
+ *   `'Shift'`，是为了让将来加 Ctrl/Alt 前缀只改这一行 —— 解析、互斥、
+ *   preventDefault 三处都从它推导。
+ * ⚠️ `ShiftLeft` / `ShiftRight` 是**物理键本身**（可以被直接绑），不是组合前缀。
+ */
+const MODIFIERS = ['Shift'] as const;
+type Modifier = (typeof MODIFIERS)[number];
+
+/** `'ShiftTab'` → `{ mod: 'Shift', base: 'Tab' }`；`'Tab'` / `'ShiftLeft'` → `{ mod: null, base: 原串 }` */
+const parseBinding = (code: string): { mod: Modifier | null; base: string } => {
+  for (const mod of MODIFIERS) {
+    if (!code.startsWith(mod) || code === `${mod}Left` || code === `${mod}Right`) continue;
+    const base = code.slice(mod.length);
+    if (base.length > 0) return { mod, base };
+  }
+  return { mod: null, base: code };
+};
+
 export class InputManager {
   private bindings: Record<Action, string>;
   private down = new Set<string>();
@@ -171,24 +191,88 @@ export class InputManager {
     return this.bindings[action];
   }
 
-  private isDown(action: Action): boolean {
-    const code = this.codeOf(action);
-    // ShiftTab 这类组合键
-    if (code.startsWith('Shift') && code !== 'ShiftLeft' && code !== 'ShiftRight') {
-      return this.down.has('ShiftLeft') && this.down.has(code.slice(5));
+  /** 修饰键是否按住。⚠️ 左右两颗都算 —— 只认 ShiftLeft 会让惯用右手小指的人按不出 Shift+Tab */
+  private modHeld(mod: Modifier | null): boolean {
+    if (mod === null) return true;
+    return this.down.has(`${mod}Left`) || this.down.has(`${mod}Right`);
+  }
+
+  /**
+   * 同一颗物理键上是否存在「修饰键已按住」的更具体绑定。
+   *
+   * ★★ 这是 Shift+Tab 反选能生效的关键：`ShiftTab` 与 `Tab` 是两条**互斥**的
+   *   绑定，不是可以同时命中的两条。此前两者同帧都为真，于是 targetNext 与
+   *   targetPrev 在同一帧互相抵消 —— 真机连按 4 次 Shift+Tab 目标纹丝不动。
+   * ★ 规则用「更具体优先」表述而不是给 Tab 特判：任何重绑出来的组合键
+   *   （玩家把某动作绑到 Shift+某键）都自动获得同样的让位关系。
+   */
+  private hasActiveComboOn(base: string): boolean {
+    for (const a of Object.values(Action)) {
+      const p = parseBinding(this.codeOf(a));
+      if (p.mod !== null && p.base === base && this.modHeld(p.mod)) return true;
     }
-    return this.down.has(code);
+    return false;
+  }
+
+  private isDown(action: Action): boolean {
+    const { mod, base } = parseBinding(this.codeOf(action));
+    if (!this.down.has(base)) return false;
+    if (mod !== null) return this.modHeld(mod);
+    // 无修饰绑定：同键上有生效的组合绑定时让位（见 hasActiveComboOn）
+    return !this.hasActiveComboOn(base);
+  }
+
+  /**
+   * 一次 keydown 该触发**哪一个**动作（至多一个）。
+   *
+   * ★★ 此前这里是「遍历所有动作，凡是 isDown() 为真的全塞进 pressedThisFrame」，
+   *   而 isDown() 表达的是「按住」而非「刚按下」—— 于是任何一次新按键都会把
+   *   **当前所有按住的动作**重新触发一遍：按住 Tab 再按 Q 会再换一次目标、
+   *   按住技能键再按无关键会重复提交施法、按住 K 再按 W 会反复开关实战模式。
+   *   触发源必须只有本次事件的那颗键。
+   */
+  private resolvePress(code: string): Action | null {
+    let plain: Action | null = null;
+    for (const a of Object.values(Action)) {
+      const p = parseBinding(this.codeOf(a));
+      if (p.base !== code) continue;
+      // 组合键更具体，命中即胜出，压过同物理键的无修饰绑定
+      if (p.mod !== null) {
+        if (this.modHeld(p.mod)) return a;
+      } else if (plain === null) {
+        // ⚠️ 重绑允许两个动作撞同一颗键（rebindWithSwap 之外的路径），取枚举序第一个，
+        //    保证「至多一个」且结果稳定，不随遍历顺序漂移
+        plain = a;
+      }
+    }
+    return plain;
+  }
+
+  /** 这颗物理键上挂着任何绑定吗（含组合键的基键）*/
+  private isBoundCode(code: string): boolean {
+    for (const a of Object.values(Action)) {
+      if (parseBinding(this.codeOf(a)).base === code) return true;
+    }
+    return false;
   }
 
   private attach(): void {
     const onKeyDown = (e: KeyboardEvent) => {
-      // Tab 默认会切换焦点，必须阻止；F10 会聚焦浏览器菜单栏（W9 设置键）
-      if (['Tab', 'Space', 'F1', 'F2', 'F10'].includes(e.code)) e.preventDefault();
+      /**
+       * ★ 白名单换成「凡命中已绑定动作的键就拦」：此前写死 Tab/Space/F1/F2/F10，
+       *   于是 F3（循环色盲模式）会同时拉出浏览器查找栏、F4 也漏在外面；更要命的是
+       *   玩家一旦重绑到别的功能键，保护就跟不过去。按绑定表算 ⇒ 重绑后自动受保护。
+       * ★ Escape 单列：它默认就绑着 CancelCast，但即使被重绑走也要拦
+       *   （游戏里 Esc 是「取消读条」，不该顺带触发浏览器行为）。
+       *   ⚠️ 浏览器全屏的 Esc 退出是拦不住的（UA 保留），这条只管普通场景。
+       * ⚠️ preventDefault 必须在「忽略按键重复」之前：按住 Tab 时系统仍会发重复事件，
+       *   放过去照样会把焦点交给浏览器。
+       */
+      if (e.code === 'Escape' || this.isBoundCode(e.code)) e.preventDefault();
       if (this.down.has(e.code)) return; // 忽略系统的按键重复
       this.down.add(e.code);
-      for (const a of Object.values(Action)) {
-        if (this.isDown(a)) this.pressedThisFrame.add(a);
-      }
+      const pressed = this.resolvePress(e.code);
+      if (pressed !== null) this.pressedThisFrame.add(pressed);
     };
     const onKeyUp = (e: KeyboardEvent) => this.down.delete(e.code);
     /** 失焦时清空按键，否则 Alt+Tab 回来会一直往前走 */

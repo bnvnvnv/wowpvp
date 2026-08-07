@@ -18,6 +18,12 @@ import {
   resolveGroundPlacement,
   shapeOrigin,
   validateCast,
+  describeCastBlockers,
+  createCastQueueStore,
+  withinSelectRange,
+  GCD,
+  RANGE,
+  type CastContext,
   type GroundPlacement,
   applyInterrupt,
   beginCast,
@@ -130,6 +136,13 @@ export interface CombatLogEntry {
   time: number;
   text: string;
   kind: 'ok' | 'fail' | 'interrupt' | 'info';
+  /**
+   * P10：这一行代表几次相同的失败（「… ×3」）。
+   * ★ 只有合并过才有值 —— 恒带一个 1 会让「没合并」和「合并了一次」看起来一样。
+   */
+  repeat?: number;
+  /** 合并前的原文，用来判断下一条能不能继续并进来（`text` 已经带了 ×N）*/
+  repeatBase?: string;
 }
 
 export interface SkillSlotView {
@@ -138,6 +151,27 @@ export interface SkillSlotView {
   cooldownRemaining: number;
   /** 当前不可用的原因。Ok 表示可用 */
   blocker: CastFailure;
+  /**
+   * 合同 C1：公共冷却剩余与总长，秒。
+   *
+   * ★ 与 `cooldownRemaining` 是**两件事**，不能合并显示：技能自己的冷却是
+   *   「这一个技能要等」，GCD 是「所有技能一起等」—— 一格上同时画两圈，
+   *   玩家才分得清「这技能还早」和「再等半秒全都能按」。
+   * ★ 不吃 GCD 的技能（`triggersGcd === false`）恒为 0：给它画扫圈是在撒谎，
+   *   而它恰恰是 GCD 期间唯一还能按的东西。
+   */
+  gcdRemaining: number;
+  gcdTotal: number;
+  /**
+   * 合同 C1：**当前全部**阻碍项（`blocker` 只有第一个）。
+   *
+   * ★★ 这是 M11 的 `describeCastBlockers()` 头一次有生产消费方（A16 老债）。
+   *   门禁顺序由 7.4 规定「资源在距离之前」，于是怒气 0 的战士站 30 米外
+   *   被告知「资源不足」—— 正确，但玩家更需要知道的是「你还太远」。
+   *   两个答案都对，所以两个都给：`blocker` 服务判定与统计归因，
+   *   `blockers` 服务提示。
+   */
+  blockers: CastFailure[];
 }
 
 export class CombatDirector {
@@ -192,6 +226,13 @@ export class CombatDirector {
    *   只接一个是 M4 踩过的坑。交给 tick 之后这个坑在结构上不存在。
    */
   private readonly pendingCasts = new Map<EntityId, CastIntent>();
+  /**
+   * 合同 C5 的排队位。**必须由调用方持有** —— 排队位要跨 tick 存活，
+   * tick 自己造一个等于每帧丢一次（与 casting/movement 同规矩，见 `TickDeps`）。
+   * ⚠️ 不传这个 store，`queue: true` 是**静默无效**的 —— 施法排队会「实现了但没接上」。
+   * ★ 它对不带 queue 的请求（假人的每一条）完全不参与，平衡零扰动。
+   */
+  private readonly castQueue = createCastQueueStore();
   /** 8.3 战斗意志请求（W8）。与技能请求同规矩：只排意图，结算在 tick 第 1c 步 */
   private readonly pendingTrinkets = new Set<EntityId>();
 
@@ -226,6 +267,19 @@ export class CombatDirector {
    *   也是这套控制器日后能接到服务器侧当人机的前提。
    */
   combatMode = false;
+
+  /**
+   * 合同 C8 练习场缓冲：开局这么多秒内假人不锁定玩家、也不出招。
+   *
+   * ★★ **缺省 0 = 现行为逐帧不变。** `world.time < 0` 恒为假，下面每一处
+   *   宽限判断都直接落空，连那句「战斗开始」都被 `graceSeconds > 0` 挡住 ——
+   *   二十多支 verify 脚本不带 `&grace`，它们的初始条件一个字节都不能动。
+   * ★ 只有大厅「开始练习」拼出来的 `&grace` 会把它设成 5 秒（B1 配置）。
+   */
+  graceSeconds = 0;
+  /** 「战斗开始」只播一次的闩。★ 不用 world.time 反推：那样每帧都会重播 */
+  private graceAnnounced = false;
+  private get inGrace(): boolean { return this.world.time < this.graceSeconds; }
 
   /**
    * 假人的移动状态。★ 只在实战模式下按需建立 —— `tickWorld` 只推进
@@ -308,7 +362,7 @@ export class CombatDirector {
 
     this.grantDemoLoadout();
 
-    this.info('试验场：Tab 选目标，1–8 释放技能。地面技能会先进入落点预览，左键确认。');
+    this.info('试验场：Tab 选目标，1–9 释放技能。地面技能会先进入落点预览，左键确认。');
     this.info('M8：F2 切画质，G 与旗帜交互，B 切换备用武器。');
   }
 
@@ -344,11 +398,48 @@ export class CombatDirector {
 
   // ── 日志 ────────────────────────────────────────────────────
 
+  /**
+   * 往战斗日志里写一行。
+   *
+   * ★★ **连续相同的失败会合并成「… ×N」。**
+   *   资源不足时连按 8 次，此前是 8 条一模一样的红字 —— HUD 只有 14 行可见区，
+   *   一次手滑就把「你被打断了」「谁在打你」全顶出屏幕。刷屏本身没有信息量：
+   *   第 2 条到第 8 条只告诉你「还是那个原因」，一个计数就说完了。
+   *
+   * ★ **只合并 `fail`，且只合并紧挨着的上一条。**
+   *   ·「只合并 fail」：伤害/治疗行是流水账，合并会把真实的输出节奏抹平。
+   *   ·「只合并上一条」：中间插了别的事就说明世界变了，此时再往回并会让
+   *     两件事的时间顺序错乱 —— 日志唯一的承诺就是顺序。
+   */
   private push(text: string, kind: CombatLogEntry['kind']): void {
+    const head = this.log[0];
+    if (kind === 'fail' && head?.kind === 'fail' && (head.repeatBase ?? head.text) === text) {
+      const n = (head.repeat ?? 1) + 1;
+      head.repeat = n;
+      head.repeatBase = text;
+      head.text = `${text} ×${n}`;
+      // ★ 时间跟到最后一次：合并行代表的是「到刚才为止」，不是第一次按下的那一刻
+      head.time = this.world.time;
+      return;
+    }
     this.log.unshift({ time: this.world.time, text, kind });
     if (this.log.length > 40) this.log.pop();
   }
   info(t: string) { this.push(t, 'info'); }
+
+  /**
+   * 玩家自己「按了没放出来」。
+   *
+   * ★ 日志与屏幕中部提示（合同 C3）走**同一个出口**：此前每个失败分支各 push
+   *   各的，一共散在六处 —— 再加一个提示通道就得记得改六个地方，而漏掉一个
+   *   不会报错，只会有一条失败悄悄没提示。
+   * ★ 传给回调的是**合并前**的原文（不带 ×N）：中部提示本来就是一闪而过的
+   *   单条提示，带个计数只会让人以为按了 N 次才弹一次。
+   */
+  private selfFail(text: string): void {
+    this.push(text, 'fail');
+    this.onSelfCastFailed?.(text);
+  }
 
   /**
    * 清掉玩家身上的全部光环。**只给验收脚本用**（8.1 要量的是「基础速度」，
@@ -393,6 +484,7 @@ export class CombatDirector {
         movement: this.movementStates,
         inputs: this.frameInputs,
         castRequests: this.pendingCasts,
+        castQueue: this.castQueue,
         trinketRequests: this.pendingTrinkets,
         // ★ 7.6 白字只在实战模式给 —— 站桩模式必须没有（见 swings 的注释）
         ...(this.combatMode ? { swings: this.swings } : {}),
@@ -424,16 +516,29 @@ export class CombatDirector {
           onFailed: (c, sk, reason) => {
             this.onCastActivity?.('failed', c, sk);
             return c.id === this.player.id
-              ? this.push(`${sk.name} 无法释放：${FAIL_TEXT[reason]}`, 'fail')
+              ? this.selfFail(`${sk.name} 无法释放：${FAIL_TEXT[reason]}`)
               : this.push(`${c.name} 的 ${sk.name} 失败：${FAIL_TEXT[reason]}`, 'fail');
           },
+          /**
+           * ★ 与上面的 onFailed 是**同一条纪律**，但此前只有 onFailed 做到了：
+           *   自己的事用第二人称。「你（法师） 的 寒冰箭 被移动中断」是旁观口吻，
+           *   读起来像在说别人 —— 而这恰恰是玩家最需要一眼看懂的一行
+           *   （它解释了「我按了为什么什么都没发生」）。
+           */
           onInterrupted: (c, st, src, lock) => {
             this.onCastActivity?.('interrupted', c, getSkill(st.skillId));
             const skillName = getSkill(st.skillId)?.name ?? st.skillId;
             const lockText = lock
               ? `，${SCHOOL_TEXT[lock.school]}学派锁定 ${(lock.until - this.world.time).toFixed(1)}s`
               : '';
-            this.push(`${c.name} 的 ${skillName} 被${INTERRUPT_TEXT[src] ?? src}中断${lockText}`, 'interrupt');
+            const by = INTERRUPT_TEXT[src] ?? src;
+            if (c.id === this.player.id) {
+              const text = `${by}打断了你的${skillName}${lockText}`;
+              this.push(text, 'interrupt');
+              this.onSelfInterrupted?.(text);
+              return;
+            }
+            this.push(`${c.name} 的 ${skillName} 被${by}中断${lockText}`, 'interrupt');
           },
         },
         // ★ 12.3 / 验收 #40：带旗使用无敌/潜行技能时**先掉旗**，再播技能表现
@@ -523,7 +628,12 @@ export class CombatDirector {
        *   一起恢复，否则被假人打死一次之后 15.3 的装备栏就再也没东西可看，
        *   而那是 M8 验收 #35 正在验的对象。
        */
-      if (e.id === this.player.id) this.grantDemoLoadout();
+      if (e.id === this.player.id) {
+        this.grantDemoLoadout();
+        // C3：假复活发生在死亡后的**下一帧**，玩家来不及读日志就已经站起来了 ——
+        //   中部提示要收掉死亡那条，否则「你已阵亡」会一直挂在活人脸上
+        this.onSelfRevive?.();
+      }
       this.push(`${e.name} 已复活（试验场不结算死亡，见 11.4）`, 'info');
     }
   }
@@ -565,6 +675,23 @@ export class CombatDirector {
   onSwingHit?: (attackerId: EntityId) => void;
 
   /**
+   * 合同 C3：**只关于玩家自己**的四件大事，供屏幕中部短提示（B1 接线）。
+   *
+   * ★★ 为什么不让接线方自己去 `log` 里筛：日志是 40 条的环形缓冲，
+   *   一帧里可能进好几条，接线方要么轮询（会漏、会重）、要么按文案匹配
+   *   （文案一改就静默失效）。这里在事件发生的那一刻直接推给它。
+   * ★ 四个都是**纯通知**：不改任何战斗状态，不订阅也不影响规则
+   *   （与上面三个表现钩子同一条纪律）。
+   * ★ 传的是**已经写进日志的那句话**，不是错误码 —— 中部提示与日志说同一句，
+   *   玩家不必在两处之间做翻译。
+   */
+  onSelfInterrupted?: (text: string) => void;
+  onSelfCastFailed?: (text: string) => void;
+  /** 击杀者姓名。★ 可空：环境伤害、持续伤害结算时源已离场都拿不到名字 */
+  onSelfDeath?: (killerName?: string) => void;
+  onSelfRevive?: () => void;
+
+  /**
    * 把一条战斗事件转成日志行。
    *
    * ★ 事件由 `tickWorld` 的 `onEffects` 送进来 —— 客户端**不再自己结算效果**，
@@ -589,7 +716,11 @@ export class CombatDirector {
         break;
       case 'auraApplied': {
         const drNote = ev.drFactor !== undefined && ev.drFactor < 1 ? `（递减至 ${(ev.drFactor * 100).toFixed(0)}%）` : '';
-        this.push(`${name(ev.targetId as never)} 获得 ${ev.auraId} ${ev.duration.toFixed(1)}s${drNote}`, 'info');
+        this.push(
+          `${name(ev.targetId as never)} 获得 ${this.auraDisplayName(ev.targetId, ev.auraId)} ` +
+            `${ev.duration.toFixed(1)}s${drNote}`,
+          'info',
+        );
         break;
       }
       case 'immune':
@@ -602,17 +733,61 @@ export class CombatDirector {
         this.push(`${name(ev.targetId as never)} 的护盾破裂`, 'interrupt');
         break;
       case 'dispelled':
-        this.push(`${name(ev.sourceId as never)} 驱散了 ${name(ev.targetId as never)} 的 ${ev.auraId}`, 'ok');
+        // ★ 同上：驱散提示里也不该出现内部 id。⚠️ 这条走的是回落链第 2/3 级 ——
+        //   光环已经被移走了，实例查不到，只能靠 id 前缀反查技能名
+        this.push(
+          `${name(ev.sourceId as never)} 驱散了 ${name(ev.targetId as never)} 的 ` +
+            this.auraDisplayName(ev.targetId, ev.auraId),
+          'ok',
+        );
         break;
-      case 'death':
+      case 'death': {
         this.push(`${name(ev.targetId as never)} 被击杀`, 'interrupt');
+        // C3：自己倒下要有中部大提示 —— 14 行的日志区在团战里两秒就被顶完了
+        if (ev.targetId === this.player.id) {
+          const killer = ev.killerId === undefined
+            ? undefined : getEntity(this.world, ev.killerId)?.name;
+          this.onSelfDeath?.(killer);
+        }
         break;
+      }
       case 'displaced':
         this.push(`${name(ev.targetId as never)} 被${DISPLACE_TEXT[ev.kind] ?? ev.kind}`, 'info');
         break;
       default:
         break;
     }
+  }
+
+  /**
+   * 光环 id → 玩家看得懂的名字。
+   *
+   * ★★ 存在的理由：日志里曾经直接打内部 id ——「获得 mage.frostbolt.chill 3.0s」。
+   *   那是给写代码的人看的，不是给玩家看的。
+   *
+   * ⚠️ **三级回落，可靠度逐级下降，如实写在这里：**
+   *   1. **目标身上这条光环实例的 `def.name`** —— 光环定义自带的显示名，唯一
+   *      权威的一级。事件是效果结算**之后**成批送来的，所以此刻它已经在
+   *      `auras` 仓里了（`auraRemoved` / `dispelled` 是例外，见下）。
+   *   2. 查不到实例时，把 auraId 的**前缀**当技能 id 反查技能名
+   *      （`mage.frostbolt.chill` → `mage.frostbolt` → 「寒冰箭」）。
+   *      ⚠️ 这一级依赖「光环 id 以所属技能 id 开头」这条**书写约定**，
+   *      不是 schema 保证的 —— 数据里换个命名它就静默失效（回落到第 3 级）。
+   *   3. 都查不到才裸露 id。宁可露出 `control.stun`，也不编一个名字：
+   *      编出来的名字玩家找不到对应技能，比看见 id 更糟。
+   */
+  private auraDisplayName(targetId: EntityId, auraId: string): string {
+    for (const a of aurasOf(this.auras, targetId)) {
+      if (a.def.id === auraId && a.def.name) return a.def.name;
+    }
+    const parts = auraId.split('.');
+    // ★ 从长到短试前缀：技能 id 是 `<职业>.<技能>` 两段，但不写死段数 ——
+    //   将来出现三段技能 id 时这里不需要跟着改
+    for (let n = parts.length - 1; n >= 2; n--) {
+      const s = getSkill(asSkillId(parts.slice(0, n).join('.')));
+      if (s) return s.name;
+    }
+    return auraId;
   }
 
   /**
@@ -625,6 +800,15 @@ export class CombatDirector {
    *   `gcdUntil = 0`）是**演示靶子专用**的，日后接到服务器当人机时绝不能带过去。
    */
   private updateCombatBots(): void {
+    /**
+     * 合同 C8：宽限期内整段控制器让位。
+     *
+     * ★ 规格只要求「不锁定玩家、不出招」，这里**连移动意图也不下发** ——
+     *   只停手不停脚的话，假人会在这 5 秒里稳稳贴到你脸上，缓冲就白给了
+     *   （宽限期本来就是为「够读一遍提示条」设的）。
+     * ⚠️ 缺省 graceSeconds=0 时 `inGrace` 恒假，这一行等于不存在。
+     */
+    if (this.inGrace) return;
     for (const e of listEntities(this.world)) {
       if (e.id === this.player.id || !e.alive) continue;
       if (this.pausedDummyClasses.has(e.classId as string)) continue;
@@ -674,11 +858,22 @@ export class CombatDirector {
 
   /** 假人行为：牧师和法师反复读条，战士见缝插针打断你 */
   private updateDummies(): void {
+    /**
+     * 合同 C8：宽限期结束时打一条「战斗开始」。
+     * ★ 挂在 `graceSeconds > 0` 后面而不是只看 `graceAnnounced` —— 不带 `&grace`
+     *   的场次（全部 verify 脚本）连这条判断的第二项都不会求值，日志逐字节不变。
+     */
+    if (this.graceSeconds > 0 && !this.graceAnnounced && !this.inGrace) {
+      this.graceAnnounced = true;
+      this.info('宽限期结束 —— 战斗开始');
+    }
     // 实战模式：整段站桩脚本让位给控制器
     if (this.combatMode) {
       this.updateCombatBots();
       return;
     }
+    // C8：站桩假人同理 —— 练习场也可能不开实战模式，两条路都得挡
+    if (this.inGrace) return;
     for (const e of listEntities(this.world)) {
       if (e.id === this.player.id || !e.alive) continue;
       // M15：教学按环静音部分假人（见 pausedDummyClasses 注释）
@@ -793,7 +988,12 @@ export class CombatDirector {
         const lockText = lock
           ? `，${SCHOOL_TEXT[lock.school]}学派锁定 ${(lock.until - this.world.time).toFixed(1)}s`
           : '';
-        this.push(`${warriorDummy.name} 用${pummel.name}打断了你的 ${n}${lockText}`, 'interrupt');
+        const text = `${warriorDummy.name} 用${pummel.name}打断了你的 ${n}${lockText}`;
+        this.push(text, 'interrupt');
+        // C3：这条路径不经过 tickWorld（专用打断直接调 applyInterrupt），
+        // 所以中部提示得在这里再接一次 —— 漏掉它就会「被拳击打断没提示，
+        // 被移动打断有提示」，而玩家分不清这两者有什么区别
+        this.onSelfInterrupted?.(text);
       },
     });
 
@@ -818,8 +1018,27 @@ export class CombatDirector {
     if (!picked) this.info('前方 140° / 45 米内没有可选目标');
   }
 
+  /**
+   * 玩家主动选中（点击姓名板 / HUD 队伍框）。
+   *
+   * ★ 合同 C6：这条路径传 `enforceRange: true` —— 45 米（`RANGE.MAX_SELECT`）
+   *   之外点得到、选得上，但那个目标什么技能都放不出来，玩家会以为是技能坏了。
+   *   ⚠️ 只有**玩家主动选中**这条路径拦；`tabTarget`（本来就只在 45 米内循环）
+   *   与实战模式给假人设硬目标都不走这里，行为不变。
+   * ★ 判「有没有选上」看的是 `targets.hard` 本身而不是返回值：拒绝的表达方式
+   *   属于 shared 的接口设计，这里只关心**世界的状态**变没变。
+   */
   selectById(id: number): void {
-    setHardTarget(this.world, this.player, id as never);
+    setHardTarget(this.world, this.player, id as never, { enforceRange: true });
+    if (this.player.targets.hard === (id as never)) return;
+    const e = getEntity(this.world, id as never);
+    // 超距是唯一需要解释的拒绝理由 —— 其余（目标不存在/不可选中）在 UI 上
+    // 本来就点不到，多一条日志只是噪音。
+    // ★ 判据用 shared 的 `withinSelectRange`，与 setHardTarget 内部**同一把尺子**：
+    //   这里自己量一遍的话，边界上会出现「拒绝了但不说为什么」
+    if (e && !withinSelectRange(this.player, e)) {
+      this.selfFail(`${e.name}：超出选中距离（${RANGE.MAX_SELECT} 米）`);
+    }
   }
 
   toggleFocusOnCurrent(): void {
@@ -882,7 +1101,7 @@ export class CombatDirector {
   requestTrinket(): void {
     const ready = this.player.cooldowns.get(TRINKET_COOLDOWN_KEY) ?? 0;
     if (this.world.time < ready) {
-      this.push(`战斗意志冷却中（还剩 ${Math.ceil(ready - this.world.time)} 秒）`, 'fail');
+      this.selfFail(`战斗意志冷却中（还剩 ${Math.ceil(ready - this.world.time)} 秒）`);
       return;
     }
     this.pendingTrinkets.add(this.player.id);
@@ -910,24 +1129,33 @@ export class CombatDirector {
     const skill = this.skills[index];
     if (!skill) return;
 
+    /**
+     * ★ 合同 C5：**玩家**按下的每一发都带 `queue: true`。
+     *   GCD 还剩 0.1 秒时按下去，此前是一条「公共冷却」红字 + 什么都没发生 ——
+     *   人手压不进 16ms 的窗口，所以「连招打不出来」是必然而不是手残。
+     *   带上 queue 之后它进 0.4 秒排队窗，GCD 一结束**重走完整 validateCast**
+     *   再消费，二次失败照常报错。
+     * ⚠️ 假人/教学驱动的 `requestCast` **一律不带** —— 这是 normal 难度 bot
+     *   平衡基线逐位不变的红线：bot 永远不触发排队，行为零扰动。
+     */
     // 地面技能：先做落点合法性检查（5.5：非法位置不能确认）
     if (needsGroundPlacement(skill)) {
       if (!groundPoint) {
-        this.push(`${skill.name}：需要先选择落点`, 'fail');
+        this.selfFail(`${skill.name}：需要先选择落点`);
         return;
       }
       const placement = this.resolveGround(skill, groundPoint);
       if (!placement.legal) {
-        this.push(`${skill.name} 落点非法：${FAIL_TEXT[placement.reason]}`, 'fail');
+        this.selfFail(`${skill.name} 落点非法：${FAIL_TEXT[placement.reason]}`);
         return;
       }
-      this.requestCast(this.player, skill, { groundPoint: placement.center });
+      this.requestCast(this.player, skill, { groundPoint: placement.center, queue: true });
       return;
     }
 
     // 5.6：自身、自身中心、方向技能都不需要选择目标，按角色位置/面向结算
     if (usesNoTarget(skill)) {
-      this.requestCast(this.player, skill);
+      this.requestCast(this.player, skill, { queue: true });
       return;
     }
 
@@ -935,7 +1163,7 @@ export class CombatDirector {
     // 对敌技能不改（免得把火球按给自己吃一发拒绝），服务器语义同款
     if (opts?.selfCast
         && (skill.targetFilter === TargetFilter.Ally || skill.targetFilter === TargetFilter.Any)) {
-      this.requestCast(this.player, skill, { targetId: this.player.id });
+      this.requestCast(this.player, skill, { targetId: this.player.id, queue: true });
       return;
     }
 
@@ -950,11 +1178,30 @@ export class CombatDirector {
     }
 
     if (!resolved.ok && skill.targetFilter === TargetFilter.Enemy) {
-      this.push(`${skill.name}：${resolved.reason === 'noTarget' ? '需要目标' : '目标无效'}`, 'fail');
+      this.selfFail(`${skill.name}：${resolved.reason === 'noTarget' ? '需要目标' : '目标无效'}`);
       return;
     }
 
-    this.requestCast(this.player, skill, { targetId: target?.id });
+    /**
+     * ★★ 友方技能选着敌人时，此前这里**不拦**，请求带着 `targetId: undefined`
+     *   进 sim，回来一句「需要目标」—— 而玩家屏幕上明明选着一个人。
+     *   提示说的是反话，玩家会去按 Tab 找目标，越找越错。
+     *
+     *   真正的情况有两种，分别给专门文案：
+     *   · 有目标但不是友方 → 说清「不是友方」，并把出路（Alt 自我施放）一起给出。
+     *   · 压根没目标 → 说清缺的是**友方**目标，别让人以为随便选个敌人就行。
+     * ⚠️ 文案里的 Alt 是真的能用：上面的 selfCast 分支就只认 Ally/Any，
+     *   两处的判据一字不差（技能描述不许对实现撒谎）。
+     */
+    if (!resolved.ok
+        && (skill.targetFilter === TargetFilter.Ally || skill.targetFilter === TargetFilter.Any)) {
+      this.selfFail(resolved.reason === 'noTarget'
+        ? `${skill.name}：需要友方目标（按住 Alt 对自己施放）`
+        : `${skill.name}：目标不是友方（按住 Alt 对自己施放）`);
+      return;
+    }
+
+    this.requestCast(this.player, skill, { targetId: target?.id, queue: true });
   }
 
   /**
@@ -976,12 +1223,19 @@ export class CombatDirector {
   requestCast(
     caster: CombatEntity,
     skill: SkillDef,
-    opts: { targetId?: EntityId; groundPoint?: Vec3 } = {},
+    /**
+     * ★ 合同 C5 的 `queue` **不给默认值、由调用方显式传**。
+     *   缺省即 undefined = 老行为，所以「忘了传」的后果是少一个便利功能，
+     *   而不是给假人开出一条平衡外的通道 —— 这个默认方向是红线要求的：
+     *   bot 永远不带 queue，normal 难度基线逐位不变。
+     */
+    opts: { targetId?: EntityId; groundPoint?: Vec3; queue?: boolean } = {},
   ): void {
     this.pendingCasts.set(caster.id, {
       skillId: skill.id,
       ...(opts.targetId !== undefined ? { targetId: opts.targetId } : {}),
       ...(opts.groundPoint ? { groundPoint: opts.groundPoint } : {}),
+      ...(opts.queue ? { queue: true } : {}),
     });
   }
 
@@ -1002,7 +1256,7 @@ export class CombatDirector {
      */
     const pre = beginCast(this.world, this.store, this.player, { ...skill, effects: [] }, { target });
     if (!pre.ok) {
-      this.push(`${skill.name} 无法释放：${FAIL_TEXT[pre.reason]}`, 'fail');
+      this.selfFail(`${skill.name} 无法释放：${FAIL_TEXT[pre.reason]}`);
       return;
     }
 
@@ -1051,30 +1305,38 @@ export class CombatDirector {
     return this.store.get(e.id);
   }
 
-  /** 技能栏视图：冷却与当前不可用原因 */
+  /** 技能栏视图：冷却、GCD、当前不可用原因与**全部**阻碍项（合同 C1）*/
   skillSlots(): SkillSlotView[] {
+    /**
+     * ★ GCD 全栏共用一份 —— 它是**角色**的状态，不是技能的。
+     *   与 `beginCast` 里写 `gcdUntil` 用的是同一个表达式（`casting.ts`），
+     *   两处漂了就会出现「扫圈转完了还按不动」。
+     */
+    const gcdTotal = Math.max(GCD.MIN, GCD.BASE);
+    const gcdLeft = Math.max(0, this.player.gcdUntil - this.world.time);
+
     return this.skills.map((skill) => {
-      let blocker: CastFailure;
+      let target: CombatEntity | undefined;
+      let groundPoint: Vec3 | undefined;
       if (needsGroundPlacement(skill)) {
         // 地面技能不需要硬目标，落点在瞄准时才产生。
         // 这里传一个必然合法的落点（脚下），让 HUD 只反映冷却/资源/沉默这类状态 ——
         // 否则技能栏会一直显示「需要目标」，那是错的（15.2 要求提示准确）。
-        blocker = validateForHud(this.world, this.player, skill, undefined, this.player.position);
-      } else if (usesNoTarget(skill)) {
-        blocker = validateForHud(this.world, this.player, skill, undefined);
-      } else {
+        groundPoint = this.player.position;
+      } else if (!usesNoTarget(skill)) {
         const resolved = resolveSkillTarget(this.world, this.player, skill.targetFilter);
-        blocker = validateForHud(
-          this.world,
-          this.player,
-          skill,
-          resolved.ok ? resolved.target : undefined,
-        );
+        target = resolved.ok ? resolved.target : undefined;
       }
+      const ctx = hudCastContext(this.world, this.player, skill, target, groundPoint);
       return {
         skill,
         cooldownRemaining: Math.max(0, (this.player.cooldowns.get(skill.id) ?? 0) - this.world.time),
-        blocker,
+        blocker: validateCast(ctx),
+        blockers: describeCastBlockers(ctx),
+        // ★ 不吃 GCD 的技能恒为 0：它恰恰是 GCD 期间唯一还能按的东西，
+        //   给它画一圈扫光等于把唯一的出路也涂灰了
+        gcdRemaining: skill.triggersGcd ? gcdLeft : 0,
+        gcdTotal,
       };
     });
   }
@@ -1165,18 +1427,22 @@ export class CombatDirector {
 }
 
 /**
- * HUD 用的校验。
+ * HUD 用的校验上下文。
+ *
  * ★ 与实际释放走的是**同一个** `validateCast` —— 15.2 要求图标明确提示
- * 「超出距离/缺少视线/朝向错误」，如果 HUD 自己算一遍，迟早会出现
- * 「图标是亮的但按下去失败」这种最让人困惑的 bug。
+ *   「超出距离/缺少视线/朝向错误」，如果 HUD 自己算一遍，迟早会出现
+ *   「图标是亮的但按下去失败」这种最让人困惑的 bug。
+ * ★ M11 的 `describeCastBlockers()` 吃的也是这个 ctx：门禁（单一原因）与
+ *   提示（全部原因）必须看**同一份输入**，否则会出现「图标写着资源不足、
+ *   叠加提示写着超出距离」这种自相矛盾 —— 那比只有一条错原因更糟。
  */
-const validateForHud = (
+const hudCastContext = (
   world: World,
   caster: CombatEntity,
   skill: SkillDef,
   target: CombatEntity | undefined,
   groundPoint?: Vec3,
-): CastFailure => validateCast({ world, caster, skill, target, groundPoint, phase: 'start' });
+): CastContext => ({ world, caster, skill, target, groundPoint, phase: 'start' });
 
 // ── 文案 ───────────────────────────────────────────────────────
 

@@ -53,7 +53,10 @@ import { gainResource, type CombatEntity } from './entity.js';
 import {
   deriveStatusFlags, moveSpeedMultiplierOf, tickAuras, type AuraStore,
 } from './aura.js';
-import { beginCast, tickCasting, type CastEvents, type CastState, type CastingStore } from './casting.js';
+import {
+  beginCast, beginCastOrQueue, tickCasting, tickCastQueue,
+  type CastEvents, type CastQueueStore, type CastState, type CastingStore,
+} from './casting.js';
 import { resolveCastTargets } from './castResolve.js';
 import type { DrStore } from './dr.js';
 import { settleDeaths, type DeathSettlement } from './death.js';
@@ -100,6 +103,16 @@ export interface CastIntent {
   groundPoint?: Vec3;
   /** 方向技能的朝向。不传则用施法者当前 yaw */
   facing?: number;
+  /**
+   * 施法排队窗（P10 / 合同 C5）。**缺省 `undefined` = 老行为**：
+   * 撞上 GCD 或正在读条就直接丢掉这次按键。
+   *
+   * ⚠️★ **这是平衡红线的那个显式开关。** 人机（`BotDriver`）发出的
+   *   `CastRequest` 协议消息里根本没有这个字段，`MatchLoop` 也只给真人会话
+   *   补 `queue: true` —— 于是 normal 档人机永远走不进排队窗，配平基线逐位不变。
+   *   往这里加「默认开启」之类的便利改动 = 直接踩线。
+   */
+  queue?: boolean;
 }
 
 /**
@@ -149,6 +162,17 @@ export interface TickDeps {
    *   放进 tick 之后，「只接一个出口」在结构上写不出来。
    */
   castRequests?: ReadonlyMap<EntityId, CastIntent>;
+  /**
+   * 施法排队窗的存放处（P10 / 合同 C5）。
+   *
+   * ⚠️ **不传 = 排队窗整体不存在**：带 `queue: true` 的请求会退化成老行为
+   *   （撞 GCD 直接失败并正常上报）。这是有意的默认 —— 排队位必须跨 tick 存活，
+   *   而「跨 tick 的状态」在本仓库一律由调用方持有（与 `casting` / `movement`
+   *   同规矩），tick 自己造一个就等于每 tick 丢一次。
+   * ★ 服务器由 `tickDepsOf()` 自动接上（`Match.castQueue`）；试验场要自己建一个
+   *   `createCastQueueStore()` 传进来，否则 `queue: true` 是**静默无效**的。
+   */
+  castQueue?: CastQueueStore;
   /**
    * 本 tick 每个实体要使用的消耗品槽位（10.1）。
    *
@@ -366,13 +390,23 @@ export const tickWorld = (
     const skill = deps.getSkill(intent.skillId);
     if (!skill) continue;
     if (intent.facing !== undefined) caster.yaw = intent.facing;
-    beginCast(deps.world, deps.casting, caster, skill, {
+    const opts = {
       ...(intent.targetId !== undefined
         ? { target: getEntity(deps.world, intent.targetId) }
         : {}),
       ...(intent.groundPoint ? { groundPoint: intent.groundPoint } : {}),
       events: castEvents,
-    });
+    };
+    /**
+     * ★ 分叉只有这一处，而且是**显式开关**驱动的：没带 `queue` 的请求
+     *   （人机的每一条、balance-report 的每一条）走的仍然是**同一个**
+     *   `beginCast()` 调用，一个字节的行为差异都没有。见 `CastIntent.queue`。
+     */
+    if (intent.queue === true && deps.castQueue) {
+      beginCastOrQueue(deps.world, deps.casting, deps.castQueue, caster, skill, opts);
+    } else {
+      beginCast(deps.world, deps.casting, caster, skill, opts);
+    }
   }
 
   // ── 1b. 消耗品使用（10.1）。与技能请求同属「applyInputs」───
@@ -478,6 +512,22 @@ export const tickWorld = (
 
   // ── 3. casting 推进（必须在 movement 之后 —— 7.3）──────────
   tickCasting(deps.world, deps.casting, { getSkill: deps.getSkill, events: castEvents });
+
+  // ── 3b. 施法排队窗消费（P10 / 合同 C5）──────────────────────
+  /**
+   * ★ **必须紧跟在第 3 步之后**：本 tick 刚读完的那一条读条要能被排队的下一发
+   *   当场接上，中间不隔一个 tick（隔了就等于把排队窗省下的提前量还回去）。
+   * ★ 位置带来的一处**如实**差异：排队放出的瞬发技能，效果结算发生在
+   *   移动之后（这里），而第 1 步直接放的发生在移动之前。差一个 tick 内的
+   *   次序，只影响 opt-in 的排队路径 —— 不带 `queue` 的一切照旧。
+   * ⚠️ `deps.castQueue` 不存在时这一步整个不发生（连遍历都没有），
+   *   所以人机局与 balance-report 的 tick 结构与改动前完全一致。
+   */
+  if (deps.castQueue) {
+    tickCastQueue(deps.world, deps.casting, deps.castQueue, {
+      getSkill: deps.getSkill, events: castEvents,
+    });
+  }
 
   // ── 4. auras ────────────────────────────────────────────────
   // ★ periodic：DoT/HoT 的周期跳不暴击（见 combat.ts rollCrit 的注释）

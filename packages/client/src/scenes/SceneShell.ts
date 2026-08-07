@@ -90,6 +90,38 @@ export class SceneShell {
     decor?.applyQuality(tier);
   }
 
+  /**
+   * P10 / C7：底部常驻操作提示条（两场景共用）。
+   *
+   * ★ 为什么是**常驻**而不是开局两条日志：真机实测那两条 info 5 秒就被
+   *   战斗日志顶掉，之后整局再没有任何地方提到 F10 —— 键位表藏在 F10 里、
+   *   F10 只写在键位表里，玩家从这个环里出不来。
+   * ★ 只有一条：重复调用改写内容而不追加，所以联网侧把 `#net-hint` 迁进来
+   *   之后屏幕上也不会出现两条（C7 的存在意义就是这个）。
+   * ⚠️ 收的是 HTML（键名要单独描重），⇒ 调用方负责转义自己拼进去的文本。
+   */
+  showHintBar(html: string): void {
+    this.hintBar ??= this.createHintBar();
+    this.hintBar.innerHTML = html;
+  }
+
+  private hintBar: HTMLElement | undefined;
+
+  private createHintBar(): HTMLElement {
+    const el = document.createElement('div');
+    el.id = 'hint-bar';
+    // ★ 贴着屏幕最底边：技能栏下边缘在 18px，这一条占 1–14px 的空档，
+    //   谁也不压谁；`pointer-events:none` 保证它永远不吃走一次点击
+    Object.assign(el.style, {
+      position: 'fixed', left: '50%', bottom: '1px', transform: 'translateX(-50%)',
+      color: '#c8d2e0', font: '500 11px system-ui, sans-serif', lineHeight: '13px',
+      whiteSpace: 'nowrap', textShadow: '0 1px 2px #000, 0 0 6px rgba(0,0,0,.85)',
+      pointerEvents: 'none', zIndex: '25', opacity: '.72',
+    } as Partial<CSSStyleDeclaration>);
+    (this.canvas.parentElement ?? document.body).appendChild(el);
+    return el;
+  }
+
   /** 鼠标事件 → NDC。射线拾取与地面瞄准共用的换算（此前四处重复）*/
   ndcFromMouse(ev: MouseEvent, out: THREE.Vector2): THREE.Vector2 {
     const rect = this.canvas.getBoundingClientRect();
@@ -109,6 +141,7 @@ export class SceneShell {
   /** 只回收壳自己接的线；场景专属的（GameLoop、连接、canvas 点击）由场景收 */
   dispose(): void {
     this.input.dispose();
+    this.hintBar?.remove();
     window.removeEventListener('resize', this.onResize);
     this.env.dispose();
     this.renderer.dispose();

@@ -6,8 +6,21 @@
  *   · 验收 #5「未被发现的潜行目标不能被小地图选中」
  */
 
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { FlagState, TEAM_BLUE, TEAM_RED, mage, type WeaponDef } from '@wowpvp/shared';
+import {
+  ALL_SKILLS,
+  CastFailure,
+  FlagState,
+  RANGE,
+  TEAM_BLUE,
+  TEAM_RED,
+  asSkillId,
+  getSkill,
+  mage,
+  type WeaponDef,
+} from '@wowpvp/shared';
 import {
   isFlagBlip,
   type ArenaBlip,
@@ -19,6 +32,24 @@ import { MAX_PARTY_MEMBERS, type PartyMemberView } from './PartyFrame.js';
 import { POP_IN, POP_PEAK, POP_SETTLE, popScale } from './FloatingNumbers.js';
 import { SWAP_INTERRUPT_TEXT, compareArmors, compareWeapons } from './LoadoutPanel.js';
 import { CONTROL_VISUALS } from '../vfx/status.js';
+import {
+  BLOCKER_GLYPH,
+  blockerCategory,
+  blockerText,
+  castMethodText,
+  cooldownText,
+  escHtml,
+  pickBlocker,
+  rangeText,
+  skillTooltipHtml,
+} from './skillTooltip.js';
+import type { HudSkillSlot } from './CombatView.js';
+
+/** 源码文本。★ 下面几条是**回归锁**：它们锁的是「这一行还在不在」 */
+const readSrc = (rel: string): string =>
+  readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
+const INDEX_HTML = readSrc('../../index.html');
+const COMBAT_HUD_SRC = readSrc('./CombatHud.ts');
 
 describe('★ 15.4 竞技场不显示任何旗帜信息', () => {
   it('★★ ArenaHudView 的字段里没有任何旗帜相关项', () => {
@@ -162,6 +193,249 @@ describe('★ 15.3 战场装备栏（验收 #35）', () => {
       expect(w.advantage.length, w.name).toBeGreaterThan(0);
       expect(w.cost.length, w.name).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('★★ P10 技能栏可点击 —— 一行 CSS 决定整条链是不是死代码', () => {
+  it('★★ `#skill-bar .slot` 必须有 pointer-events:auto', () => {
+    /**
+     * ⚠️ 这条锁的是一个**沉默失效**：`#skill-bar` 容器是 pointer-events:none
+     *   （正确，它不能挡住 3D 画布），而 `.slot` 从来没改回 auto ——
+     *   于是 CombatHud 里那条 mousedown 委托和 `.slot.usable:hover` 动效
+     *   全是死代码：代码在，事件永远不会来，没有任何报错。
+     *   删掉这一行不会红任何别的测试，所以必须有一条专门盯着它。
+     */
+    const rule = /#skill-bar\s+\.slot\s*\{[^}]*pointer-events:\s*auto/;
+    expect(rule.test(INDEX_HTML), '#skill-bar .slot 的 pointer-events:auto 不见了').toBe(true);
+    // 容器必须**保持** none，否则技能栏会挡住它下面的画布点击
+    expect(/#skill-bar\s*\{[^}]*pointer-events:\s*none/.test(INDEX_HTML)).toBe(true);
+  });
+
+  it('★ 技能栏层级压过战斗日志与装备栏（1280×720 上真的会重叠）', () => {
+    expect(/#skill-bar\s*\{[^}]*z-index:\s*\d+/.test(INDEX_HTML)).toBe(true);
+  });
+
+  it('★ mousedown 只认左键 —— 右键是转镜头，不该顺手放个技能', () => {
+    expect(COMBAT_HUD_SRC).toContain('ev.button !== 0');
+    // HUD 区域内拦下浏览器右键菜单（画布上那条在 InputManager，管不到浮层）
+    expect(COMBAT_HUD_SRC).toContain("addEventListener('contextmenu'");
+  });
+
+  it('★ 帮助面板在 720p 上不再被 calc(100vh - 560px) 压成 158px', () => {
+    expect(INDEX_HTML).toContain('min(70vh, calc(100vh - 220px))');
+    expect(INDEX_HTML).not.toContain('max-height: calc(100vh - 560px)');
+  });
+
+  it('★ 战斗日志有底板且字号 ≥12px —— 死亡/失败只走这一条通道', () => {
+    const block = /#combat-log\s*\{[^}]*\}/.exec(INDEX_HTML)?.[0] ?? '';
+    expect(block).toMatch(/background:\s*rgba\(12,\s*14,\s*20,\s*\.55\)/);
+    expect(block).toMatch(/font-size:\s*12px/);
+  });
+});
+
+describe('★★ 技能 tooltip —— SkillDef.description / counters 的第一个消费方', () => {
+  const smite = getSkill(asSkillId('priest.smite'))!;
+
+  it('★★ 每一个技能的 description 与 counters 都真的出现在 tooltip 里', () => {
+    /**
+     * schema.ts 的注释写着「反制方式……**也直接用于 HUD tooltip**」，
+     * 91 个技能都填了，客户端却零消费。这条按全表断言，
+     * 以后加技能忘了填也会在这里红（data.test.ts 保证非空，这里保证被用上）。
+     */
+    for (const s of ALL_SKILLS) {
+      const html = skillTooltipHtml(s);
+      expect(html, `${s.id} 的说明没进 tooltip`).toContain(escHtml(s.description));
+      expect(html, `${s.id} 的反制没进 tooltip`).toContain(escHtml(s.counters));
+      expect(html, `${s.id} 的名称没进 tooltip`).toContain(escHtml(s.name));
+    }
+  });
+
+  it('★ 规格要求的六项都在：名称/学派/消耗/施法方式/射程/冷却', () => {
+    const html = skillTooltipHtml(smite);
+    for (const label of ['消耗', '施法', '射程', '冷却', '反制']) {
+      expect(html, label).toContain(label);
+    }
+    expect(html).toContain('神圣'); // 学派用中文，不是 'holy'
+  });
+
+  it('★★ 「脱GCD」这个黑话在 tooltip 里必须写全', () => {
+    const noGcd = ALL_SKILLS.filter((s) => !s.triggersGcd);
+    expect(noGcd.length, '数据里应当存在不触发 GCD 的技能').toBeGreaterThan(0);
+    for (const s of noGcd) {
+      expect(cooldownText(s), s.id as string).toContain('不占公共冷却');
+      expect(skillTooltipHtml(s), s.id as string).not.toContain('脱GCD');
+    }
+  });
+
+  it('★ 施法方式说的是「怎么被反制」，不是一个光秃秃的秒数', () => {
+    for (const s of ALL_SKILLS) {
+      const t = castMethodText(s);
+      expect(t, s.id as string).toMatch(/瞬发|读条|引导|射击准备/);
+      // 不可打断是 7.5 的关键信息，读条类必须说出来
+      if (s.cast.kind !== 'instant' && !s.cast.interruptible) {
+        expect(t, s.id as string).toContain('不可打断');
+      }
+    }
+  });
+
+  it('★ 射程随武器变化的技能不许写死数字撒谎', () => {
+    for (const s of ALL_SKILLS.filter((x) => x.rangeFromWeapon)) {
+      expect(rangeText(s), s.id as string).toContain('随当前武器触及变化');
+    }
+    expect(rangeText({ ...smite, range: { min: 0, max: 0 } })).toBe('自身');
+  });
+
+  it('★ 用自绘浮层而不是原生 title —— 技能格上不许再挂 title 属性', () => {
+    const bar = /private renderSkillBar[\s\S]*?\n {2}\}/.exec(COMBAT_HUD_SRC)?.[0] ?? '';
+    expect(bar.length).toBeGreaterThan(0);
+    expect(bar).not.toContain('title=');
+    // 无障碍三件套
+    expect(bar).toContain('role="button"');
+    expect(bar).toContain('tabindex="0"');
+    expect(bar).toContain('aria-label=');
+  });
+
+  it('★★ 浮层锚点必须现场命中测试，不许回到 `:hover` / mouseout 记账', () => {
+    /**
+     * ⚠️ 这条是**两次真机复验换来的**，改回去不会红任何别的断言：
+     *   · 技能栏每 50ms 重建 innerHTML，刚换完那一帧 `.slot:hover` 恒为 null
+     *     ⇒ tooltip 一次都不会出现；
+     *   · 鼠标底下的格子被删掉后再移开，mouseout 从已脱离文档的节点发出，
+     *     冒泡不到技能栏 ⇒ tooltip 收不回去。
+     *   `elementFromPoint` 没有任何跨帧状态，两个坑都绕开了。
+     */
+    const fn = /private syncSkillTip[\s\S]*?\n {2}\}/.exec(COMBAT_HUD_SRC)?.[0] ?? '';
+    expect(fn.length).toBeGreaterThan(0);
+    expect(fn).toContain('document.elementFromPoint');
+    expect(fn).not.toContain(':hover');
+  });
+
+  it('★★ 点击技能格之后必须退焦 —— 否则 Space 被格子吃掉，跳跃失灵', () => {
+    // mousedown 的 preventDefault 实测压不住聚焦（真机复验：点完
+    // activeElement 就是那个 .slot）。退焦必须是显式的一步。
+    expect(COMBAT_HUD_SRC).toMatch(/setTimeout\(\(\) => \{[\s\S]{0,160}?a\.blur\(\);/);
+  });
+
+  it('转义不漏：说明里出现尖括号也不会把浮层的 HTML 撑破', () => {
+    const evil = { ...smite, description: '<img src=x onerror="boom">&' };
+    const html = skillTooltipHtml(evil);
+    expect(html).not.toContain('<img');
+    expect(html).toContain('&lt;img');
+  });
+});
+
+describe('★ 合同 C1：不可用原因的分级显示', () => {
+  it('★★ 顺序是「位置→视线→朝向→资源→冷却→状态」', () => {
+    // 同时超距 + 没资源 + 冷却中 → 先让玩家去解决站位
+    expect(pickBlocker([
+      CastFailure.OnCooldown, CastFailure.NotEnoughResource, CastFailure.OutOfRange,
+    ])).toBe(CastFailure.OutOfRange);
+    expect(pickBlocker([CastFailure.WrongFacing, CastFailure.NoLineOfSight]))
+      .toBe(CastFailure.NoLineOfSight);
+    expect(pickBlocker([CastFailure.Silenced, CastFailure.OnGlobalCooldown]))
+      .toBe(CastFailure.OnGlobalCooldown);
+    expect(pickBlocker([CastFailure.NotEnoughResource, CastFailure.WrongFacing]))
+      .toBe(CastFailure.WrongFacing);
+  });
+
+  it('★ 空数组 / 全是 Ok → Ok，生产方没填时不会被误判成「有阻碍」', () => {
+    expect(pickBlocker([])).toBe(CastFailure.Ok);
+    expect(pickBlocker([CastFailure.Ok])).toBe(CastFailure.Ok);
+  });
+
+  it('★★ 17.2：四类阻碍的字形两两不同 —— 颜色之外还有第二通道', () => {
+    const glyphs = Object.values(BLOCKER_GLYPH);
+    expect(new Set(glyphs).size).toBe(glyphs.length);
+  });
+
+  it('★ 分类落点：位置/资源/冷却/状态', () => {
+    for (const f of [
+      CastFailure.OutOfRange, CastFailure.TooClose,
+      CastFailure.NoLineOfSight, CastFailure.WrongFacing,
+    ]) {
+      expect(blockerCategory(f), f).toBe('position');
+    }
+    expect(blockerCategory(CastFailure.NotEnoughResource)).toBe('resource');
+    expect(blockerCategory(CastFailure.OnCooldown)).toBe('cooldown');
+    expect(blockerCategory(CastFailure.OnGlobalCooldown)).toBe('cooldown');
+    for (const f of [CastFailure.Silenced, CastFailure.Dead, CastFailure.CarryingFlag]) {
+      expect(blockerCategory(f), f).toBe('state');
+    }
+  });
+
+  it('★ 冷却类把秒数带上：「还剩多久」比「冷却中」有用', () => {
+    expect(blockerText(CastFailure.OnGlobalCooldown, 0.8)).toBe('公共冷却 0.8s');
+    expect(blockerText(CastFailure.OnGlobalCooldown)).toBe('公共冷却');
+    expect(blockerText(CastFailure.OnGlobalCooldown, 0)).toBe('公共冷却');
+  });
+
+  it('★ 合同 C1 的三个新字段都是可选的 —— 生产方没跟上也不该编译报错', () => {
+    const bare: HudSkillSlot = {
+      skill: getSkill(asSkillId('priest.smite'))!,
+      cooldownRemaining: 0,
+      blocker: CastFailure.Ok,
+    };
+    expect(bare.gcdRemaining).toBeUndefined();
+    expect(bare.gcdTotal).toBeUndefined();
+    expect(bare.blockers).toBeUndefined();
+  });
+
+  it('★ GCD 扫层只在两个字段都有值时画 —— 不画停在 0 度的假扫层', () => {
+    const bar = /private renderSkillBar[\s\S]*?\n {2}\}/.exec(COMBAT_HUD_SRC)?.[0] ?? '';
+    expect(bar).toContain('s.gcdRemaining !== undefined && s.gcdRemaining > 0');
+    expect(bar).toContain('s.gcdTotal !== undefined && s.gcdTotal > 0');
+    expect(INDEX_HTML).toContain('--gcd-deg');
+  });
+});
+
+describe('★★ 15.2 敌方施法条必须显示技能**名称**，不是内部 id', () => {
+  it('★★ 全局技能表能查到别的职业的技能名（玩家自己那 9 格查不到）', () => {
+    /**
+     * 真机实测：法师看牧师读条，施法条上写的是 `priest.flash_heal`。
+     * 根因是 HUD 从 `dir.skills`（**玩家自己的技能**）里查名字。
+     * 7.5 的打断博弈全靠这一行 —— 是治疗还是伤害决定要不要交打断。
+     */
+    for (const id of ['priest.flash_heal', 'priest.smite']) {
+      const s = getSkill(asSkillId(id));
+      expect(s, id).toBeDefined();
+      expect(s!.name, id).not.toBe(id);
+      expect(mage.skills.some((m) => String(m.id) === id), '法师栏里不该有牧师技能').toBe(false);
+    }
+  });
+
+  it('★ 实现确实改成了先查全局表，玩家栏只作兜底', () => {
+    const fn = /private castBarHtml[\s\S]*?const skill = [\s\S]*?;\n/.exec(COMBAT_HUD_SRC)?.[0] ?? '';
+    expect(fn).toContain('getSkill(cast.skillId)');
+    // 兜底仍在，但排在全局表之后
+    expect(fn.indexOf('getSkill(cast.skillId)')).toBeLessThan(fn.indexOf('dir.skills.find'));
+  });
+});
+
+describe('★ 目标框与姓名板的收尾', () => {
+  it('★ 隐藏目标框时一并清空内容，不留幽灵数据', () => {
+    const fn = /private renderUnitFrame\([\s\S]*?if \(!unit\) \{[\s\S]*?\n {4}\}/.exec(COMBAT_HUD_SRC)?.[0] ?? '';
+    expect(fn).toContain("el.innerHTML = ''");
+  });
+
+  it('★★ 姓名板剔除距离与服务器侧校验同一个常量（合同 C6 口径）', () => {
+    expect(COMBAT_HUD_SRC).toContain('RANGE.MAX_SELECT');
+    // 45 米不是这里定的，改了就一起改
+    expect(RANGE.MAX_SELECT).toBe(45);
+  });
+
+  it('★ 目标框敌我：颜色 + ▲/◆ 字形 + 友方/敌方文字，三条通道', () => {
+    expect(COMBAT_HUD_SRC).toContain("classList.toggle('uf-friendly'");
+    expect(COMBAT_HUD_SRC).toContain("'友方' : '敌方'");
+    expect(INDEX_HTML).toContain(".unit-frame.uf-friendly .uf-name::before");
+    expect(INDEX_HTML).toContain(".unit-frame.uf-hostile .uf-name::before");
+  });
+
+  it('★ 合同 C2：showCenterNotice 与瞄准透传都在，且默认不改老行为', () => {
+    expect(COMBAT_HUD_SRC).toContain('showCenterNotice(text: string): void');
+    expect(COMBAT_HUD_SRC).toContain('aimActiveProbe: (() => boolean) | undefined');
+    expect(COMBAT_HUD_SRC).toContain('onAimConfirm: (() => void) | undefined');
+    // 探针为真时**先 return**，不落到 selectById
+    expect(COMBAT_HUD_SRC).toMatch(/if \(this\.aimActiveProbe\?\.\(\)\) \{\s*\n\s*this\.onAimConfirm\?\.\(\);\s*\n\s*return;/);
   });
 });
 

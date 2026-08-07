@@ -3,7 +3,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { TARGETING } from '../constants/combat.js';
+import { RANGE, TARGETING } from '../constants/combat.js';
 import { mage, priest, rogue, warrior } from '../data/index.js';
 import { box } from '../data/maps/schema.js';
 import { DEG, vec3 } from '../math/vec3.js';
@@ -19,6 +19,8 @@ import {
   tabTarget,
   targetOfTarget,
   toggleFocus,
+  withinSelectRange,
+  TAB_MELEE_EXEMPT_RANGE,
 } from './targeting.js';
 import { addEntity, allocEntityId, createWorld, type World } from './world.js';
 
@@ -197,6 +199,89 @@ describe('5.3 Tab 候选过滤', () => {
     expect(
       collectTabCandidates(world, me, { ...opts(), includePets: true }).map((c) => c.entity.id),
     ).toContain(pet.id);
+  });
+});
+
+describe('P10 —— 近战贴身 Tab 死区（TAB_MELEE_EXEMPT_RANGE）', () => {
+  /**
+   * 真机坐实：第三人称镜头在角色身后约 6.5 米，而扇区判定的夹角是从**角色位置**
+   * 算的 —— 贴脸 2 米、屏幕正中央的敌人算出来是 81°，超过半角 70° 被判「前方
+   * 没有目标」。近战 Tab 因此几乎每次落空。
+   */
+  it('★ 贴脸 2 米、正侧方 90° 的敌人 —— 修好之后 Tab 得到', () => {
+    const inFace = spawn(warrior, BLUE, 2, 0); // 正右方，夹角 90°
+    expect(collectTabCandidates(world, me, opts()).map((c) => c.entity.id)).toContain(inFace.id);
+    expect(tabTarget(world, me, opts())?.id).toBe(inFace.id);
+  });
+
+  it('★ 35 米侧后方的敌人依旧选不到 —— 豁免只对贴身生效', () => {
+    // 120°（超出半角 70°）、35 米（远超豁免半径）
+    const behind = spawn(mage, BLUE, Math.sin(120 * DEG) * 35, -Math.cos(120 * DEG) * 35);
+    expect(collectTabCandidates(world, me, opts()).map((c) => c.entity.id))
+      .not.toContain(behind.id);
+    expect(tabTarget(world, me, opts())).toBeUndefined();
+  });
+
+  it('豁免半径的分界：8 米内的正后方进候选，稍远的不进', () => {
+    const near = spawn(warrior, BLUE, 0, TAB_MELEE_EXEMPT_RANGE - 1); // 正后方 7 米
+    const far = spawn(warrior, BLUE, 0, TAB_MELEE_EXEMPT_RANGE + 1); // 正后方 9 米
+    const ids = collectTabCandidates(world, me, opts()).map((c) => c.entity.id);
+    expect(ids).toContain(near.id);
+    expect(ids).not.toContain(far.id);
+  });
+
+  it('★ 豁免只是多给候选，不改优先级 —— 正面的仍排在前面', () => {
+    const side = spawn(warrior, BLUE, 2, 0); // 贴脸 90°，靠豁免进来的
+    const front = spawn(mage, BLUE, 0, -12); // 屏幕正中，但远一些
+    const sorted = sortTabCandidates(collectTabCandidates(world, me, opts()));
+    expect(sorted[0]!.entity.id).toBe(front.id);
+    expect(sorted.map((c) => c.entity.id)).toContain(side.id);
+  });
+});
+
+describe('合同 C6 —— 45 米选中距离（setHardTarget 的 enforceRange）', () => {
+  it('★ 缺省不查距离 —— 老行为一字不动', () => {
+    const far = spawn(mage, BLUE, 0, -100);
+    expect(setHardTarget(world, me, far.id)).toBe(true);
+    expect(me.targets.hard).toBe(far.id);
+  });
+
+  it('★ enforceRange:true 时超过 45 米拒绝，且不改动当前目标', () => {
+    const near = spawn(mage, BLUE, 0, -10);
+    const far = spawn(mage, BLUE, 0, -60);
+    setHardTarget(world, me, near.id);
+
+    expect(setHardTarget(world, me, far.id, { enforceRange: true })).toBe(false);
+    expect(me.targets.hard).toBe(near.id); // 没有被清掉，也没有切过去
+  });
+
+  it('enforceRange:true 时 45 米内正常选中', () => {
+    const inRange = spawn(mage, BLUE, 0, -(RANGE.MAX_SELECT - 5));
+    expect(setHardTarget(world, me, inRange.id, { enforceRange: true })).toBe(true);
+    expect(me.targets.hard).toBe(inRange.id);
+  });
+
+  it('清除目标（undefined）不受 enforceRange 影响', () => {
+    const near = spawn(mage, BLUE, 0, -10);
+    setHardTarget(world, me, near.id);
+    expect(setHardTarget(world, me, undefined, { enforceRange: true })).toBe(true);
+    expect(me.targets.hard).toBeUndefined();
+  });
+
+  it('★ 验收 #6 不受影响：已选中的目标跑到 100 米外仍然保留', () => {
+    const enemy = spawn(mage, BLUE, 0, -10);
+    setHardTarget(world, me, enemy.id, { enforceRange: true });
+    enemy.position = vec3(0, 0, -100);
+    pruneInvalidTargets(world, me);
+    expect(me.targets.hard).toBe(enemy.id);
+  });
+
+  it('withinSelectRange 与 Tab 用的是同一把尺子', () => {
+    const edge = spawn(mage, BLUE, 0, -(RANGE.MAX_SELECT - 1));
+    const beyond = spawn(mage, BLUE, 0, -(RANGE.MAX_SELECT + 1));
+    expect(withinSelectRange(me, edge)).toBe(true);
+    expect(withinSelectRange(me, beyond)).toBe(false);
+    expect(TARGETING.TAB_MAX_RANGE).toBe(RANGE.MAX_SELECT);
   });
 });
 

@@ -336,7 +336,12 @@ export const isWeaponSkill = (skill: SkillDef): boolean =>
 
 export type CastResult =
   | { ok: true; state: CastState | null }
-  | { ok: false; reason: CastFailure };
+  /**
+   * `queued` 只由 `beginCastOrQueue()` 置位（P10 / 合同 C5）——
+   * 表示这次按键被存进了排队窗，失败提示**已被有意吞掉**，稍后会重试。
+   * 老调用方读不到这个字段也不受影响（可选）。
+   */
+  | { ok: false; reason: CastFailure; queued?: boolean };
 
 /**
  * 施法事件回调。
@@ -590,5 +595,169 @@ export const interruptByForcedMove = (
   store.delete(caster.id);
   events?.onInterrupted?.(caster, state, InterruptSource.ForcedMove);
   return true;
+};
+
+// ── 施法排队窗（P10 / 合同 C5）─────────────────────────────────────
+
+/**
+ * ★★ **排队窗时长，秒。占位值 0.4。**
+ *
+ *   取值理由：参照 WoW 的按键队列窗（~400ms）。它必须同时满足两件相反的事 ——
+ *   够长到能吸收人手在 GCD 结束前的提前量（实测手感上多数人早按 100~300ms），
+ *   又短到不会把「我改主意了」变成「0.8 秒后突然放了一个我早就不想放的技能」。
+ *   ⚠️ 没有本项目自己的实测数据支撑这个数，是照抄手感基准；调之前先做一次
+ *   真机对比（早按 0.2s / 0.35s / 0.5s 三档），不要凭感觉动。
+ */
+export const CAST_QUEUE_WINDOW = 0.4;
+
+/**
+ * 排队窗里存着的那一次按键。
+ *
+ * ⚠️ **刻意不存 `facing`。** 方向技能在按下那一刻会把 `caster.yaw` 设成当时的
+ *    镜头朝向（见 `tick.ts` 第 1 步）；等 0.4 秒后真正放出来时再把那个**旧**朝向
+ *    重放一遍，角色会被扭回按键那一刻的方向 —— 玩家会看到自己原地一甩。
+ *    消费时用**当前** yaw 才是他此刻的意图。
+ */
+export interface QueuedCast {
+  skillId: SkillId;
+  targetId?: EntityId;
+  groundPoint?: Vec3;
+  /** 按下的绝对时刻（`world.time`），用于判断 0.4 秒过期 */
+  pressedAt: number;
+}
+
+/**
+ * 每个实体**至多一格**的排队位。
+ * ★ 单槽是有意的：后按的覆盖先按的 —— 玩家连点三个键时想放的是最后那个，
+ *   排成队列会在 GCD 结束后连放三个，那不是「跟手」是「失控」。
+ */
+export type CastQueueStore = Map<EntityId, QueuedCast>;
+
+export const createCastQueueStore = (): CastQueueStore => new Map();
+
+/**
+ * 这个失败原因值不值得排队。
+ *
+ * ★ **只有这两个**：它们的共同点是「再等一小会儿就会自己好」。
+ *   距离不够、资源不足、被沉默都不在其列 —— 那些是玩家要**做点什么**才能
+ *   解决的问题，替他重试只会把一次明确的失败拖成 0.4 秒后的同一次失败。
+ */
+export const isQueueableFailure = (reason: CastFailure): boolean =>
+  reason === CastFailure.OnGlobalCooldown || reason === CastFailure.AlreadyCasting;
+
+/** `events` 去掉 onFailed 的那一份。排队期间失败提示要吞掉，其余事件照发 */
+const withoutFailureReport = (
+  events: CastEvents | undefined,
+): { quiet: CastEvents; report: CastEvents['onFailed'] } => {
+  // ★ 用 rest 而不是逐个字段拷 —— 将来给 CastEvents 加新回调时不会被静默丢掉
+  const { onFailed, ...quiet } = events ?? {};
+  return { quiet, report: onFailed };
+};
+
+/**
+ * ★★ **带排队窗的 `beginCast()`（合同 C5）。**
+ *
+ *   真机审计坐实的问题：GCD 是 1.0 秒，而人手不可能恰好在它归零那一帧按下。
+ *   早按 100 毫秒 = 这次按键**被直接丢掉**，GCD 结束也不会补放 —— 玩家的
+ *   感受是「我明明按了」。这是 WoW 顺手感里最核心的一环，也是本作此前
+ *   与它差得最远的一环。
+ *
+ * ⚠️ **平衡红线：只有显式 `queue` 的请求走这条路。**
+ *   `tick.ts` 第 1 步对不带 `queue` 的请求调的仍然是原样的 `beginCast()`，
+ *   一个字节的差异都没有。红线的三道保险：
+ *     · 协议 `CastRequest` **没有** `queue` 字段 —— 客户端伪造不出来；
+ *     · 服务器只给 `Session.isBot !== true` 的会话补 `queue: true`
+ *       （⚠️ `BotDriver` 发的是**真的** `CastRequest`，走的正是同一条
+ *       `MatchLoop.requestCast`，所以那道 isBot 判断是红线本身，不是优化）；
+ *     · `scripts/balance-report.ts` 直接调 `tickWorld`，连排队 store 都不建。
+ *
+ * @returns 与 `beginCast` 同构；被存进排队窗时额外带 `queued: true`
+ */
+export const beginCastOrQueue = (
+  world: World,
+  store: CastingStore,
+  queue: CastQueueStore,
+  caster: CombatEntity,
+  skill: SkillDef,
+  opts: { target?: CombatEntity; groundPoint?: Vec3; events?: CastEvents } = {},
+): CastResult => {
+  const { quiet, report } = withoutFailureReport(opts.events);
+  const r = beginCast(world, store, caster, skill, { ...opts, events: quiet });
+  if (r.ok) return r;
+
+  if (isQueueableFailure(r.reason)) {
+    queue.set(caster.id, {
+      skillId: skill.id,
+      ...(opts.target ? { targetId: opts.target.id } : {}),
+      ...(opts.groundPoint ? { groundPoint: { ...opts.groundPoint } } : {}),
+      pressedAt: world.time,
+    });
+    // ★ 这次失败**不上报**：马上就要替他重试了，弹一句「公共冷却中」等于
+    //   把排队窗要消灭的那条噪音又原样放回 HUD 上
+    return { ok: false, reason: r.reason, queued: true };
+  }
+
+  report?.(caster, skill, r.reason);
+  return r;
+};
+
+export interface CastQueueTickOptions {
+  getSkill: (id: SkillId) => SkillDef | undefined;
+  events?: CastEvents;
+}
+
+/**
+ * 消费排队窗。
+ *
+ * ★ **必须在 `tickCasting()` 之后调**：本 tick 刚读完的那一条读条要能被排队的
+ *   下一发**当场**接上。放在它之前的话，「读条结束 → 排队技能起手」中间会空
+ *   一整个 tick（50ms），排队窗省下来的提前量又被这里还回去了。
+ *
+ * ★ 重试走的是**完整的** `beginCast()`（内含完整 `validateCast`）——
+ *   排队不是「先斩后奏」：这 0.4 秒里目标可能跑远了、自己可能被沉默了，
+ *   那些照样要拦。合同 C5 的「重新走完整 validateCast」就是这个意思。
+ */
+export const tickCastQueue = (
+  world: World,
+  store: CastingStore,
+  queue: CastQueueStore,
+  opts: CastQueueTickOptions,
+): void => {
+  const { quiet, report } = withoutFailureReport(opts.events);
+
+  for (const [id, q] of [...queue.entries()]) {
+    const caster = world.entities.get(id);
+    const skill = opts.getSkill(q.skillId);
+    if (!caster || !caster.alive || !skill) {
+      queue.delete(id);
+      continue;
+    }
+
+    /**
+     * 过期。★ **静默丢弃，不补一条失败提示** —— 按键过去 0.4 秒之后才弹出
+     * 「公共冷却中」，玩家早就在做下一件事了，那条迟到的提示只会让人以为
+     * 是刚才那一下出的问题。合同 C5 只要求「二次失败」上报，不含过期。
+     */
+    if (world.time - q.pressedAt > CAST_QUEUE_WINDOW) {
+      queue.delete(id);
+      continue;
+    }
+
+    const r = beginCast(world, store, caster, skill, {
+      ...(q.targetId !== undefined ? { target: getEntity(world, q.targetId) } : {}),
+      ...(q.groundPoint ? { groundPoint: q.groundPoint } : {}),
+      events: quiet,
+    });
+    if (r.ok) {
+      queue.delete(id);
+      continue;
+    }
+    // GCD/读条还没结束 —— 这不算「二次失败」，是还没轮到它。窗口没过期就继续等
+    if (isQueueableFailure(r.reason)) continue;
+
+    // 合同 C5：二次失败按普通失败上报（这时玩家确实需要知道为什么没放出来）
+    queue.delete(id);
+    report?.(caster, skill, r.reason);
+  }
 };
 

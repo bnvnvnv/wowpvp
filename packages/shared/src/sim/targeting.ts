@@ -26,14 +26,43 @@ import { getEntity, listEntities, type World } from './world.js';
 // ── 槽位操作 ─────────────────────────────────────────────────────
 
 /**
+ * 目标是否在 5.1 的 45 米选中距离内。
+ *
+ * ★ 用的是中心到中心的 `distance()`，与 `collectTabCandidates` 里那道
+ *   `TAB_MAX_RANGE`（= 同一个 `RANGE.MAX_SELECT`）**同一把尺子** ——
+ *   点击选中与 Tab 选中如果各用各的量法，会出现「Tab 循环不到但点得中」
+ *   这种没人说得清的边界。
+ * ★ 供调用方在 `setHardTarget()` 返回 false 时区分原因（那里保持 boolean
+ *   返回，是为了不动既有的三个调用点）。
+ */
+export const withinSelectRange = (actor: CombatEntity, target: CombatEntity): boolean =>
+  distance(actor.position, target.position) <= RANGE.MAX_SELECT;
+
+/**
  * 设置硬目标。
  * 5.1：硬目标**持续保留**，超距或被墙遮挡都不会自动清除（验收 #6）——
  * 只有切换、目标离场、玩家主动清除才会变。这里只做「能不能选中」的校验。
+ *
+ * @param opts.enforceRange 合同 C6。**缺省 false = 老行为**（不查距离）。
+ *   true 时距离 > `RANGE.MAX_SELECT` 直接拒绝。
+ *
+ *   ⚠️★ **为什么是可选参而不是直接强制：**
+ *     5.1 的 45 米是**新建选中**的上限，而验收 #6 要求**已经选中**的目标
+ *     跑到 100 米外也不掉。两条规则共用这一个函数（`pruneInvalidTargets`
+ *     刻意不查距离），所以距离检查只能挂在「新选一个」这条路径上。
+ *     无脑改成永远强制会直接打掉验收 #6。
+ *
+ *   ⚠️ **人机也会走到这里。** `BotDriver` 发的是**真的** `SetTarget` 协议消息
+ *     （BotDriver.ts «目标：让服务器知道它在打谁»），经 RoomServer →
+ *     `MatchLoop.applyCommands` 落到本函数 —— 它**不是**直接赋值
+ *     `targets.hard`。所以 `MatchLoop` 那一侧只给**真人**会话传
+ *     `enforceRange: true`，人机原样走老路径，配平基线逐位不变。
  */
 export const setHardTarget = (
   world: World,
   actor: CombatEntity,
   targetId: EntityId | undefined,
+  opts: { enforceRange?: boolean } = {},
 ): boolean => {
   if (targetId === undefined) {
     delete actor.targets.hard;
@@ -41,6 +70,7 @@ export const setHardTarget = (
   }
   const t = getEntity(world, targetId);
   if (!t || !isSelectableBy(t, actor)) return false;
+  if (opts.enforceRange === true && !withinSelectRange(actor, t)) return false;
   actor.targets.hard = targetId;
   return true;
 };
@@ -116,11 +146,48 @@ export interface TabOptions {
 }
 
 /**
+ * ★★ **贴脸豁免半径，米。占位值 8。**
+ *
+ *   P10 真机审计坐实的死区：5.3 的扇区判定拿的是**镜头 yaw**，夹角却从
+ *   **角色位置**算 —— 而第三人称镜头挂在角色身后约 6.5 米。于是一个贴在
+ *   脸上（2 米）、明明就在屏幕正中央的敌人，算出来的夹角是 81°，
+ *   超过半角 70° 被判「前方没有目标」。近战贴身时 Tab 几乎必然落空。
+ *
+ *   ⚠️ 真正的修法是让夹角从**镜头位置**算，但镜头位置不在 sim 里（服务器
+ *   连镜头 yaw 都拿不到，见 `MatchLoop` 的 TabTarget 分支），把它塞进
+ *   `TabOptions` 会让 sim 依赖一个只有客户端有的量。所以这里取**最小修**：
+ *   近到一定程度就不吃扇区过滤。
+ *
+ *   取值理由：8 米 = 覆盖全部近战武器触及（最长的长柄 `RANGE.MELEE_POLEARM`
+ *   是 3.8 米）+ 贴身走位的余量（双方各退一两步仍算「缠斗中」）。它同时
+ *   小于 `RANGE.SHORT`（12 米），所以不会把中距离的目标也一并放进来。
+ *   ⚠️ 占位值，凭几何推算而非实测；调之前先在试验场量一次镜头臂长。
+ */
+export const TAB_MELEE_EXEMPT_RANGE = 8;
+
+/**
+ * 5.3 的扇区过滤是否放行。
+ *
+ * ★ 抽成导出函数是为了让**客户端的快照版 Tab**（`snapshotTargeting.ts`）
+ *   复用同一条规则 —— 它有一份一模一样的 `angleFromCenter > halfArc` 过滤，
+ *   两处各修一遍必然漂移（联网局能 Tab 到、试验场 Tab 不到，或者反过来）。
+ *
+ * ⚠️ **有意的副作用：8 米内正后方的敌人也会进候选。**
+ *   近战缠斗时镜头、角色、敌人的朝向每一帧都在变，「背后」这个概念在 2 米
+ *   距离上没有意义；而排序仍然按夹角分档（`sortTabCandidates`），正面的候选
+ *   照样排在前面 —— 豁免只是**多给一个候选**，不改优先级。
+ */
+export const passesTabArc = (angleFromCenter: number, distanceToTarget: number): boolean =>
+  distanceToTarget <= TAB_MELEE_EXEMPT_RANGE ||
+  angleFromCenter <= (TARGETING.TAB_FRONT_ARC_DEG / 2) * DEG;
+
+/**
  * 收集 Tab 候选。
  *
  * 过滤规则（5.3）：
  *   - 45 米内
  *   - 位于**镜头**前方 140° 内 —— 完全在身后的不进首轮列表
+ *     （★ 贴脸 8 米内豁免这一条，见 `TAB_MELEE_EXEMPT_RANGE`）
  *   - 敌对、存活、可被选中
  *   - **排除未被发现的潜行目标**（验收 #5）
  *   - 宠物默认排除
@@ -130,7 +197,6 @@ export const collectTabCandidates = (
   actor: CombatEntity,
   opts: TabOptions,
 ): TabCandidate[] => {
-  const halfArc = (TARGETING.TAB_FRONT_ARC_DEG / 2) * DEG;
   const out: TabCandidate[] = [];
 
   for (const e of listEntities(world)) {
@@ -144,7 +210,7 @@ export const collectTabCandidates = (
 
     const toTarget = normalize2D(sub(e.position, actor.position));
     const angleFromCenter = angleDelta(opts.viewYaw, dirToYaw(toTarget));
-    if (angleFromCenter > halfArc) continue;
+    if (!passesTabArc(angleFromCenter, d)) continue;
 
     out.push({
       entity: e,

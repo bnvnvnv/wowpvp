@@ -21,11 +21,13 @@
 
 import {
   ALL_CLASSES,
+  CastKind,
   MAP_BY_ID,
   TEAM_RED,
   compositionHints,
   getClass,
   teamSizeOf,
+  type ClassDef,
   type ClassId,
   type MapId,
   type Room,
@@ -62,6 +64,65 @@ import {
 
 /** 昵称的本地存档（照 accessibility 的 `wowpvp.<域>.v1` 键式）*/
 const LOBBY_STORAGE_KEY = 'wowpvp.lobby.v1';
+
+// ── P10 纯函数（本仓库没有 jsdom，DOM 之外的判断都提到这里单测）────────
+
+/**
+ * P10：连不上服务器时标题页说的话。
+ * ★ 带上地址 —— 自己起服务器的人最常见的失败就是端口/主机填错，
+ *   只说「连不上」他没法自查。后半句给出**此刻就能玩**的两条单机路。
+ */
+export const offlineToast = (serverUrl: string): string =>
+  `连不上服务器（${serverUrl}）—— 可先玩练习场/新手教学`;
+
+/**
+ * P10：练习场入口 URL。
+ * ★ 合同 C8：只有大厅这个入口追加 `&grace`（新手缓冲）。验收脚本一律直接
+ *   开 `?testbed…` 不带它 —— 缓冲缺省关，脚本那条路逐字节不变。
+ */
+export const practiceUrl = (pathname: string, classId: string, diff: string): string =>
+  `${pathname}?testbed&combat`
+  + `&class=${encodeURIComponent(classId)}`
+  + `&bot=${encodeURIComponent(diff)}`
+  + `&grace`;
+
+/**
+ * P10：练习场默认职业 = 展示顺序第一位（战士）。
+ * ★ 原默认是列表第 6 位的法师 —— 全职业里读条最多的一个，等于让第一次
+ *   开游戏的人先撞打断。战士全技能瞬发：先给手感，机制放后面。
+ * ★ 取 `ALL_CLASSES[0]` 而不是写死 'warrior' —— 展示顺序就是入门顺序，
+ *   顺序本身由 shared 自己的数据测试钉住。
+ */
+export const DEFAULT_PRACTICE_CLASS: string = ALL_CLASSES[0]!.id as string;
+
+/**
+ * P10：新手教学按钮文案。
+ * ⚠️ 未完成态原本写「尚未完成」，真机上读起来像**这个功能是半成品**（第一反应
+ *   是「别点」）。没做完的从来不是教学，是玩家的进度 —— 改成通关口径。
+ */
+export const tutorialLabel = (completed: boolean): string =>
+  completed ? '新手教学（已完成 ✓ 可重温）' : '新手教学（推荐先玩 · 未通关）';
+
+/**
+ * P10：职业按钮下面那行定位小字。
+ *
+ * ★★ **算出来，不手写。** 八职业的定位手写一遍，下次谁改了技能表，
+ *   这八行就成了界面上的谎话（本仓库红线：UI 文案不许对实现撒谎）。
+ *   三段全部有出处：
+ *     · 近战/远程 ← `ClassDef.autoAttack.ranged`
+ *     · 定位词    ← `ClassDef.role`（9.x「定位一句话」）的第一段
+ *     · 节奏      ← 非瞬发技能条数（读条/引导/瞄准都会顶出施法条）
+ * ⚠️ 分档阈值 2 是**占位值**：八职业实测非瞬发技能数落在 0~4，
+ *   切在 2 让「全瞬发 / 少量读条 / 依赖读条」三档各自有人，不是空档。
+ */
+export const classTagline = (c: ClassDef): string => {
+  const reach = c.autoAttack.ranged ? '远程' : '近战';
+  const head = c.role.split('、')[0] ?? '';
+  const casts = c.skills.filter((s) => s.cast.kind !== CastKind.Instant).length;
+  const cadence = casts === 0 ? '全瞬发' : casts <= 2 ? '少量读条' : '依赖读条';
+  // role 第一段本身就说了远近时不再重复一遍（「近战压制 · 全瞬发」而不是「近战 · 近战压制 · …」）
+  return head.startsWith(reach) ? `${head} · ${cadence}` : `${reach} · ${head} · ${cadence}`;
+};
 
 export interface LobbyOptions {
   /** ws 服务器地址（`?server=` 或默认 ws://<主机>:8080，与 ?net= 老路同规则）*/
@@ -104,8 +165,8 @@ export class LobbyShell {
   /** P5：人机补位状态（由 RoomState 同步，房主可改）*/
   private fillWithBots = false;
   private botDifficulty: 'easy' | 'normal' | 'hard' = 'normal';
-  /** P6：练习场配置（入口页点选，开始时拼进 ?testbed URL）*/
-  private practiceClass = 'mage';
+  /** P6：练习场配置（入口页点选，开始时拼进 ?testbed URL）。P10：默认见 DEFAULT_PRACTICE_CLASS */
+  private practiceClass: string = DEFAULT_PRACTICE_CLASS;
   private practiceDiff: 'easy' | 'normal' | 'hard' = 'normal';
   /** 房主 id。只有他能改规则预设（服务器校验，这里只决定按钮亮不亮）*/
   private hostId: string | undefined;
@@ -140,7 +201,30 @@ export class LobbyShell {
         if (!resumed && this.pendingJoin) this.sendJoin();
       },
       onClose: (willRetry) => {
-        if (!willRetry && this.page !== 'title') this.toast(`与服务器断开（${this.opts.serverUrl}）`);
+        if (willRetry) {
+          /**
+           * ⚠️ 真机实测：本机 8080 没人监听时，六次退避重试要走 **23 秒**才出最终结论
+           * （远超退避表本身的 7.75s —— 浏览器每次 ws 握手另有开销）。提示条只活 12 秒，
+           * 中间那十几秒又会退回「零反馈」。所以每退一次就把提示条续上一次，
+           * 顺带把「还在重试」说出来 —— 它确实在重试（Connection.scheduleRetry）。
+           */
+          if (this.pendingJoin) this.toast('连不上服务器，正在重试…', 12000);
+          return;
+        }
+        /**
+         * P10 ★ 标题页此前被排除在断开提示之外 —— 而「建房连不上」恰恰
+         * 停在标题页：点完「创建房间」只有一条 8 秒的「正在创建房间…」，
+         * 之后再无任何反馈（实测干等 40 秒也没有一个字）。
+         * 连接是玩家亲手点出来的，失败就必须由他正看着的这一页说出来。
+         */
+        if (this.pendingJoin) {
+          this.pendingJoin = undefined;
+          this.setTitleBusy(false); // 按钮恢复可点：不然他连重试都试不了
+          // 6000 是占位值：这条比普通提示长（默认 3200），因为它要人读完地址再决定去哪
+          this.toast(offlineToast(this.opts.serverUrl), 6000);
+          return;
+        }
+        if (this.page !== 'title') this.toast(`与服务器断开（${this.opts.serverUrl}）`);
       },
     });
   }
@@ -189,8 +273,14 @@ export class LobbyShell {
           <label>昵称
             <input id="lb-name" maxlength="12" placeholder="给自己起个名字" value="${escapeHtml(this.name)}"/>
           </label>
+          <!--
+            ★ P10 视觉层级：主按钮以前是「创建房间」—— 而它是这一页上**唯一
+            需要第二个人**才走得通的路。新玩家被最亮的按钮领到一间空房里等人，
+            两条自己就能玩的路反倒是最弱的 ghost 样式。现在主按钮归练习场，
+            联机保持普通按钮（路还在，只是不再假装它是第一步）。
+          -->
           <div class="lb-row">
-            <button class="lb-btn lb-primary" data-action="create">创建房间</button>
+            <button class="lb-btn" data-action="create">创建房间</button>
           </div>
           <div class="lb-row lb-join">
             <input id="lb-code" maxlength="16" placeholder="房间码"
@@ -199,14 +289,16 @@ export class LobbyShell {
           </div>
           <hr/>
           <div class="lb-row">
+            <!--
+              ⚠️ P10 文案：原来未完成时写「尚未完成」，读起来像**这个功能没做完**
+              （真机上第一反应就是「别点，是半成品」）。教学是完整的，没通关的是玩家。
+            -->
             <button class="lb-btn" data-action="tutorial">${
-              this.tutorialCompleted()
-                ? '新手教学（已完成 ✓ 可重温）'
-                : '新手教学（推荐先玩 · 尚未完成）'
+              tutorialLabel(this.tutorialCompleted())
             }</button>
           </div>
           <div class="lb-row">
-            <button class="lb-btn lb-ghost" data-action="practice">练习场（单机 · 选职业与人机难度）</button>
+            <button class="lb-btn lb-primary" data-action="practice">练习场（单机 · 选职业与人机难度）</button>
           </div>
           <!--
             P6 练习场配置：点「练习场」展开。此前它直接跳裸试验场（固定法师、
@@ -214,11 +306,20 @@ export class LobbyShell {
           -->
           <div id="lb-practice" class="lb-practice" hidden>
             <div class="lb-fine" style="margin:6px 0 2px">选择职业：</div>
+            <!--
+              ★ P10：八个职业此前只有名字。没玩过的人在「死亡骑士」和「德鲁伊」
+              之间没有任何依据可选 —— 小字给的是**这一局会怎么打**（远近 + 节奏），
+              全部由 classTagline() 从 shared 的职业数据算出，不是手写的宣传语。
+              ⚠️ lb-small 带 white-space:nowrap，两行得在这儿就地解开（样式表不归本包改）。
+            -->
             <div class="lb-row" id="lb-practice-classes" style="flex-wrap:wrap">
               ${ALL_CLASSES.map((c) => `
                 <button class="lb-btn lb-small${(c.id as string) === this.practiceClass ? ' lb-armed' : ''}"
                         data-action="practice-class"
-                        data-class="${c.id as string}">${c.name}</button>`).join('')}
+                        style="white-space:normal;line-height:1.3;padding:5px 10px"
+                        data-class="${c.id as string}">${escapeHtml(c.name)}<span
+                          style="display:block;font-size:11px;opacity:.72;margin-top:2px"
+                          >${escapeHtml(classTagline(c))}</span></button>`).join('')}
             </div>
             <div class="lb-fine" style="margin:6px 0 2px">人机难度（实战模式，假人会打你）：</div>
             <div class="lb-row">
@@ -364,6 +465,17 @@ export class LobbyShell {
       if (target.id === 'lb-code') this.act('join');
       if (target.id === 'lb-name') (this.root.querySelector('#lb-code') as HTMLElement)?.focus();
     });
+    /**
+     * P10：昵称此前**只在建/加房那一刻**才落盘 —— 先填名字再去练习场或教学的人
+     * 下次回来又是空的（填了个寂寞）。change（失焦/回车）就存，与 join() 走同一个
+     * saveName，口径不分家。
+     */
+    this.root.addEventListener('change', (ev) => {
+      const el = ev.target as HTMLElement;
+      if (el.id !== 'lb-name') return;
+      this.name = sanitizeName((el as HTMLInputElement).value);
+      this.saveName(this.name);
+    });
     // 悬停哪张职业卡就预览哪个模型（选中另算，见 render）
     this.root.addEventListener('mouseover', (ev) => {
       const card = (ev.target as HTMLElement).closest<HTMLElement>('.lb-card');
@@ -403,6 +515,7 @@ export class LobbyShell {
           this.pendingJoin = undefined;
           this.page = 'room';
           this.clearToast();
+          this.setTitleBusy(false); // 离开房间回到标题页时按钮得是活的
         }
         if (this.page !== 'match') this.render();
         break;
@@ -446,6 +559,7 @@ export class LobbyShell {
       case 'Rejected': {
         if (this.pendingJoin && msg.what === 'JoinRoom') {
           this.pendingJoin = undefined;
+          this.setTitleBusy(false); // 被服务器拒了也停在标题页，按钮必须能再点
           this.toast(`加入失败：${msg.reason}`);
         } else if (this.page === 'room' || this.page === 'class') {
           this.toast(`${msg.what} 被拒绝:${msg.reason}`);
@@ -502,6 +616,11 @@ export class LobbyShell {
         // P6：展开/收起练习场配置（职业 + 难度都在页面上点选）
         const panel = this.root.querySelector('#lb-practice') as HTMLElement | null;
         if (panel) panel.hidden = !panel.hidden;
+        /**
+         * ★ P10：展开之后「练习场」只剩折叠开关的作用，主按钮让给「开始练习」——
+         * 同屏两个主按钮等于一个都没有，而此刻唯一该点的是最下面那个。
+         */
+        btn?.classList.toggle('lb-primary', panel?.hidden !== false);
         break;
       }
       case 'practice-class': {
@@ -523,10 +642,9 @@ export class LobbyShell {
         /**
          * 练习场 = 试验场实战模式（?combat 假人会打）+ 所选职业与难度。
          * 大厅不内嵌它、只跳过去 —— 两条路径的启动代码零交集（M13 旧则）。
+         * P10：URL 尾部多一个 `&grace`（合同 C8 新手缓冲），见 practiceUrl。
          */
-        location.href = `${location.pathname}?testbed&combat`
-          + `&class=${encodeURIComponent(this.practiceClass)}`
-          + `&bot=${this.practiceDiff}`;
+        location.href = practiceUrl(location.pathname, this.practiceClass, this.practiceDiff);
         break;
       case 'dev-testbed':
         // P6 本地开发入口（isLocalDev 才渲染按钮）：原「验收试验场」无参语义
@@ -670,8 +788,26 @@ export class LobbyShell {
     if (this.conn.connected) {
       this.sendJoin();
     } else {
-      this.toast(creating ? '正在创建房间…' : '正在加入房间…', 8000);
+      /**
+       * ⚠️ P10：提示条得**活过整个重连退避**（250+500+1000+2000+4000 ≈ 7.75s
+       * 外加六次握手），否则它先消失、失败提示还没到，中间那段又是静默。
+       * 12000 是占位值：按最坏一次退避走完再留点余量取的。
+       */
+      this.toast(creating ? '正在创建房间…' : '正在加入房间…', 12000);
+      this.setTitleBusy(true);
       this.conn.connect();
+    }
+  }
+
+  /**
+   * P10：建/加房这段时间把两个联机按钮压灰。「点了没反应」和「点了正在连」
+   * 在标题页上原本长得一模一样 —— 而失败时必须再点得动（见 onClose）。
+   */
+  private setTitleBusy(busy: boolean): void {
+    for (const el of this.root.querySelectorAll<HTMLButtonElement>(
+      '[data-action="create"], [data-action="join"]',
+    )) {
+      el.disabled = busy;
     }
   }
 

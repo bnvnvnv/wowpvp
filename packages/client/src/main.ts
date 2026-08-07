@@ -33,7 +33,7 @@ const SCENE_DOM = `
   <div id="hud">
     <div class="panel" id="stats"></div>
     <div class="panel" id="help">
-      <h3>M1 试验场 · 按规格书第 4 / 13 章验证</h3>
+      <h3>试验场 · 按规格书第 4 / 13 章验证</h3>
       <table>
         <tr><td><kbd>W</kbd><kbd>S</kbd></td><td>前进 / 后退<span class="hint">后退 65% 速度</span></td></tr>
         <tr><td><kbd>A</kbd><kbd>D</kbd></td><td>转向<span class="hint">按住右键时变侧移</span></td></tr>
@@ -47,14 +47,23 @@ const SCENE_DOM = `
         <tr><td><kbd>F2</kbd></td><td>画质档位<span class="hint">高 → 中 → 低</span></td></tr>
         <tr><td><kbd>M</kbd></td><td>静音开关<span class="hint">M12 音效</span></td></tr>
       </table>
-      <h3>战斗（M2）</h3>
+      <!--
+        P10：战斗段由场景在启动后**覆写**（TestbedScene.combatHelpHtml）——
+        写死的那份是法师的技能表加「1–8 释放技能」：换成 ?class=warrior 之后
+        整段全错，而技能栏其实是 9 格。这里留的是场景还没接手时的兜底文案，
+        不列具体技能（列了就会撒谎）。
+      -->
+      <!-- margin 是补回来的：#help 的段间距靠「h3 + table + h3」相邻选择器，
+           套了这层 div 之后那条链断了，两段会挤在一起 -->
+      <div id="help-combat" style="margin:12px 0">
+      <h3>战斗与技能</h3>
       <table>
         <tr><td><kbd>Tab</kbd> <kbd>⇧Tab</kbd></td><td>循环选择目标<span class="hint">镜头前方 140°/45m</span></td></tr>
         <tr><td><kbd>左键</kbd></td><td>点击角色或姓名板选中</td></tr>
         <tr><td><kbd>F</kbd></td><td>设为焦点<span class="hint">独立于硬目标</span></td></tr>
-        <tr><td><kbd>1</kbd>–<kbd>8</kbd></td><td>释放技能</td></tr>
         <tr><td><kbd>Esc</kbd></td><td>取消瞄准 / 取消读条<span class="hint">假读条</span></td></tr>
       </table>
+      </div>
       <h3>瞄准（M3）</h3>
       <table>
         <tr><td><kbd>6</kbd> <kbd>7</kbd></td><td>地面技能<span class="hint">进入落点预览</span></td></tr>
@@ -205,7 +214,7 @@ if (room !== null) {
    * W10（技术债总账）：撤掉试验场专用的帮助与调试面板。那份 #help 的标题
    * 是「M1 试验场 · 按规格书第 4/13 章验证」（假人验收清单、F1 调试……），
    * 对联网对局整个是误导；#stats 在这条分支上从来没人绘制过（空框）。
-   * 联网的键位入口与读数由场景**自带**：#net-hint 一行提示 + F10 设置面板
+   * 联网的键位入口与读数由场景**自带**：SceneShell 提示条（#hint-bar）+ F10 设置面板
    * （含完整键位表）+ 右下角延迟/帧率 —— 大厅路径与老路因此同一份体验。
    */
   document.getElementById('help')?.remove();
@@ -251,15 +260,44 @@ if (room !== null) {
     ? (getClass(classParam as never) ?? undefined) : undefined;
   const botParam = params.get('bot');
   const botDifficulty = botParam === 'easy' || botParam === 'hard' ? botParam : undefined;
+  /**
+   * ★★ P10：**练习场**（大厅「开始练习」跳来的 `?testbed&combat`）与
+   *   **裸 `?testbed`**（开发入口，141 项验收的载体）自此分家。
+   *
+   *   分家的只有「开发化的那几块」：`#help` 是一份写着「M1 试验场 / 验收 #2 /
+   *   F1 调试」的验收清单，`#stats` 是 FPS 与 yaw 读数 —— 联网分支早在 W10
+   *   就把这两块 remove 掉了（那儿的注释写着「对玩家整个是误导」），而练习场
+   *   这条路一直原样端给玩家。★ 复用的就是下面那**同样两行**。
+   *   `?stress` 不在此列：它的读数面板就装在 `#stats` 里。
+   */
+  const practiceMode = params.has('combat') && !stressMode;
+  if (practiceMode) {
+    document.getElementById('help')?.remove();
+    document.getElementById('stats')?.remove();
+  }
+  /**
+   * C8：`&grace` 由大厅「开始练习」拼进来（A5）。★ 5 秒是**占位值** ——
+   * 取「够把底部提示条读一遍」的量级，没有出处。verify 脚本不带 `&grace`
+   * ⇒ 缺省 0 ⇒ 假人行为逐字节等于现状。
+   */
+  const graceSeconds = params.has('grace') ? 5 : 0;
   const scene = new TestbedScene(
     canvas,
     stressMode
       ? makePaintStress(document.getElementById('stats')!)
-      : makePaintStats(document.getElementById('stats')!),
+      // 练习场没有调试面板 ⇒ 连每 100ms 那次 innerHTML 拼装都不做
+      : practiceMode ? (): void => {} : makePaintStats(document.getElementById('stats')!),
     stage,
     playerClass,
     botDifficulty,
+    { ctfDemo: !practiceMode, graceSeconds },
   );
+  /**
+   * `#help` 的战斗段改成从**真实技能栏 + 真实键位**生成（见 combatHelpHtml）。
+   * 练习场已经把 `#help` 整个 remove 了，所以这里查不到就跳过。
+   */
+  const helpCombat = document.getElementById('help-combat');
+  if (helpCombat) helpCombat.innerHTML = scene.combatHelpHtml;
   // 压测要假人**真的在打**（站桩测不到特效负载）—— 与 K 键同一个开关；
   // P6：`?combat` 显式开实战（主菜单练习场走这里 —— 练习就是要有人打你）
   if (stressMode || params.has('combat')) scene.combatMode = true;

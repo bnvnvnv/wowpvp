@@ -84,6 +84,98 @@ import { visualForAuraId, visualForSchool } from '../vfx/schools.js';
  */
 const SKILL_SLOT_COUNT = 9;
 
+/** 技能栏九格对应的输入动作 id。★ 与 SKILL_SLOT_COUNT 同源，加一格不会漏改这里 */
+const SKILL_ACTIONS: readonly Action[] =
+  Array.from({ length: SKILL_SLOT_COUNT }, (_, i) => `skill${i + 1}` as Action);
+
+const escHtml = (s: string): string =>
+  s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+
+/**
+ * 一串按键标签是不是**连号**（如 1…9）。
+ * ★ 只有连号才敢缩写成「1–9」；重绑成不连号之后逐个列出 ——
+ *   提示条写出来的键必须真的能按（W7 点名的那类「界面在撒谎」）。
+ */
+const isKeyRun = (keys: readonly string[]): boolean =>
+  keys.every((k, i) =>
+    k.length === 1 && (i === 0 || k.charCodeAt(0) === keys[i - 1]!.charCodeAt(0) + 1));
+
+/**
+ * C7 底部提示条的文案。
+ *
+ * ★ 键名全部取自**当前绑定**：重绑之后提示条跟着变，否则它会在玩家把技能键
+ *   换掉之后继续说「1–9 技能」。
+ * ★ 「左右键同按 = 向前跑」是 InputManager.sample 里真实存在的双键跑
+ *   （无对应可重绑动作，所以写死文字）。
+ */
+export const hintBarHtml = (bindings: Readonly<Record<Action, string>>): string => {
+  const key = (a: Action): string => escHtml(prettyKey(bindings[a] ?? ''));
+  const skillKeys = SKILL_ACTIONS.map(key);
+  const skills = isKeyRun(skillKeys)
+    ? `${skillKeys[0]}–${skillKeys[skillKeys.length - 1]}`
+    : skillKeys.join('/');
+  const b = (s: string): string => `<b style="color:#e8eef8;font-weight:600">${s}</b>`;
+  return [
+    `${b(key(Action.TargetNext))} 选目标`,
+    `${b(skills)} 技能`,
+    `${b(key(Action.CancelCast))} 取消读条`,
+    `${b('左右键同按')} 向前跑`,
+    `${b(key(Action.ToggleCombatMode))} 实战模式`,
+    `${b(key(Action.OpenSettings))} 设置与键位`,
+  ].join(' · ');
+};
+
+/**
+ * `#help` 的战斗段（由 main.ts 注入，见那边的 `#help-combat`）。
+ *
+ * ★ 从**真实技能栏**与**真实键位**生成。此前这一段写死的是法师的技能表加
+ *   「1–8 释放技能」：换成 `?class=warrior` 后整段全错，而技能栏其实有 9 格。
+ *   写死的文案没有任何机制会随职业/重绑更新 —— 只能改成从数据长出来。
+ */
+export const combatHelpHtml = (
+  skills: readonly { name: string; targeting: string; range: { max: number } }[],
+  bindings: Readonly<Record<Action, string>>,
+): string => {
+  const key = (a: Action): string => escHtml(prettyKey(bindings[a] ?? ''));
+  // 超出九格的技能没有键可按，列出来就是撒谎 —— 截到技能栏长度
+  const rows = skills.slice(0, SKILL_ACTIONS.length).map((s, i) => {
+    // 只补一句**操作上**必须先知道的（要不要选落点/是不是对自己放），
+    // 时长与射程技能栏本来就每帧在显示，这里再抄一遍只会长出第二个真相源
+    const hint = s.targeting === Targeting.Ground
+      ? '地面技能：进入落点预览'
+      : s.range.max === 0 ? '自身' : '';
+    return `<tr><td><kbd>${key(SKILL_ACTIONS[i]!)}</kbd></td><td>${escHtml(s.name)}${
+      hint ? `<span class="hint">${hint}</span>` : ''}</td></tr>`;
+  }).join('');
+  return `
+      <h3>战斗与技能（当前技能栏）</h3>
+      <table>
+        <tr><td><kbd>${key(Action.TargetNext)}</kbd> <kbd>${key(Action.TargetPrev)}</kbd></td><td>循环选择目标<span class="hint">镜头前方 140°/45m</span></td></tr>
+        <tr><td><kbd>左键</kbd></td><td>点击角色或姓名板选中</td></tr>
+        <tr><td><kbd>${key(Action.SetFocus)}</kbd></td><td>设为焦点<span class="hint">独立于硬目标</span></td></tr>
+        ${rows}
+        <tr><td><kbd>${key(Action.CancelCast)}</kbd></td><td>取消瞄准 / 取消读条<span class="hint">假读条</span></td></tr>
+      </table>`;
+};
+
+/**
+ * P10：试验场的两个开关。★ 都默认「现行为」——
+ * 141 项验收跑的是裸 `?testbed`，那条路径必须逐字节不变。
+ */
+export interface TestbedOptions {
+  /**
+   * 夺旗演示（12 分钟倒计时 + 0/3 比分 + 旗帜标记）。缺省 true = 试验场原样。
+   * 练习场传 false：那块 HUD 演的是「试验场演示，不是正式比赛」
+   * （CtfDemo 文件头自己写着），压在假人头上只会让人以为练习场是一局比赛。
+   */
+  ctfDemo?: boolean;
+  /**
+   * C8 练习场开局缓冲秒数。缺省 0 = 现行为（verify 脚本不带 `&grace`）。
+   * 宽限期内假人不锁定玩家也不出招 —— 由 CombatDirector 实现。
+   */
+  graceSeconds?: number;
+}
+
 export interface DebugInfo {
   fps: number;
   position: { x: number; y: number; z: number };
@@ -149,8 +241,11 @@ export class TestbedScene {
   private sun!: THREE.DirectionalLight;
   /** 场景经过的总时间，驱动标记的运动 */
   private elapsed = 0;
-  /** M8：夺旗演示，用来把 M7 的规则接到真实操作与 15.4 HUD 上 */
-  private readonly ctf: CtfDemo;
+  /**
+   * M8：夺旗演示，用来把 M7 的规则接到真实操作与 15.4 HUD 上。
+   * ★ P10：练习场（`ctfDemo:false`）**根本不建** —— 理由见 TestbedOptions.ctfDemo
+   */
+  private readonly ctf: CtfDemo | undefined;
   private readonly flagMarkers: FlagMarkers;
   /**
    * M12 / 14.2：八属性技能粒子特效。★ 只在 `?art=on` 时构造 ——
@@ -203,6 +298,8 @@ export class TestbedScene {
     private readonly playerClass?: ClassDef,
     /** P5：`?bot=` 实战模式假人难度。缺省 normal（现状） */
     botDifficulty?: 'easy' | 'hard',
+    /** P10：练习场用的两个开关。★ 缺省全是现行为，见 TestbedOptions */
+    opts: TestbedOptions = {},
   ) {
     this.stage = stage;
     this.musicDir = new MusicDirector(ambientTrackFor(stage.map.id as string));
@@ -256,12 +353,19 @@ export class TestbedScene {
     //   结果玩家身上的控制标记永远不会更新（一直是构造时的 visible=false）。
     //   编译通过、测试全绿，只有截图比对才看得出来
     this.addStatusMarkers(this.combat.player.id as number, this.view);
+    /**
+     * C8：练习场开局缓冲。★ 5 秒是**占位值** —— 取「够把底部提示条读一遍」
+     *   的量级，没有出处；`?grace` 之外的路径一律 0，与现行为逐字节相同。
+     */
+    if (opts.graceSeconds !== undefined && opts.graceSeconds > 0) {
+      this.combat.graceSeconds = opts.graceSeconds;
+    }
     // M8：夺旗演示（12.x 的客户端接线）。规则全部走 shared 的 flag.ts
-    this.ctf = new CtfDemo(this.combat.world);
+    if (opts.ctfDemo !== false) this.ctf = new CtfDemo(this.combat.world);
     // ★ 12.3 / 验收 #40：带旗使用无敌/潜行技能时先掉旗，再播放技能表现
     this.combat.onBeforeSkillEffects = (caster, skill) => {
       void skill;
-      this.ctf.onSkillThatDropsFlag(caster, this.combat.world.time);
+      this.ctf?.onSkillThatDropsFlag(caster, this.combat.world.time);
     };
     // ── M12：音效。★ 三个钩子都是只读旁路，不改任何战斗状态 ──────
     const audioDeps: CombatAudioDeps = {
@@ -396,10 +500,36 @@ export class TestbedScene {
     this.scene.add(this.flagMarkers.group);
     this.scene.add(this.groundIndicator.group, this.directionIndicator.group);
     this.scene.add(this.targetRing.group, this.focusRing.group);
-    canvas.addEventListener('mousemove', this.onCanvasMouseMove);
+    /**
+     * ★★ P10：NDC 挂在 **window** 上更新，不再挂 canvas。
+     *   真机实测：光标一压到姓名板或 `#help`（两者 `pointer-events:auto`），
+     *   canvas 就收不到 mousemove —— 地面技能的落点预览圈当场冻住，
+     *   而「把圈拖到敌人脚下」恰恰要求光标能压在姓名板上。鼠标位置是**全局**
+     *   状态，本来就不该由某一个元素的命中测试决定。
+     */
+    window.addEventListener('mousemove', this.onPointerMove);
     this.hud = new CombatHud(canvas.parentElement ?? document.body);
     // 鼠标点技能格 → 记下槽位，下一帧走与数字键完全相同的瞄准流程
     this.hud.onSkillClick = (slot) => { this.clickedSlot = slot; };
+    /**
+     * C2：瞄准期间点姓名板 = **确认落点**，不改目标。
+     * ★ `onAimConfirm` 走的就是左键确认那条路（置 `clickFlags.left`，
+     *   下一帧由同一个瞄准状态机消费）—— 不是第二条施法路径，
+     *   否则两条路会各自漂移（"确认"的语义只能有一份）。
+     */
+    this.hud.aimActiveProbe = () => this.aim.isAiming;
+    this.hud.onAimConfirm = () => { this.clickFlags.left = true; };
+    /** C4：队伍框点名字选中队友（此前左侧那块面板整个点不动）*/
+    this.hud.party.onSelectMember = (entityId) => this.combat.selectById(entityId);
+    /**
+     * C3：自己身上发生的三件事必须在**屏幕上**说话。
+     * 真机实测：读条被自己移动打断时全场零提示；零操作 4.15 秒被打死、
+     * 同帧满血复活，死亡这件事玩家根本看不见（deadFrames=0）。
+     */
+    this.combat.onSelfInterrupted = (text) => this.hud.showCenterNotice(text);
+    this.combat.onSelfCastFailed = (text) => this.hud.showCenterNotice(text);
+    this.combat.onSelfDeath = (killerName) => this.showDeathOverlay(killerName);
+    this.combat.onSelfRevive = () => this.hideDeathOverlay();
     // 17.2：恢复上次的可访问性设置。★ 损坏的设置会被 normalize 回落到默认值
     this.setAccessibility(loadAccessibility(globalThis.localStorage));
     /**
@@ -409,6 +539,8 @@ export class TestbedScene {
     // W7：重绑控制器（应用到 InputManager + 落 localStorage），与联网场景共用
     const rebindCtl = makeRebindController(
       this.input, rebindableActions(), globalThis.localStorage,
+      // 重绑后立刻重画提示条 —— 否则它会继续显示旧键（W7 那类「界面撒谎」）
+      () => this.refreshHintBar(),
     );
     this.settings = new SettingsPanel(canvas.parentElement ?? document.body, {
       getAccessibility: () => this.access,
@@ -442,6 +574,8 @@ export class TestbedScene {
     // W7：技能栏 <kbd> 读实时绑定（换了技能键跟着变）
     this.hud.skillKeyLabel = (i) =>
       prettyKey(this.input.getBindings()[`skill${i + 1}` as never] ?? String(i + 1));
+    // C7：底部常驻操作提示条（两场景共用的壳负责显示，文案由本场景给）
+    this.refreshHintBar();
     // M12：玩家模型（法师）。setClass 在 combat 建好后才调得了 —— 字段初始化时职业未知
     // ★ `?art=off` 时 ModelLibrary 没 init，setClass 会安静地无事发生
     this.view.setClass(this.combat.player.classId as string);
@@ -595,12 +729,27 @@ export class TestbedScene {
   dispose(): void {
     this.loop.stop();
     this.canvas.removeEventListener('mousedown', this.onCanvasMouseDown);
-    this.canvas.removeEventListener('mousemove', this.onCanvasMouseMove);
+    window.removeEventListener('mousemove', this.onPointerMove);
+    this.deathOverlay?.remove();
     this.spellVfx?.dispose();
     this.shell.dispose();
   }
 
-  private onCanvasMouseMove = (ev: MouseEvent): void => {
+  /** C7：按当前键位重画底部提示条。开局一次 + 每次重绑一次 */
+  private refreshHintBar(): void {
+    this.shell.showHintBar(hintBarHtml(this.input.getBindings()));
+  }
+
+  /**
+   * `#help` 的战斗段 HTML（main.ts 注入到 `#help-combat`）。
+   * ★ 由本场景给而不是 main.ts 自己拼：只有场景知道**这一局**的技能栏
+   *   （`?class=` 换职业、P3c 自定义过的栏）与当前键位。
+   */
+  get combatHelpHtml(): string {
+    return combatHelpHtml(this.combat.skills, this.input.getBindings());
+  }
+
+  private onPointerMove = (ev: MouseEvent): void => {
     this.shell.ndcFromMouse(ev, this.ndc);
     this.updateHoverCursor();
   };
@@ -639,6 +788,14 @@ export class TestbedScene {
    * 用射线拾取角色组，命中即选中；点空地不清除目标（5.1：硬目标持续保留）。
    */
   private onCanvasMouseDown = (ev: MouseEvent): void => {
+    /**
+     * ⚠️ 只认**真的落在画布上**的按下。NDC 改由 window 更新之后，「鼠标在哪」
+     * 与「点了什么」是两件事了：前者永远跟手，后者必须仍然只在画布上成立 ——
+     * 否则任何盖在画布上的 HUD（`#help`、设置面板、姓名板）被点一下都会
+     * 顺带确认落点/改目标。这条守卫把它写死在代码里，而不是依赖
+     * 「监听器挂在 canvas 上」这个随时可能被改掉的隐含前提。
+     */
+    if (ev.target !== this.canvas) return;
     // 记录给瞄准状态机（5.5：左键确认、右键取消）
     if (ev.button === 0) this.clickFlags.left = true;
     if (ev.button === 2) this.clickFlags.right = true;
@@ -658,6 +815,76 @@ export class TestbedScene {
     }
     if (best) this.combat.selectById(best.id);
   };
+
+  /**
+   * 死亡遮罩（C3 的 `onSelfDeath` / `onSelfRevive`）。
+   *
+   * ★ 真机实测：零操作 4.15 秒被打死、**同一帧**满血复活，`deadFrames = 0` ——
+   *   试验场的 `reviveInTestbed()` 让「我刚才死了」在画面上完全没有痕迹，
+   *   玩家只看到血条突然回满，会以为是 bug 而不是自己被杀了。
+   * ★ 1.2 秒后自动淡出、`pointer-events:none`：这是一条**回执**不是一个界面，
+   *   它不该拦住任何操作 —— 试验场里人已经复活了，挡住输入才是真的错。
+   * ★ 1.2s 是占位值：取「一眼能读完两行字」的量级，无出处。
+   */
+  private deathOverlay: HTMLElement | undefined;
+  private deathFadeTimer: ReturnType<typeof setTimeout> | undefined;
+  /** 遮罩这一次是什么时候亮起来的，用来保底最短可见时长（见 hideDeathOverlay）*/
+  private deathShownAt = 0;
+  /** 死亡回执的最短可见时长，毫秒。★ 占位值，取「一眼读完两行字」的量级 */
+  private static readonly DEATH_NOTICE_MS = 1200;
+
+  private showDeathOverlay(killerName?: string): void {
+    const el = this.deathOverlay ??= this.createDeathOverlay();
+    el.innerHTML =
+      `<div style="font:700 30px/1.3 system-ui,sans-serif;color:#ffd0cc">你被击杀</div>` +
+      (killerName
+        ? `<div style="font:500 14px system-ui,sans-serif;color:#e3b3ae;margin-top:4px">击杀者：${escHtml(killerName)}</div>`
+        : '');
+    // ⚠️ 显隐只走 opacity，不碰 display —— 这层是 flex 容器（居中靠它），
+    //    随手写一句 `display=''` 就会把创建时的 `display:flex` 抹掉，
+    //    文字当场掉到屏幕顶端（真机截图逮到过一次）
+    el.style.transition = 'none';
+    el.style.opacity = '1';
+    this.deathShownAt = performance.now();
+    if (this.deathFadeTimer !== undefined) clearTimeout(this.deathFadeTimer);
+    this.deathFadeTimer = setTimeout(() => {
+      el.style.transition = 'opacity .45s ease-out';
+      el.style.opacity = '0';
+    }, TestbedScene.DEATH_NOTICE_MS);
+  }
+
+  /**
+   * 复活 ⇒ 撤遮罩。
+   *
+   * ⚠️★★ **但撤不掉一条还没被看见的回执**：试验场的假复活（`reviveInTestbed`）
+   *   与死亡是**同一 tick** 的事 —— 真机实测日志里「你被击杀」和「已复活」
+   *   同为 54.4 秒。直接在这里撤，遮罩就会在亮起的同一帧被抹掉，
+   *   于是「死亡可见化」这件事等于没做（这正是本次要修的那条现象）。
+   *   所以最短可见时长内不动它，交给已经排好的自动淡出。
+   * ★ 联网侧躺尸是真的有几秒，那时 revive 早在窗口之后到达，这条分支
+   *   照常立即撤 —— 两种节奏用同一段代码，不需要分场景特判。
+   */
+  private hideDeathOverlay(): void {
+    if (!this.deathOverlay) return;
+    if (performance.now() - this.deathShownAt < TestbedScene.DEATH_NOTICE_MS) return;
+    if (this.deathFadeTimer !== undefined) clearTimeout(this.deathFadeTimer);
+    this.deathFadeTimer = undefined;
+    this.deathOverlay.style.transition = 'opacity .25s ease-out';
+    this.deathOverlay.style.opacity = '0';
+  }
+
+  private createDeathOverlay(): HTMLElement {
+    const el = document.createElement('div');
+    el.id = 'death-overlay';
+    Object.assign(el.style, {
+      position: 'fixed', inset: '0', display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center', textAlign: 'center',
+      background: 'radial-gradient(circle at 50% 45%, rgba(70,10,10,.42), rgba(12,6,8,.72))',
+      pointerEvents: 'none', zIndex: '45', opacity: '0',
+    } as Partial<CSSStyleDeclaration>);
+    (this.canvas.parentElement ?? document.body).appendChild(el);
+    return el;
+  }
 
   /**
    * 地面参考网格。1 米一格、5 米一条粗线 ——
@@ -864,23 +1091,32 @@ export class TestbedScene {
       .filter((e) => (e.team as number) === (player.team as number));
     this.hud.party.render(partyViewOf(allies));
 
-    // 15.4 夺旗 HUD
-    this.hud.modeHud.renderCtf({
-      scoreRed: this.ctf.scoreOf(player.team),
-      scoreBlue: this.ctf.scoreOf(this.combat.visibleEntities()[0]?.team ?? player.team),
-      scoreToWin: this.ctf.ctf.scoreToWin,
-      timeRemaining: Math.max(0, 720 - this.combat.world.time),
-      flags: this.ctf.views(),
-      focusStacks: this.ctf.ctf.focusStacks,
-      message: this.ctf.lastMessage,
-    });
+    /**
+     * 15.4 夺旗 HUD。
+     * ★ P10：练习场没有 `ctf` ⇒ **一次都不 render**，而 ModeHud 出厂就是
+     *   `display:none` —— 于是「12 分钟倒计时 + 0/3 比分」那块面板根本不出现，
+     *   不是被藏起来。它演的是夺旗规则演示，压在练习假人头上会被当成一局比赛。
+     */
+    const enemyTeam = this.combat.visibleEntities()[0]?.team ?? player.team;
+    if (this.ctf) {
+      this.hud.modeHud.renderCtf({
+        scoreRed: this.ctf.scoreOf(player.team),
+        scoreBlue: this.ctf.scoreOf(enemyTeam),
+        scoreToWin: this.ctf.ctf.scoreToWin,
+        timeRemaining: Math.max(0, 720 - this.combat.world.time),
+        flags: this.ctf.views(),
+        focusStacks: this.ctf.ctf.focusStacks,
+        message: this.ctf.lastMessage,
+      });
+    }
 
     // 速赢清单：O 键记分板。名单走可见实体 + 自己 —— 与小地图同一条
     // 可见性规矩（潜行者不在列表里，验收 #5）。不可见时 render 零开销。
     this.hud.scoreboard.render({
-      modeLabel: '夺旗战场 · 试验场',
-      scoreRed: this.ctf.scoreOf(player.team),
-      scoreBlue: this.ctf.scoreOf(this.combat.visibleEntities()[0]?.team ?? player.team),
+      // 没有夺旗演示时**不说**自己是夺旗战场（练习场本来就不计分）
+      modeLabel: this.ctf ? '夺旗战场 · 试验场' : '练习场 · 不计分',
+      scoreRed: this.ctf?.scoreOf(player.team) ?? 0,
+      scoreBlue: this.ctf?.scoreOf(enemyTeam) ?? 0,
       rows: [player, ...this.combat.visibleEntities()].map((e) => ({
         name: e.name,
         classId: e.classId,
@@ -901,12 +1137,12 @@ export class TestbedScene {
         kind: (e.team as number) === (player.team as number) ? 'ally' : 'enemy',
         team: e.team,
       })),
-      // 15.4：小地图**永久**显示双方旗手与掉落旗帜
-      ...this.ctf.carriedFlags().map<MinimapBlip>((f) => ({
+      // 15.4：小地图**永久**显示双方旗手与掉落旗帜（没有夺旗演示时列表为空）
+      ...(this.ctf?.carriedFlags() ?? []).map<MinimapBlip>((f) => ({
         x: f.position.x, z: f.position.z, kind: 'flagCarrier', team: f.team,
         ...(f.carrierName ? { label: f.carrierName } : {}),
       })),
-      ...this.ctf.droppedFlags().map<MinimapBlip>((f) => ({
+      ...(this.ctf?.droppedFlags() ?? []).map<MinimapBlip>((f) => ({
         x: f.position.x, z: f.position.z, kind: 'droppedFlag', team: f.team,
       })),
     ];
@@ -968,7 +1204,7 @@ export class TestbedScene {
       void err;
     }
     if (input.pressed.has(Action.FlagInteract)) {
-      this.ctf.interact(this.combat.player, this.combat.world.time);
+      this.ctf?.interact(this.combat.player, this.combat.world.time);
     }
     /**
      * K：实战模式开关。假人从站桩切成会追、会走位的人机。
@@ -1252,9 +1488,10 @@ export class TestbedScene {
 
     this.updateIndicators();
     this.updateStatusMarkers(realDt); // 状态标记是倒计时，不在顿帧时钟上
-    this.ctf.tick(this.combat.world.time);
+    this.ctf?.tick(this.combat.world.time);
     this.flagMarkers.cameraDistance = this.cam.distance;
-    this.flagMarkers.update(this.ctf.views(), this.elapsed);
+    // 没有夺旗演示时喂空列表 —— 场上一面旗也没有，标记自然全收
+    this.flagMarkers.update(this.ctf?.views() ?? [], this.elapsed);
     this.updateTargetRings();
     this.updateHudPanels();
     this.renderer.render(this.scene, this.cam.camera);

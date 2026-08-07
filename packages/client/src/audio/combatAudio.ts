@@ -77,11 +77,25 @@ export const playCombatEvent = (
       break;
 
     case 'interrupt':
-      // 7.2：打断成功与落空是两件事 —— 落空也进冷却，玩家必须听得出区别
-      audio.play(ev.success ? 'ui_error' : 'ui_click', {
-        group: 'ui',
-        volume: ev.success ? 0.9 : 0.4,
-      });
+      /**
+       * 7.2：打断成功与落空是两件事 —— 落空也进冷却，玩家必须听得出区别。
+       *
+       * ★★ 此前**成功**播的是 `ui_error`、落空播 `ui_click`，于是同一声
+       *   `ui_error` 同时代表三件语义相反的事：「我打断成功了」（好）、
+       *   「我被打断了」（坏）、「我按了没放出来」（坏）。耳朵学不会这种编码 ——
+       *   玩家只能回头去看日志，而反制链恰恰是没空看日志的那几秒。
+       *
+       *   现在三件事三种声音（都在 AudioManager 已注册的变体组里，素材确实存在）：
+       *   · 打断**成功** → `metal`（金属撞击）：一记硬碰硬的「截住了」。
+       *   · 打断**落空** → `swing`（挥空的破空声）：字面意义上的打了个空。
+       *   · 被打断 / 施法失败 → 仍是 `ui_error`（见 playCastActivity）。
+       *
+       * ⚠️ `metal` 也是格挡的叠加层、`swing` 也是普攻挥砍音 —— AudioManager 的
+       *   40ms 同名去重会让「打断落在一次格挡/挥砍的同 40ms 内」少响一声。
+       *   接受它：这两个事件本来就同源于「兵器相交」，而备选是继续共用错的那一声。
+       */
+      if (ev.success) audio.playVariant('metal', { volume: 0.9 });
+      else audio.playVariant('swing', { volume: 0.45 });
       break;
 
     case 'displaced':
@@ -94,6 +108,25 @@ export const playCombatEvent = (
       break;
   }
 };
+
+/**
+ * 「自己按了没放出来」的提示音节流，毫秒。
+ *
+ * ★ 占位值 300ms：AudioManager 自己的 40ms 同名去重是为「AOE 一帧命中 5 个人」
+ *   设的，挡不住人手连按 —— 资源不足时按 8 次就是 8 声 `ui_error`（间隔远大于
+ *   40ms），听上去像系统坏了。300ms 取自「人连按的舒适上限约 3–5 次/秒」，
+ *   比它略长一点即可让一串连按只响一声，又不至于吞掉两次**分开的**误操作。
+ * ⚠️ 刻意**不动** AudioManager 的 40ms 全局去重：那是所有音效共用的参数，
+ *   为一个 UI 提示音改它会顺带闷掉多目标命中的层次。
+ */
+const SELF_FAIL_THROTTLE_MS = 300;
+/**
+ * ★ 模块级可变状态，本文件唯一的一处。放这里而不是塞进 deps，是因为它是
+ *   **纯表现的节流**，不该出现在任何调用方的接口里（本文件对玩法只读，
+ *   见文件头）。用 `Date.now()` 而不是 world.time：节流的是**人手的节奏**，
+ *   与模拟时间无关（暂停、慢放时人照样在连按）。
+ */
+let lastSelfFailSoundAt = -Infinity;
 
 /** 施法生命周期的音效（7.4） */
 export const playCastActivity = (
@@ -122,9 +155,14 @@ export const playCastActivity = (
     case 'interrupted':
       audio.play('ui_error', { group: 'ui', volume: isSelf ? 0.9 : 0.5, ...opts });
       break;
-    case 'failed':
+    case 'failed': {
       // 只有**自己**按了没放出来才需要提示音；别人失败是旁观信息，日志够了
-      if (isSelf) audio.play('ui_error', { group: 'ui', volume: 0.5 });
+      if (!isSelf) break;
+      const now = Date.now();
+      if (now - lastSelfFailSoundAt < SELF_FAIL_THROTTLE_MS) break;
+      lastSelfFailSoundAt = now;
+      audio.play('ui_error', { group: 'ui', volume: 0.5 });
       break;
+    }
   }
 };

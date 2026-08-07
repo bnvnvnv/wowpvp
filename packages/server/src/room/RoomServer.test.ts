@@ -18,6 +18,7 @@ import {
   applyAura,
   asClassId,
   asWeaponId,
+  getEntity,
   encodeClientMessage,
   decodeServerMessage,
   type ClientMessage,
@@ -212,23 +213,47 @@ describe('A3：两个真客户端从房间跑到快照', () => {
     blue.close();
   });
 
-  /** ★ 选中**看得见**的敌人是允许的 —— 否则上一条测试可能只是「全都拒绝」*/
-  it('★ 选中可见的敌人不会被拒绝（证明上一条不是一刀切）', async () => {
+  /**
+   * ★ 选中**看得见**的敌人 —— 否则上一条测试可能只是「全都拒绝」。
+   *
+   * ⚠️★ P10（合同 C6）起 5.1 的 45 米选中上限被真正强制，而 arena2v2
+   *   出生点相距 88 米 —— 这条测试原来只断言「没有 Rejected」，在超距
+   *   拒绝还是静默的那段时间里**空转过**（选中其实没成功，测试只是恰好
+   *   不红）。现在拆成正反两半，各自有实据：
+   *   ① 出生点（超距）：拒绝必须**有回话**，理由是「距离」而不是沉默；
+   *   ② 白盒拉进 45 米后：不被拒，且 `targets.hard` **真的被设上** ——
+   *     「布置白盒、断言黑盒」，与 `matchOf()` 注释里的分工一致。
+   */
+  it('★ 可见敌人：45 米外被明确拒绝，拉近后 targets.hard 真的落位', async () => {
     const red = await TestClient.connect(server.port);
     const blue = await TestClient.connect(server.port);
     await readyUp(red, 'r6', '红方', 'red', 'mage');
     await readyUp(blue, 'r6', '蓝方', 'blue', 'warrior');
+    const redStart = await red.waitFor('MatchStart');
     const blueStart = await blue.waitFor('MatchStart');
     await red.waitFor('Snapshot');
+
+    // ① 出生点相距 88 米 > RANGE.MAX_SELECT(45)：拒绝有回话、理由可读
+    red.received.length = 0;
+    red.send({ t: 'SetTarget', slot: 'hard', entityId: blueStart.you });
+    const rejected = await red.waitFor('Rejected');
+    expect(rejected.what).toBe('SetTarget');
+    expect(rejected.reason, '超距拒绝该说清是距离问题').toContain('距离');
+
+    // ② 白盒把红方挪进 45 米，同一条 SetTarget 必须成功且真的落位
+    const world = server.rooms.matchOf('r6')!.world;
+    const redE = getEntity(world, redStart.you)!;
+    const blueE = getEntity(world, blueStart.you)!;
+    redE.position = { ...blueE.position, x: blueE.position.x + 10 };
 
     red.received.length = 0;
     red.send({ t: 'SetTarget', slot: 'hard', entityId: blueStart.you });
     await new Promise((r) => setTimeout(r, 200));
-
     expect(
       red.received.filter((m) => m.t === 'Rejected'),
-      '选中一个看得见的敌人被拒绝了',
+      '45 米内选中可见敌人被拒绝了',
     ).toEqual([]);
+    expect(redE.targets.hard, '选中没有真的落到 targets.hard').toBe(blueStart.you);
 
     red.close();
     blue.close();

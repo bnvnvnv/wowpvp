@@ -39,6 +39,7 @@ import {
   chooseFromArmory,
   ctfWinner,
   distance2D,
+  getEntity,
   getWeapon,
   isVisibleTo,
   listEntities,
@@ -51,6 +52,7 @@ import {
   tickDepsOf,
   tickWorld,
   toggleFocus,
+  withinSelectRange,
   type ArsenalChoice,
   type CastIntent,
   type CombatEntity,
@@ -394,9 +396,21 @@ export class MatchLoop {
   requestCast(playerId: string, intent: CastIntent): void {
     const entityId = this.match.entityOf.get(playerId);
     if (entityId === undefined) return;
+    /**
+     * ★★ 施法排队窗（P10 / 合同 C5）：**只给真人补 `queue: true`。**
+     *
+     *   协议里没有这个字段（客户端点不出来，也就伪造不出来），是服务器
+     *   单方面替真人开的。之所以不能无条件开 —— `BotDriver` 发的是**真的**
+     *   `CastRequest` 消息，走的正是这条 `requestCast`；无条件开等于让 normal
+     *   档人机也吃上按键排队，配平基线当场漂移。这是本批次的红线。
+     *
+     * ⚠️ 断线的真人 `sessionOf` 会返回 undefined —— 按真人算（他本来也发不出
+     *   请求），宁可这样也不要「查不到就当人机」那种会把红线判反的兜底。
+     */
+    const isBot = this.sessionOf(playerId)?.isBot === true;
     // ★ 一个实体一 tick 只有一个请求（后一个覆盖前一个）——
     //   与客户端 CombatDirector.requestCast 同语义
-    this.pendingCasts.set(entityId, intent);
+    this.pendingCasts.set(entityId, isBot ? intent : { ...intent, queue: true });
   }
 
   /**
@@ -462,7 +476,37 @@ export class MatchLoop {
       switch (cmd.t) {
         case 'SetTarget':
           if (cmd.slot === 'focus') toggleFocus(this.match.world, e, cmd.entityId ?? undefined);
-          else setHardTarget(this.match.world, e, cmd.entityId ?? undefined);
+          /**
+           * ★★ 合同 C6：5.1 的 45 米选中上限在此之前**从未被强制过** ——
+           *   `SetTarget` 只校验可见性，于是半张地图外的人照样能选中。
+           *
+           * ⚠️ **只对真人强制。** `BotDriver` 发的同样是真的 `SetTarget` 消息
+           *   （见那个文件「目标：让服务器知道它在打谁」那一段），它**不是**
+           *   直接赋值 `targets.hard`。无条件传 true 会改掉人机在开局/复活后
+           *   远距离锁人的行为 —— 那是配平基线的一部分。
+           *
+           * ★ 超距拒绝**必须回话**（P10 收口）：能走到这里的 id 都已在
+           *   `RoomServer.onSetTarget` 过了可见性筛（不可见的在那里就被
+           *   `Rejected('目标无效')` 掉了），所以「超出选中距离」这条更具体的
+           *   理由**不构成探测通道** —— 探测者根本到不了这个分支。入队到执行
+           *   之间目标死亡/消失的竞态窗口，回落到与接收侧同一句笼统的
+           *   「目标无效」。姓名板只画到 45 米，常规点选撞不到这条 ——
+           *   它服务的是 3D 拾取点到远人与脚本这两类入口：本仓库不接受
+           *   「发了没反应」的静默失败（RoomServer.test 有正反两半盯着）。
+           */
+          else {
+            const human = this.sessionOf(playerId)?.isBot !== true;
+            const ok = setHardTarget(this.match.world, e, cmd.entityId ?? undefined, {
+              enforceRange: human,
+            });
+            if (!ok && human) {
+              const t = getEntity(this.match.world, cmd.entityId ?? undefined);
+              this.sessionOf(playerId)?.reject(
+                'SetTarget',
+                t && isVisibleTo(t, e) && !withinSelectRange(e, t) ? '超出选中距离' : '目标无效',
+              );
+            }
+          }
           break;
 
         case 'TabTarget':

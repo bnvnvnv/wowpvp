@@ -242,6 +242,53 @@ describe('docs/08 §4.3 冷却与资源', () => {
     const foeSnap = snap.entities.find((e) => e.id === foe.id)!;
     expect(Object.keys(foeSnap.resources).length).toBeGreaterThan(0);
   });
+
+  /**
+   * P10：GCD 与焦点是本轮新增的两个**只发给自己**的字段。
+   * 断言按 `cooldowns` 那条的同一形状写 —— 三个人各查一次，
+   * 「顺手也发给了别人」会在这里变红。
+   */
+  it('★ P10：公共冷却只发给自己，且走完就不发（没有字段 = 不在 GCD 中）', () => {
+    me.gcdUntil = 3;
+    foe.gcdUntil = 3;
+    world.time = 1;
+
+    const snap = buildSnapshot(deps(), me);
+    expect(snap.entities.find((e) => e.id === me.id)!.gcdUntil).toBe(3);
+    expect(snap.entities.find((e) => e.id === foe.id)!.gcdUntil).toBeUndefined();
+    expect(snap.entities.find((e) => e.id === mate.id)!.gcdUntil).toBeUndefined();
+
+    // GCD 已走完 → 字段整个不出现，客户端不必再判「过期了没」
+    world.time = 5;
+    const later = buildSnapshot(deps(), me);
+    expect(later.entities.find((e) => e.id === me.id)!.gcdUntil).toBeUndefined();
+  });
+
+  it('★ P10：焦点目标回读给自己（5.1 的切换语义在服务器，客户端不记账）', () => {
+    me.targets.focus = foe.id;
+    const snap = buildSnapshot(deps(), me);
+    expect(snap.entities.find((e) => e.id === me.id)!.focusId).toBe(foe.id);
+    // 别人的焦点一律不发 —— 焦点是战术意图，敌人知道了就是白送信息
+    mate.targets.focus = foe.id;
+    const snap2 = buildSnapshot(deps(), me);
+    expect(snap2.entities.find((e) => e.id === mate.id)!.focusId).toBeUndefined();
+  });
+
+  /**
+   * ★★ 这条是验收 #5 在焦点通道上的复述：焦点设定之后目标潜行遁走，
+   *   回读会把一个**不在快照里**的 id 发出去 —— 那等于确认了他还在场上。
+   */
+  it('★★ P10：焦点潜行后不再回读（看不见的焦点等于没有焦点）', () => {
+    me.targets.focus = sneak.id;
+    expect(buildSnapshot(deps(), me).entities.find((e) => e.id === me.id)!.focusId)
+      .toBe(sneak.id);
+
+    sneak.flags.stealthed = true;
+    const snap = buildSnapshot(deps(), me);
+    expect(snap.entities.find((e) => e.id === me.id)!.focusId).toBeUndefined();
+    // 与潜行裁剪同一条标准：id 连字节都不出现
+    expect(JSON.stringify(snap)).not.toContain(`"focusId"`);
+  });
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -544,9 +591,9 @@ describe('S7：隐身施加者的光环 id 掩码', () => {
 });
 
 describe('裁剪规则清单', () => {
-  it('六条按接收者裁剪的规则都有登记（供文档与 review 对照）', () => {
+  it('七条按接收者裁剪的规则都有登记（供文档与 review 对照）', () => {
     expect(CULLING_RULES.map((r) => r.id)).toEqual([
-      '4.1', '4.2', '4.3-cooldown', '4.3-spectate', '8.5', '12.2',
+      '4.1', '4.2', '4.3-cooldown', '4.3-focus', '4.3-spectate', '8.5', '12.2',
     ]);
   });
 });

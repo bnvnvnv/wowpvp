@@ -102,7 +102,10 @@ console.log('\n── 规格书 8.2 / 验收 #23：控制递减 ──');
     await page.keyboard.press('Digit4');
     await page.waitForTimeout(2200); // 读条 1.5s + 结算
     const lines = await logLines();
-    const applied = lines.find((l) => /control\.incapacitate ([\d.]+)s/.test(l));
+    // ★ P10 起战斗日志打**显示名**（「迷惑」），不再裸露内部 id
+    //   `control.incapacitate` —— 那正是审计点名、这一批修掉的问题。
+    //   断言跟着玩家看到的口径走，显示名来源见 CONTROL_SPECS.incapacitate。
+    const applied = lines.find((l) => /获得 迷惑 ([\d.]+)s/.test(l));
     if (applied) durations.push(parseFloat(applied.match(/([\d.]+)s/)[1]));
     if (lines.some((l) => l.includes('控制递减已满'))) immuneSeen.push(i);
     // 等控制自然结束但不超出 15 秒递减窗口
@@ -139,8 +142,9 @@ console.log('\n── 规格书 8.4 / 验收 #23：完全免疫 ──');
   await page.waitForTimeout(800);
   const lines = await logLines();
   check('#23c', '完全免疫光环成功施加（8.4）',
-    ok && lines.some((l) => l.includes('ice_block')),
-    lines.find((l) => l.includes('ice_block')) ?? '(未施加)');
+    // ★ P10：同上，日志按显示名断言（光环名回落到所属技能名「冰封庇护」）
+    ok && lines.some((l) => l.includes('获得 冰封庇护')),
+    lines.find((l) => l.includes('获得 冰封庇护')) ?? '(未施加)');
 }
 
 console.log('\n── 规格书 14.3：地面区域与延迟落点 ──');

@@ -66,6 +66,27 @@ export interface HudSkillSlot {
   skill: SkillDef;
   cooldownRemaining: number;
   blocker: CastFailure;
+  /**
+   * 公共冷却剩余/总时长，秒（合同 C1）。
+   *
+   * ★ **可选**是有意的：生产方有两个（本地 director 与快照视图），
+   *   快照视图只能尽力而为。可选字段让「没填」是一个合法状态而不是
+   *   编译错误 —— HUD 侧对应地退回原来的静态「公共冷却」文字，
+   *   不会画出一个停在 0 的假扫层。
+   * ⚠️ 与 `cooldownRemaining`（本技能自身冷却）是**两件事**：
+   *   GCD 期间 7 个格子一起转，自身冷却只有那一个格子转。
+   */
+  gcdRemaining?: number;
+  gcdTotal?: number;
+  /**
+   * 本格当前的**全部**不可用原因（合同 C1）。
+   *
+   * ★ `blocker` 只有一个名额，而实战里经常同时超距 + 没资源；
+   *   只报一个会让玩家「走近了还是不能放」连着惊讶两次。
+   *   HUD 按「位置→视线→朝向→资源→冷却→状态」挑首个显示
+   *   （判定在 skillTooltip.ts 的 `pickBlocker`）。
+   */
+  blockers?: CastFailure[];
 }
 
 export interface HudLogEntry {

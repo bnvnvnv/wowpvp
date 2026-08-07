@@ -62,7 +62,8 @@ describe('W1：队友投影只有一份实现', () => {
     const [fromSnap] = partyViewFromSnapshot([snapshotTwin(e)]);
     expect(fromSnap).toEqual(fromEntity);
     // ★ 抽查真值 —— toEqual 双方都错也能绿，先钉住其中一侧的绝对值
-    expect(fromEntity!.resource).toEqual({ current: 80, max: 100, label: '法力' });
+    // （`key` 是 P10 给资源条上色用的，与目标框同一套配色）
+    expect(fromEntity!.resource).toEqual({ current: 80, max: 100, label: '法力', key: 'mana' });
     expect(fromEntity!.carryingFlag).toBe(true);
     expect(fromEntity!.className).toBe(mage.name);
   });

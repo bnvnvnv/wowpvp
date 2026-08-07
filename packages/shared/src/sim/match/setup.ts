@@ -31,7 +31,9 @@ import {
   createArsenalStore, createPickupStore, setupArmories,
   type ArsenalStore, type PickupStore,
 } from '../arsenal.js';
-import { createCastingStore, type CastingStore } from '../casting.js';
+import {
+  createCastQueueStore, createCastingStore, type CastQueueStore, type CastingStore,
+} from '../casting.js';
 import { createDrStore, type DrStore } from '../dr.js';
 import { createEntity, type CombatEntity } from '../entity.js';
 import { createGroundStore, type GroundStore } from '../groundArea.js';
@@ -71,6 +73,12 @@ export interface Match {
   ground: GroundStore;
   projectiles: ProjectileStore;
   casting: CastingStore;
+  /**
+   * 施法排队窗（P10 / 合同 C5）。★ 每局一份，与 `casting` 同生命周期。
+   * ⚠️ 只有带 `queue: true` 的请求会往里写，人机的请求永远不带 —— 所以这份
+   *   store 在满人机房里恒为空，配平基线不受影响。
+   */
+  castQueue: CastQueueStore;
 
   loadouts: LoadoutStore;
   swaps: SwapStore;
@@ -199,6 +207,7 @@ export const createMatch = (room: Room, map: MapDef): Match => {
     ground: createGroundStore(),
     projectiles: createProjectileStore(),
     casting: createCastingStore(),
+    castQueue: createCastQueueStore(),
     loadouts,
     swaps: createSwapStore(),
     pickups: createPickupStore(),
@@ -290,6 +299,7 @@ export const tickDepsOf = (
   ground: m.ground,
   projectiles: m.projectiles,
   casting: m.casting,
+  castQueue: m.castQueue,
   loadouts: m.loadouts,
   swaps: m.swaps,
   pickups: m.pickups,

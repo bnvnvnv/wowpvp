@@ -315,7 +315,9 @@ try {
      *   没有任何键位提示的路径。一行提示指向 F10 的完整键位表。
      */
     const hint = await pageA.evaluate(`(() => {
-      const el = document.querySelector('#net-hint');
+      // P10：提示条从 NetworkScene 私有的 #net-hint 迁到两场景共用的
+      // SceneShell.showHintBar（#hint-bar）—— 断言跟着搬家，内容要求不变
+      const el = document.querySelector('#hint-bar');
       return { found: el !== null, text: el ? el.textContent : '' };
     })()`) as { found: boolean; text: string };
     check('18', '★ 大厅开局有键位提示且指向 F10 设置（W10）',

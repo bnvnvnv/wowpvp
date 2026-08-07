@@ -78,7 +78,12 @@
       #stats hr { border: 0; border-top: 1px solid #2c313d; margin: 7px 0; }
 
       /* M8：让开右上角的小地图（168px + 间距）*/
-      #help { top: 196px; right: 14px; max-width: 360px; max-height: calc(100vh - 560px);
+      /* ⚠️ 老的 `calc(100vh - 560px)` 在 720p 上只剩 158px —— 帮助面板
+         第一屏就被截断，而它正是新玩家唯一的键位说明（1280×720 实测）。
+         `min(70vh, …)` 让大屏仍然受 220px 的上下留白约束，小屏则退到
+         「最多占七成高度」而不是一个会算出负数的减法。 */
+      #help { top: 196px; right: 14px; max-width: 360px;
+              max-height: min(70vh, calc(100vh - 220px));
               overflow-y: auto; pointer-events: auto; }
       #help h3 { font-size: 12px; color: #6f9fd0; margin: 0 0 6px; font-weight: 600; }
       #help h3 + table + h3 { margin-top: 12px; }
@@ -152,6 +157,19 @@
       .uf-class { color: #8b93a7; font-weight: 400; font-size: 11px; margin-left: 4px; }
       .uf-meta .weapon { color: #9aa3b6; }
 
+      /* ── 目标框的敌我区分（规格 777，与姓名板同一套语言）─────────
+         在此之前目标框**不分敌我**：选队友和选敌人长得一模一样、血条恒绿，
+         而它是治疗与集火共用的同一个控件。
+         ★ 颜色由 JS 按色盲色板写在 inline style 上（与姓名板同一份色板），
+           这里给**第二通道**：字形 ▲/◆ + 左侧色条 —— 17.2 不能只靠颜色。 */
+      .unit-frame.uf-friendly { border-left: 3px solid var(--c-friendly); }
+      .unit-frame.uf-hostile { border-left: 3px solid var(--c-hostile); }
+      .unit-frame.uf-friendly .uf-name::before { content: '▲ '; opacity: .85; }
+      .unit-frame.uf-hostile .uf-name::before { content: '◆ '; opacity: .85; }
+      .uf-team { letter-spacing: 0; }
+      .unit-frame.uf-friendly .uf-team { color: var(--c-friendly); }
+      .unit-frame.uf-hostile .uf-team { color: var(--c-hostile); }
+
       /* 15.2：可打断=正常边框；不可打断=盾牌标记；物理射击准备=独立颜色 */
       .bar.cast { margin-top: 6px; height: 20px; }
       .bar.cast i { background: color-mix(in srgb, var(--school) 55%, #1b1f28); }
@@ -179,18 +197,48 @@
       #player-cast { position: absolute; left: 50%; bottom: 132px;
                      transform: translateX(-50%); width: 320px; }
 
+      /* ⚠️ `z-index: 12` 是 1280×720 实测补的：技能栏与左下战斗日志、
+         右下装备栏在小屏上真的会重叠，而它们后写 = 后画，第 9 格被装备栏
+         **完全遮死**、第 1 格被日志压住 —— 玩家点不到也看不到。
+         技能栏是操作面，压在两块纯展示面之上是正确的层序。
+         （记分板 30 / 军械三选一 20 仍在它之上，那两块是模态。）*/
       #skill-bar { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
-                   display: flex; gap: 6px; pointer-events: none; }
+                   display: flex; gap: 6px; pointer-events: none; z-index: 12; }
+      /* ★★ 容器保持 pointer-events:none（别挡住画布），**格子恢复 auto** ——
+         与 :266 的 `.nameplate` 同一手法。缺这一行时 CombatHud 里那整条
+         点击施法链（mousedown 委托）和 `.slot.usable:hover` 动效都是死代码：
+         代码在、事件永远不会来。真机审计「技能栏点不动」的根因就是它。 */
+      #skill-bar .slot { pointer-events: auto; cursor: pointer; }
       #skill-bar .slot { width: 108px; padding: 5px 7px; border-radius: 8px;
                          background: rgba(20,23,30,.9); border: 1px solid #2c313d;
                          border-top: 2px solid var(--school); }
+      /* 键盘/辅助技术聚焦时的可见焦点环（格子对外声明了 role="button"）*/
+      #skill-bar .slot:focus-visible { outline: 2px solid #9fd0ff; outline-offset: 1px; }
       #skill-bar .slot.blocked { opacity: .5; }
       #skill-bar .slot.usable { box-shadow: 0 0 0 1px color-mix(in srgb, var(--school) 45%, transparent); }
       #skill-bar .sk-head { display: flex; align-items: center; gap: 6px; margin: 2px 0 1px; }
       #skill-bar .sk-icon { flex: none; display: block; }
       #skill-bar .sk-name { font-size: 12px; font-weight: 600; white-space: nowrap; }
       #skill-bar .sk-meta { font-size: 10px; color: #7d8698; }
+      #skill-bar .sk-nogcd { color: #9ad48f; }
       #skill-bar .sk-block { font-size: 10px; color: #e08a8a; margin-top: 2px; }
+
+      /* ── 不可用原因的分级（合同 C1 的 blockers[]）────────────────
+         ★ 四类对应玩家的四种动作：走位 / 等资源 / 等冷却 / 先解控。
+         ★★ 17.2「不能只靠颜色」：每一类都有**三条**通道 ——
+            颜色 + 左边框样式（实线/点线/虚线/双线）+ JS 给的字形前缀。
+            色觉受限或截图压缩掉颜色时，边框与字形照样能分。            */
+      #skill-bar .sk-block[data-blk="position"] { color: var(--c-hostile);
+        border-left: 2px solid var(--c-hostile); padding-left: 4px; }
+      #skill-bar .sk-block[data-blk="resource"] { color: #6fa8ff;
+        border-left: 2px dotted #6fa8ff; padding-left: 4px; }
+      #skill-bar .sk-block[data-blk="cooldown"] { color: #9aa3b6;
+        border-left: 2px dashed #9aa3b6; padding-left: 4px; }
+      #skill-bar .sk-block[data-blk="state"] { color: #d8a07e;
+        border-left: 2px double #d8a07e; padding-left: 4px; }
+      /* 位置类顺带给整格一圈红描边 —— 这条是「站错地方」，走两步就好了，
+         值得在余光里看见（其余三类不加，否则满屏描边等于没描边）*/
+      #skill-bar .slot:has(.sk-block[data-blk="position"]) { border-color: var(--c-hostile); }
 
       /* ── M12 技能栏打磨 ──────────────────────────────────────── */
       #skill-bar .slot {
@@ -214,9 +262,56 @@
         border-radius: 5px; pointer-events: none;
         background: conic-gradient(rgba(10,12,18,.78) var(--cd-deg), transparent 0);
       }
+      /* ★ 公共冷却扫层（合同 C1）。
+         GCD 期间**七个格子一起转**，与自身冷却是两件事：
+         一个 1.5 秒后全好，一个只有这格要等 30 秒。所以它**更浅**
+         且带一圈内描边 —— 两层叠在同一个图标上必须一眼分得开。
+         ⚠️ 生产方没填 gcdRemaining/gcdTotal 时 JS 压根不输出这个节点，
+            不会画一个停在 0 度的假扫层。 */
+      #skill-bar .sk-gcd {
+        position: absolute; left: 0; top: 0; width: 26px; height: 26px;
+        border-radius: 5px; pointer-events: none;
+        background: conic-gradient(rgba(150,170,210,.30) var(--gcd-deg), transparent 0);
+        box-shadow: inset 0 0 0 1px rgba(150,170,210,.22);
+      }
       /* 按下技能时的一次脉冲，让「按了」有即时回执（不等服务器） */
       @keyframes sk-press { 0% { transform: scale(1); } 45% { transform: scale(.9); } 100% { transform: scale(1); } }
       #skill-bar .slot.pressed .sk-head { animation: sk-press .17s ease-out; }
+
+      /* ── 技能 tooltip（第一次消费 SkillDef.description / counters）──
+         ★ 自绘而不是原生 title：原生提示有 ~1 秒延迟、样式不可控，
+           而这里要的是「扫一眼就知道这招怎么反制」。
+         ★ 位置由 JS 算（格子上方、视口内钳位），这里只管长相。      */
+      #skill-tip { position: absolute; left: 0; top: 0; width: 268px; z-index: 28;
+                   background: rgba(14,17,23,.97); border: 1px solid #3a4152;
+                   border-radius: 8px; padding: 9px 11px; font-size: 12px;
+                   color: #cfd6e4; pointer-events: none;
+                   box-shadow: 0 8px 26px rgba(0,0,0,.5); }
+      #skill-tip .tip-head { display: flex; align-items: baseline; gap: 6px;
+                             border-bottom: 1px solid #262b36; padding-bottom: 5px;
+                             margin-bottom: 5px; border-top: 2px solid var(--school);
+                             margin-top: -9px; padding-top: 7px; }
+      #skill-tip .tip-name { font-size: 14px; color: #e8edf7; }
+      #skill-tip .tip-school { font-style: normal; font-size: 11px; color: var(--school); }
+      #skill-tip .tip-row { display: flex; gap: 8px; line-height: 1.5; }
+      #skill-tip .tip-row span { color: #6f7a90; width: 34px; flex: none; }
+      #skill-tip .tip-row b { font-weight: 500; color: #c9d1e0; }
+      #skill-tip .tip-desc { margin-top: 6px; padding-top: 5px;
+                             border-top: 1px solid #262b36; color: #b9c1d1; line-height: 1.6; }
+      /* 反制单独一块：7.x 的整套博弈就写在这一行里，不能和说明混成一段 */
+      #skill-tip .tip-counter { margin-top: 5px; color: #9ad48f; line-height: 1.55; }
+      #skill-tip .tip-counter span { color: #6f7a90; margin-right: 5px; }
+
+      /* ── 屏幕中部短提示（合同 C2）───────────────────────────────
+         ★ 放在准星正下方一点：打断/失败/死亡这些要求**立刻改操作**的信息，
+           必须落在玩家真正在看的地方；左下角的战斗日志是事后复盘用的。
+         ⚠️ 不吃鼠标事件 —— 它盖在画面正中，能点就等于挡住了瞄准。      */
+      #center-notice { position: absolute; left: 50%; top: 46%; transform: translate(-50%,-50%);
+                       padding: 7px 18px; border-radius: 8px; font-size: 15px; font-weight: 600;
+                       background: rgba(16,19,26,.86); border: 1px solid #4a5468;
+                       color: #ffd9a8; text-shadow: 0 1px 3px #000;
+                       pointer-events: none; opacity: 0; transition: opacity .3s ease-out; }
+      #center-notice.show { opacity: 1; }
 
       /* ── M12 浮动伤害数字（14.1 命中反馈 / 17.2 可关闭）────────
          ★ 关闭由 `#combat-hud.no-damage-numbers` 的 display:none 兜底，
@@ -254,8 +349,14 @@
          几乎读不出来 —— 这是画面变亮带来的真实可读性回退，截图比对发现的。
          做法是给文字加描边阴影而不是调亮颜色：颜色还要继续承担
          ok/fail/interrupt 的语义区分（15.2），动了颜色就动了语义。 */
+      /* ★ P10 再补一层：只加描边阴影仍然不够 —— 1280×720 实测，白天石板地
+         上 11px 的浅色小字基本读不出来，而**死亡、施法失败、被打断这三类
+         信息只走这一条通道**（没有别的地方说）。所以给一块半透明底板把
+         背景压暗，再把字号 11→12px。⚠️ 颜色一个都没动：ok/fail/interrupt
+         三色仍然承担 15.2 的语义区分，调亮就等于调语义。 */
       #combat-log { position: absolute; left: 14px; bottom: 14px; width: 380px;
-                    font-size: 11px; font-variant-numeric: tabular-nums;
+                    font-size: 12px; font-variant-numeric: tabular-nums;
+                    background: rgba(12,14,20,.55); border-radius: 6px; padding: 6px 8px;
                     text-shadow: 0 1px 2px #000, 0 0 6px rgba(0,0,0,.85); }
       .log { display: flex; gap: 6px; padding: 1px 0; color: #c2c9d8; }
       .log span { color: #808aa2; min-width: 34px; text-align: right; }

@@ -7,10 +7,34 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { asEntityId, asSkillId } from '../types/ids.js';
+import { asClassId, asEntityId, asSkillId, TEAM_RED } from '../types/ids.js';
 import { School } from '../types/enums.js';
 import { decodeServerMessage, encodeServerMessage, parseClientMessage } from './codec.js';
 import type { ServerMessage } from './protocol.js';
+import type { EntitySnapshot } from './visibility.js';
+
+/** 自己的一份最小实体快照。★ 只为往返测试拼形状，不代表任何真实局面 */
+const selfEntity: EntitySnapshot = {
+  id: asEntityId(1),
+  name: '我',
+  team: TEAM_RED,
+  classId: asClassId('mage'),
+  position: { x: 0, y: 0, z: 0 },
+  yaw: 0,
+  teleported: false,
+  health: 100,
+  maxHealth: 100,
+  alive: true,
+  resources: { mana: 50 },
+  maxResources: { mana: 100 },
+  auras: [],
+  carryingFlag: false,
+  flags: {
+    stunned: false, feared: false, rooted: false, silenced: false, disarmed: false,
+    carryingFlag: false, immuneAll: false, immunePhysical: false, immuneMagic: false,
+  },
+  equipment: { currentWeaponId: undefined, armorArchetype: undefined, swapping: false },
+};
 
 describe('★ 服务器消息编解码往返', () => {
   it('★ Damage 带 crit/overkill 时字段无损', () => {
@@ -48,6 +72,34 @@ describe('★ 服务器消息编解码往返', () => {
       auraId: 'rogue.rupture', duration: 12, stacks: 1,
     };
     expect(decodeServerMessage(encodeServerMessage(msg))).toEqual(msg);
+  });
+
+  /**
+   * P10：`focusId` / `gcdUntil` 是新的**条件展开**可选字段（只发给自己、
+   * 且只在成立时发）—— 与 crit/overkill 属于同一类，所以进同一张回归网：
+   * 换二进制编码时最容易被漏掉的正是「不总是出现」的那几个。
+   */
+  it('★ P10：快照的 focusId/gcdUntil 往返无损', () => {
+    const msg: ServerMessage = {
+      t: 'Snapshot', tick: 3, time: 0.15, ackSeq: 7, you: asEntityId(1),
+      entities: [{ ...selfEntity, focusId: asEntityId(2), gcdUntil: 1.25 }],
+      projectiles: [], grounds: [], drops: [], armories: [],
+      match: { dampening: 0, suddenDeath: false },
+    };
+    expect(decodeServerMessage(encodeServerMessage(msg))).toEqual(msg);
+  });
+
+  it('★ P10：没有焦点 / 不在 GCD 时两个字段不会凭空出现', () => {
+    const msg: ServerMessage = {
+      t: 'Snapshot', tick: 3, time: 0.15, ackSeq: 7, you: asEntityId(1),
+      entities: [selfEntity],
+      projectiles: [], grounds: [], drops: [], armories: [],
+      match: { dampening: 0, suddenDeath: false },
+    };
+    const back = decodeServerMessage(encodeServerMessage(msg));
+    expect(back).toEqual(msg);
+    expect(JSON.stringify(back)).not.toContain('focusId');
+    expect(JSON.stringify(back)).not.toContain('gcdUntil');
   });
 
   it("★ 入站校验不受影响：客户端消息里塞 'crit' 仍被丢弃", () => {

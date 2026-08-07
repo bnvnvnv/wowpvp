@@ -270,6 +270,30 @@ export interface EntitySnapshot {
    */
   cooldowns?: Readonly<Record<string, number>>;
   /**
+   * 5.1 焦点目标。★ 只有**自己**有这个字段，且**只在焦点对自己可见时**才有。
+   *
+   * ★★ P10：没有它，联网侧的焦点整条链路是死的 —— 协议早有
+   *   `SetTarget slot:'focus'`、服务器早有 `toggleFocus`，但焦点是一个
+   *   **切换**（同一目标再按一次清除），客户端本地猜出来的状态迟早与服务器分叉
+   *   （服务器会因目标不可选中而静默不设）。所以由服务器回读，不由客户端记账。
+   *
+   * ★ 「焦点不可见就不发」是结构性的、不是保险起见：焦点可能在设定之后
+   *   潜行遁走（`pruneInvalidTargets` 会在下一 tick 清掉它，但快照可以在
+   *   任何时刻构建）。发一个我看不见的实体 id 就是把验收 #5 从
+   *   「不能选中」放宽成「能确认他还在」。看不见的焦点等于没有焦点。
+   */
+  focusId?: EntityId;
+  /**
+   * 公共冷却的结束时刻（服务器时间）。★ 只有**自己**有，且**只在 GCD 还没走完时**才有
+   *   —— 没有这个字段就是「不在 GCD 中」，与 `cooldowns` 同一条「可选即事实」的规矩。
+   *
+   * ★ 为什么需要：`cooldowns` 只有**技能自身**的冷却，GCD 是另一个量
+   *   （`CombatEntity.gcdUntil`）。缺了它，联网侧技能栏画不出 GCD 转圈 ——
+   *   而 GCD 恰恰是「按了为什么没反应」最常见的答案。
+   * ★ 敌方的不发，理由与 `cooldowns` 同条（docs/08 §4.3：削弱博弈）。
+   */
+  gcdUntil?: number;
+  /**
    * 装备。队友是完整视图，敌人是裁剪视图 —— **两个不相交的类型**。
    * 想在敌人视图里读备用装备是类型错误（10.6 / 验收 #36）。
    */
@@ -661,7 +685,19 @@ const snapshotEntity = (
   };
 
   // docs/08 §4.3：只有自己能看到自己的冷却
-  if (isSelf) snap.cooldowns = Object.fromEntries(e.cooldowns);
+  if (isSelf) {
+    snap.cooldowns = Object.fromEntries(e.cooldowns);
+    // GCD 只在还没走完时下发（见字段注释：没有字段 = 不在 GCD 中）
+    if (e.gcdUntil > deps.world.time) snap.gcdUntil = e.gcdUntil;
+    /**
+     * 5.1 焦点回读。★ 只发**对自己可见**的焦点 —— 见 `focusId` 的字段注释：
+     *   看不见的焦点等于没有焦点，否则就等于告诉我「那个隐身的人还在场上」。
+     */
+    const focus = e.targets.focus !== undefined
+      ? deps.world.entities.get(e.targets.focus)
+      : undefined;
+    if (focus && isVisibleTo(focus, viewer, ctx)) snap.focusId = focus.id;
+  }
 
   // docs/08 §5 第 6 步：只有自己需要重放，所以也只有自己带完整移动状态
   if (isSelf) {
@@ -795,7 +831,8 @@ export const assertNoHiddenEntities = (
 export const CULLING_RULES = [
   { id: '4.1', what: '未被发现的潜行者完全不进快照', acceptance: '#5' },
   { id: '4.2', what: '敌人只暴露当前武器与护甲原型，备用装备不发', acceptance: '#36' },
-  { id: '4.3-cooldown', what: '敌方技能冷却不发', acceptance: 'docs/08 §4.3' },
+  { id: '4.3-cooldown', what: '敌方技能冷却与公共冷却不发', acceptance: 'docs/08 §4.3' },
+  { id: '4.3-focus', what: '焦点目标只回读给自己，且焦点不可见时不发', acceptance: '#5 + 5.1' },
   { id: '4.3-spectate', what: '观战只能跟随己方存活玩家', acceptance: '11.4' },
   { id: '8.5', what: '决胜阶段发无 id 的粗略位置标记，不使潜行者变为可选中', acceptance: '#5 + 8.5' },
   { id: '12.2', what: '旗手位置始终对双方可见', acceptance: '12.2' },
