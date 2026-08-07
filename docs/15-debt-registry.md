@@ -139,6 +139,7 @@
 | P8 | 无 instancing（全仓 0 处 `InstancedMesh`）；模型材质逐 mesh `.clone()`（为受击闪白）破坏合批 —— 可改顶点色/uniform | `entity/ModelLibrary.ts`（≈:143-145）；`arsenal/ArsenalView.ts` 等 | draw call 随掉落物线性涨 | ⛔ |
 | P9 | **无自动画质降档**：两场景默认 High（2048 阴影 + 2x 像素比），FPS 已量但无反馈回路，低端机只能自己按 F2 | `render/QualityController.ts`；`GameLoop.ts` fps | 低端机第一印象 | ⛔ |
 | P10 | 每帧小额浪费：`NetworkScene` 多处线性 `find/some`（有 Map 不用）；记分板可见时每帧重建对象数组 | `NetworkScene.ts`（≈:1101,1173,1218-1225,1310） | 低 | ⛔ |
+| P11 | **快照下行带宽 ~306 KB/s/客户端（≈2.4 Mbps）—— 比同类网游肥 10~30 倍**，是部署容量的第一约束。实测（2026-08-07 容量探针，真 ws 客户端 + 20Hz 输入）：12v12 单房下行合计 **60 Mbps**（≈27 GB/小时）；CPU 反而便宜（13.6% 桌面核/房，线性，零慢 tick）；RSS 88MB 基底 + 7MB/房。根因链 = 20Hz × 全量 JSON 快照 × 逐接收者重建（P3 是它的 GC 面）：无 delta 编码、无二进制、无 permessage-deflate。**这也是弱网真人玩家的问题**（手机/弱 WiFi 扛不住 2.4 Mbps 常驻流）。修的杠杆按性价比：① ws 开 permessage-deflate（JSON 重复键可压 5~10×，代价 CPU）② 非自身实体降到 10Hz ③ delta 快照（典型 10~50×）④ 二进制编码。⚠️ 修哪个都要过 m10 的裁剪红线（压缩/差分不得绕过 redactFor） | 容量探针数据（PROGRESS P3 后问答记录）；`shared/net/visibility.ts` 快照构建；`Session.sendRaw` | 12v12 部署与弱网体验的第一瓶颈 | ⛔ |
 
 ## G. 工程与流程
 
