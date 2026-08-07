@@ -400,7 +400,7 @@ const { page, errors } = await open(`${BASE}?testbed`);
    *
    * ★★ 为什么必须暂停（拿两条假失败换来的）：
    *   1. 战士假人会拳击打断玩家的霜矢，**并锁住寒冰学派 3 秒** ——
-   *      于是紧接着的霜爆新星（冰系）报「无法释放：学派锁定」。
+   *      于是紧接着的霜爆新星（冰系）报「无法释放：技能被封锁」。
    *      这不是 bug，正是 7.2 + 7.5 的反制链在按设计工作，
    *      是本脚本的操作序列在和试验场的演示脚本抢同一个玩家。
    *   2. `activeWindups` 是**全场**施法者的计数，牧师与法师假人一直在读条 ——
@@ -456,7 +456,7 @@ const { page, errors } = await open(`${BASE}?testbed`);
   await pressSkill(page, 'mage.frost_nova');
   const wave = await waveWatch;
   // ★ 失败时把战斗日志一起打出来：这条断言失败过一次，而真正的原因
-  //   （先是「无法释放：学派锁定」，后是采样漏掉）光看计数都查不出来
+  //   （先是「无法释放：技能被封锁」，后是采样漏掉）光看计数都查不出来
   const tail = await page.evaluate(
     () => (globalThis.__scene?.combat?.log ?? []).slice(0, 4).map((l) => l.text));
   check('#14f', '★ 瞬发范围技能画出贴地扩张波（边界即判定半径，14.3）',

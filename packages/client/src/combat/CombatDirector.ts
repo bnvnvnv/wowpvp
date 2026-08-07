@@ -529,7 +529,7 @@ export class CombatDirector {
             this.onCastActivity?.('interrupted', c, getSkill(st.skillId));
             const skillName = getSkill(st.skillId)?.name ?? st.skillId;
             const lockText = lock
-              ? `，${SCHOOL_TEXT[lock.school]}学派锁定 ${(lock.until - this.world.time).toFixed(1)}s`
+              ? `，${SCHOOL_TEXT[lock.school]}系技能被封锁 ${(lock.until - this.world.time).toFixed(1)}s`
               : '';
             const by = INTERRUPT_TEXT[src] ?? src;
             if (c.id === this.player.id) {
@@ -986,7 +986,7 @@ export class CombatDirector {
       onInterrupted: (_c, st, _src, lock) => {
         const n = getSkill(st.skillId)?.name ?? st.skillId;
         const lockText = lock
-          ? `，${SCHOOL_TEXT[lock.school]}学派锁定 ${(lock.until - this.world.time).toFixed(1)}s`
+          ? `，${SCHOOL_TEXT[lock.school]}系技能被封锁 ${(lock.until - this.world.time).toFixed(1)}s`
           : '';
         const text = `${warriorDummy.name} 用${pummel.name}打断了你的 ${n}${lockText}`;
         this.push(text, 'interrupt');
@@ -1273,8 +1273,8 @@ export class CombatDirector {
         onInterrupted: (c, st, _src, lock) => {
           const n = getSkill(st.skillId)?.name ?? st.skillId;
           const lockText = lock
-            ? `，${SCHOOL_TEXT[lock.school]}学派锁定 ${(lock.until - this.world.time).toFixed(1)}s`
-            : '（物理动作，不产生学派锁定）';
+            ? `，${SCHOOL_TEXT[lock.school]}系技能被封锁 ${(lock.until - this.world.time).toFixed(1)}s`
+            : '（物理动作，不会封锁技能）';
           this.push(`你打断了 ${c.name} 的 ${n}${lockText}`, 'interrupt');
         },
       },
@@ -1459,7 +1459,13 @@ export const FAIL_TEXT: Record<CastFailure, string> = {
   notEnoughResource: '资源不足',
   silenced: '已被沉默',
   disarmed: '已被缴械',
-  schoolLocked: '学派锁定',
+  /**
+   * ★ 玩家语言不说「学派」（P10 后用户拍板：看不懂）—— 对玩家统一说
+   *   「系」（火系/冰霜系，日志里带具体是哪系）。「学派」只留在代码与
+   *   规格书层。改这条前先想清楚：它同时出现在格子徽标 / 失败日志 /
+   *   中部提示 / 联网 CastFailed 四个出口。
+   */
+  schoolLocked: '技能被封锁',
   controlled: '无法行动',
   dead: '已死亡',
   invalidGroundPosition: '超出地图边界',

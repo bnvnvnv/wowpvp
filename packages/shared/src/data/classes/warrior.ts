@@ -156,7 +156,7 @@ const skills: SkillDef[] = [
     requiresLos: true,
     counters: '目标未在施法、或施法带盾牌标记（不可打断）时仍会进入冷却（7.2）；缴械状态下无法使用；假读条可以骗掉。',
     effects: [{ kind: 'interrupt', schoolLockSeconds: 3 }],
-    description: '打断法术、引导或射击准备，并锁定该魔法学派 3 秒。',
+    description: '打断法术、引导或射击准备，并封锁该系魔法技能 3 秒。',
     vfx: 'warrior_pummel',
   },
   {

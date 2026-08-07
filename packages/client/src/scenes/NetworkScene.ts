@@ -1076,7 +1076,7 @@ export class NetworkScene {
         if (msg.casterId === this.selfId) {
           const skillName = st ? getSkill(st.skillId)?.name ?? '施法' : '施法';
           const lock = msg.schoolLock
-            ? `，${SCHOOL_NAMES[msg.schoolLock.school] ?? msg.schoolLock.school}系被锁定`
+            ? `，${SCHOOL_NAMES[msg.schoolLock.school] ?? msg.schoolLock.school}系技能被封锁`
             : '';
           const text = `你的${skillName}被打断了${lock}`;
           this.view.push(text, 'interrupt');

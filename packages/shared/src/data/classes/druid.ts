@@ -95,7 +95,7 @@ const skills: SkillDef[] = [
     triggersGcd: true,
     requiresLos: true,
     cost: { resource: Resource.Mana, amount: 120 },
-    counters: '1.3 秒读条且必须原地：专用打断会锁自然学派 3 秒（7.2），昏迷、恐惧、击退和主动移动都能打断；被「致死打击」一类降治疗减益压制时收益明显下降；形态下不可施放，切回人形本身要吃 1 秒公共冷却。',
+    counters: '1.3 秒读条且必须原地：专用打断会封锁自然系技能 3 秒（7.2），昏迷、恐惧、击退和主动移动都能打断；被「致死打击」一类降治疗减益压制时收益明显下降；形态下不可施放，切回人形本身要吃 1 秒公共冷却。',
     effects: [
       // M14：220→270 —— 主动治疗职业的生存底盘，与月火同轮定值
       { kind: 'heal', amount: { flat: 270, powerCoef: 0.6 } },
@@ -233,7 +233,7 @@ const skills: SkillDef[] = [
       { kind: 'chargeTo', minRange: 0, maxRange: 13, stopDistance: RANGE.MELEE },
       { kind: 'interrupt', schoolLockSeconds: 3 },
     ],
-    description: '短距离冲向目标并打断其施法，锁定该魔法学派 3 秒。不触发公共冷却。',
+    description: '短距离冲向目标并打断其施法，封锁该系魔法技能 3 秒。不触发公共冷却。',
     vfx: 'druid_skull_bash',
   },
   {
@@ -502,7 +502,7 @@ const skills: SkillDef[] = [
     counters:
       '**10 秒冷却**，是月火术（6 秒）之外的第二个瞬发键而不是主力输出，单发伤害低于月火术首击；耗蓝 45 偏高，长局里连按会见底；熊/猎豹形态下不可用，切形态就等于放弃它。',
     effects: [{ kind: 'damage', school: School.Arcane, amount: { flat: 175 } }],
-    description: '牵引星辰之力瞬间轰击目标，造成奥术伤害。自然学派被打断锁死时，这是唯一还能按出去的伤害技能。',
+    description: '牵引星辰之力瞬间轰击目标，造成奥术伤害。自然系被打断封锁时，这是唯一还能按出去的伤害技能。',
     vfx: 'druid_starsurge',
   },
   {

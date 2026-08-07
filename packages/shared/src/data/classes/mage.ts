@@ -175,7 +175,7 @@ const skills: SkillDef[] = [
       // 7.2：法师是唯一 4 秒学派锁定的职业，见 constants/combat.ts 的 INTERRUPT.SCHOOL_LOCK_COUNTERSPELL
       { kind: 'interrupt', schoolLockSeconds: 4 },
     ],
-    description: '打断法术、引导或射击准备。打断魔法时额外锁定该学派 4 秒；打断物理射击只取消本次动作。',
+    description: '打断法术、引导或射击准备。打断魔法时额外封锁该系技能 4 秒；打断物理射击只取消本次动作。',
     vfx: 'mage_counterspell',
   },
   {
@@ -431,7 +431,7 @@ const skills: SkillDef[] = [
     counters:
       '伤害低于烈焰爆，3 秒冷却决定它只能当填充；火焰学派被锁（断法命中火系技能）时不可用，此时要换冰霜键；25 米射程在法师技能里偏短，被拉开就够不到。',
     effects: [{ kind: 'damage', school: School.Fire, amount: { flat: 110 } }],
-    description: '瞬发灼烧目标造成少量火焰伤害。冷却短、可移动 —— 冰霜学派被锁时的备用输出。',
+    description: '瞬发灼烧目标造成少量火焰伤害。冷却短、可移动 —— 冰霜系被封锁时的备用输出。',
     vfx: 'mage_scorch',
   },
   /**

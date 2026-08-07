@@ -19,6 +19,7 @@ import {
   asClassId,
   asWeaponId,
   getEntity,
+  teleportTo,
   encodeClientMessage,
   decodeServerMessage,
   type ClientMessage,
@@ -240,11 +241,24 @@ describe('A3：两个真客户端从房间跑到快照', () => {
     expect(rejected.what).toBe('SetTarget');
     expect(rejected.reason, '超距拒绝该说清是距离问题').toContain('距离');
 
-    // ② 白盒把红方挪进 45 米，同一条 SetTarget 必须成功且真的落位
-    const world = server.rooms.matchOf('r6')!.world;
-    const redE = getEntity(world, redStart.you)!;
-    const blueE = getEntity(world, blueStart.you)!;
-    redE.position = { ...blueE.position, x: blueE.position.x + 10 };
+    // ② 白盒把红方挪进 45 米，同一条 SetTarget 必须成功且真的落位。
+    // ⚠️ 必须走 `match.movement` 的 teleportTo，不能直写 entity.position ——
+    //   A2 清偿后缺输入实体也按全零输入积分，直写会在下一 tick 被移动系统
+    //   从权威 MovementState 吹回出生点（verify-m10 的白盒摆位同一个坑，
+    //   直写版本赢了 50ms 竞态还能偶发变绿，更阴险）。
+    const match = server.rooms.matchOf('r6')!;
+    const redE = getEntity(match.world, redStart.you)!;
+    const blueE = getEntity(match.world, blueStart.you)!;
+    const redMove = match.movement.get(redStart.you)!;
+    match.movement.set(
+      redStart.you,
+      teleportTo(
+        redMove,
+        { x: blueE.position.x + 10, y: 0, z: blueE.position.z },
+        match.map.geometry,
+      ),
+    );
+    redE.position = { ...match.movement.get(redStart.you)!.position };
 
     red.received.length = 0;
     red.send({ t: 'SetTarget', slot: 'hard', entityId: blueStart.you });

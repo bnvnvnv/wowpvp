@@ -199,7 +199,7 @@ const skills: SkillDef[] = [
     counters:
       '目标未在施法、或施法带盾牌标记（不可打断）时仍会进入冷却（7.2）；假读条可以骗掉（7.5）；打断物理射击准备条只取消本次射击，不产生学派锁定；本身是冰霜魔法，被沉默或冰霜学派锁定时无法使用（7.3）；需要视线且射程只有 15 米。',
     effects: [{ kind: 'interrupt', schoolLockSeconds: 3 }],
-    description: '打断法术、引导或射击准备，并锁定该魔法学派 3 秒。不触发公共冷却。',
+    description: '打断法术、引导或射击准备，并封锁该系魔法技能 3 秒。不触发公共冷却。',
     vfx: 'deathknight_mind_freeze',
   },
   {
