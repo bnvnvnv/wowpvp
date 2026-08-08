@@ -26,6 +26,7 @@ import {
   ccCategoryOf,
   decideBotAction,
   hasDamage,
+  healTargets,
   isEscapeSkill,
   isGapCloserSkill,
   isHealSkill,
@@ -812,6 +813,190 @@ describe('B2 hard 苟住：弹尽粮绝时转身满速跑', () => {
     const picked = mage.skills.find((sk) => sk.id === a.cast?.skillId);
     expect(picked !== undefined && isSelfDefenseSkill(picked),
       `手里还有保命牌却选了 ${a.cast?.skillId}`).toBe(true);
+  });
+});
+
+/**
+ * B1：治疗协作 —— 奶**血最少的队友**，不只是奶自己。
+ *
+ * ★ 用户反馈「BOT 都是单独行动，团队 PK 没有配合逻辑」的第一刀。
+ * ⚠️ 这一组里最重要的是那条「敌人塞进名册也奶不到」—— 它钉的是
+ *   **不开第二条施法通道**：队友治疗与自我治疗走同一个 `usableOn`
+ *   （即同一个 `validateCast`），`TargetFilter.Ally` 由结算侧判，
+ *   决策层不抄一份会漂移的镜像。P3 的「HPS 恒 0」就是从验错目标来的。
+ */
+describe('B1 治疗协作：healTargets（该奶谁）', () => {
+  /**
+   * 一个实体，只用来喂纯函数（不需要 world 上下文）。
+   * ⚠️ 共用一个 world 才拿得到**互不相同**的 id —— 每次新建 world 的话
+   *   `allocEntityId` 会从头发号，去重逻辑会把两个人当成同一个人。
+   */
+  const world = createWorld();
+  const entity = (cls: typeof mage, team: typeof TEAM_RED, pct: number): CombatEntity => {
+    const e = addEntity(world, createEntity(allocEntityId(world), cls, team, vec3(0, 0, 0)));
+    e.health = e.maxHealth * pct;
+    return e;
+  };
+
+  it('★★ 不传队友 = 队伍里只有我一个（老调用方逐位不变）', () => {
+    const healthy = entity(priest, TEAM_RED, 1.0);
+    expect(healTargets(healthy)).toEqual([]);
+
+    const hurt = entity(priest, TEAM_RED, 0.4);
+    expect(healTargets(hurt).map((e) => e.id)).toEqual([hurt.id]);
+  });
+
+  it('★★ 队友比自己残 → 队友排前面（这就是「配合」的全部内容）', () => {
+    const self = entity(priest, TEAM_RED, 0.45);
+    const ally = entity(warrior, TEAM_RED, 0.2);
+    expect(healTargets(self, [ally]).map((e) => e.id)).toEqual([ally.id, self.id]);
+  });
+
+  it('★ 血量 ≥ 阈值的人不进列表（满血队友不值一个公共冷却）', () => {
+    const self = entity(priest, TEAM_RED, 1.0);
+    const full = entity(warrior, TEAM_RED, 1.0);
+    const half = entity(warrior, TEAM_RED, 0.5); // 恰好等于阈值 → 不进（判据是 <）
+    expect(healTargets(self, [full, half])).toEqual([]);
+  });
+
+  it('★ 死人与宠物不奶（死人奶不活，宠物不是配合）', () => {
+    const self = entity(priest, TEAM_RED, 1.0);
+    const corpse = entity(warrior, TEAM_RED, 0.1);
+    corpse.alive = false;
+    const pet = entity(warrior, TEAM_RED, 0.1);
+    pet.isPet = true;
+    expect(healTargets(self, [corpse, pet])).toEqual([]);
+  });
+
+  it('★ 自己出现在名册里不会被算两遍（调用方直接把整队丢进来）', () => {
+    const self = entity(priest, TEAM_RED, 0.3);
+    expect(healTargets(self, [self]).map((e) => e.id)).toEqual([self.id]);
+  });
+
+  it('★★ 血量平手按实体 id 排 —— 没有二级键，回放会在这里分叉', () => {
+    const self = entity(priest, TEAM_RED, 1.0);
+    const a = entity(warrior, TEAM_RED, 0.3);
+    const b = entity(warrior, TEAM_RED, 0.3);
+    // ⚠️ 两个方向喂进去必须得到同一个答案（数组顺序不许决定奶谁）
+    const first = healTargets(self, [a, b]).map((e) => e.id);
+    const second = healTargets(self, [b, a]).map((e) => e.id);
+    expect(first).toEqual(second);
+  });
+});
+
+describe('B1 治疗协作：决策链会把奶按到队友身上', () => {
+  /** 在 self 同队造一个 z 米外、血量为 pct 的队友 */
+  const allyAt = (
+    s: ReturnType<typeof duel>, z: number, pct: number,
+  ): CombatEntity => {
+    const e = addEntity(
+      s.world, createEntity(allocEntityId(s.world), warrior, TEAM_RED, vec3(0, 0, z)),
+    );
+    for (const [r, max] of e.maxResources) e.resources.set(r, max);
+    e.health = e.maxHealth * pct;
+    return e;
+  };
+
+  /** 决策产出的那一发是不是治疗 */
+  const castHeal = (skillId: unknown): boolean =>
+    priest.skills.some((sk) => sk.id === skillId && isHealSkill(sk));
+
+  it('★★ 自己满血、队友 20% → 把奶按在**队友**身上（此前只会奶自己）', () => {
+    const s = duel(priest, warrior, 20);
+    const ally = allyAt(s, 5, 0.2);
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(), allies: [ally],
+    }));
+    expect(castHeal(a.cast?.skillId), `实际选了 ${a.cast?.skillId}`).toBe(true);
+    expect(a.cast?.targetId).toBe(ally.id);
+  });
+
+  /**
+   * ⚠️ 血量取 0.4 而不是更低：低于 `SURVIVAL_HEALTH`(0.35) 会先走**保命键**
+   *   那一步（护心屏障），那是决策链既有的优先级，不是治疗顺序的事。
+   */
+  it('★★ 自己更残 → 先奶自己（顺序就是血量百分比，不偏心）', () => {
+    const s = duel(priest, warrior, 20);
+    const ally = allyAt(s, 5, 0.45);
+    s.self.health = s.self.maxHealth * 0.4;
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(), allies: [ally],
+    }));
+    expect(castHeal(a.cast?.skillId), `实际选了 ${a.cast?.skillId}`).toBe(true);
+    expect(a.cast?.targetId).toBe(s.self.id);
+  });
+
+  it('★★ 最残的队友够不着（40 米 > 30 米治疗射程）→ 退回来奶自己，不干等', () => {
+    const s = duel(priest, warrior, 20);
+    const farAlly = allyAt(s, 40, 0.1);
+    s.self.health = s.self.maxHealth * 0.4;
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(), allies: [farAlly],
+    }));
+    expect(castHeal(a.cast?.skillId), `实际选了 ${a.cast?.skillId}`).toBe(true);
+    expect(a.cast?.targetId).toBe(s.self.id);
+  });
+
+  it('★★ 敌人塞进名册也奶不到他 —— 走的是 TargetFilter.Ally 的 validateCast', () => {
+    const s = duel(priest, warrior, 20);
+    s.foe.health = s.foe.maxHealth * 0.1; // 全场最残的就是他
+    const a = decideBotAction(perceive(s, {
+      // ⚠️ 故意喂一份**错的**名册：把敌人当队友。决策层不自己判敌我，
+      //   靠 validateCast 判 —— 所以这里必须自然地一发奶也按不到他身上
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(), allies: [s.foe],
+    }));
+    expect(castHeal(a.cast?.skillId), `把奶按到敌人身上了：${a.cast?.skillId}`).toBe(false);
+  });
+
+  it('★ easy 不奶队友（与它不打断/不躲圈/不参与集火同一条难度门）', () => {
+    const s = duel(priest, warrior, 20);
+    const ally = allyAt(s, 5, 0.2);
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'easy', auras: new Map(), dr: createDrStore(), allies: [ally],
+    }));
+    expect(a.cast?.targetId).not.toBe(ally.id);
+  });
+
+  it('★ 不传 allies → 逐位退回老行为（自己半血才奶，且只奶自己）', () => {
+    const s = duel(priest, warrior, 20);
+    allyAt(s, 5, 0.05); // 队友快死了，但没进感知 → 决策层看不见他
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    expect(castHeal(a.cast?.skillId)).toBe(false);
+  });
+
+  /**
+   * ★★ `pnpm balance` 的 168 场是这份逻辑的回归网，而它的复现依赖
+   *   「同一个种子 → 同一串 rng 消耗」。治疗步骤是唯一用 rng 的分支，
+   *   一旦它在**不出手**的路径上也摸一次随机源，整份基线会整体漂移
+   *   （而且是那种「数字全变了但说不清为什么」的漂移）。
+   */
+  it('★★ 不出手就不碰随机源（谁都不用奶 / 奶不到 → rng 零消耗）', () => {
+    const count = (): { rng: () => number; calls: () => number } => {
+      let n = 0;
+      return { rng: () => { n++; return 0.5; }, calls: () => n };
+    };
+
+    const idle = count();
+    const s1 = duel(priest, warrior, 20);
+    decideBotAction(perceive(s1, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(), rng: idle.rng,
+      allies: [], // 全队满血
+    }));
+    expect(idle.calls(), '没人要奶却摸了随机源').toBe(0);
+
+    const unreachable = count();
+    const s2 = duel(priest, warrior, 20);
+    const farAlly = addEntity(
+      s2.world, createEntity(allocEntityId(s2.world), warrior, TEAM_RED, vec3(0, 0, 40)),
+    );
+    farAlly.health = farAlly.maxHealth * 0.1;
+    decideBotAction(perceive(s2, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(), rng: unreachable.rng,
+      allies: [farAlly],
+    }));
+    expect(unreachable.calls(), '一发都验不过却摸了随机源').toBe(0);
   });
 });
 
