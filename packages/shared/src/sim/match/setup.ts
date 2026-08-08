@@ -28,7 +28,7 @@ import type { Vec3 } from '../../math/vec3.js';
 import { TEAM_BLUE, TEAM_RED, type EntityId, type TeamId } from '../../types/ids.js';
 import { createAuraStore, type AuraStore } from '../aura.js';
 import {
-  createArsenalStore, createPickupStore, setupArmories,
+  createArsenalStore, createPickupStore, setupArmories, setupPartyDrops,
   type ArsenalStore, type PickupStore,
 } from '../arsenal.js';
 import {
@@ -252,6 +252,30 @@ export const createMatch = (room: Room, map: MapDef): Match => {
      *   返回空数组 —— 两道保险。
      */
     setupArmories(match.arsenal, room.config.mode, world.time);
+  }
+
+  /**
+   * 大乱斗（FFA）的**派对掉落**：每 30~45 秒在随机位置刷一件夸张武装或
+   * 新奇道具，场上同时最多 6 件（规则与占位参数见 `arsenal.ts` 的
+   * `PARTY_DROP`，内容见 `data/party.ts`）。
+   *
+   * ★★ 挂在 `map.family` 上而不是 `room.config.mode` 上，与
+   *   `spawnPointsFor()` 同一条理由：**这是地图数据决定的**。
+   *   判模式的话，将来加第二张大乱斗图（或者同一张图跑不同人数）
+   *   都要回来改这一行；判 family 则加图即生效。
+   * ★ 与军械点并列而不是二选一 —— `setupArmories()` 对未知模式返回空列表，
+   *   所以大乱斗只会有派对掉落，不会凭空多出军械箱。
+   * ★ 掉落半径取地图**内切半径的八成**，留出贴墙的一圈不刷货：
+   *   贴着墙刷出来的东西会有一半卡在墙里够不着。
+   */
+  if (map.family === 'ffa') {
+    const halfX = (map.bounds.max.x - map.bounds.min.x) / 2;
+    const halfZ = (map.bounds.max.z - map.bounds.min.z) / 2;
+    setupPartyDrops(match.arsenal, {
+      // ★ 用世界种子：整局仍由一个种子完全决定（world.ts §rng 的不变量）
+      seed: world.seed,
+      radius: Math.min(halfX, halfZ) * 0.8,
+    });
   }
 
   return match;

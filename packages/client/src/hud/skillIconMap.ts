@@ -169,6 +169,19 @@ export const SKILL_ICON_FILES: Readonly<Record<string, string>> = {
   //   且原先占用它的星火术已被本技能取代，不构成同职业重复
   'druid.starsurge': 'druid/starfire',
   'druid.thorns': 'druid/thorns',
+
+  // ── 大乱斗派对武装授予的技能（shared/data/party.ts）────────────
+  /**
+   * ★ 这四条不属于任何职业，只在手持对应派对武装时出现在技能栏上。
+   *   「同职业内两两不同」那条纪律对它们照样成立 —— 它们自成一组，
+   *   四张图互不相同（`skillIconMap.test.ts` 把派对组也纳入了那条断言）。
+   * ★ 上游没有「派对」主题的图标目录，按语义从最近的职业目录借，
+   *   与死亡骑士整组借用邻近职业是同一个先例。
+   */
+  'ffa.mountain_smash': 'warrior/faultline', // ◆ 地面裂开 —— 抡锤砸地
+  'ffa.starfall': 'druid/starfire', // ◆ 天降星火
+  'ffa.drumstick_volley': 'shaman/lightning_bolt', // ◆ 在人堆里连续弹射的一道
+  'ffa.boomerang_throw': 'warrior/breachmaker', // ◆ 破开一整排的重斧
 };
 
 /** 技能图标 URL；没有映射时返回 undefined（回落程序化 SVG） */

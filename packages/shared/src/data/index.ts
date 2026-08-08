@@ -23,6 +23,9 @@ import { paladin } from './classes/paladin.js';
 import { priest } from './classes/priest.js';
 import { rogue } from './classes/rogue.js';
 import { warrior } from './classes/warrior.js';
+import {
+  isPartyItemId, PARTY_CONSUMABLES, PARTY_SKILLS, PARTY_WEAPONS,
+} from './party.js';
 
 /** 八个首发职业（规格书 1.1）。顺序即 UI 中的展示顺序 */
 export const ALL_CLASSES: readonly ClassDef[] = [
@@ -38,6 +41,15 @@ export const ALL_CLASSES: readonly ClassDef[] = [
 
 export { warrior, paladin, deathknight, rogue, hunter, mage, priest, druid };
 
+/** 大乱斗派对道具内容包（不属于任何职业，只从 FFA 掉落获得）*/
+export * from './party.js';
+/**
+ * 消耗品目录。★ 此前只有 sim 内部按相对路径 import 得到它 ——
+ * 于是客户端拿不到 `getConsumable`，地上的消耗品在 HUD 上只能显示 id。
+ * 与武器/护甲一样从注册表出口暴露。
+ */
+export * from './consumables.js';
+
 // ── 索引 ─────────────────────────────────────────────────────────
 
 const buildIndex = <T>(items: Iterable<[string, T]>): ReadonlyMap<string, T> => {
@@ -50,14 +62,26 @@ export const CLASS_BY_ID: ReadonlyMap<string, ClassDef> = buildIndex(
   ALL_CLASSES.map((c) => [c.id as string, c] as [string, ClassDef]),
 );
 
+/**
+ * ★★ `ALL_SKILLS` / `ALL_WEAPONS` 是**职业池**，大乱斗的派对道具
+ *   （`data/party.ts`）刻意**不在**里面 —— 它们不属于任何职业，
+ *   而这两个数组的既有读者全都在问「八个职业有什么」：
+ *   验收 #31 的武器取舍、附录A#3 的九项标注、每职业三套武器方案…
+ *   把 4 件派对武装混进去，那些断言问的就不再是它们想问的问题了。
+ *
+ * ★ 但**按 id 查得到**是另一回事：`getSkill()` / `getWeapon()` 是 sim 的
+ *   唯一入口（`tickDepsOf` 把 `getSkill` 直接传给 `tickWorld`），查不到
+ *   就等于「捡到了一把引擎不认识的武器」—— 表现是白字消失、技能放不出来
+ *   且**没有任何报错**。所以下面两张索引表是**职业池 ∪ 派对池**。
+ */
 export const ALL_SKILLS: readonly SkillDef[] = ALL_CLASSES.flatMap((c) => c.skills);
 export const SKILL_BY_ID: ReadonlyMap<string, SkillDef> = buildIndex(
-  ALL_SKILLS.map((s) => [s.id as string, s] as [string, SkillDef]),
+  [...ALL_SKILLS, ...PARTY_SKILLS].map((s) => [s.id as string, s] as [string, SkillDef]),
 );
 
 export const ALL_WEAPONS: readonly WeaponDef[] = ALL_CLASSES.flatMap((c) => c.weapons);
 export const WEAPON_BY_ID: ReadonlyMap<string, WeaponDef> = buildIndex(
-  ALL_WEAPONS.map((w) => [w.id as string, w] as [string, WeaponDef]),
+  [...ALL_WEAPONS, ...PARTY_WEAPONS].map((w) => [w.id as string, w] as [string, WeaponDef]),
 );
 
 export const ALL_ARMORS: readonly ArmorDef[] = ALL_CLASSES.flatMap((c) => c.armors);
@@ -192,6 +216,88 @@ export const validateData = (): DataIssue[] => {
       if (!a.isDefault && a.cost.trim().length === 0)
         issues.push({ where: aw, problem: '非默认护甲必须有明确代价（17.1 / 验收 #32）' });
     }
+
+    // 武器的视觉缩放：只影响外观，但写错了没有任何别的地方会发现（见 schema）
+    for (const w of cls.weapons) {
+      if (w.renderScale !== undefined && (w.renderScale < 0.5 || w.renderScale > 4)) {
+        issues.push({
+          where: `weapon:${w.id}`,
+          problem: `renderScale ${w.renderScale} 超出 [0.5, 4]`,
+        });
+      }
+    }
+  }
+
+  issues.push(...validatePartyItems(seenIds));
+  return issues;
+};
+
+/**
+ * 大乱斗派对道具的体检（`data/party.ts`）。
+ *
+ * ★★ 它们**不在** `ALL_CLASSES` 里，所以上面那个大循环一条都覆盖不到 ——
+ *   派对道具是「另一个池子」，需要另一组判据：
+ *     · 前缀就是规则（`isPartyItemId` 决定人人可捡），写错前缀 = 悄悄变成
+ *       一件谁都捡不起来的武器
+ *     · 不许混进职业池（混进去会破坏「每职业恰好三套武器方案」）
+ *     · grants 指向的必须是**派对技能**（职业技能被派对武器授予会让
+ *       `skillsAvailableWith` 给出一个跨职业的技能栏）
+ */
+const validatePartyItems = (seenSkillIds: ReadonlySet<string>): DataIssue[] => {
+  const issues: DataIssue[] = [];
+  const partySkillIds = new Set(PARTY_SKILLS.map((s) => s.id as string));
+  const classWeaponIds = new Set(ALL_WEAPONS.map((w) => w.id as string));
+
+  for (const s of PARTY_SKILLS) {
+    const where = `partySkill:${s.id}`;
+    if (!isPartyItemId(s.id as string))
+      issues.push({ where, problem: 'id 应以 "ffa." 开头（前缀即规则，见 party.ts）' });
+    if (seenSkillIds.has(s.id as string))
+      issues.push({ where, problem: 'id 与某个职业技能重复' });
+    // 附录A#3：反制方式必须写清楚 —— 派对道具越夸张越要写明怎么破
+    if (s.counters.trim().length < 10)
+      issues.push({ where, problem: 'counters 过短，附录A#3 要求写明反制方式' });
+    if (s.description.trim().length === 0)
+      issues.push({ where, problem: 'description 为空' });
+    if (s.cast.kind === 'instant' && s.cast.interruptible)
+      issues.push({ where, problem: '瞬发技能不能标记为可打断（7.1）' });
+    if ((s.cast.kind === 'cast' || s.cast.kind === 'aimedShot') && s.cast.time <= 0)
+      issues.push({ where, problem: '读条/瞄准射击的 time 必须大于 0' });
+    if (s.range.max > 45)
+      issues.push({ where, problem: `range.max ${s.range.max} 超过最大选中距离 45 米（6.1）` });
+  }
+
+  for (const w of PARTY_WEAPONS) {
+    const where = `partyWeapon:${w.id}`;
+    if (!isPartyItemId(w.id as string))
+      issues.push({ where, problem: 'id 应以 "ffa." 开头（前缀即规则，见 party.ts）' });
+    if (classWeaponIds.has(w.id as string))
+      issues.push({ where, problem: '同一个 id 也出现在职业武器池里' });
+    // 10.6：默认武器不可删除、永不掉落 —— 派对武装恰恰只靠掉落获得
+    if (w.isDefault) issues.push({ where, problem: '派对武装不能是任何职业的默认武器' });
+    if (w.advantage.trim().length === 0) issues.push({ where, problem: 'advantage 为空（附录A#4）' });
+    if (w.cost.trim().length === 0) issues.push({ where, problem: 'cost 为空（附录A#4）' });
+    if (w.swingInterval <= 0) issues.push({ where, problem: 'swingInterval 必须大于 0' });
+    if (w.reach <= 0) issues.push({ where, problem: 'reach 必须大于 0' });
+    if (w.renderScale !== undefined && (w.renderScale < 0.5 || w.renderScale > 4))
+      issues.push({ where, problem: `renderScale ${w.renderScale} 超出 [0.5, 4]` });
+    for (const id of [...(w.grantsSkills ?? []), ...(w.removesSkills ?? [])]) {
+      if (!partySkillIds.has(id as string))
+        issues.push({ where, problem: `引用了不存在的派对技能 ${id}` });
+    }
+  }
+
+  for (const c of PARTY_CONSUMABLES) {
+    const where = `partyConsumable:${c.id}`;
+    if (!isPartyItemId(c.id as string))
+      issues.push({ where, problem: 'id 应以 "ffa." 开头（前缀即规则，见 party.ts）' });
+    // 10.2：消耗品**没有**职业归属（10.1 的临时增益人人可用）
+    if (c.classId !== undefined)
+      issues.push({ where, problem: '派对消耗品不该有 classId（人人可用）' });
+    if (c.effects.length === 0) issues.push({ where, problem: '没有任何效果' });
+    // 16.2「增益期间击杀」按 buffSeconds 计窗口，为 0 时那条统计恒为 0
+    if (c.buffSeconds <= 0) issues.push({ where, problem: 'buffSeconds 必须为正（16.2 的记账窗口）' });
+    if (c.description.trim().length === 0) issues.push({ where, problem: 'description 为空' });
   }
 
   return issues;

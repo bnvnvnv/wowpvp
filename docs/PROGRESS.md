@@ -3951,6 +3951,38 @@ min=0 的近战技能反而 OutOfRange**。
 M15 红线（不动 sim 一行）之内不修，**动手前记得补「重叠时可施放」的单测**
 （6.2 的边缘语义此前没有负值用例）。优先级：低（需要主动钻进模型里才触发）。
 
+### 9. ★★ 五个 `AuraModifiers` 字段「只聚合、没有消费方」（大乱斗派对道具批发现）
+
+`sim/modifiers.ts` 的 `aggregate()` 把它们乘进了 `Modifiers`，然后**没有任何
+下游读它们**：
+
+| 字段 | 现有数据里的使用者 | 玩家看到的承诺 | 实际发生 |
+|---|---|---|---|
+| `maxHealth` | 德鲁伊熊形态 `1.2` | 「生命上限 +20%」 | 什么都没有 |
+| `knockbackTaken` | 机动护甲 `1.25`、抗控护甲 `0.6` | 「击退抵抗降低/提高」 | 什么都没有 |
+| `castSpeed` | 法师/牧师/圣骑士 6 处 | 「读条 -15%」 | 什么都没有 |
+| `attackSpeed` | 守护型护甲 `1.08` | 「攻速降低」 | 什么都没有 |
+| `absorbDone` | 无 | — | — |
+
+复现：`grep -rn 'castSpeed' packages/shared/src/sim` —— 除了 `modifiers.ts`
+自己，`casting.ts` 与 `autoAttack.ts` 里一次都没有出现。
+
+**这类缺陷正是本仓库最怕的那种**：不报错、不变红，只有 `advantage` /
+`description` 里那句话变成了谎话。护甲的横向取舍（10.8 / 验收 #32）因此有
+一部分是**只写在文案里的**。
+
+**本批的处理**：**绕开**，不修。修它等于一次性改动八个职业与五套护甲的
+实际数值（熊形态凭空多 20% 血、守护护甲真的开始变慢），属于配平工作。
+`data/party.ts` 因此只用有真实读者的字段，并由
+`sim/party.test.ts` 的「不使用死修正字段」断言钉住这条纪律。
+
+**改法向**：`attackSpeed` 接 `autoAttack.ts` 的挥击间隔、`castSpeed` 接
+`casting.ts` 的 `endsAt`、`knockbackTaken` 接 `effects/displacement.ts` 的
+knockback 距离、`maxHealth` 需要一个「聚合后写回 `entity.maxHealth` 并按比例
+保持当前百分比」的 tick 步骤（这一条最麻烦：写回时机错了会让变身瞬间掉血）。
+四条各自独立，可以分开做。做完必须重出 `pnpm balance` 基线。
+优先级：中（不影响正确性，影响「说到做到」）。
+
 ---
 
 ## 环境备注

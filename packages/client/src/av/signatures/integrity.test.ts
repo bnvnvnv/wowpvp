@@ -22,13 +22,24 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { ALL_SKILLS, type SkillDef } from '@wowpvp/shared';
+import { ALL_SKILLS, PARTY_SKILLS, type SkillDef } from '@wowpvp/shared';
 
 import { CAST_SOUND, IMPACT_SOUND } from '../../audio/AudioManager.js';
 import { registeredSignatureEntries, resolveSignature } from '../skillSignature.js';
 import { COMMON_SIGNATURE_IDS } from './common.js';
 // ★ 副作用导入：这一行就是「把手写表灌进注册表」。没有它整个文件在验空气
 import './index.js';
+
+/**
+ * ★ 会**发出声音**的全部技能。
+ *
+ *   `ALL_SKILLS` 只有八个职业的（大乱斗派对武装授予的 `ffa.*` 刻意不在里面，
+ *   见 shared/data/index.ts 的注释）—— 但它们同样会被玩家按出来、同样会
+ *   走 `resolveSignature`，所以本文件的四条断言必须一起管着它们。
+ *   不管的表现：派对技能可以引用一个不存在的 mp3 而测试全绿，
+ *   而那正是本文件开头列的第①种死法。
+ */
+const AUDIBLE_SKILLS: readonly SkillDef[] = [...ALL_SKILLS, ...PARTY_SKILLS];
 
 /** packages/client/src/av/signatures → 仓库根，五级 */
 const SFX_ROOT = resolve(
@@ -74,7 +85,7 @@ describe('★★ P3 签名注册表的完整性', () => {
   describe('② 每个键都指向一个真实存在的东西', () => {
     it('★★ 键要么是真技能 id，要么是 common 里的约定键', () => {
       const known = new Set<string>([
-        ...ALL_SKILLS.map((s) => s.id as string),
+        ...AUDIBLE_SKILLS.map((s) => s.id as string),
         ...COMMON_SIGNATURE_IDS,
       ]);
       const orphans = registeredSignatureEntries()
@@ -88,7 +99,7 @@ describe('★★ P3 签名注册表的完整性', () => {
     });
 
     it('★ common 的约定键刻意不是任何职业技能（避免与八张表静默互相覆盖）', () => {
-      const skillIds = new Set(ALL_SKILLS.map((s) => s.id as string));
+      const skillIds = new Set(AUDIBLE_SKILLS.map((s) => s.id as string));
       expect(COMMON_SIGNATURE_IDS.filter((id) => skillIds.has(id))).toEqual([]);
     });
   });
@@ -139,13 +150,13 @@ const pairKey = (a: string, b: string): string => [a, b].sort().join(' ↔ ');
  */
 describe('★★ ④ 全局唯一性：任意两个技能都不许完全同声同色', () => {
   it('★ 判据跑在全部技能上，不依赖注册表里写了几条', () => {
-    expect(ALL_SKILLS.length).toBeGreaterThanOrEqual(117);
+    expect(AUDIBLE_SKILLS.length).toBeGreaterThanOrEqual(117);
   });
 
   it('★★ 零撞车、无例外（跨职业的守门员）', () => {
     const firstSeen = new Map<string, string>();
     const collisions: string[] = [];
-    for (const skill of ALL_SKILLS) {
+    for (const skill of AUDIBLE_SKILLS) {
       const tuple = effectiveTupleOf(skill);
       const prev = firstSeen.get(tuple);
       if (prev === undefined) firstSeen.set(tuple, skill.id as string);

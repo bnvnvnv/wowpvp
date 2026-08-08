@@ -231,6 +231,8 @@ export const ALL_EFFECT_KINDS: readonly EffectDef['kind'][] = [
   'enterStealth',
   'interveneGuard',
   'onNthHit',
+  // 大乱斗变身药水（sim/effects/party.ts）
+  'borrowClassKit',
   'custom',
 ];
 

@@ -26,6 +26,8 @@ import { signatures as hunterSignatures } from './hunter.js';
 import { signatures as mageSignatures } from './mage.js';
 import { signatures as priestSignatures } from './priest.js';
 import { signatures as druidSignatures } from './druid.js';
+// 大乱斗派对武装授予的技能（shared/data/party.ts）—— 不属于任何职业
+import { signatures as partySignatures } from './party.js';
 
 registerSignatures(commonSignatures);
 registerSignatures(warriorSignatures);
@@ -36,3 +38,4 @@ registerSignatures(hunterSignatures);
 registerSignatures(mageSignatures);
 registerSignatures(priestSignatures);
 registerSignatures(druidSignatures);
+registerSignatures(partySignatures);

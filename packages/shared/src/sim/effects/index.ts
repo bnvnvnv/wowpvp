@@ -19,6 +19,7 @@ import type { EntityId } from '../../types/ids.js';
 
 import './combat.js';
 import './displacement.js';
+import './party.js';
 
 import {
   assertAllEffectsRegistered,
@@ -32,6 +33,7 @@ export {
   dealDamage, dealHeal, applyControl, magnitudeOf, useTrinket, rollCrit,
   setDampening, getDampening, type DampeningState,
 } from './combat.js';
+export { parseBorrowedClass } from './party.js';
 
 // 启动即校验，而不是运行到那个技能才发现漏注册
 assertAllEffectsRegistered();

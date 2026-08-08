@@ -20,7 +20,7 @@ import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { clone as cloneWithSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { GEOMETRY } from '@wowpvp/shared';
+import { GEOMETRY, getWeapon, type WeaponDef } from '@wowpvp/shared';
 
 /** 八职业 → 玩家模型文件。上游恰好有八个外形互异的卡通人形模型（基调见规格书 13.2）*/
 const CLASS_MODEL: Readonly<Record<string, string>> = {
@@ -42,7 +42,12 @@ export interface WeaponAttachment {
   right?: string;
   left?: string;
 }
-const WEAPON_MODEL: Readonly<Record<string, WeaponAttachment>> = {
+/**
+ * ★ 导出是给 `partyAssets.test.ts` 用的：与 `skillIconMap` 同一条纪律 ——
+ *   「加一件武器不配模型」应该是**红灯**，而不是运行时悄悄回落。
+ *   （回落仍然存在，见 `proceduralWeapon`，那是给「素材目录整个不存在」留的。）
+ */
+export const WEAPON_MODEL: Readonly<Record<string, WeaponAttachment>> = {
   'warrior.sword_shield': { right: 'adv_sword_1handed', left: 'shield_round' },
   'warrior.greatsword': { right: 'adv_sword_2handed' },
   'warrior.dual_swords': { right: 'adv_sword_1handed', left: 'adv_sword_1handed' },
@@ -67,6 +72,66 @@ const WEAPON_MODEL: Readonly<Record<string, WeaponAttachment>> = {
   'druid.nature_staff': { right: 'adv_druid_staff' },
   'druid.polearm': { right: 'halberd' },
   'druid.mace_totem': { right: 'tempered_flanged_mace' },
+
+  /**
+   * 大乱斗的派对武装（`shared/data/party.ts`）。上游素材里恰好有几件
+   * 名字与它们一一对上的（`starfall_judgment_of_the_heavens` 之于星火倾泻）。
+   * ★ 「和玩家一样大」由 `WeaponDef.renderScale` 表达，不在这里写死尺寸 ——
+   *   放大倍数是**数据**（规则层要拿它做范围校验），不是资产路径。
+   */
+  'ffa.colossus_hammer': { right: 'iron_field_hammer' },
+  'ffa.colossus_staff': { right: 'starfall_judgment_of_the_heavens' },
+  'ffa.drumstick_bow': { left: 'fletcher_s_guild_bow' },
+  'ffa.boomerang_axe': { right: 'purple_axe' },
+};
+
+// ── 程序化兜底 ───────────────────────────────────────────────────
+
+/**
+ * 没有模型时的程序化替身。
+ *
+ * ★★ 在此之前 `weaponFor()` 对**没有映射**的武器 id 直接返回 `{}` ——
+ *   表现是手上空空如也，且没有任何提示。这在 24 件职业武器全都配好映射时
+ *   看不出来，但派对武装（或任何将来新加的武器）一旦漏配，就会静默地
+ *   变成「赤手空拳」。与 CharacterView 的胶囊体同一条纪律：
+ *   **素材可选，但形态不能缺席**。
+ *
+ * ★ 形态只由 `handedness` / `isRanged` 决定 —— 兜底的职责是「让人看出
+ *   他手里有个什么东西、有多大」，不是还原造型。颜色统一取一个中性金属色，
+ *   避免和 14.2 的属性视觉语言（学派色）抢通道。
+ */
+const PROCEDURAL_MATERIAL = new THREE.MeshLambertMaterial({ color: 0x9aa3ad });
+
+const proceduralWeapon = (def: WeaponDef | undefined): THREE.Group => {
+  const g = new THREE.Group();
+  const add = (geo: THREE.BufferGeometry, y: number): void => {
+    const m = new THREE.Mesh(geo, PROCEDURAL_MATERIAL);
+    m.position.y = y;
+    m.castShadow = true;
+    g.add(m);
+  };
+
+  switch (def?.handedness) {
+    case 'ranged':
+      // 弓：一段细长的弧（用扁圆环近似），竖着握在手里
+      add(new THREE.TorusGeometry(0.45, 0.035, 6, 12, Math.PI * 1.2), 0.45);
+      break;
+    case 'staff':
+      add(new THREE.CylinderGeometry(0.045, 0.045, 1.9, 8), 0.95);
+      add(new THREE.IcosahedronGeometry(0.16, 0), 1.95);
+      break;
+    case 'twoHand':
+      // 柄 + 一颗大锤头：双手武器的辨识点就是「顶上那一坨」
+      add(new THREE.CylinderGeometry(0.05, 0.05, 1.3, 8), 0.65);
+      add(new THREE.BoxGeometry(0.42, 0.34, 0.34), 1.4);
+      break;
+    default:
+      // 单手 / 双持：短柄 + 一片刃
+      add(new THREE.CylinderGeometry(0.04, 0.04, 0.28, 6), 0.14);
+      add(new THREE.BoxGeometry(0.08, 0.8, 0.03), 0.68);
+      break;
+  }
+  return g;
 };
 
 export interface CharacterModel {
@@ -194,10 +259,20 @@ export class ModelLibrary {
     return g;
   }
 
-  /** 武器挂载模型；无映射或加载失败返回空对象（不挂就是了，不报错） */
+  /**
+   * 武器挂载模型。
+   *
+   * ★★ **永远返回一件东西**：无映射或 GLB 加载失败时回落到程序化替身
+   *   （见 `proceduralWeapon`），而不是像以前那样静默地什么都不挂。
+   * ★★ `WeaponDef.renderScale` 在这里生效 —— 这是**全仓库唯一**读它的地方。
+   *   它只放大**视觉**：碰撞体是 `GEOMETRY` 常量、触及距离是 `reach`，
+   *   两者都在 shared 里，本文件碰不到（验收 #10）。
+   */
   async weaponFor(weaponId: string): Promise<{ right?: THREE.Group; left?: THREE.Group }> {
+    const def = getWeapon(weaponId as never);
+    const scale = def?.renderScale ?? 1;
     const att = WEAPON_MODEL[weaponId];
-    if (!att) return {};
+
     const load = async (file: string | undefined): Promise<THREE.Group | undefined> => {
       if (!file) return undefined;
       const tpl = await this.template(`/art/models/weapons/${file}.glb`);
@@ -208,8 +283,28 @@ export class ModelLibrary {
       });
       return g;
     };
-    const [right, left] = await Promise.all([load(att.right), load(att.left)]);
-    return { ...(right ? { right } : {}), ...(left ? { left } : {}) };
+
+    const [right, left] = att
+      ? await Promise.all([load(att.right), load(att.left)])
+      : [undefined, undefined];
+
+    /**
+     * ★ 兜底只补**主手**：双持/弓盾的副手缺一件不影响「他手里拿着什么」，
+     *   而给每只手都塞一个灰色积木反而更像是坏了。
+     */
+    const primary = right ?? left ?? proceduralWeapon(def);
+    // 弓按持握习惯挂左手（上游约定）—— 兜底件也照这条走
+    const preferLeft = right === undefined && (left !== undefined || def?.isRanged === true);
+
+    const out: { right?: THREE.Group; left?: THREE.Group } = {};
+    if (preferLeft) out.left = primary;
+    else out.right = primary;
+    if (right && left) out.left = left;
+
+    for (const g of [out.right, out.left]) {
+      if (g && scale !== 1) g.scale.multiplyScalar(scale);
+    }
+    return out;
   }
 
   private template(url: string): Promise<Template | null> {

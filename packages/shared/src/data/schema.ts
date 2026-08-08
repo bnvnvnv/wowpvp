@@ -341,6 +341,26 @@ export type EffectDef =
   | { kind: 'interveneGuard'; duration: number }
   /** 累计 N 次命中后触发（凛冬领域）*/
   | { kind: 'onNthHit'; count: number; effects: EffectDef[] }
+  /**
+   * 大乱斗「变身药水」：把自己的**技能栏整个换成另一个职业的**。
+   *
+   * ★★ 这是「更换职业的道具」在本引擎里**能做到的最强版本**，也是一次
+   *   如实的降级 —— 真正改 `entity.classId` 会牵动出生装备（`Loadout` 的
+   *   `defaultWeaponId` 是 readonly，死亡与回合复位都按它回装）、统计注册、
+   *   客户端模型与技能栏缓存，属于「换一整套身份」而不是「捡到一个道具」。
+   *   这里换的是**你能放什么技能**（附录A#4 的 `availableSkills` 通道，
+   *   武器方案本来就在用它），外加借来那个职业的资源池 —— 否则战士借到
+   *   法师的技能会因为没有法力而一个都放不出来。
+   *
+   * ★ `classIds` 不填 = 从全部职业里随机（含自己的，运气不好就白喝一瓶，
+   *   这在派对游戏里是特性不是缺陷）。随机流走**实体自己的** `nextRandom`，
+   *   与暴击/闪避同一条纪律：一次新的掷骰不扰动别人的序列。
+   * ★ **持续到死亡或回合结束**，不按秒过期 —— 光环系统没有「到期回调」，
+   *   靠 `duration` 复原会变成一条没人执行的承诺；而 `onDeath()` /
+   *   `resetLoadouts()` 本来就要把装备打回原形，顺手清掉借来的身份是
+   *   同一处收口。大乱斗死得频繁，这个窗口天然不长。
+   */
+  | { kind: 'borrowClassKit'; classIds?: ClassId[] }
   /** 触发已注册的自定义处理器，用于确实无法数据化的一次性机制 */
   | { kind: 'custom'; handler: string; params?: Record<string, unknown> };
 
@@ -493,6 +513,23 @@ export interface WeaponDef {
   autoAttack?: { ranged: boolean; school: School };
   /** 模型挂点键，供客户端装配（13.6）*/
   model?: string;
+  /**
+   * 手持模型的**视觉**缩放。1 = 上游模型原尺寸，不填等同 1。
+   *
+   * ★★ **只影响外观，不影响任何判定**（验收 #10：模型大小不改变碰撞体）。
+   *   触及距离仍然只由 `reach` 决定 —— 一把 renderScale 3 的锤子看起来能扫到
+   *   半个屏幕，实际打不打得到还是看 `reach`。这条分层是结构性的：
+   *   sim 从不读这个字段，客户端 `ModelLibrary.weaponFor()` 是它唯一的读者。
+   *
+   * ★ 存在的理由是大乱斗的派对武装（`data/party.ts`）——「和玩家一样大的
+   *   超级大锤」这件事**只能**在表现层表达，而武器的其他表现坐标
+   *   （模型文件名 `model`）本来就在 WeaponDef 上，再开一张
+   *   「武器 id → 缩放」的客户端表反而会与它分家、漂移。
+   *
+   * ⚠️ `validateData()` 校验范围 [0.5, 4]：小于 0.5 看不见，大于 4 会把
+   *   队友的屏幕塞满，两头都是「数据写错了」而不是「设计如此」。
+   */
+  renderScale?: number;
 }
 
 /** 武器对单个技能的数值改写。全部为乘算，1 = 不变 */

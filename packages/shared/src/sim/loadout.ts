@@ -13,7 +13,7 @@
  */
 
 import { EQUIP } from '../constants/combat.js';
-import { getArmor, getClass, getWeapon } from '../data/index.js';
+import { getArmor, getClass, getWeapon, isPartyItemId } from '../data/index.js';
 import type { ArmorDef, WeaponDef } from '../data/schema.js';
 import type { ArmorId, ClassId, ConsumableId, EntityId, WeaponId } from '../types/ids.js';
 import { skillsAvailableWith, type CombatEntity } from './entity.js';
@@ -80,7 +80,18 @@ export const canPickupWeapon = (
   const w = getWeapon(weaponId);
   if (!w) return { ok: false, reason: 'unknownItem', hint: '未知物品' };
 
-  if ((w.classId as string) !== (entity.classId as string)) {
+  /**
+   * ★★ 大乱斗的派对武装（`data/party.ts`，id 以 `ffa.` 开头）**人人可捡**。
+   *
+   *   10.2 的职业归属规则管的是「职业池里的那件装备」—— 它存在的理由是
+   *   「不刷出无人可用的东西」（10.4）。派对武装不属于任何职业池，
+   *   它的伪职业 id `ffa` 谁都不匹配，照原样走职业判据的结果是
+   *   **场上八个人没有一个捡得起来** —— 掉落调度照刷、地上堆满、谁都拿不走。
+   *
+   * ★ 判据借 `isPartyItemId()`，不在这里重写一遍前缀匹配（见 party.ts 头注）。
+   * ★ 放开的**只有职业匹配这一条**：槽位上限、已拥有、宠物照旧全部生效。
+   */
+  if (!isPartyItemId(w.id as string) && (w.classId as string) !== (entity.classId as string)) {
     const owner = getClass(w.classId);
     return {
       ok: false,
@@ -294,8 +305,18 @@ export const completeSwap = (entity: CombatEntity, state: SwapState): void => {
  * 方案专属技能还亮着」。
  */
 const refreshAvailableSkills = (entity: CombatEntity): void => {
-  const cls = getClass(entity.classId);
-  if (cls) entity.availableSkills = skillsAvailableWith(cls, entity.weaponId);
+  /**
+   * ★ 「借来的身份」优先（大乱斗变身药水）。不查它的话，**换一次武器**
+   *   就会把借来的技能栏悄悄换回自己的 —— 换装是 0.8 秒的常见动作，
+   *   药水的效果会莫名其妙地消失。
+   */
+  const cls = getClass(entity.borrowedClassId ?? entity.classId);
+  if (!cls) return;
+  /**
+   * ★ 把**当前武器的定义**一起交给纯函数：派对武装不在 `cls.weapons` 里，
+   *   不传的话它的 `grantsSkills` 会静默失效（见 `skillsAvailableWith` 注释）。
+   */
+  entity.availableSkills = skillsAvailableWith(cls, entity.weaponId, getWeapon(entity.weaponId));
 };
 
 export interface SwapTickEvent {
@@ -443,6 +464,8 @@ export const onDeath = (entity: CombatEntity, loadout: Loadout, swaps: SwapStore
   loadout.consumables = [];
   entity.weaponId = loadout.defaultWeaponId;
   entity.armorId = loadout.defaultArmorId;
+  // ★ 大乱斗变身药水借来的身份也在这里还回去 —— 与「临时装备随玩家失效」同源
+  delete entity.borrowedClassId;
   refreshAvailableSkills(entity);
   swaps.delete(entity.id);
 };
@@ -464,6 +487,7 @@ export const resetLoadouts = (
     l.consumables = [];
     e.weaponId = l.defaultWeaponId;
     e.armorId = l.defaultArmorId;
+    delete e.borrowedClassId;
     refreshAvailableSkills(e);
   }
   swaps.clear();

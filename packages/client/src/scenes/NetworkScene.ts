@@ -124,6 +124,14 @@ const NET_HINT_TEXT =
 /** 8.2「迷惑」链的光环 id（`control.${kind}`，见 shared/sim/effects/combat.ts）*/
 const MORPH_AURA_ID = 'control.incapacitate';
 
+/**
+ * 大乱斗「巨人化药水」的光环 id（shared/data/party.ts）。
+ * ★ 1.6 倍是**视觉**倍数 —— 碰撞体不变（验收 #10，见 `CharacterView.setBodyScale`）。
+ *   占位值：再大就会挡住队友的屏幕，再小就看不出「我变成巨人了」。
+ */
+const GIANT_AURA_ID = 'ffa.giant_growth';
+const GIANT_BODY_SCALE = 1.6;
+
 export interface NetworkSceneOptions {
   url: string;
   roomId: string;
@@ -2071,6 +2079,9 @@ export class NetworkScene {
       this.syncWeapon(meSnap.id as number, this.selfView, meSnap.equipment.currentWeaponId as string | undefined);
       // 8.2「迷惑」= 被变形（快照 auras 是权威，重连也不丢）
       this.selfView.setMorphed(meSnap.auras.some((a) => a.auraId === MORPH_AURA_ID));
+      this.selfView.setBodyScale(
+        meSnap.auras.some((a) => a.auraId === GIANT_AURA_ID) ? GIANT_BODY_SCALE : 1,
+      );
       this.updateMarkersFor(meSnap, this.selfView);
     }
     this.selfView.update(dt);
@@ -2137,6 +2148,9 @@ export class NetworkScene {
       this.syncWeapon(id, view, e.snapshot.equipment.currentWeaponId as string | undefined);
       // 8.2「迷惑」= 被变形；14.3 控制标记 —— 都从快照读，与试验场同一套表现
       view.setMorphed(e.snapshot.auras.some((a) => a.auraId === MORPH_AURA_ID));
+      view.setBodyScale(
+        e.snapshot.auras.some((a) => a.auraId === GIANT_AURA_ID) ? GIANT_BODY_SCALE : 1,
+      );
       this.updateMarkersFor(e.snapshot, view);
       view.update(dt);
     }
@@ -2242,6 +2256,41 @@ export class NetworkScene {
     if (this.shownWeapons.get(id) === weaponId) return;
     this.shownWeapons.set(id, weaponId);
     view.setWeapon(weaponId);
+    // ★ 自己换武器时，技能栏要跟着变（派对武装授予的技能只在手持时存在）
+    if (id === this.selfId) this.refreshSkillBarForWeapon(weaponId);
+  }
+
+  /**
+   * 附录A#4：手持武器**授予**的技能要出现在技能栏上。
+   *
+   * ★★ 职业武器的 grants（顺劈、盾撞、连击风暴…）本来就在 `cls.skills` 里，
+   *   所以 `skillBarDefsFor()` 的自定义池能选到它们；而大乱斗的派对武装
+   *   授予的是 `ffa.*` —— 它们**不属于任何职业**，`cls.skills.find()` 永远
+   *   找不到，于是「捡到山崩巨锤但技能栏上没有山崩一击」，而且**没有任何报错**。
+   *
+   * ★ 做法是**占用最后几格**而不是加长技能栏：`SKILL_BAR_SLOTS` 是 9，
+   *   对应数字键 1–9，加长的话第 10 格按不出来（P10 那条「HUD 画着它、
+   *   永远按不出来」的教训就在几十行之上）。
+   * ★ 换回普通武器时原样还原 —— 数据来自 `skillBarDefsFor()`，
+   *   它每次都从 localStorage 重算，不存在「被覆盖回不去」。
+   */
+  private refreshSkillBarForWeapon(weaponId: string | undefined): void {
+    if (this.myClassId === undefined) return;
+    const base = this.skillBarDefsFor(this.myClassId);
+    const granted = (weaponId === undefined ? undefined : getWeapon(weaponId as never))
+      ?.grantsSkills
+      ?.map((id) => getSkill(id))
+      .filter((s): s is SkillDef => s !== undefined)
+      // 职业自己的 grants 已经在 base 里了，只补 base 没有的（即跨池的派对技能）
+      .filter((s) => !base.some((b) => b.id === s.id)) ?? [];
+    if (granted.length === 0) {
+      this.view.setSkillBar(base);
+      return;
+    }
+    this.view.setSkillBar([
+      ...base.slice(0, Math.max(0, SKILL_BAR_SLOTS - granted.length)),
+      ...granted.slice(0, SKILL_BAR_SLOTS),
+    ]);
   }
 
   // ── 杂项 ──────────────────────────────────────────────────────
