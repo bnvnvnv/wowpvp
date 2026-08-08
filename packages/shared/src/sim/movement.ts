@@ -11,7 +11,7 @@
  */
 
 import { GEOMETRY, MOVE } from '../constants/combat.js';
-import type { Aabb } from '../math/geometry.js';
+import { obstaclesInRect, type Aabb } from '../math/geometry.js';
 import { clamp, vec3, yawToDir, type Vec3 } from '../math/vec3.js';
 
 // ── 调参 ─────────────────────────────────────────────────────────
@@ -115,13 +115,25 @@ export const cylinderOverlapsAabb = (
   return dx * dx + dz * dz < radius * radius;
 };
 
+/**
+ * 点查询的候选集 scratch（见 `obstaclesInRect` 的 ★）。三个查询各一份 ——
+ * `tryStepUp` 里 `collides` 与 `findGroundY` 会连用，共享一份会互相覆盖。
+ */
+const COLLIDE_SCRATCH: Aabb[] = [];
+const GROUND_SCRATCH: Aabb[] = [];
+const WATER_SCRATCH: Aabb[] = [];
+
 const collides = (
   p: Vec3,
   radius: number,
   height: number,
   obstacles: readonly Aabb[],
 ): boolean => {
-  for (const b of obstacles) {
+  // 候选集 = 圆柱 XZ 包围矩形触到的格子（超集，谓词是布尔 OR —— 幂等）
+  const candidates = obstaclesInRect(
+    obstacles, p.x - radius, p.z - radius, p.x + radius, p.z + radius, COLLIDE_SCRATCH,
+  );
+  for (const b of candidates) {
     if (!blocksMove(b)) continue;
     if (cylinderOverlapsAabb(p, radius, height, b)) return true;
   }
@@ -143,7 +155,11 @@ export const findGroundY = (
 ): number | undefined => {
   let best: number | undefined;
   const lo = p.y - maxDrop;
-  for (const b of obstacles) {
+  // 谓词取 max（严格大于，等值保留先到者但数值相同）—— 与访问顺序无关
+  const candidates = obstaclesInRect(
+    obstacles, p.x - radius, p.z - radius, p.x + radius, p.z + radius, GROUND_SCRATCH,
+  );
+  for (const b of candidates) {
     if (!blocksMove(b)) continue;
     if (b.standable === false) continue;
     // 顶面必须落在 [lo, p.y + SKIN] 区间内
@@ -415,7 +431,7 @@ export const stepMovement = (
 
 /** 13.5：深水可终止坠落伤害。靠 Aabb.endsFallDamage 而不是渲染标签判断 */
 export const isInWater = (p: Vec3, obstacles: readonly Aabb[]): boolean =>
-  obstacles.some(
+  obstaclesInRect(obstacles, p.x, p.z, p.x, p.z, WATER_SCRATCH).some(
     (b) =>
       b.endsFallDamage === true &&
       p.x >= b.min.x && p.x <= b.max.x &&

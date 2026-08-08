@@ -464,6 +464,12 @@ export const tickWorld = (
    *   新实体，那几步的 listEntities 必须现取。
    */
   const movementEntities = listEntities(deps.world);
+  /**
+   * ★ P11：软推开的 `others` 数组同样是每实体一个的短命分配（24 人 =
+   *   24 数组/tick × 20Hz × 房间数）。提出来复用，每个实体开始时清空 ——
+   *   `separationVelocity` 当场读完返回一个 Vec3，不持有数组引用，复用安全。
+   */
+  const separationOthers: Vec3[] = [];
   for (const [id, state] of deps.movement) {
     const e = getEntity(deps.world, id);
     if (!e || !e.alive) continue;
@@ -495,15 +501,15 @@ export const tickWorld = (
      * ★ A2 之后不再要求输入条目：有 movement 条目就积分（缺输入按全零），
      *   「停发输入换免推开」的豁免窗口不存在了。
      */
-    const others: Vec3[] = [];
+    separationOthers.length = 0;
     for (const o of movementEntities) {
-      if (o.id !== id && o.alive) others.push(o.position);
+      if (o.id !== id && o.alive) separationOthers.push(o.position);
     }
     const r = stepMovement(state, input, dt, obstacles, {
       radius: e.radius,
       height: e.height,
       speedMultiplier: moveSpeedMultiplierOf(deps.auras, e, deps.world.time),
-      separation: separationVelocity(state.position, others, e.radius),
+      separation: separationVelocity(state.position, separationOthers, e.radius),
     });
     deps.movement.set(id, r.state);
     e.position = r.state.position;
@@ -579,7 +585,10 @@ export const tickWorld = (
    * ★ 只回存活者；封顶由 `gainResource` 负责；怒气 regen=0 天然不受影响
    *   （怒气来源是挥击与技能，见 6b 与 COMBAT_SWING）。
    */
-  for (const e of listEntities(deps.world)) {
+  // ★ P11：本步与第 7 步之间没有实体增删，共享一次 listEntities（分配减半）。
+  //   第 3–5 步会生成实体的警告（movementEntities 的 ⚠️）不适用于这两步之间
+  const settledEntities = listEntities(deps.world);
+  for (const e of settledEntities) {
     if (!e.alive) continue;
     for (const [r, rate] of e.resourceRegen) gainResource(e, r, rate * dt);
   }
@@ -587,7 +596,7 @@ export const tickWorld = (
   // ── 7. deriveStatusFlags ────────────────────────────────────
   // ★ 必须在全部光环变动之后，否则本 tick 新加的控制要等下一 tick 才生效。
   //   也必须在第 7 步之前 —— swaps/pickups 读 flags.stunned
-  for (const e of listEntities(deps.world)) {
+  for (const e of settledEntities) {
     e.flags = deriveStatusFlags(deps.auras, e);
   }
 

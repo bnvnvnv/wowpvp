@@ -219,6 +219,115 @@ export interface Aabb {
   endsFallDamage?: boolean;
 }
 
+// ── 障碍物空间索引（性能优化，判定语义零改动）──────────────────
+//
+// ★★ 容量探针（docs/15 P11 问答）定位的第一 CPU 热点不是 O(n²) 的实体
+//   两两分离（那只占 sim 的 6%），而是 **O(实体 × 障碍) 的线性扫描**：
+//   ctf_twin_bridges 有 128 个 AABB，12v12 一个 tick 里移动解算 + 视线
+//   判定要对它们扫上千遍 —— 76% 的 tickWorld、83% 的 bot 决策耗在这里。
+//
+// ★ 均匀网格按 XZ 分格。一个盒子插进它跨越的**每一个**格子，查询按
+//   范围取覆盖到的格子并**不去重** —— 这是刻意的：所有消费方的谓词都
+//   与访问顺序无关且对重复访问幂等（collides/isInWater 是布尔 OR、
+//   hasLineOfSight 是布尔 AND、findGroundY 取 max、segmentClipT 取 min），
+//   所以「超集 + 可能重复」与「全集恰好一遍」逐位同解。往消费方加
+//   新谓词前先确认这条性质还成立。
+//
+// ★ 小地图不建索引（竞技场只有 ~10 个盒子，线性更快也更简单）——
+//   `obstaclesInRect` 直接返回原数组，既有路径一寸不动。
+
+/** 格边长（米）。8m ≈ 两个碰撞体直径的 5 倍，144×360 的夺旗图 ~810 格 */
+const INDEX_CELL_SIZE = 8;
+/** 盒子数低于这个值不值得建索引（哈希/边界开销超过省下的比较） */
+const INDEX_MIN_OBSTACLES = 16;
+
+interface ObstacleIndex {
+  minX: number;
+  minZ: number;
+  cols: number;
+  rows: number;
+  /** cols × rows，行优先。undefined = 空格子（稀疏，省内存） */
+  cells: (Aabb[] | undefined)[];
+}
+
+/** 索引按数组**身份**缓存 —— `world.obstacles` 建世界时设一次后不再换引用 */
+const INDEX_CACHE = new WeakMap<readonly Aabb[], ObstacleIndex | null>();
+
+const buildObstacleIndex = (obstacles: readonly Aabb[]): ObstacleIndex => {
+  let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+  for (const b of obstacles) {
+    if (b.min.x < minX) minX = b.min.x;
+    if (b.min.z < minZ) minZ = b.min.z;
+    if (b.max.x > maxX) maxX = b.max.x;
+    if (b.max.z > maxZ) maxZ = b.max.z;
+  }
+  const cols = Math.max(1, Math.ceil((maxX - minX) / INDEX_CELL_SIZE));
+  const rows = Math.max(1, Math.ceil((maxZ - minZ) / INDEX_CELL_SIZE));
+  const cells: (Aabb[] | undefined)[] = new Array(cols * rows);
+  for (const b of obstacles) {
+    const c0 = clampCell(Math.floor((b.min.x - minX) / INDEX_CELL_SIZE), cols);
+    const c1 = clampCell(Math.floor((b.max.x - minX) / INDEX_CELL_SIZE), cols);
+    const r0 = clampCell(Math.floor((b.min.z - minZ) / INDEX_CELL_SIZE), rows);
+    const r1 = clampCell(Math.floor((b.max.z - minZ) / INDEX_CELL_SIZE), rows);
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) {
+        (cells[r * cols + c] ??= []).push(b);
+      }
+    }
+  }
+  return { minX, minZ, cols, rows, cells };
+};
+
+const clampCell = (i: number, n: number): number => (i < 0 ? 0 : i >= n ? n - 1 : i);
+
+const obstacleIndexFor = (obstacles: readonly Aabb[]): ObstacleIndex | undefined => {
+  if (obstacles.length < INDEX_MIN_OBSTACLES) return undefined;
+  let idx = INDEX_CACHE.get(obstacles);
+  if (idx === undefined) {
+    idx = buildObstacleIndex(obstacles);
+    INDEX_CACHE.set(obstacles, idx);
+  }
+  return idx ?? undefined;
+};
+
+/**
+ * XZ 矩形 [minX,maxX]×[minZ,maxZ] 可能触到的障碍物候选集。
+ *
+ * ★ 返回值是**超集且可能含重复**（见文件内索引一节的 ★★），消费方谓词
+ *   必须幂等。无索引时返回原数组本身。
+ * ★ `out` 由调用方持有并复用（模块级 scratch），避免热路径上每查询一次
+ *   分配一个数组。**返回值的生命周期只到该调用方的下一次查询** ——
+ *   不要跨查询持有。
+ */
+export const obstaclesInRect = (
+  obstacles: readonly Aabb[],
+  minX: number,
+  minZ: number,
+  maxX: number,
+  maxZ: number,
+  out: Aabb[],
+): readonly Aabb[] => {
+  const idx = obstacleIndexFor(obstacles);
+  if (!idx) return obstacles;
+  out.length = 0;
+  const c0 = clampCell(Math.floor((minX - idx.minX) / INDEX_CELL_SIZE), idx.cols);
+  const c1 = clampCell(Math.floor((maxX - idx.minX) / INDEX_CELL_SIZE), idx.cols);
+  const r0 = clampCell(Math.floor((minZ - idx.minZ) / INDEX_CELL_SIZE), idx.rows);
+  const r1 = clampCell(Math.floor((maxZ - idx.minZ) / INDEX_CELL_SIZE), idx.rows);
+  for (let r = r0; r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) {
+      const cell = idx.cells[r * idx.cols + c];
+      if (cell) for (const b of cell) out.push(b);
+    }
+  }
+  return out;
+};
+
+/** hasLineOfSight / isGroundPositionLegal 的 scratch（见 obstaclesInRect 的 ★） */
+const LOS_SCRATCH: Aabb[] = [];
+/** segmentClipT 的 scratch。与 LOS 分开：clampDisplacement 内部两者可能连用 */
+const CLIP_SCRATCH: Aabb[] = [];
+
 /**
  * 线段 vs AABB（slab 方法）。返回是否相交。
  */
@@ -258,7 +367,14 @@ export const hasLineOfSight = (
 ): boolean => {
   const a = chestOf(from);
   const b = chestOf(to);
-  for (const box of obstacles) {
+  // 候选集按线段的 XZ 包围盒取（超集，谓词是布尔 AND —— 幂等，见索引一节）
+  const candidates = obstaclesInRect(
+    obstacles,
+    Math.min(a.x, b.x), Math.min(a.z, b.z),
+    Math.max(a.x, b.x), Math.max(a.z, b.z),
+    LOS_SCRATCH,
+  );
+  for (const box of candidates) {
     if (box.blocksSight === false) continue;
     if (segmentIntersectsAabb(a, b, box)) return false;
   }
@@ -276,7 +392,13 @@ export const isGroundPositionLegal = (
 ): boolean => {
   const a = chestOf(caster);
   const b = vec3(groundPoint.x, groundPoint.y + 0.5, groundPoint.z);
-  for (const box of obstacles) {
+  const candidates = obstaclesInRect(
+    obstacles,
+    Math.min(a.x, b.x), Math.min(a.z, b.z),
+    Math.max(a.x, b.x), Math.max(a.z, b.z),
+    LOS_SCRATCH,
+  );
+  for (const box of candidates) {
     if (box.blocksSight === false) continue;
     if (segmentIntersectsAabb(a, b, box)) return false;
   }
@@ -331,7 +453,14 @@ export const firstProjectileHit = <T extends HitCircle>(
 /** 线段被墙体截断后的最近命中点参数 t，没有命中返回 1 */
 export const segmentClipT = (a: Vec3, b: Vec3, obstacles: readonly Aabb[]): number => {
   let best = 1;
-  for (const box of obstacles) {
+  // 谓词取 min（与访问顺序无关、可重复访问），候选集见索引一节
+  const candidates = obstaclesInRect(
+    obstacles,
+    Math.min(a.x, b.x), Math.min(a.z, b.z),
+    Math.max(a.x, b.x), Math.max(a.z, b.z),
+    CLIP_SCRATCH,
+  );
+  for (const box of candidates) {
     if (box.blocksMovement === false) continue;
     if (!segmentIntersectsAabb(a, b, box)) continue;
     // 二分求最早相交参数，10 次足够到厘米级

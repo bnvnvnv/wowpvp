@@ -12,6 +12,7 @@ import {
   createMovementState,
   cylinderOverlapsAabb,
   findGroundY,
+  isInWater,
   separationVelocity,
   stepMovement,
   teleportTo,
@@ -414,5 +415,70 @@ describe('确定性 —— 客户端预测回放的前提', () => {
     const snapshot = JSON.parse(JSON.stringify(s));
     stepMovement(s, fwd(), DT, [ground]);
     expect(JSON.parse(JSON.stringify(s))).toEqual(snapshot);
+  });
+});
+
+describe('障碍物空间索引 —— movement 侧逐位等价（P11 性能改造的正确性闸门）', () => {
+  /**
+   * geometry.test.ts 已对线段查询做了索引/线性对拍；这里补点查询侧：
+   *   · findGroundY —— 谓词取 max，走 GROUND_SCRATCH
+   *   · isInWater  —— 谓词布尔 OR，走 WATER_SCRATCH
+   *   · obstaclesInRect 的**超集性质**（collides 不导出，它的正确性由
+   *     「候选集是超集 + 谓词幂等」保证，超集性质在此单独站岗）
+   */
+  const mulberry32 = (seed: number) => () => {
+    seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+
+  it('findGroundY / isInWater 在 128 盒地图上与线性版一致；候选集是超集', async () => {
+    const { ctfMap } = await import('../data/maps/ctf.js');
+    const { obstaclesInRect } = await import('../math/geometry.js');
+    const obstacles = ctfMap.geometry;
+    expect(obstacles.length).toBeGreaterThanOrEqual(16);
+
+    const rand = mulberry32(20260809);
+    const R = 0.45;
+
+    const linearGround = (p: { x: number; y: number; z: number }, maxDrop: number) => {
+      let best: number | undefined;
+      const lo = p.y - maxDrop;
+      for (const b of obstacles) {
+        if (b.blocksMovement === false) continue;
+        if (b.standable === false) continue;
+        if (b.max.y > p.y + 1e-3 || b.max.y < lo) continue;
+        const cx = Math.min(Math.max(p.x, b.min.x), b.max.x);
+        const cz = Math.min(Math.max(p.z, b.min.z), b.max.z);
+        const dx = p.x - cx;
+        const dz = p.z - cz;
+        if (dx * dx + dz * dz >= R * R) continue;
+        if (best === undefined || b.max.y > best) best = b.max.y;
+      }
+      return best;
+    };
+    const linearWater = (p: { x: number; y: number; z: number }) =>
+      obstacles.some(
+        (b) => b.endsFallDamage === true &&
+          p.x >= b.min.x && p.x <= b.max.x &&
+          p.z >= b.min.z && p.z <= b.max.z &&
+          p.y <= b.max.y + 0.5,
+      );
+
+    const scratch: typeof obstacles[number][] = [];
+    for (let i = 0; i < 800; i++) {
+      const p = vec3(rand() * 200 - 100, rand() * 12, rand() * 400 - 200);
+      expect(findGroundY(p, R, obstacles, 5)).toBe(linearGround(p, 5));
+      expect(isInWater(p, obstacles)).toBe(linearWater(p));
+
+      // 超集性质：矩形线性命中的每个盒子都必须出现在候选集里
+      const w = rand() * 6, h = rand() * 6;
+      const got = new Set(obstaclesInRect(obstacles, p.x, p.z, p.x + w, p.z + h, scratch));
+      for (const b of obstacles) {
+        const overlaps = b.max.x >= p.x && b.min.x <= p.x + w && b.max.z >= p.z && b.min.z <= p.z + h;
+        if (overlaps) expect(got.has(b)).toBe(true);
+      }
+    }
   });
 });

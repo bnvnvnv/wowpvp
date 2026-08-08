@@ -21,6 +21,8 @@ import {
   isGroundPositionLegal,
   nextChainTarget,
   rangedDistance,
+  segmentClipT,
+  segmentIntersectsAabb,
   type Aabb,
   type HitCircle,
 } from './geometry.js';
@@ -187,5 +189,69 @@ describe('13.5 / 验收 #46 — 位移技能必须停在合法位置', () => {
   it('无阻挡时到达目标点', () => {
     const landing = clampDisplacement(vec3(0, 0, 0), vec3(0, 0, -20), GEOMETRY.HITBOX_RADIUS, [wall]);
     expect(landing.z).toBeCloseTo(-20);
+  });
+});
+
+describe('障碍物空间索引 —— 与线性扫描逐位等价（P11 性能改造的正确性闸门）', () => {
+  /**
+   * ★ 索引只在 obstacles.length >= 16 时启用，上面所有小夹具测的都是
+   *   线性回落路径。这一组用真实的 128 盒夺旗地图触发索引路径，
+   *   并断言与「对全集线性扫描」**逐位相同**（===，不是 toBeCloseTo）——
+   *   索引给的是超集候选 + 幂等谓词，结果必须一个比特都不差。
+   * ★ 线性参照在测试里用导出的基元（segmentIntersectsAabb）重实现，
+   *   与生产实现共享谓词、不共享候选集 —— 正是要对比的那条轴。
+   */
+  const mulberry32 = (seed: number) => () => {
+    seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+
+  it('hasLineOfSight / isGroundPositionLegal / segmentClipT 在 128 盒地图上与线性版一致', async () => {
+    const { ctfMap } = await import('../data/maps/ctf.js');
+    const obstacles = ctfMap.geometry;
+    expect(obstacles.length).toBeGreaterThanOrEqual(16); // 索引真的启用了
+
+    const rand = mulberry32(20260808);
+    const pt = () => vec3(rand() * 200 - 100, rand() * 12, rand() * 400 - 200);
+
+    const linearLos = (a: HitCircle, b: HitCircle): boolean => {
+      const ca = vec3(a.position.x, a.position.y + GEOMETRY.CHEST_HEIGHT, a.position.z);
+      const cb = vec3(b.position.x, b.position.y + GEOMETRY.CHEST_HEIGHT, b.position.z);
+      for (const box of obstacles) {
+        if (box.blocksSight === false) continue;
+        if (segmentIntersectsAabb(ca, cb, box)) return false;
+      }
+      return true;
+    };
+    const linearClip = (a: ReturnType<typeof vec3>, b: ReturnType<typeof vec3>): number => {
+      let best = 1;
+      for (const box of obstacles) {
+        if (box.blocksMovement === false) continue;
+        if (!segmentIntersectsAabb(a, b, box)) continue;
+        let lo = 0, hi = 1;
+        for (let i = 0; i < 10; i++) {
+          const mid = (lo + hi) / 2;
+          const p = vec3(a.x + (b.x - a.x) * mid, a.y + (b.y - a.y) * mid, a.z + (b.z - a.z) * mid);
+          if (segmentIntersectsAabb(a, p, box)) hi = mid;
+          else lo = mid;
+        }
+        best = Math.min(best, hi);
+      }
+      return best;
+    };
+
+    for (let i = 0; i < 500; i++) {
+      const a = { position: pt() };
+      const b = { position: pt() };
+      expect(hasLineOfSight(a, b, obstacles)).toBe(linearLos(a, b));
+      expect(segmentClipT(a.position, b.position, obstacles)).toBe(linearClip(a.position, b.position));
+      const g = pt();
+      // isGroundPositionLegal 与 LOS 共享谓词，只是端点不同 —— 用 LOS 的线性参照即可
+      expect(isGroundPositionLegal(a, g, obstacles)).toBe(
+        linearLos(a, { position: vec3(g.x, g.y + 0.5 - GEOMETRY.CHEST_HEIGHT, g.z) }),
+      );
+    }
   });
 });

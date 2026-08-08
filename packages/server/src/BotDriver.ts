@@ -127,6 +127,12 @@ export class BotDriver {
     const m = this.match();
     if (!m) return;
 
+    /**
+     * ★ P11：实体列表在本函数内是不变量（tick() 只发消息，不碰 world ——
+     *   正是上面那条红线保证的），取一次给全部席位的 pickFoe 共用。
+     *   此前每个人机各取一次 = 满人机房 24 次数组展开/tick。
+     */
+    const entities = listEntities(m.world);
     for (const [playerId, seat] of this.seats) {
       const entityId = m.entityOf.get(playerId);
       if (entityId === undefined) continue;
@@ -139,7 +145,7 @@ export class BotDriver {
        *   （`SetTarget` 可能被服务器拒掉，比如目标已经隐身），自记的
        *   影子状态会和它悄悄分叉。
        */
-      const foe = pickFoe(m, self, seat.difficulty ?? 'normal', self.targets.hard);
+      const foe = pickFoe(m, self, seat.difficulty ?? 'normal', self.targets.hard, entities);
       if (!foe) continue;
 
       const action = decideBotAction({
@@ -230,11 +236,16 @@ export class BotDriver {
  *   的实现（hard 走血量优先的集火评分）。保留独立导出是因为它有自己的
  *   A4 回归测试，而且「最近敌人」是 hard 评分退化后的语义基准。
  */
-export const nearestFoe = (m: Match, self: CombatEntity): CombatEntity | undefined => {
+export const nearestFoe = (
+  m: Match,
+  self: CombatEntity,
+  /** 调用方已持有实体列表时传入复用（P11）。不传则现取 —— 行为一致 */
+  entities?: readonly CombatEntity[],
+): CombatEntity | undefined => {
   const ctx = m.ctf ? { ctf: m.ctf.state } : undefined;
   let best: CombatEntity | undefined;
   let bestD = Infinity;
-  for (const e of listEntities(m.world)) {
+  for (const e of entities ?? listEntities(m.world)) {
     if (!isFoeCandidate(e, self, ctx)) continue;
     const d = distance2D(self.position, e.position);
     if (d < bestD) { bestD = d; best = e; }
@@ -290,9 +301,11 @@ export const pickFoe = (
   self: CombatEntity,
   difficulty: BotDifficulty,
   currentTargetId?: EntityId,
+  /** 调用方已持有实体列表时传入复用（P11）。不传则现取 —— 行为一致 */
+  entities?: readonly CombatEntity[],
 ): CombatEntity | undefined => {
   // ★ 只有 hard 改行为：easy/normal 走原路径，既有回归网一寸不动
-  if (difficulty !== 'hard') return nearestFoe(m, self);
+  if (difficulty !== 'hard') return nearestFoe(m, self, entities);
 
   const ctx = m.ctf ? { ctf: m.ctf.state } : undefined;
   let best: CombatEntity | undefined;
@@ -300,7 +313,7 @@ export const pickFoe = (
   let current: CombatEntity | undefined;
   let currentScore = Infinity;
 
-  for (const e of listEntities(m.world)) {
+  for (const e of entities ?? listEntities(m.world)) {
     if (!isFoeCandidate(e, self, ctx)) continue;
     const score = foeScore(self, e);
     if (score < bestScore) { bestScore = score; best = e; }

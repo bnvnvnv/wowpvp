@@ -31,7 +31,7 @@ import { aurasOf, dispelEligible, type AuraStore } from '../sim/aura.js';
 import { drFactor, type DrStore } from '../sim/dr.js';
 import { CONTROL_DR_CATEGORY, magnitudeOf } from '../sim/effects/combat.js';
 import { isFriendly, type CombatEntity } from '../sim/entity.js';
-import type { EntityId } from '../types/ids.js';
+import type { ClassId, EntityId } from '../types/ids.js';
 import type { GroundStore } from '../sim/groundArea.js';
 import type { MovementInput } from '../sim/movement.js';
 import type { ProjectileStore } from '../sim/projectile.js';
@@ -364,7 +364,44 @@ const EMPTY_AURA_SET: ReadonlySet<string> = new Set<string>();
  * （远程件只有全火力的两三成，过不了线）。
  * ⚠️ 60% 是站位偏好的阈值，不是平衡参数 —— 它只决定 AI 站哪，不改任何结算。
  */
+/**
+ * standOff 记忆化（P11 CPU 优化）。
+ *
+ * ★ 依赖闭包已核实：技能表由 classId 决定；数值链
+ *   `nominalDps → totalDamageOf(sk, self)`（无 tickingOnTarget 上下文）→
+ *   `magnitudeOf` 只读 `source.weaponId`。所以答案是 (classId, weaponId)
+ *   的纯函数 —— 同职业同武器的任意两个实体逐位同解。
+ * ⚠️ 往 standOff 的估值链里加**任何**读实体其他字段的项（血量、光环、
+ *   属性）之前，必须先删掉这层缓存，否则站位会静默冻结在旧答案上。
+ */
+const STANDOFF_CACHE = new Map<string, number>();
+
+/**
+ * 职业技能表缓存（P11 CPU 优化）。此前 `decideBotAction` 每 bot 每 tick 做一次
+ * `ALL_CLASSES.find` —— 12v12 满人机 = 480 次线性查找/秒/房。
+ * ALL_CLASSES 是模块级常量数据，进程内不变，缓存永不失效。
+ */
+const CLASS_SKILLS_CACHE = new Map<ClassId, readonly SkillDef[]>();
+
+const skillsOfClass = (classId: ClassId): readonly SkillDef[] => {
+  let skills = CLASS_SKILLS_CACHE.get(classId);
+  if (skills === undefined) {
+    skills = ALL_CLASSES.find((c) => c.id === classId)?.skills ?? [];
+    CLASS_SKILLS_CACHE.set(classId, skills);
+  }
+  return skills;
+};
+
 export const standOff = (self: CombatEntity, skills: readonly SkillDef[]): number => {
+  const cacheKey = `${self.classId}|${self.weaponId}`;
+  const cached = STANDOFF_CACHE.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const result = standOffUncached(self, skills);
+  STANDOFF_CACHE.set(cacheKey, result);
+  return result;
+};
+
+const standOffUncached = (self: CombatEntity, skills: readonly SkillDef[]): number => {
   const w = getWeapon(self.weaponId);
   const whiteDps = w ? (w.swingPercent * 100) / w.swingInterval : 0;
   const damaging = skills.filter(
@@ -587,7 +624,7 @@ export const decideBotAction = (p: BotPerception): BotAction => {
     return { move: { forward: 0, strafe: 0, jump: false, yaw } };
   }
 
-  const skills = ALL_CLASSES.find((c) => c.id === self.classId)?.skills ?? [];
+  const skills = skillsOfClass(self.classId);
   /**
    * ★ 治疗要按**自己**为目标验，进攻要按**对手**为目标验。
    *   ⚠️ 早期版本全部技能都拿 foe 去 validateCast —— 于是 TargetFilter.Ally
