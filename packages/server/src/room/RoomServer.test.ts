@@ -109,6 +109,47 @@ const readyUp = async (
   c.send({ t: 'SetReady', ready: true });
 };
 
+describe('P12：大乱斗（FFA）', () => {
+  it('★★ 两名玩家同槽参战 → 独立阵营互为敌人；杀满目标数出 MatchEnd', async () => {
+    const a = await TestClient.connect(server.port);
+    const b = await TestClient.connect(server.port);
+    await a.waitFor('Welcome');
+    await b.waitFor('Welcome');
+
+    a.send({ t: 'JoinRoom', roomId: 'ffa1', name: '甲' });
+    await a.waitFor('RoomState');
+    a.send({ t: 'SetRoomMode', mode: 'ffa' as never }); // 甲是房主
+    b.send({ t: 'JoinRoom', roomId: 'ffa1', name: '乙' });
+    await b.waitFor('RoomState');
+    // 大乱斗没有「双方」—— 全员进同一个参战槽
+    for (const c of [a, b]) {
+      c.send({ t: 'SelectTeam', team: 'red' });
+      c.send({ t: 'SelectClass', classId: asClassId('warrior') });
+      c.send({ t: 'SetReady', ready: true });
+    }
+    const sa = await a.waitFor('MatchStart');
+    const sb = await b.waitFor('MatchStart');
+
+    // ★ 核心断言：同槽的两人拿到**不同**阵营 —— 人人为敌的实现方式
+    const match = server.rooms.matchOf('ffa1')!;
+    const ea = match.world.entities.get(sa.you)!;
+    const eb = match.world.entities.get(sb.you)!;
+    expect(ea.team).not.toBe(eb.team);
+
+    // 复活系统在场（大乱斗复用波次复活），击杀目标已配置
+    expect(match.respawn).toBeDefined();
+    expect(match.ffa?.killTarget).toBeGreaterThan(0);
+
+    // 白盒把甲的击杀数推到目标 → 下一 tick 出 MatchEnd，胜者是甲的独立队号
+    match.stats.players.get(sa.you)!.general.kills = match.ffa!.killTarget;
+    server.rooms.loopOf('ffa1')!.advance();
+    const end = await a.waitFor('MatchEnd');
+    expect(end.winner).toBe(ea.team);
+
+    a.close(); b.close();
+  });
+});
+
 describe('A3：两个真客户端从房间跑到快照', () => {
   it('★ 连上就收到 Welcome（含 tick 频率与插值缓冲）', async () => {
     const c = await TestClient.connect(server.port);

@@ -202,6 +202,8 @@ export const GameMode = {
   Arena10v10: 'arena10v10',
   Arena11v11: 'arena11v11',
   Arena12v12: 'arena12v12',
+  /** P12 大乱斗：所有玩家互为敌人（每人独立阵营），上限 100 人 */
+  Ffa: 'ffa',
   Ctf6v6: 'ctf6v6',
   Ctf8v8: 'ctf8v8',
   Ctf12v12: 'ctf12v12',

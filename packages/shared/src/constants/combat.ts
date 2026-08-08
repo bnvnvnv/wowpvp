@@ -135,6 +135,16 @@ export const ARENA = {
 } as const;
 
 // ── 12 夺旗战场 ──────────────────────────────────────────────────
+/** P12 大乱斗 */
+export const FFA = {
+  /** 先到这么多杀获胜。混战节奏下 ~8-12 分钟一局 */
+  KILL_TARGET: 15,
+  /** 参战人数上限（房间另留观战余量,LIMITS.MAX_FFA_ROOM_MEMBERS） */
+  MAX_PLAYERS: 100,
+  /** 人机补位把参战人数补到这个数（不是补到上限 —— 100 个 bot 是 DoS 自己） */
+  FILL_TARGET: 20,
+} as const;
+
 export const CTF = {
   /** 12.1 默认率先完成 3 次夺旗获胜，房主可调 1~5 */
   DEFAULT_SCORE_TO_WIN: 3,

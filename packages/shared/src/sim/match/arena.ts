@@ -291,6 +291,8 @@ const TEAM_SIZE: Record<GameMode, number> = {
   arena6v6: 6, arena7v7: 7, arena8v8: 8, arena9v9: 9,
   arena10v10: 10, arena11v11: 11, arena12v12: 12,
   ctf6v6: 6, ctf8v8: 8, ctf12v12: 12,
+  // P12 大乱斗：没有「队」——这里是**参战槽位容量**（全员挤 Red 槽,UI 叫「参战」）
+  ffa: 100,
 };
 
 export const teamSizeOf = (mode: GameMode): number => TEAM_SIZE[mode];

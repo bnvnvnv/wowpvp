@@ -105,18 +105,25 @@ describe('S3 Origin 白名单', () => {
 });
 
 describe('S3 连接数上限', () => {
-  it('★★ 超过 maxConnections 的连接以 1013 关闭', async () => {
+  it('★★ 超过 maxConnections 的连接进入排队（P12：不再 1013 一关了之）', async () => {
     const s = await spawn({ maxConnections: 2 });
     const a = await connect(s.port);
     const b = await connect(s.port);
-    // 第三条：握手成功但服务器立即以 1013 关闭
+    // 第三条：握手成功，连接保持、收到排队位置 —— 1013 只留给排队队列也满的情况
     const c = await connect(s.port);
-    const code = await waitClose(c);
-    expect(code).toBe(1013);
+    const queued = await new Promise<string>((res, rej) => {
+      const timer = setTimeout(() => rej(new Error('没等到 QueueStatus')), 3000);
+      c.on('message', (raw) => {
+        const t = String(raw);
+        if (t.includes('"QueueStatus"')) { clearTimeout(timer); res(t); }
+      });
+    });
+    expect(JSON.parse(queued)).toEqual({ t: 'QueueStatus', ahead: 0 });
+    expect(c.readyState).toBe(WebSocket.OPEN);
     // 前两条不受影响
     expect(a.readyState).toBe(WebSocket.OPEN);
     expect(b.readyState).toBe(WebSocket.OPEN);
-    a.close(); b.close();
+    a.close(); b.close(); c.close();
   });
 });
 

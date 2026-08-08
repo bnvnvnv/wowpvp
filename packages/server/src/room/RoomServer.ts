@@ -437,11 +437,15 @@ export class RoomServer {
       session.reject('JoinRoom', '服务器房间数已满，稍后再试');
       return;
     }
+    // P12 大乱斗房间放大到 100 参战 + 观战余量；其余模式按原上限
+    const memberCap = existing?.room.config.mode === GameMode.Ffa
+      ? LIMITS.MAX_FFA_ROOM_MEMBERS
+      : this.maxRoomMembers;
     if (existing
-      && existing.room.players.length >= this.maxRoomMembers
+      && existing.room.players.length >= memberCap
       && !existing.room.players.some((p) => p.id === session.playerId)) {
       log('warn', 'room_member_cap_reject', { playerId: session.playerId, roomId });
-      session.reject('JoinRoom', `该房间人数已达上限（${this.maxRoomMembers}）`);
+      session.reject('JoinRoom', `该房间人数已达上限（${memberCap}）`);
       return;
     }
     const sr = existing ?? this.createRoomFor(roomId, session.playerId);
@@ -515,7 +519,10 @@ export class RoomServer {
         roomId: sr.room.id,
         mode: sr.room.config.mode,
         players: sr.room.players.filter((p) => p.slot !== Slot.Spectator).length,
-        capacity: teamSizeOf(sr.room.config.mode) * 2,
+        // 大乱斗没有「两队」——容量就是参战槽位本身
+        capacity: sr.room.config.mode === GameMode.Ffa
+          ? teamSizeOf(sr.room.config.mode)
+          : teamSizeOf(sr.room.config.mode) * 2,
         started: sr.room.started,
         fillWithBots: sr.room.config.fillWithBots === true,
       }))

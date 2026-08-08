@@ -258,21 +258,40 @@ export const startServer = async (port = 0, opts: ServerOptions = {}): Promise<S
       }, backpressureMs)
     : undefined;
 
-  wss.on('connection', (socket: WebSocket) => {
-    // ★ S3 连接数上限。wss.clients 已含本条 —— 超出的以 1013（稍后再试）关闭。
-    //   Origin 已在 verifyClient（握手层）拦过，走到这里的都是允许的来源
-    if (wss.clients.size > maxConnections) {
-      log('warn', 'conn_rejected_capacity', { connections: wss.clients.size });
-      socket.close(1013, '服务器已满');
-      return;
-    }
+  /**
+   * P12 连接排队（玩家需求：「服务器满了可以排队，告知前面还剩多少人」）。
+   *
+   * ★★ 满员不再 1013 一关了之 —— 连接留在等待队列里：
+   *   · 入队即发 `QueueStatus{ahead}`，每次队伍变动全队重报（前面还有几人）
+   *   · 排队期间收到的消息**缓存**（上限 QUEUE_BUFFER_MAX），接纳后按序
+   *     重放进 Session —— 客户端在 ws open 时就发的 JoinRoom 不会丢，
+   *     排队对客户端因此是透明的：等到 Welcome 就是轮到了
+   *   · 有人下线（close 路径）即 drainQueue 按序接纳
+   * ★ 容量判据从 `wss.clients.size` 换成 `admitted.size` —— 排队的连接
+   *   也在 wss.clients 里，拿它当分母会让队伍自己把门堵死。
+   * ★ 队列有自己的上限（防无限排队吃内存）：超出的仍按老规矩 1013。
+   */
+  const admitted = new Set<WebSocket>();
+  const waiting: { socket: WebSocket; buffered: string[] }[] = [];
+  const QUEUE_MAX = 200;
+  const QUEUE_BUFFER_MAX = 64;
 
+  const notifyQueue = (): void => {
+    for (const [i, w] of waiting.entries()) {
+      if (w.socket.readyState === w.socket.OPEN) {
+        w.socket.send(JSON.stringify({ t: 'QueueStatus', ahead: i }));
+      }
+    }
+  };
+
+  const admit = (socket: WebSocket, replay: readonly string[] = []): void => {
+    admitted.add(socket);
     missesOf.set(socket, 0);
     socket.on('pong', () => missesOf.set(socket, 0));
     const session = rooms.connect(adapt(socket));
     playerOf.set(socket, session.playerId);
 
-    socket.on('message', (raw) => {
+    const feed = (raw: string): void => {
       /**
        * ★★ **这里必须 try/catch。**
        *   `Session.handleRaw` 自己不抛（畸形包走返回值），但 `ws` 的
@@ -281,7 +300,7 @@ export const startServer = async (port = 0, opts: ServerOptions = {}): Promise<S
        *   更不该拖垮整台服务器。
        */
       try {
-        session.handleRaw(raw.toString());
+        session.handleRaw(raw);
       } catch (err) {
         log('error', 'message_handler_error', {
           playerId: session.playerId,
@@ -289,7 +308,11 @@ export const startServer = async (port = 0, opts: ServerOptions = {}): Promise<S
         });
         session.reject('internal', '服务器处理该消息时出错');
       }
-    });
+    };
+
+    socket.on('message', (raw) => feed(raw.toString()));
+    // 排队期间攒下的消息按序重放 —— 在 Welcome 之后、任何新消息之前
+    for (const raw of replay) feed(raw);
 
     socket.on('close', (code) => {
       // ★ S6：异常关闭码留痕（1009 超大包 / 1008 origin / 1013 满载）。
@@ -297,14 +320,56 @@ export const startServer = async (port = 0, opts: ServerOptions = {}): Promise<S
       if (code === 1008 || code === 1009 || code === 1013) {
         log('warn', 'conn_closed_abnormal', { playerId: session.playerId, code });
       }
+      admitted.delete(socket);
       rooms.disconnect(session);
+      drainQueue();
     });
     // ★ 传输层错误也当断线处理，否则连接半死不活地留在房间名单里。
     //   超大包（S2 maxPayload）走的正是这条 error 路径 —— 日志在此留痕
     socket.on('error', (err) => {
       log('warn', 'conn_error', { playerId: session.playerId, error: String(err) });
+      admitted.delete(socket);
       rooms.disconnect(session);
+      drainQueue();
     });
+  };
+
+  const drainQueue = (): void => {
+    let moved = false;
+    while (admitted.size < maxConnections && waiting.length > 0) {
+      const next = waiting.shift()!;
+      next.socket.removeAllListeners('message');
+      next.socket.removeAllListeners('close');
+      if (next.socket.readyState !== next.socket.OPEN) continue; // 排着排着走了
+      log('info', 'queue_admitted', { waited: waiting.length });
+      admit(next.socket, next.buffered);
+      moved = true;
+    }
+    if (moved) notifyQueue();
+  };
+
+  wss.on('connection', (socket: WebSocket) => {
+    // Origin 已在 verifyClient（握手层）拦过，走到这里的都是允许的来源
+    if (admitted.size >= maxConnections) {
+      if (waiting.length >= QUEUE_MAX) {
+        log('warn', 'conn_rejected_capacity', { queued: waiting.length });
+        socket.close(1013, '服务器已满');
+        return;
+      }
+      const entry = { socket, buffered: [] as string[] };
+      waiting.push(entry);
+      log('info', 'conn_queued', { position: waiting.length });
+      socket.on('message', (raw) => {
+        if (entry.buffered.length < QUEUE_BUFFER_MAX) entry.buffered.push(raw.toString());
+      });
+      socket.on('close', () => {
+        const i = waiting.indexOf(entry);
+        if (i >= 0) { waiting.splice(i, 1); notifyQueue(); }
+      });
+      socket.send(JSON.stringify({ t: 'QueueStatus', ahead: waiting.length - 1 }));
+      return;
+    }
+    admit(socket);
   });
 
   await new Promise<void>((resolve) => httpServer.listen(port, resolve));

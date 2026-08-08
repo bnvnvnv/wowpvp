@@ -41,6 +41,12 @@ export const LIMITS = {
   MAX_ROOM_MEMBERS: 32,
 
   /**
+   * P12 大乱斗房间的成员上限：100 参战 + 8 观战余量。
+   * 其余模式仍走 MAX_ROOM_MEMBERS —— 大房间是显式选择,不是默认放开。
+   */
+  MAX_FFA_ROOM_MEMBERS: 108,
+
+  /**
    * 入站消息令牌桶：容量（突发额度）与每秒回填。
    *
    * 合法客户端的稳态流量：每 tick 一条 Input = 20/s，加上人手点击的

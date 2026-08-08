@@ -35,7 +35,7 @@ import {
   type ServerMessage,
   type SkillDef,
 } from '@wowpvp/shared';
-import { ArenaPreset, GameMode } from '@wowpvp/shared';
+import { ArenaPreset, FFA, GameMode } from '@wowpvp/shared';
 
 import { audio } from '../audio/AudioManager.js';
 import { skillIconHtml } from '../hud/skillIcon.js';
@@ -166,6 +166,8 @@ export class LobbyShell {
   private fillWithBots = false;
   /** P12：点了「刷新房间列表」但连接还没通 —— Welcome 到达时补发 ListRooms */
   private pendingBrowse = false;
+  /** P12：从「大乱斗」入口建房 —— RoomState 到达后补发 SetRoomMode ffa */
+  private pendingFfa = false;
   private botDifficulty: 'easy' | 'normal' | 'hard' = 'normal';
   /** P6：练习场配置（入口页点选，开始时拼进 ?testbed URL）。P10：默认见 DEFAULT_PRACTICE_CLASS */
   private practiceClass: string = DEFAULT_PRACTICE_CLASS;
@@ -281,8 +283,16 @@ export class LobbyShell {
             两条自己就能玩的路反倒是最弱的 ghost 样式。现在主按钮归练习场，
             联机保持普通按钮（路还在，只是不再假装它是第一步）。
           -->
+          <!-- P12：教学入口提到第一排 —— 玩家反馈找不到它（原在练习场下方） -->
+          <div class="lb-row">
+            <button class="lb-btn" data-action="tutorial">${
+              tutorialLabel(this.tutorialCompleted())
+            }</button>
+          </div>
           <div class="lb-row">
             <button class="lb-btn" data-action="create">创建房间</button>
+            <button class="lb-btn" data-action="create-ffa"
+                    title="没有队伍，所有玩家互为敌人；先杀满目标数获胜，至多 100 人">大乱斗（人人为敌）</button>
           </div>
           <div class="lb-row lb-join">
             <input id="lb-code" maxlength="16" placeholder="房间码"
@@ -300,15 +310,6 @@ export class LobbyShell {
           </div>
           <div id="lb-roomlist"></div>
           <hr/>
-          <div class="lb-row">
-            <!--
-              ⚠️ P10 文案：原来未完成时写「尚未完成」，读起来像**这个功能没做完**
-              （真机上第一反应就是「别点，是半成品」）。教学是完整的，没通关的是玩家。
-            -->
-            <button class="lb-btn" data-action="tutorial">${
-              tutorialLabel(this.tutorialCompleted())
-            }</button>
-          </div>
           <div class="lb-row">
             <button class="lb-btn lb-primary" data-action="practice">练习场（单机 · 选职业与人机难度）</button>
           </div>
@@ -541,6 +542,20 @@ export class LobbyShell {
         this.renderRoomList(msg.rooms);
         break;
 
+      /**
+       * P12 连接排队：满员时服务器不关连接,报「前面还有几人」。
+       * 长 toast 挂住（每次更新续期）—— 轮到时 Welcome 到达,加房流程
+       * 自动继续（排队期间发的 JoinRoom 服务器有缓存重放,不用重发）。
+       */
+      case 'QueueStatus':
+        this.toast(
+          msg.ahead === 0
+            ? '服务器已满，正在排队 —— 你是下一个'
+            : `服务器已满，正在排队 —— 前面还有 ${msg.ahead} 人`,
+          60000,
+        );
+        break;
+
       case 'RoomState': {
         this.players = msg.players;
         this.roomStarted = msg.started;
@@ -559,6 +574,11 @@ export class LobbyShell {
            */
           if (this.pendingJoin.creating) {
             this.conn.send({ t: 'SetFillWithBots', enabled: true });
+            // P12：从「大乱斗」入口建的房,建成即切模式（建房者必是房主）
+            if (this.pendingFfa) {
+              this.pendingFfa = false;
+              this.conn.send({ t: 'SetRoomMode', mode: GameMode.Ffa });
+            }
           }
           // JoinRoom 的成功答复就是第一条 RoomState（协议没有单独的 ack）
           this.pendingJoin = undefined;
@@ -651,6 +671,11 @@ export class LobbyShell {
   private act(action: string, btn?: HTMLElement): void {
     switch (action) {
       case 'create':
+        this.join(makeRoomCode(), true);
+        break;
+      case 'create-ffa':
+        // P12 大乱斗：建房成功后（RoomState 到达）由 pendingJoin 分支补发换模式
+        this.pendingFfa = true;
         this.join(makeRoomCode(), true);
         break;
       case 'browse': {
@@ -866,6 +891,7 @@ export class LobbyShell {
     if (!box) return;
     if (hint) hint.textContent = rooms.length === 0 ? '现在没有开着的房间 —— 创建一个吧' : '';
     const modeLabel = (m: string): string => {
+      if (m === 'ffa') return '大乱斗';
       const a = /^arena(\d+)v\d+$/.exec(m);
       if (a) return `竞技场 ${a[1]}v${a[1]}`;
       const c = /^ctf(\d+)v\d+$/.exec(m);
@@ -1084,9 +1110,23 @@ export class LobbyShell {
         label.style.opacity = m ? '1' : '.5';
       }
     }
+    /**
+     * P12 大乱斗的房间页适配：没有「双方」——
+     * 红方按钮改叫「参战」，蓝方按钮藏起来（发 SelectTeam blue 也没意义，
+     * createMatch 的 ffa 分支只按「在不在战斗槽」分独立阵营）。
+     */
+    const isFfa = (this.mode as string | undefined) === 'ffa';
+    {
+      const redBtn = this.root.querySelector('[data-action="team"][data-team="red"]');
+      const blueBtn = this.root.querySelector('[data-action="team"][data-team="blue"]');
+      if (redBtn) redBtn.textContent = isFfa ? '参战' : '红方';
+      if (blueBtn) (blueBtn as HTMLElement).hidden = isFfa;
+    }
     (this.root.querySelector('#lb-mode-why') as HTMLElement).textContent = isCtf
       ? '夺旗：拔起敌方旗帜送回己方基地（G 交互）'
-      : (isHost ? '' : '由房主设置');
+      : isFfa
+        ? `大乱斗：人人为敌，先杀满目标数获胜（至多 ${FFA.MAX_PLAYERS} 人）`
+        : (isHost ? '' : '由房主设置');
 
     /**
      * 10.1 规则预设。★ 非房主也**看得到**当前预设（它决定这局怎么打），

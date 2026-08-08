@@ -267,6 +267,8 @@ export class NetworkScene {
   private lastGrounds: readonly GroundAreaSnapshot[] = [];
   /** 速赢清单记分板：最近一份 match 快照（CTF 比分/旗帜在这里）*/
   private lastMatch: Snapshot['match'] | undefined;
+  /** P12 大乱斗：MatchEnd 报胜者名字用（winner 是独立队号,按名单反查）*/
+  private lastStatsRows: readonly MatchStatsRow[] | undefined;
   /** 竞技场回合比分。快照不带（只有 RoundEnd 事件），本地累计 */
   private readonly roundWins = { red: 0, blue: 0 };
   /**
@@ -1146,6 +1148,8 @@ export class NetworkScene {
 
       /** 16a 战后统计。★ 场景只负责转交给上层（大厅的结算页在渲染它）*/
       case 'MatchStats':
+        // P12 大乱斗：MatchEnd 的 winner 是独立队号，报名字要靠这份名单反查
+        this.lastStatsRows = msg.rows;
         this.onMatchStats?.(msg.rows, msg.awards);
         break;
 
@@ -1164,12 +1168,24 @@ export class NetworkScene {
          * 画面何时切走由上层决定：大厅流程回房间页，`?net=` 老路停在结算日志。
          */
         this.started = false;
-        this.view.push(
-          msg.winner === 'draw'
-            ? '对局结束：平局'
-            : `对局结束：${msg.winner === TEAM_RED ? '红方' : '蓝方'}获胜`,
-          'interrupt',
-        );
+        /**
+         * P12 大乱斗：winner 是那名玩家的独立队号（不是红/蓝）——
+         * 从刚收到的 MatchStats 名单反查名字。夺旗/竞技场照旧红蓝口径。
+         */
+        {
+          const isFfa = this.map?.family === 'ffa';
+          const ffaName = isFfa && msg.winner !== 'draw'
+            ? this.lastStatsRows?.find((r) => r.team === msg.winner)?.name
+            : undefined;
+          this.view.push(
+            msg.winner === 'draw'
+              ? '对局结束：平局'
+              : ffaName !== undefined
+                ? `对局结束：${ffaName} 称霸乱斗场`
+                : `对局结束：${msg.winner === TEAM_RED ? '红方' : '蓝方'}获胜`,
+            'interrupt',
+          );
+        }
         this.celebrate(msg.winner);
         break;
       }

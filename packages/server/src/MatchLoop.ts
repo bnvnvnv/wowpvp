@@ -1074,9 +1074,26 @@ export class MatchLoop {
      * ★ 夺旗没有平局分支：没有时限就没有「时间到比分相同」这回事
      *   （12.x 的时限/加时是另一笔已登记的账，见总账 —— 这里不发明规则）。
      */
+    /**
+     * P12 大乱斗：先到 killTarget 杀获胜。读的是 sim 统计（击杀归因在
+     * stats.ts，这里不重算）；「胜者」用他的独立 TeamId 表达 —— MatchEnd
+     * 的形状不变，客户端按 MatchStats 的名单反查名字显示。
+     */
+    const ffaWinner = (): TeamId | null => {
+      if (!this.match.ffa) return null;
+      for (const [entityId, row] of this.match.stats.players) {
+        if (row.general.kills >= this.match.ffa.killTarget) {
+          return this.match.world.entities.get(entityId)?.team ?? null;
+        }
+      }
+      return null;
+    };
+
     const winner: TeamId | 'draw' | null = this.match.arena
       ? (this.match.arena.outcome ? this.match.arena.outcome.winner ?? 'draw' : null)
-      : this.match.ctf ? ctfWinner(this.match.ctf.state) : null;
+      : this.match.ctf ? ctfWinner(this.match.ctf.state)
+      : this.match.ffa ? ffaWinner()
+      : null;
     if (winner === null) return;
     this.ended = true;
     this.stop();
@@ -1217,7 +1234,8 @@ export const referencedEntities = (msg: ServerMessage): EntityId[] => {
     //    与 broadcastSnapshots 的同一张可见实体表保证）、
     //    赛后/房间广播（RoomState/RoundEnd/MatchEnd/MatchStats/Peer*，
     //    对局结束或房间阶段没有需要瞒的实体）──────────────────
-    case 'Welcome': case 'RoomState': case 'RoomList': case 'MatchStart': case 'Snapshot':
+    case 'Welcome': case 'QueueStatus': case 'RoomState': case 'RoomList':
+    case 'MatchStart': case 'Snapshot':
     case 'EntityMeta':
     case 'CastFailed': case 'ArsenalOffer': case 'PickupResult':
     case 'RoundEnd': case 'MatchEnd': case 'MatchStats': case 'Rejected':

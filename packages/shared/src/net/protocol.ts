@@ -317,6 +317,13 @@ export type ServerMessage =
   | { t: 'RoomList'
       rooms: readonly { roomId: string; mode: GameMode; players: number
         capacity: number; started: boolean; fillWithBots: boolean }[] }
+  /**
+   * P12 连接排队：服务器满员时不再一关了之（原 1013），连接进等待队列，
+   * 这条消息告知前面还有几个人；有人下线即按序接纳（收到 Welcome 为准）。
+   * ★ 排队期间客户端发的消息由服务器缓存，接纳后按序重放 —— 对客户端
+   *   透明：早发的 JoinRoom 不会丢。
+   */
+  | { t: 'QueueStatus'; ahead: number }
   | { t: 'MatchStart'; mapId: MapId; you: EntityId; startsAt: number
       /** 17.3 重连令牌。★ 断线后凭它恢复，见 server/room/reconnect.ts */
       reconnectToken: string }
@@ -445,7 +452,7 @@ export type ServerMessage =
 export type ServerMessageKind = ServerMessage['t'];
 
 export const ALL_SERVER_MESSAGE_KINDS: readonly ServerMessageKind[] = [
-  'Welcome', 'RoomState', 'RoomList', 'MatchStart', 'Snapshot', 'EntityMeta',
+  'Welcome', 'QueueStatus', 'RoomState', 'RoomList', 'MatchStart', 'Snapshot', 'EntityMeta',
   'CastStarted', 'CastResolved', 'CastInterrupted', 'CastFailed', 'Damage', 'Heal',
   'AuraApplied', 'AuraRemoved', 'Death', 'ArsenalOffer', 'PickupResult',
   'FlagEvent', 'RoundEnd', 'MatchEnd', 'MatchStats',

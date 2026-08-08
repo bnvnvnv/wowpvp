@@ -22,10 +22,11 @@
  *   「把状态摆好」，摆完之后 `tickDepsOf()` 把它转成 `tickWorld` 的入参。
  */
 
+import { FFA } from '../../constants/combat.js';
 import { getClass, getSkill } from '../../data/index.js';
 import type { MapDef, SpawnPoint } from '../../data/maps/schema.js';
 import type { Vec3 } from '../../math/vec3.js';
-import { TEAM_BLUE, TEAM_RED, type EntityId, type TeamId } from '../../types/ids.js';
+import { TEAM_BLUE, TEAM_NEUTRAL, TEAM_RED, type EntityId, type TeamId } from '../../types/ids.js';
 import { createAuraStore, type AuraStore } from '../aura.js';
 import {
   createArsenalStore, createPickupStore, setupArmories,
@@ -97,10 +98,15 @@ export interface Match {
 
   /** 夺旗模式才有。★ 竞技场是 undefined —— 与 15.4 两种 HUD 视图不相交同源 */
   ctf?: { state: CtfState; deps: CtfDeps; map: MapDef };
-  /** 夺旗模式才有：12.6 的复活波次 */
+  /** 夺旗与大乱斗才有：12.6 的复活波次（大乱斗复用同一套波次+复活保护） */
   respawn?: RespawnState;
   /** 竞技场模式才有：2.1 的回合与平局窗口 */
   arena?: ArenaState;
+  /**
+   * P12 大乱斗才有。规则只有一条：先到 killTarget 杀获胜（读 stats 的
+   * kills —— 统计是既有的，胜负判定在 MatchLoop.checkEnd 的 ffa 分支）。
+   */
+  ffa?: { killTarget: number };
 
   /** 房间玩家 id → 实体 id。断线重连要靠它找回自己的角色 */
   entityOf: Map<string, EntityId>;
@@ -159,17 +165,21 @@ export const createMatch = (room: Room, map: MapDef): Match => {
   /** 每队各自的出生点游标 —— 同队的人依次占位，不叠在同一个点上 */
   const nextSpawnIndex = new Map<TeamId, number>();
 
-  const spawnPlayer = (p: RoomPlayer, team: TeamId): void => {
+  const spawnPlayer = (p: RoomPlayer, team: TeamId, ffaPoint?: SpawnPoint): void => {
     const cls = getClass(p.classId!);
     // 走到这里还没有职业，说明调用方跳过了 canStart()。宁可少一个人也不要崩掉整局
     if (!cls) return;
 
-    const points = spawnPointsFor(map, team);
-    const idx = nextSpawnIndex.get(team) ?? 0;
-    nextSpawnIndex.set(team, idx + 1);
-    // ★ 出生点用完就从头轮转（12v12 的地图给了 12 个，够用；但不要因为
-    //   名单多一个人就崩）
-    const point = points[idx % Math.max(1, points.length)];
+    // P12 大乱斗：出生点由调用方从中立池轮转好传进来（按队查会查空）
+    let point = ffaPoint;
+    if (!point) {
+      const points = spawnPointsFor(map, team);
+      const idx = nextSpawnIndex.get(team) ?? 0;
+      nextSpawnIndex.set(team, idx + 1);
+      // ★ 出生点用完就从头轮转（12v12 的地图给了 12 个，够用；但不要因为
+      //   名单多一个人就崩）
+      point = points[idx % Math.max(1, points.length)];
+    }
     const position: Vec3 = point?.position ?? { x: 0, y: 0, z: 0 };
 
     const e = addEntity(
@@ -193,10 +203,31 @@ export const createMatch = (room: Room, map: MapDef): Match => {
     playerOf.set(e.id, p.id);
   };
 
-  for (const p of room.players) {
-    const team = TEAM_OF_SLOT[p.slot];
-    if (team === undefined) continue; // 观战者不进世界
-    spawnPlayer(p, team);
+  if (map.family === 'ffa') {
+    /**
+     * ★★ P12 大乱斗：**每名玩家一个独立 TeamId** —— 这一行就是「所有玩家
+     *   都是敌人」的全部实现。isFriendly 是纯队伍比较，独立队号让它对任意
+     *   两人恒 false，于是敌对判定/潜行裁剪/光环掩码/AI 选目标全部原样生效，
+     *   不需要任何「如果是大乱斗则…」的分支。
+     * ★ 队号从 0 起连续分配（TEAM_NEUTRAL=-1 不冲突）；出生点从中立墓地
+     *   （ffa 图的唯一 graveyard）轮转 —— 用 TEAM_NEUTRAL 做共享游标，
+     *   spawnPlayer 原有的按队游标在这里会退化成人人第 0 号点。
+     */
+    const pool = (map.graveyards ?? []).flatMap((g) => g.spawns);
+    let nextTeam = 0;
+    for (const p of room.players) {
+      if (TEAM_OF_SLOT[p.slot] === undefined) continue; // 观战者不进世界
+      const team = nextTeam++ as TeamId;
+      const idx = nextSpawnIndex.get(TEAM_NEUTRAL) ?? 0;
+      nextSpawnIndex.set(TEAM_NEUTRAL, idx + 1);
+      spawnPlayer(p, team, pool[idx % Math.max(1, pool.length)]);
+    }
+  } else {
+    for (const p of room.players) {
+      const team = TEAM_OF_SLOT[p.slot];
+      if (team === undefined) continue; // 观战者不进世界
+      spawnPlayer(p, team);
+    }
   }
 
   const match: Match = {
@@ -219,7 +250,24 @@ export const createMatch = (room: Room, map: MapDef): Match => {
     playerOf,
   };
 
-  if (map.family === 'ctf') {
+  if (map.family === 'ffa') {
+    /**
+     * P12 大乱斗收尾装配：
+     * · 先到 killTarget 杀获胜（FFA.KILL_TARGET；胜负判定在 MatchLoop.checkEnd）
+     * · 复活波次**零改动复用** —— createRespawn 按队号查出口，把每名玩家的
+     *   独立队号都映射到同一份中立出口表即可；死亡入队（tick.ts 死亡漏斗）、
+     *   波次复活、复活保护（免伤 + 不可用于交互）全部白拿
+     * · 不建 arena（没有回合/抑制/平局窗口）也不布军械（armoryLayoutFor
+     *   对未知模式返回空 —— 大乱斗首版与夺旗同口径关闭临时装备）
+     */
+    match.ffa = { killTarget: FFA.KILL_TARGET };
+    const exits = (map.graveyards ?? []).flatMap((g) => g.exits);
+    const exitsByTeam: Record<number, readonly Vec3[]> = {};
+    for (const team of new Set([...playerOf.keys()].map((id) => world.entities.get(id)!.team))) {
+      exitsByTeam[team as number] = exits;
+    }
+    match.respawn = createRespawn(exitsByTeam, 0);
+  } else if (map.family === 'ctf') {
     const flagOf = (team: TeamId): Vec3 =>
       map.flags!.find((f) => f.team === team)!.position;
 

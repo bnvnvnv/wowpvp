@@ -11,6 +11,7 @@
  */
 
 import { ArenaPreset, GameMode } from '../../types/enums.js';
+import { FFA } from '../../constants/combat.js';
 import { TEAM_BLUE, TEAM_RED, type ClassId, type MapId, type TeamId } from '../../types/ids.js';
 import { getClass } from '../../data/index.js';
 import { mapsForMode } from '../../data/maps/index.js';
@@ -232,6 +233,16 @@ export const setBotDifficulty = (
  */
 export const botSeatsNeeded = (room: Room): { slot: Slot; count: number }[] => {
   if (!room.config.fillWithBots) return [];
+  /**
+   * P12 大乱斗：补到 FFA.FILL_TARGET 名参战者，不是补到 100 人上限 ——
+   * 100 个 bot 的房间是自己 DoS 自己（一房 ≈ 100 实体全速模拟），
+   * 20 人混战已经是「随时有架打」的密度。真人多于目标值就不补。
+   */
+  if (room.config.mode === GameMode.Ffa) {
+    const combatants = playersOn(room, Slot.Red).length + playersOn(room, Slot.Blue).length;
+    const count = Math.max(0, FFA.FILL_TARGET - combatants);
+    return count > 0 ? [{ slot: Slot.Red, count }] : [];
+  }
   const size = teamSizeOf(room.config.mode);
   return ([Slot.Red, Slot.Blue] as const)
     .map((slot) => ({ slot, count: Math.max(0, size - playersOn(room, slot).length) }))
@@ -329,7 +340,17 @@ export const canStart = (room: Room): StartCheck => {
    *   「全员准备」的主体，也没有观众以外的任何人在玩。
    */
   const fill = room.config.fillWithBots === true;
-  if (!fill) {
+  /**
+   * P12 大乱斗：没有「双方」—— 全员互为敌人（独立阵营在 createMatch 分配）。
+   * 判据只剩人数：不补位要 ≥2（一个人的大乱斗没有对手），补位 ≥1。
+   * 人数相等那条对 FFA 无意义，一并跳过。
+   */
+  if (room.config.mode === GameMode.Ffa) {
+    const combatants = red.length + blue.length;
+    if (combatants < (fill ? 1 : 2)) {
+      reasons.push(fill ? '至少需要一名玩家参战' : '大乱斗至少需要两名玩家（或开人机补位）');
+    }
+  } else if (!fill) {
     if (red.length === 0 || blue.length === 0) reasons.push('双方都需要至少一名玩家');
   } else if (red.length + blue.length === 0) {
     reasons.push('至少需要一名玩家加入队伍');
@@ -340,8 +361,10 @@ export const canStart = (room: Room): StartCheck => {
     else if (!p.ready) reasons.push(`${p.name} 尚未准备`);
   }
 
-  // 3.2：标准竞技场要求双方人数相等（补位开着时由补位保证，见上）
-  const balanced = red.length === blue.length;
+  // 3.2：标准竞技场要求双方人数相等（补位开着时由补位保证，见上）。
+  // P12 大乱斗没有「双方」，人数相等无从谈起 —— 整条跳过
+  const isFfa = room.config.mode === GameMode.Ffa;
+  const balanced = isFfa || red.length === blue.length;
   if (!balanced && !room.config.allowUnbalanced && !fill) {
     reasons.push(`双方人数不等（${red.length} vs ${blue.length}），标准规则要求人数相等`);
   }

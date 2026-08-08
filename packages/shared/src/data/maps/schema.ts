@@ -162,7 +162,7 @@ export interface MapDecorDef {
 export interface MapDef {
   id: MapId;
   name: string;
-  family: 'arena' | 'ctf' | 'testbed';
+  family: 'arena' | 'ctf' | 'ffa' | 'testbed';
   modes: readonly GameMode[];
 
   /** 地图外边界。越界触发 17.3 重置 */

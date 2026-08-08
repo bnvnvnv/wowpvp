@@ -8,6 +8,7 @@ import { testbed } from './testbed.js';
 import { tutorialMap } from './tutorial.js';
 import { ARENA_MAPS } from './arena.js';
 import { ctfMap } from './ctf.js';
+import { ffaMap } from './ffa.js';
 
 export * from './schema.js';
 export { testbed, TESTBED_SPAWN } from './testbed.js';
@@ -16,11 +17,12 @@ export {
   TUTORIAL_CLEAR_AHEAD, TUTORIAL_CORRIDOR_HALF_WIDTH,
 } from './tutorial.js';
 export { arena2v2, arena3v3, arena5v5, ARENA_MAPS, ARENA_SPECS } from './arena.js';
+export { ffaMap } from './ffa.js';
 export { ctfMap, routeLength, routeSeconds, graveyardSeesFlag, CTF_MAP_METRICS } from './ctf.js';
 
 // P12：竞技场是 1v1–12v12 全梯子（arena.ts SPECS 一次生成），逐张点名会漏
 export const ALL_MAPS: readonly MapDef[] =
-  [testbed, tutorialMap, ...ARENA_MAPS, ctfMap];
+  [testbed, tutorialMap, ...ARENA_MAPS, ffaMap, ctfMap];
 
 export const MAP_BY_ID: ReadonlyMap<string, MapDef> = new Map(
   ALL_MAPS.map((m) => [m.id as string, m]),
