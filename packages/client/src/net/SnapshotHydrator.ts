@@ -1,14 +1,14 @@
 /**
- * P11 快照瘦身的**解码边界**：把 wire 形态的 `EntitySnapshot` 还原成
- * 下游读的 `HydratedEntitySnapshot`。
+ * P11 快照瘦身的**解码边界**：把 wire 形态还原成下游读的完整形态。
  *
- * ★★ 还原的三样东西与服务器的三条瘦身规则一一对应（visibility.ts 的
- *   `EntitySnapshot` 文件头）：
+ * ★★ 还原的四样东西与服务器的拆分一一对应（visibility.ts / protocol.ts）：
  *     1. 位掩码 `f` → `displayFlagsOf()` 展开回 DisplayFlags + alive/teleported
- *     2. 静态块（name/team/classId/maxHealth/maxResources）→ 首见时随快照
- *        到达，存进 `statics`；后续快照从缓存合回
- *     3. 装备 → 从 `EntityLoadouts` 通道的缓存合回（服务器保证该消息先于
- *        含新实体的快照到达）
+ *     2. 静态块（name/team/classId/maxHealth/maxResources）→ 来自每会话的
+ *        `EntityMeta` 通道（首见必发），按实体 id 缓存合回
+ *     3. 装备 → 同一条 `EntityMeta` 通道（首见 + 变更时发）
+ *     4. self 段（cooldowns/gcd/焦点/重放状态/可拾取列表）→ 合回
+ *        `you` 那个实体与 drops 的 `pickable` —— 波3 把它们从共享的
+ *        实体段搬了出去（同队共享同一份字节），下游契约不变
  *
  * ★ 全部还原都在这**一个**入口完成 —— 下游（Interpolator / HUD / 画面 /
  *   Predictor）拿到的是完整形状，与试验场共用的契约（DisplayFlags 等）
@@ -24,24 +24,18 @@ import {
   displayFlagsOf,
   ENTITY_FLAG_BITS,
   type AllyEquipmentSnapshot,
-  type ClassId,
   type EnemyEquipmentSnapshot,
   type EntityId,
   type EntitySnapshot,
+  type EntityStaticsSnapshot,
   type HydratedEntitySnapshot,
-  type TeamId,
+  type HydratedSnapshot,
+  type SelfStateSnapshot,
+  type SnapshotMessage,
 } from '@wowpvp/shared';
 
-interface EntityStatics {
-  name: string;
-  team: TeamId;
-  classId: ClassId;
-  maxHealth: number;
-  maxResources: Readonly<Record<string, number>>;
-}
-
 export class SnapshotHydrator {
-  private readonly statics = new Map<EntityId, EntityStatics>();
+  private readonly statics = new Map<EntityId, EntityStaticsSnapshot>();
   private readonly loadouts = new Map<
     EntityId, AllyEquipmentSnapshot | EnemyEquipmentSnapshot
   >();
@@ -52,34 +46,47 @@ export class SnapshotHydrator {
     this.loadouts.clear();
   }
 
-  /** `EntityLoadouts` 消息的落点。每条覆盖该实体的当前装备视图 */
-  setLoadouts(
+  /** `EntityMeta` 消息的落点。statics 首见到达一次；equipment 变更时覆盖 */
+  setMeta(
     items: readonly {
       entityId: EntityId;
-      equipment: AllyEquipmentSnapshot | EnemyEquipmentSnapshot;
+      statics?: EntityStaticsSnapshot;
+      equipment?: AllyEquipmentSnapshot | EnemyEquipmentSnapshot;
     }[],
   ): void {
-    for (const it of items) this.loadouts.set(it.entityId, it.equipment);
+    for (const it of items) {
+      if (it.statics) this.statics.set(it.entityId, it.statics);
+      if (it.equipment) this.loadouts.set(it.entityId, it.equipment);
+    }
   }
 
-  hydrate(entities: readonly EntitySnapshot[]): HydratedEntitySnapshot[] {
+  /** 整份快照的还原（实体 + drops.pickable）。self 段合到 `you` 实体上 */
+  hydrateSnapshot(msg: SnapshotMessage): HydratedSnapshot {
+    const pickable = new Set(msg.self?.pickableDropIds ?? []);
+    return {
+      tick: msg.tick,
+      you: msg.you,
+      entities: this.hydrate(msg.entities, msg.you, msg.self),
+      projectiles: msg.projectiles,
+      grounds: msg.grounds,
+      drops: msg.drops.map((d) => ({ ...d, pickable: pickable.has(d.id) })),
+      armories: msg.armories,
+      match: msg.match,
+      ...(msg.self ? { self: msg.self } : {}),
+    };
+  }
+
+  hydrate(
+    entities: readonly EntitySnapshot[],
+    you?: EntityId,
+    self?: SelfStateSnapshot,
+  ): HydratedEntitySnapshot[] {
     const out: HydratedEntitySnapshot[] = [];
     for (const e of entities) {
-      // 静态块：随包更新缓存（首见/重发都走这条），否则读缓存
-      let st = this.statics.get(e.id);
-      if (e.name !== undefined) {
-        st = {
-          name: e.name,
-          team: e.team ?? st?.team ?? (0 as TeamId),
-          classId: e.classId ?? st?.classId ?? ('' as ClassId),
-          maxHealth: e.maxHealth ?? st?.maxHealth ?? 1,
-          maxResources: e.maxResources ?? st?.maxResources ?? {},
-        };
-        this.statics.set(e.id, st);
-      }
+      const st = this.statics.get(e.id);
       if (!st) {
         /**
-         * 缓存缺失又没随包携带 —— 服务器契约被破坏（首见必带静态块）。
+         * 缓存缺失 —— 服务器契约被破坏（EntityMeta 首见必先于快照到达）。
          * 跳过这个实体并留痕，比造一个字段全空的实体污染下游更可诊断。
          */
         console.warn(`SnapshotHydrator：实体 ${e.id} 无静态块可用，本帧跳过`);
@@ -87,6 +94,7 @@ export class SnapshotHydrator {
       }
 
       const f = e.f ?? 0;
+      const isYou = you !== undefined && e.id === you;
       out.push({
         id: e.id,
         name: st.name,
@@ -103,10 +111,11 @@ export class SnapshotHydrator {
         carryingFlag: (f & ENTITY_FLAG_BITS.carryingFlag) !== 0,
         flags: displayFlagsOf(f),
         teleported: (f & ENTITY_FLAG_BITS.teleported) !== 0,
-        ...(e.selfMovement ? { selfMovement: e.selfMovement } : {}),
-        ...(e.cooldowns ? { cooldowns: e.cooldowns } : {}),
-        ...(e.focusId !== undefined ? { focusId: e.focusId } : {}),
-        ...(e.gcdUntil !== undefined ? { gcdUntil: e.gcdUntil } : {}),
+        // ── self 段只合到 you 身上（观战跟随时 you = 被跟随者，语义原样）──
+        ...(isYou && self ? { cooldowns: self.cooldowns } : {}),
+        ...(isYou && self?.gcdUntil !== undefined ? { gcdUntil: self.gcdUntil } : {}),
+        ...(isYou && self?.focusId !== undefined ? { focusId: self.focusId } : {}),
+        ...(isYou && self?.selfMovement ? { selfMovement: self.selfMovement } : {}),
         ...(() => {
           const eq = this.loadouts.get(e.id);
           return eq ? { equipment: eq } : {};

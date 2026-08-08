@@ -27,10 +27,12 @@ import {
   buildSnapshot,
   buildSpectatorSnapshot,
   displayFlagsOf,
+  buildSelfState,
   equipmentViewFor,
   isVisibleTo,
   packEntityFlags,
   spectatableFor,
+  staticsOf,
   type AllyEquipmentSnapshot,
   type EnemyEquipmentSnapshot,
   type SnapshotDeps,
@@ -247,22 +249,35 @@ describe('P11 快照瘦身 —— 位掩码 / 静态块 / 量化', () => {
     expect('f' in meSnap).toBe(false);
   });
 
-  it('★ 静态块首见即发、再见省略；不传 seen 则每份都带（旧行为）', () => {
-    const seen = new Set<ReturnType<typeof allocEntityId>>();
-    const first = buildSnapshot({ ...deps(), seen }, me);
-    const firstFoe = first.entities.find((e) => e.id === foe.id)!;
-    expect(firstFoe.name).toBeDefined();
-    expect(firstFoe.maxHealth).toBeDefined();
-    expect(firstFoe.team).toBeDefined();
+  it('★ 波3：静态块整体离开快照（EntityMeta 通道），staticsOf 是它的唯一投影', () => {
+    const snap = buildSnapshot(deps(), me);
+    // 共享实体段结构上没有任何静态字段 —— 字节级验证
+    const json = JSON.stringify(snap.entities);
+    for (const key of ['"name"', '"classId"', '"maxHealth"', '"maxResources"', '"team"']) {
+      expect(json).not.toContain(key);
+    }
+    // 静态块的投影完整（MatchLoop 首见时随 EntityMeta 发）
+    const st = staticsOf(foe);
+    expect(st.name).toBe(foe.name);
+    expect(st.team).toBe(foe.team);
+    expect(st.classId).toBe(foe.classId);
+    expect(st.maxHealth).toBe(foe.maxHealth);
+  });
 
-    const second = buildSnapshot({ ...deps(), seen }, me);
-    const secondFoe = second.entities.find((e) => e.id === foe.id)!;
-    expect('name' in secondFoe).toBe(false);
-    expect('maxHealth' in secondFoe).toBe(false);
+  it('★★ 波3 的支点：同队任意两个观察者的快照逐字节相同（共享段可行性）', () => {
+    // 造点逐人差异的诱因：潜行敌人、各自的焦点/冷却 —— 都不该进共享段
+    sneak.flags.stealthed = true;
+    me.targets.focus = foe.id;
+    me.cooldowns.set(asSkillId('mage.blink'), 5);
+    mate.cooldowns.set(asSkillId('priest.smite'), 3);
 
-    // 不传 seen —— 每份都带（试验场/纯规则测试的旧行为）
-    const third = buildSnapshot(deps(), me);
-    expect(third.entities.find((e) => e.id === foe.id)!.name).toBeDefined();
+    // `you` 不在共享段里（MatchLoop 拼接时逐人注入）—— 比较时归一掉
+    const shared = (viewer: CombatEntity): string =>
+      JSON.stringify({ ...buildSnapshot(deps(), viewer), you: 0 });
+    const a = shared(me);
+    expect(shared(mate)).toBe(a);
+    // 敌方视角则不同（潜行者进不进快照按队伍分）
+    expect(shared(foe)).not.toBe(a);
   });
 
   it('★ 位置量化到 2 位小数（Predictor.IGNORE_BELOW=0.02m 的硬下界之内）', () => {
@@ -278,16 +293,18 @@ describe('P11 快照瘦身 —— 位掩码 / 静态块 / 量化', () => {
 // ════════════════════════════════════════════════════════════════
 
 describe('docs/08 §4.3 冷却与资源', () => {
-  it('★ 只有自己能看到自己的技能冷却（敌方冷却不发，避免削弱博弈）', () => {
+  it('★ 冷却只住在 self 段（P11 波3）：共享实体段结构上没有冷却字段', () => {
     foe.cooldowns.set(asSkillId('warrior.charge'), 99);
     me.cooldowns.set(asSkillId('mage.blink'), 5);
 
+    // 实体段：谁的冷却都不带 —— 字节级验证（敌方冷却不发，§4.3）
     const snap = buildSnapshot(deps(), me);
-    expect(snap.entities.find((e) => e.id === me.id)!.cooldowns).toBeDefined();
-    expect(snap.entities.find((e) => e.id === foe.id)!.cooldowns).toBeUndefined();
-    // 队友的也不发 —— §4.3 只说了「自己」
-    expect(snap.entities.find((e) => e.id === mate.id)!.cooldowns).toBeUndefined();
+    expect(JSON.stringify(snap)).not.toContain('cooldowns');
     expect(JSON.stringify(snap)).not.toContain('warrior.charge');
+    // self 段：只有自己的（每人的 self 段只发给自己 —— MatchLoop 拼接）
+    const self = buildSelfState(deps(), me);
+    expect(self.cooldowns['mage.blink']).toBe(5);
+    expect(JSON.stringify(self)).not.toContain('warrior.charge');
   });
 
   it('敌方资源值要发 —— 15.2 的目标框需要显示', () => {
@@ -306,25 +323,22 @@ describe('docs/08 §4.3 冷却与资源', () => {
     foe.gcdUntil = 3;
     world.time = 1;
 
-    const snap = buildSnapshot(deps(), me);
-    expect(snap.entities.find((e) => e.id === me.id)!.gcdUntil).toBe(3);
-    expect(snap.entities.find((e) => e.id === foe.id)!.gcdUntil).toBeUndefined();
-    expect(snap.entities.find((e) => e.id === mate.id)!.gcdUntil).toBeUndefined();
+    // P11 波3：GCD 住在 self 段；共享实体段结构上没有它
+    expect(JSON.stringify(buildSnapshot(deps(), me))).not.toContain('gcdUntil');
+    expect(buildSelfState(deps(), me).gcdUntil).toBe(3);
 
     // GCD 已走完 → 字段整个不出现，客户端不必再判「过期了没」
     world.time = 5;
-    const later = buildSnapshot(deps(), me);
-    expect(later.entities.find((e) => e.id === me.id)!.gcdUntil).toBeUndefined();
+    expect(buildSelfState(deps(), me).gcdUntil).toBeUndefined();
   });
 
   it('★ P10：焦点目标回读给自己（5.1 的切换语义在服务器，客户端不记账）', () => {
     me.targets.focus = foe.id;
-    const snap = buildSnapshot(deps(), me);
-    expect(snap.entities.find((e) => e.id === me.id)!.focusId).toBe(foe.id);
-    // 别人的焦点一律不发 —— 焦点是战术意图，敌人知道了就是白送信息
+    // P11 波3：焦点住在 self 段（每人只收自己的）；共享实体段没有它
+    expect(buildSelfState(deps(), me).focusId).toBe(foe.id);
+    // 别人的焦点一律不进共享段 —— 焦点是战术意图，敌人知道了就是白送信息
     mate.targets.focus = foe.id;
-    const snap2 = buildSnapshot(deps(), me);
-    expect(snap2.entities.find((e) => e.id === mate.id)!.focusId).toBeUndefined();
+    expect(JSON.stringify(buildSnapshot(deps(), me))).not.toContain('focusId');
   });
 
   /**
@@ -333,14 +347,13 @@ describe('docs/08 §4.3 冷却与资源', () => {
    */
   it('★★ P10：焦点潜行后不再回读（看不见的焦点等于没有焦点）', () => {
     me.targets.focus = sneak.id;
-    expect(buildSnapshot(deps(), me).entities.find((e) => e.id === me.id)!.focusId)
-      .toBe(sneak.id);
+    expect(buildSelfState(deps(), me).focusId).toBe(sneak.id);
 
     sneak.flags.stealthed = true;
-    const snap = buildSnapshot(deps(), me);
-    expect(snap.entities.find((e) => e.id === me.id)!.focusId).toBeUndefined();
+    const self = buildSelfState(deps(), me);
+    expect(self.focusId).toBeUndefined();
     // 与潜行裁剪同一条标准：id 连字节都不出现
-    expect(JSON.stringify(snap)).not.toContain(`"focusId"`);
+    expect(JSON.stringify(self)).not.toContain(`"focusId"`);
   });
 });
 

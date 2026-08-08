@@ -18,7 +18,7 @@
  */
 
 import * as THREE from 'three';
-import { RANGE, type ArmorySnapshot, type DropSnapshot, type Vec3 } from '@wowpvp/shared';
+import { RANGE, type ArmorySnapshot, type HydratedDropSnapshot as DropSnapshot, type Vec3 } from '@wowpvp/shared';
 
 /** 10.4：刷新前 5 秒进入预告窗口。★ 与 sim 的 `EQUIP.SPAWN_TELEGRAPH_SECONDS` 同值 */
 const TELEGRAPH_SECONDS = 5;

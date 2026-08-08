@@ -27,7 +27,7 @@ import {
   availableArmors, availableWeapons, enemyLoadoutView,
   type Loadout, type LoadoutView, type SwapKind, type SwapStore,
 } from '../sim/loadout.js';
-import { getArmor, getWeapon } from '../data/index.js';
+import { getArmor, getClass, getWeapon } from '../data/index.js';
 import type { FlagState } from '../types/enums.js';
 import type { CtfState } from '../sim/match/flag.js';
 import { secondsToNextWave, type RespawnState } from '../sim/match/respawn.js';
@@ -92,6 +92,21 @@ export const isVisibleTo = (
 
 const isFlagCarrier = (e: CombatEntity, ctf: CtfState): boolean =>
   Object.values(ctf.flags).some((f) => f.carrierId === e.id);
+
+/**
+ * P11 数字量化（有损）。`world.time += dt` 的浮点累加让几乎每个数都拖着
+ * 17 位小数尾巴。方向与下界的论证见 `EntitySnapshot` 文件头第 3 条：
+ * position 的 2 位是 Predictor 死区决定的硬下界；health/资源用 round 不用
+ * floor —— hasResourceFor 的「宁可显示可用」口径的安全侧。
+ */
+const q2 = (v: number): number => Math.round(v * 100) / 100;
+const q3 = (v: number): number => Math.round(v * 1000) / 1000;
+const q1 = (v: number): number => Math.round(v * 10) / 10;
+const q1Record = (m: ReadonlyMap<string, number>): Record<string, number> => {
+  const out: Record<string, number> = {};
+  for (const [k, v] of m) out[k] = q1(v);
+  return out;
+};
 
 // ════════════════════════════════════════════════════════════════
 //  快照结构
@@ -316,55 +331,44 @@ export interface EntitySnapshot {
    *   敌人」，那就退回到 docs/08 §4.1 明确否掉的路上了。
    */
   f?: number;
-  // ── 静态块（首见即发，见文件头第 2 条）──────────────────────
-  name?: string;
-  team?: TeamId;
-  classId?: ClassId;
-  maxHealth?: number;
-  maxResources?: Readonly<Record<string, number>>;
-  /**
-   * 自己的完整移动状态。★ 只有**自己**有这个字段（与 `cooldowns` 同理）。
-   *
-   * ★★ **没有它，客户端预测永远无法精确收敛。**
-   *   docs/08 §5 第 6 步要「从权威状态出发重放剩余输入」，而 `stepMovement`
-   *   读的**不止位置**：速度（有加速度）、是否着地、空中速度上限、起跳高度
-   *   都参与下一步的积分。只发位置的话，重放会从「正确的位置 + 错误的速度」
-   *   出发，于是每次对账都差一点点 —— 而那个「一点点」看起来就像网络抖动，
-   *   查起来极难。（这条是 `Predictor` 的重放不变量测试逼出来的。）
-   *
-   * ★ 只发给自己，所以 12v12 的快照里也只有一份 —— 不是每个实体都带。
-   */
-  selfMovement?: SelfMovementSnapshot;
-  /**
-   * 技能冷却。★ 只有**自己**有这个字段。
-   * docs/08 §4.3：敌方技能冷却不发 —— 规格书没要求，而且会削弱博弈。
-   * 做成可选字段而不是「填个空对象」，是为了让「不小心发出去」需要显式赋值。
-   */
-  cooldowns?: Readonly<Record<string, number>>;
-  /**
-   * 5.1 焦点目标。★ 只有**自己**有这个字段，且**只在焦点对自己可见时**才有。
-   *
-   * ★★ P10：没有它，联网侧的焦点整条链路是死的 —— 协议早有
-   *   `SetTarget slot:'focus'`、服务器早有 `toggleFocus`，但焦点是一个
-   *   **切换**（同一目标再按一次清除），客户端本地猜出来的状态迟早与服务器分叉
-   *   （服务器会因目标不可选中而静默不设）。所以由服务器回读，不由客户端记账。
-   *
-   * ★ 「焦点不可见就不发」是结构性的、不是保险起见：焦点可能在设定之后
-   *   潜行遁走（`pruneInvalidTargets` 会在下一 tick 清掉它，但快照可以在
-   *   任何时刻构建）。发一个我看不见的实体 id 就是把验收 #5 从
-   *   「不能选中」放宽成「能确认他还在」。看不见的焦点等于没有焦点。
-   */
-  focusId?: EntityId;
-  /**
-   * 公共冷却的结束时刻（服务器时间）。★ 只有**自己**有，且**只在 GCD 还没走完时**才有
-   *   —— 没有这个字段就是「不在 GCD 中」，与 `cooldowns` 同一条「可选即事实」的规矩。
-   *
-   * ★ 为什么需要：`cooldowns` 只有**技能自身**的冷却，GCD 是另一个量
-   *   （`CombatEntity.gcdUntil`）。缺了它，联网侧技能栏画不出 GCD 转圈 ——
-   *   而 GCD 恰恰是「按了为什么没反应」最常见的答案。
-   * ★ 敌方的不发，理由与 `cooldowns` 同条（docs/08 §4.3：削弱博弈）。
-   */
+}
+
+/**
+ * P11 波3：快照的**每人私有段**（`SnapshotMessage.self`）。
+ *
+ * ★★ 实体数组是 (世界, 接收者队伍) 的函数（对抗性验证过：潜行裁剪、
+ *   光环掩码、可见性全部只读队伍），**逐人的量恰好只有这几个** ——
+ *   所以服务器把实体段按队伍构建+序列化一次全队共享，私有段单独拼进
+ *   每人的消息。把私有字段再塞回实体数组 = 拆掉共享构建，别那么做。
+ *
+ * 各字段语义与出处（原来都挂在自己的实体上）：
+ *   · `cooldowns` / `gcdUntil` —— docs/08 §4.3：只有自己能看到自己的冷却。
+ *     gcdUntil 只在 GCD 未走完时有；「没有字段 = 不在 GCD 中」
+ *   · `selfMovement` —— docs/08 §5 第 6 步重放的全部积分状态。没有它，
+ *     预测从「正确位置 + 错误速度」出发，每次对账都差一点点
+ *   · `focusId` —— 5.1 焦点回读，且只在焦点对自己可见时有（P10）
+ *   · `pickableDropIds` —— 10.2 可拾取性按接收者算（sim 的 dropViewFor），
+ *     共享段的 drops 只带物品事实，「我能不能捡」在这里
+ *
+ * ★ 观战跟随（11.4）时整个 self 段是**被跟随队友**的 —— 与此前
+ *   `buildSpectatorSnapshot` 复用队友视角的语义逐字相同。
+ */
+export interface SelfStateSnapshot {
+  cooldowns: Readonly<Record<string, number>>;
   gcdUntil?: number;
+  focusId?: EntityId;
+  selfMovement?: SelfMovementSnapshot;
+  /** 只在有临时武装的对局里有意义；无掉落时省略 */
+  pickableDropIds?: readonly number[];
+}
+
+/** P11 波3：一局不变的实体静态块，走每会话的 `EntityMeta` 通道首见即发 */
+export interface EntityStaticsSnapshot {
+  name: string;
+  team: TeamId;
+  classId: ClassId;
+  maxHealth: number;
+  maxResources: Readonly<Record<string, number>>;
 }
 
 /**
@@ -505,11 +509,14 @@ export interface GroundAreaSnapshot {
  * ★★ **刻意没有任何实体 id** —— 与 `ProjectileSnapshot` / `SuddenDeathBlip`
  *   同一个手法。掉落物不属于任何人，画它只需要位置、是什么、归谁的职业。
  *
- * ★★ `pickable` 是**按接收者**算的，而且算它的是 sim 的 `dropViewFor()`，
+ * ★★ 可拾取性是**按接收者**算的，而且算它的是 sim 的 `dropViewFor()`，
  *   不是网络层自己判一遍。10.2 的可拾取判据（职业归属、槽位上限、宠物、
  *   已拥有）只有 `checkPickup()` 一处实现 —— 客户端因此**无法**算出一个
  *   与服务器不同的答案，和 M3 的 `GroundIndicator` 不做几何计算是同一条规矩。
  *   （不这么做的典型后果：图标是亮的，按下去却提示「职业不匹配」。）
+ * ★ P11 波3：`pickable` 从这里搬去了 `SelfStateSnapshot.pickableDropIds` ——
+ *   它是本类型里**唯一**逐接收者的字段，留在这儿会拆掉共享段。
+ *   判据的唯一实现（checkPickup → dropViewFor）不动，只换投递位置。
  */
 export interface DropSnapshot {
   id: number;
@@ -518,8 +525,6 @@ export interface DropSnapshot {
   /** 10.2「看得到所属职业」。消耗品没有归属，显示「通用」 */
   ownerClassName: string;
   itemName: string;
-  /** 对**这个**接收者是否可拾取 */
-  pickable: boolean;
   /**
    * P8：武器/护甲的定义 id（`getWeapon/getArmor` 可查回完整定义）。
    * 消耗品不填。★ 没有它，15.3 第三条「拾取时新旧对比」在客户端根本
@@ -580,10 +585,17 @@ export interface MatchSnapshot {
   respawnIn?: number;
 }
 
-/** P11：客户端 hydrate 之后的快照形状（`entities` 换成完整形态，其余同构）*/
-export interface HydratedSnapshot extends Omit<Snapshot, 'entities'> {
+/**
+ * P11：客户端 hydrate 之后的快照形状 —— `entities` 换成完整形态，
+ * drops 合回按接收者的 `pickable`（来自 self.pickableDropIds）。
+ */
+export interface HydratedSnapshot extends Omit<Snapshot, 'entities' | 'drops'> {
   entities: readonly HydratedEntitySnapshot[];
+  drops: readonly HydratedDropSnapshot[];
 }
+
+/** hydrate 后的掉落物：合回按接收者的 `pickable`（self.pickableDropIds）*/
+export type HydratedDropSnapshot = DropSnapshot & { pickable: boolean };
 
 export interface Snapshot {
   tick: number;
@@ -634,15 +646,6 @@ export interface SnapshotDeps {
    */
   arsenal?: ArsenalStore;
   /**
-   * P11 静态块的「首见」记账（**会被本函数写入**）：该接收者已经见过哪些
-   * 实体。在集合里 = 静态块（name/team/classId/maxHealth/maxResources）省略。
-   *
-   * ★ 生命周期归调用方：服务器按 (Session, MatchLoop) 持有 —— 新对局
-   *   新循环、重连换新 Session，两条路都天然拿到空集合，静态块自动重发。
-   * ★ 可选：不传 = 每份快照都带静态块（纯规则测试与试验场的旧行为）。
-   */
-  seen?: Set<EntityId>;
-  /**
    * P11 波2（快照 10Hz）：**自上一份快照以来**瞬移过的实体。
    *
    * ★★ `MovementState.teleported` 是**每 tick 的脉冲** —— 快照分频后，
@@ -691,23 +694,21 @@ export const buildSnapshot = (deps: SnapshotDeps, viewer: CombatEntity): Snapsho
   /**
    * 10.2 掉落物 / 10.4 军械点。
    *
-   * ★ 掉落物**逐接收者**算可拾取性，所以它在 viewer 分支里而不是像
-   *   projectiles 那样对所有人相同 —— 但它同样不带任何实体 id，
-   *   泄露面为零（见 `DropSnapshot` 的类型注释）。
-   * ★ `pickable` 走 sim 的 `dropViewFor()`，网络层不自己判一遍。
+   * ★ P11 波3：这里只带**物品事实**（是什么、归谁的职业、在哪）——
+   *   全队相同；「我能不能捡」逐接收者，在 `buildSelfState` 的
+   *   `pickableDropIds` 里（同样走 sim 的 dropViewFor，判据实现不动）。
+   *   不带任何实体 id，泄露面为零（见 `DropSnapshot` 的类型注释）。
    */
-  const viewerLoadout = deps.loadouts.get(viewer.id);
   const drops: DropSnapshot[] = (deps.arsenal?.drops ?? []).map((d) => {
-    const view = viewerLoadout ? dropViewFor(d, viewer, viewerLoadout) : undefined;
+    const cls = d.classId === undefined ? undefined : getClass(d.classId);
+    const item = d.weaponId ? getWeapon(d.weaponId) : d.armorId ? getArmor(d.armorId) : undefined;
     const itemId = d.weaponId ?? d.armorId;
     return {
       id: d.id,
       kind: d.kind,
       position: { ...d.position },
-      ownerClassName: view?.ownerClassName ?? '通用',
-      itemName: view?.itemName ?? '未知物品',
-      // ★ 没有装备栏（观战者的跟随视角等）一律不可拾取 —— 保守的那一边
-      pickable: view?.pickableByViewer ?? false,
+      ownerClassName: cls?.name ?? (d.classId === undefined ? '通用' : String(d.classId)),
+      itemName: item?.name ?? '未知物品',
       // P8：武器/护甲带定义 id，客户端才能做 15.3 的新旧对比（消耗品不带）
       ...(itemId !== undefined ? { itemId: itemId as string } : {}),
     };
@@ -750,7 +751,6 @@ const snapshotEntity = (
   viewer: CombatEntity,
   deps: SnapshotDeps,
 ): EntitySnapshot => {
-  const isSelf = e.id === viewer.id;
   const ctx: VisibilityContext = deps.ctf ? { ctf: deps.ctf } : {};
   /**
    * ★ S7：光环 id（`rogue.rupture`）泄露施加者职业。施加者对 viewer 不可见时
@@ -766,19 +766,8 @@ const snapshotEntity = (
   };
 
   /**
-   * P11 量化（有损，方向与下界见 `EntitySnapshot` 文件头第 3 条）。
-   * `world.time += dt` 的浮点累加让几乎每个数都拖着 17 位小数尾巴 ——
-   * 每实体白付 ~55B/tick。
+   * 量化见模块级 q1/q2/q3（P11，有损，方向与下界见 `EntitySnapshot` 文件头第 3 条）
    */
-  const q2 = (v: number): number => Math.round(v * 100) / 100;
-  const q3 = (v: number): number => Math.round(v * 1000) / 1000;
-  const q1 = (v: number): number => Math.round(v * 10) / 10;
-  const q1Record = (m: ReadonlyMap<string, number>): Record<string, number> => {
-    const out: Record<string, number> = {};
-    for (const [k, v] of m) out[k] = q1(v);
-    return out;
-  };
-
   const mask = packEntityFlags(
     e.alive,
     (deps.movement?.get(e.id)?.teleported ?? false) ||
@@ -814,52 +803,73 @@ const snapshotEntity = (
     ...(mask !== 0 ? { f: mask } : {}),
   };
 
-  /**
-   * P11 静态块：只在该接收者**第一次**看到这个实体时携带（含潜行者现身、
-   * 宠物召出）。★ 这段代码物理上在 `buildSnapshot` 的可见性闸门之后 ——
-   * 「静态块只可能发给已经通过 isVisibleTo 的实体」是结构性的。
-   * 没传 seen（纯规则测试、试验场）= 每份都带 —— 行为与旧版等价。
-   */
-  if (!deps.seen || !deps.seen.has(e.id)) {
-    deps.seen?.add(e.id);
-    snap.name = e.name;
-    snap.team = e.team;
-    snap.classId = e.classId;
-    snap.maxHealth = e.maxHealth;
-    snap.maxResources = q1Record(e.maxResources);
-  }
+  return snap;
+};
 
-  // docs/08 §4.3：只有自己能看到自己的冷却
-  if (isSelf) {
-    snap.cooldowns = Object.fromEntries(e.cooldowns);
-    // GCD 只在还没走完时下发（见字段注释：没有字段 = 不在 GCD 中）
-    if (e.gcdUntil > deps.world.time) snap.gcdUntil = e.gcdUntil;
-    /**
-     * 5.1 焦点回读。★ 只发**对自己可见**的焦点 —— 见 `focusId` 的字段注释：
-     *   看不见的焦点等于没有焦点，否则就等于告诉我「那个隐身的人还在场上」。
-     */
-    const focus = e.targets.focus !== undefined
-      ? deps.world.entities.get(e.targets.focus)
-      : undefined;
-    if (focus && isVisibleTo(focus, viewer, ctx)) snap.focusId = focus.id;
-  }
+/**
+ * P11 波3：一局不变的静态块投影。MatchLoop 在该会话**首见**这个实体时
+ * 随 `EntityMeta` 消息发一次（潜行者现身、宠物召出、重连都自动覆盖 ——
+ * 判据是「进没进过这条会话的可见集合」，记账在服务器的每会话 seen）。
+ * ★ 从快照里搬出来的动机：它曾是快照实体里**唯一**逐会话不同的部分，
+ *   留在里面就没法做「同队共享同一份实体段字节」。
+ */
+export const staticsOf = (e: CombatEntity): EntityStaticsSnapshot => ({
+  name: e.name,
+  team: e.team,
+  classId: e.classId,
+  maxHealth: e.maxHealth,
+  maxResources: q1Record(e.maxResources),
+});
+
+/**
+ * P11 波3：快照的每人私有段（字段清单与规则出处见 `SelfStateSnapshot`）。
+ *
+ * ★ `viewer` 是**有效视角**：观战跟随时传被跟随的队友 —— 与
+ *   `buildSpectatorSnapshot` 复用队友视角的既有语义逐字一致。
+ */
+export const buildSelfState = (deps: SnapshotDeps, viewer: CombatEntity): SelfStateSnapshot => {
+  const ctx: VisibilityContext = deps.ctf ? { ctf: deps.ctf } : {};
+  const self: SelfStateSnapshot = {
+    // docs/08 §4.3：只有自己能看到自己的冷却
+    cooldowns: Object.fromEntries(viewer.cooldowns),
+  };
+  // GCD 只在还没走完时下发（「可选即事实」）
+  if (viewer.gcdUntil > deps.world.time) self.gcdUntil = viewer.gcdUntil;
+
+  /**
+   * 5.1 焦点回读。★ 只发**对自己可见**的焦点：看不见的焦点等于没有焦点，
+   * 否则就等于告诉我「那个隐身的人还在场上」（验收 #5）。
+   */
+  const focus = viewer.targets.focus !== undefined
+    ? deps.world.entities.get(viewer.targets.focus)
+    : undefined;
+  if (focus && isVisibleTo(focus, viewer, ctx)) self.focusId = focus.id;
 
   // docs/08 §5 第 6 步：只有自己需要重放，所以也只有自己带完整移动状态
-  if (isSelf) {
-    const m = deps.movement?.get(e.id);
-    if (m) {
-      snap.selfMovement = {
-        velocity: { ...m.velocity },
-        grounded: m.grounded,
-        airSpeedCap: m.airSpeedCap,
-        fallStartY: m.fallStartY,
-        // ★ 与 tickWorld 第 2 步**同一个函数** —— 两边同源才谈得上预测收敛
-        speedMultiplier: moveSpeedMultiplierOf(deps.auras, e, deps.world.time),
-      };
-    }
+  const m = deps.movement?.get(viewer.id);
+  if (m) {
+    self.selfMovement = {
+      velocity: { ...m.velocity },
+      grounded: m.grounded,
+      airSpeedCap: m.airSpeedCap,
+      fallStartY: m.fallStartY,
+      // ★ 与 tickWorld 第 2 步**同一个函数** —— 两边同源才谈得上预测收敛
+      speedMultiplier: moveSpeedMultiplierOf(deps.auras, viewer, deps.world.time),
+    };
   }
 
-  return snap;
+  /**
+   * 10.2 可拾取性 —— 判据唯一实现仍是 sim 的 `dropViewFor`（→checkPickup），
+   * 这里只换投递位置。没有装备栏（极端时序）一律不可拾取 —— 保守的那一边。
+   */
+  const drops = deps.arsenal?.drops ?? [];
+  if (drops.length > 0) {
+    const loadout = deps.loadouts.get(viewer.id);
+    self.pickableDropIds = loadout
+      ? drops.filter((d) => dropViewFor(d, viewer, loadout).pickableByViewer).map((d) => d.id)
+      : [];
+  }
+  return self;
 };
 
 /**
@@ -956,6 +966,14 @@ export const spectatableFor = (world: World, viewer: CombatEntity): CombatEntity
   );
 
 /** 观战快照与活人共用同一条裁剪链路 —— 死了不会因此看到更多东西 */
+/**
+ * 11.4 观战跟随的合法性判据 —— **唯一实现**。
+ * `buildSpectatorSnapshot` 与服务器的共享段广播（MatchLoop）都用它：
+ * 各抄一遍的后果是其中一份漏了 `isPet` 或阵营检查而无人发现。
+ */
+export const isLegalFollow = (following: CombatEntity, viewer: CombatEntity): boolean =>
+  isFriendly(following, viewer) && following.alive && !following.isPet;
+
 export const buildSpectatorSnapshot = (
   deps: SnapshotDeps,
   viewer: CombatEntity,
@@ -963,7 +981,7 @@ export const buildSpectatorSnapshot = (
 ): Snapshot | undefined => {
   // ★ 只能跟随己方存活玩家。不合法的跟随目标返回 undefined，
   //   而不是「退化成自由镜头」—— 后者正好是 11.4 禁止的那种情况
-  if (!isFriendly(following, viewer) || !following.alive || following.isPet) return undefined;
+  if (!isLegalFollow(following, viewer)) return undefined;
   // 视角是队友的，所以裁剪也按**队友**来做：他看不见的潜行者观战者也看不见
   return buildSnapshot(deps, following);
 };

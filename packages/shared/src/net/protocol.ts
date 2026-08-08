@@ -26,7 +26,8 @@ import type { Vec3 } from '../math/vec3.js';
 import type { ArsenalOption } from '../sim/arsenal.js';
 import type {
   AllyEquipmentSnapshot, ArmorySnapshot, DropSnapshot, EnemyEquipmentSnapshot,
-  EntitySnapshot, GroundAreaSnapshot, MatchSnapshot, ProjectileSnapshot,
+  EntitySnapshot, EntityStaticsSnapshot, GroundAreaSnapshot, MatchSnapshot,
+  ProjectileSnapshot, SelfStateSnapshot,
 } from './visibility.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -269,6 +270,12 @@ export interface SnapshotMessage {
   /** 已确认到第几号输入（docs/08 §5 第 4 步）*/
   ackSeq: number;
   you: EntityId;
+  /**
+   * P11 波3：每人私有段（cooldowns/gcd/焦点/重放状态/可拾取列表）。
+   * `entities` 从此是**全队共享**的字节 —— 私有的都在这儿，见
+   * `SelfStateSnapshot` 的 ★★。观战跟随时整段是被跟随队友的（11.4 语义原样）。
+   */
+  self?: SelfStateSnapshot;
   entities: readonly EntitySnapshot[];
   /** 14.4 投射物主体（不带实体引用，见 visibility.ts 的类型注释）*/
   projectiles: readonly ProjectileSnapshot[];
@@ -300,18 +307,20 @@ export type ServerMessage =
       reconnectToken: string }
   | SnapshotMessage
   /**
-   * P11：装备视图的独立通道 —— 装备**不再每 tick 进快照**（基本静态的
-   * 153B/实体被 20Hz 重发曾是快照第二大字节项）。服务器在发快照**之前**
-   * 按「该接收者视角下的视图指纹变了」才发这条（含首见），客户端按
-   * entityId 缓存并在 hydrate 时合回实体。
+   * P11：实体元数据的每会话通道 —— 装备与一局不变的静态块**不再每 tick
+   * 进快照**（装备 153B/实体、静态块 ~90B/实体被 20Hz 重发曾合占快照四成）。
+   * 服务器在发快照**之前**发这条：首见带 statics + equipment，之后只在
+   * 「该接收者视角下的装备视图指纹变了」时带 equipment。客户端按 entityId
+   * 缓存并在 hydrate 时合回实体。
    * ★ 裁剪语义原样：items 里只有**该接收者本份快照可见**的实体，敌人是
    *   `EnemyEquipmentSnapshot`（无备用槽位，10.6 / 验收 #36）——
    *   `verify:m10` 第 2 条现在盯的就是这条消息流。
    * ★ 不走 dispatch() 广播 —— 与 Snapshot 同为按接收者构建的私信。
    */
-  | { t: 'EntityLoadouts'
+  | { t: 'EntityMeta'
       items: readonly { entityId: EntityId
-        equipment: AllyEquipmentSnapshot | EnemyEquipmentSnapshot }[] }
+        statics?: EntityStaticsSnapshot
+        equipment?: AllyEquipmentSnapshot | EnemyEquipmentSnapshot }[] }
 
   // ── 事件流：驱动表现与统计，**不参与状态重建**（docs/08 §3.3）──
   | { t: 'CastStarted'; casterId: EntityId; skillId: SkillId; duration: number
@@ -421,7 +430,7 @@ export type ServerMessage =
 export type ServerMessageKind = ServerMessage['t'];
 
 export const ALL_SERVER_MESSAGE_KINDS: readonly ServerMessageKind[] = [
-  'Welcome', 'RoomState', 'MatchStart', 'Snapshot', 'EntityLoadouts',
+  'Welcome', 'RoomState', 'MatchStart', 'Snapshot', 'EntityMeta',
   'CastStarted', 'CastResolved', 'CastInterrupted', 'CastFailed', 'Damage', 'Heal',
   'AuraApplied', 'AuraRemoved', 'Death', 'ArsenalOffer', 'PickupResult',
   'FlagEvent', 'RoundEnd', 'MatchEnd', 'MatchStats',

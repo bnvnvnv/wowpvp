@@ -178,11 +178,19 @@ console.log('\n── 10.1–10.7：武装竞技场（此前整条链路在联�
    * 10.2 的核心：**同一件东西，两个人看到的 `pickable` 不同**。
    * 红方是战士、蓝方是法师，地上有双方职业各一件武器。
    */
+  /**
+   * ★ P11 波3 重定向：`pickable` 从共享的 drops 段搬去了每人的
+   *   `self.pickableDropIds`（共享段只带物品事实）—— 断言跟着搬，
+   *   判据实现（sim 的 checkPickup）不动。
+   */
   const warriorDrop = redSnap.drops.find((d) => d.ownerClassName === '战士');
-  const asBlueSees = blueSnap.drops.find((d) => d.id === warriorDrop?.id);
+  const redCanPick = warriorDrop !== undefined
+    && (redSnap.self?.pickableDropIds ?? []).includes(warriorDrop.id);
+  const blueCanPick = warriorDrop !== undefined
+    && (blueSnap.self?.pickableDropIds ?? []).includes(warriorDrop.id);
   check('6', '★★ pickable 按接收者算：战士的武器只有战士拿得走（10.2 / #29）',
-    warriorDrop?.pickable === true && asBlueSees?.pickable === false,
-    `战士武器「${warriorDrop?.itemName}」：红方 pickable=${warriorDrop?.pickable}、蓝方 pickable=${asBlueSees?.pickable}`);
+    warriorDrop !== undefined && redCanPick && !blueCanPick,
+    `战士武器「${warriorDrop?.itemName}」：红方可拾=${redCanPick}、蓝方可拾=${blueCanPick}`);
 
   // ── 10.4 开箱与三选一 ────────────────────────────────────────
   // 把红方挪到箱子边上（服务器仍会自己校验 2.2 米，这里只是走过去）
@@ -202,17 +210,26 @@ console.log('\n── 10.1–10.7：武装竞技场（此前整条链路在联�
     blue.all('ArsenalOffer').length === 0 && !blue.raw.some((f) => f.includes('ArsenalOffer')),
     `蓝方收到 ArsenalOffer ${blue.all('ArsenalOffer').length} 条`);
 
-  const before = snapsOf(red).at(-1)!.entities.find((e) => e.id === redId)!.equipment;
-  const beforeCount = 'allWeaponIds' in before
-    ? before.allWeaponIds.length + before.allArmorIds.length : -1;
+  /**
+   * ★ P11 波3 重定向：装备住在 `EntityMeta` 通道（指纹变了才发）。
+   *   before 从服务器白盒读（领取前客户端收不到新 meta —— 没变化就不发，
+   *   这正是通道的语义）；after 必须来自**客户端真实收到的字节**：
+   *   领取改变指纹 → 服务器必然推一条新的 EntityMeta，客户端看得见新装备。
+   */
+  const { availableWeapons, availableArmors } = await import('../packages/shared/src/index.ts');
+  const redLoadout = match.loadouts.get(redId)!;
+  const beforeCount = availableWeapons(redLoadout).length + availableArmors(redLoadout).length;
 
   red.clear();
   red.send({ t: 'ChooseArsenal', armoryId: armory.id, choice: ArsenalChoice.Offense });
   await sleep(250);
-  const after = snapsOf(red).at(-1)!.entities.find((e) => e.id === redId)!.equipment;
-  const afterCount = 'allWeaponIds' in after
-    ? after.allWeaponIds.length + after.allArmorIds.length : -1;
-  check('8', '★★ 领取后装备栏真的多了一件（快照里看得见）',
+  const metaEquip = red.all('EntityMeta')
+    .flatMap((m) => m.items.filter((it) => it.entityId === redId && it.equipment !== undefined))
+    .map((it) => it.equipment!)
+    .at(-1);
+  const afterCount = metaEquip && 'allWeaponIds' in metaEquip
+    ? metaEquip.allWeaponIds.length + metaEquip.allArmorIds.length : -1;
+  check('8', '★★ 领取后装备栏真的多了一件（EntityMeta 推送里看得见）',
     afterCount > beforeCount,
     `装备件数 ${beforeCount} → ${afterCount}`);
 
@@ -244,13 +261,18 @@ console.log('\n── 10.1–10.7：武装竞技场（此前整条链路在联�
     pickup.some((p) => p.ok && p.dropId === mineDrop.id),
     `PickupResult：${pickup.map((p) => `${p.dropId}:${p.ok ? 'ok' : p.reason}`).join('，') || '（一条都没收到）'}`);
 
-  check('11b', '★ 拿到的东西进了道具栏（10.6 战场道具栏）',
+  // ★ P11 波3：装备住在 EntityMeta 通道 —— 拾取改变指纹，客户端必收到新视图
+  const latestRedEquip = () => red.all('EntityMeta')
+    .flatMap((m) => m.items.filter((it) => it.entityId === redId && it.equipment !== undefined))
+    .map((it) => it.equipment!)
+    .at(-1);
+  check('11b', '★ 拿到的东西进了道具栏（10.6 战场道具栏，EntityMeta 推送）',
     (() => {
-      const eq = snapsOf(red).at(-1)?.entities.find((e) => e.id === redId)?.equipment;
+      const eq = latestRedEquip();
       return !!eq && 'consumableIds' in eq && eq.consumableIds.length > 0;
     })(),
     `道具栏：${(() => {
-      const eq = snapsOf(red).at(-1)?.entities.find((e) => e.id === redId)?.equipment;
+      const eq = latestRedEquip();
       return eq && 'consumableIds' in eq ? eq.consumableIds.join(',') : '（读不到）';
     })()}`);
 

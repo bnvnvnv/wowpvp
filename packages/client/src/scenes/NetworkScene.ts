@@ -48,7 +48,7 @@ import {
   type ArmorySnapshot,
   type AwardView,
   type CombatEntity,
-  type DropSnapshot,
+  type HydratedDropSnapshot as DropSnapshot,
   type MatchStatsRow,
   type EntityId,
   type GroundAreaSnapshot,
@@ -838,9 +838,9 @@ export class NetworkScene {
         break;
       }
 
-      /** P11 装备通道 —— 必然先于含新实体的快照到达（服务器保证顺序）*/
-      case 'EntityLoadouts':
-        this.hydrator.setLoadouts(msg.items);
+      /** P11 元数据通道（静态块+装备）—— 必然先于含新实体的快照到达 */
+      case 'EntityMeta':
+        this.hydrator.setMeta(msg.items);
         break;
 
       case 'Snapshot': {
@@ -860,34 +860,30 @@ export class NetworkScene {
         }
         /**
          * ★ P11 解码边界：wire 形态在这里一次性还原成完整形态
-         *   （位掩码展开、静态块合并、装备合并 —— 见 SnapshotHydrator），
-         *   下游全部读 `entities`，不再看 msg.entities。
+         *   （位掩码展开、静态块/装备从 EntityMeta 缓存合并、self 段合到
+         *   you 实体、drops 合回 pickable —— 见 SnapshotHydrator），
+         *   下游全部读 `hydrated`，不再看 msg 的原始字段。
          */
-        const entities = this.hydrator.hydrate(msg.entities);
+        const hydrated = this.hydrator.hydrateSnapshot(msg);
+        const entities = hydrated.entities;
         this.interp.push(msg.time, entities);
         this.lastEntities = entities;
         // 14.4 投射物 / 14.3 地面区域：留给 draw 里的 spellVfx.frame 消费
         this.lastProjectiles = msg.projectiles;
         this.lastGrounds = msg.grounds;
         // 10.2 / 10.4：军械数据留给 draw 里的 arsenalView 消费
-        this.lastDrops = msg.drops;
+        // （drops 已在 hydrate 时合回按接收者的 pickable —— 波3）
+        this.lastDrops = hydrated.drops;
         this.lastArmories = msg.armories;
         this.lastMatch = msg.match;
         this.selfTeam = entities.find((e) => e.id === msg.you)?.team ?? this.selfTeam;
         /**
          * 5.1 焦点回读。★ 服务器是切换语义的唯一实现处，所以焦点**只从快照来**
-         *   （字段只发给自己、且焦点不可见时不发 —— 见 visibility.ts）。
+         *   （波3 后住在 self 段、由 hydrate 合回 you 实体 —— 语义原样）。
          *   焦点离场/潜行遁走时字段自然消失，客户端不需要一条「清焦点」的逻辑。
          */
         this.view.focusId = entities.find((e) => e.id === msg.you)?.focusId;
-        this.view.ingest(
-          {
-            tick: msg.tick, you: msg.you, entities,
-            projectiles: msg.projectiles, grounds: msg.grounds,
-            drops: msg.drops, armories: msg.armories, match: msg.match,
-          },
-          msg.time,
-        );
+        this.view.ingest(hydrated, msg.time);
 
         const me = entities.find((e) => e.id === msg.you);
         if (me && this.predictor) {

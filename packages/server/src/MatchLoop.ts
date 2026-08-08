@@ -33,13 +33,15 @@ import {
   beginSwap,
   beginSwing,
   buildSnapshot,
-  buildSpectatorSnapshot,
+  buildSelfState,
   cancelCast,
   cancelFlagInteract,
   chooseFromArmory,
   ctfWinner,
   distance2D,
   equipmentViewFor,
+  isLegalFollow,
+  staticsOf,
   getEntity,
   getWeapon,
   isVisibleTo,
@@ -61,6 +63,7 @@ import {
   type EntityId,
   type InteractTarget,
   type Match,
+  type Snapshot,
   type MovementInput,
   type ServerMessage,
   type TeamId,
@@ -942,14 +945,56 @@ export class MatchLoop {
       fpOf.set(e.id, equipFingerprint(e, m.loadouts.get(e.id), m.swaps.get(e.id)));
     }
 
+    /**
+     * ★★ P11 波3：**共享段按队伍构建+序列化一次，全队复用。**
+     *
+     *   快照的实体段是 (世界, 接收者队伍) 的函数 —— 潜行裁剪
+     *   （isHiddenFromViewer 只读 isHostile）、光环掩码（auraSourceVisible
+     *   走 isVisibleTo）、装备视图全部只依赖队伍，对抗性验证连同
+     *   「潜行旗手/死亡观察者/宠物」的边角都实证过：同队任意两人的
+     *   实体段逐字节相同。此前 24 个观察者各建各序列化 = O(N²)，
+     *   现在每队一次 + 每人一小段 self —— O(N)。
+     *
+     *   逐人的量恰好是：ackSeq / you / SelfStateSnapshot（cooldowns、gcd、
+     *   焦点、重放状态、可拾取列表）—— 全在 `buildSelfState`，见其 ★★。
+     *
+     * ★ 序列化共享：把共享对象 stringify 一次、掐掉外层花括号得到
+     *   `"tick":…,"entities":[…]` 片段，每人的消息 = 模板拼接片段 + 私有段。
+     *   拼接的正确性由「片段来自 JSON.stringify、私有段各自 JSON.stringify、
+     *   模板只补语法字符」保证 —— 没有手写转义。
+     *
+     * ★ 兜底断言每队跑一次（可见性是队伍级的，代表视角与全队等价）；
+     *   `sharedByTeam` 以 TeamId 为键 —— 「把红队的帧发给蓝队」要先把
+     *   错误的队伍号递进 Map，而队伍号直接取自接收者实体，写不出来。
+     */
+    const time = Math.round(m.world.time * 1000) / 1000;
+    const sharedByTeam = new Map<TeamId, { fragment: string; entities: Snapshot['entities'] }>();
+    const sharedFor = (rep: CombatEntity): { fragment: string; entities: Snapshot['entities'] } => {
+      let shared = sharedByTeam.get(rep.team);
+      if (!shared) {
+        const snap = buildSnapshot(snapDeps, rep);
+        assertNoHiddenEntities(snap, m.world, rep, m.ctf ? { ctf: m.ctf.state } : undefined);
+        const fragment = JSON.stringify({
+          tick: snap.tick,
+          time,
+          entities: snap.entities,
+          projectiles: snap.projectiles,
+          grounds: snap.grounds,
+          drops: snap.drops,
+          armories: snap.armories,
+          match: snap.match,
+        }).slice(1, -1);
+        shared = { fragment, entities: snap.entities };
+        sharedByTeam.set(rep.team, shared);
+      }
+      return shared;
+    };
+
     for (const s of this.deps.sessions()) {
       /**
-       * ★ P2（技术债总账）：人机会话跳过快照的**构建与序列化** ——
-       *   BotSocket 反正把字符串丢掉，此前每个人机每 tick 白付一次完整
-       *   裁剪 + `JSON.stringify`，满人机房开销 = 满人房。
-       *   ⚠️ 跳的是浪费，不是可见性语义（M16b 红线原样）：人机决策层
-       *   （BotDriver）读的是 world，从来不消费快照；每条真人会话的
-       *   `assertNoHiddenEntities` 照跑不误。
+       * ★ P2（技术债总账）：人机会话跳过快照的构建与序列化 ——
+       *   BotSocket 反正把字符串丢掉；人机决策层（BotDriver）读的是 world，
+       *   从来不消费快照。跳的是浪费，不是可见性语义（M16b 红线原样）。
        */
       if (s.isBot) continue;
       const viewer = this.viewerOf(s.playerId);
@@ -964,64 +1009,54 @@ export class MatchLoop {
 
       /**
        * ★ 11.4：**死了**才走观战视角，活着的人跟随别人就是透视。
-       *   `buildSpectatorSnapshot` 复用被跟随者的裁剪结果，所以观战者
-       *   看到的不会比那个队友更多；跟随目标不合法时它返回 undefined,
-       *   那就退回自己的视角，而不是降级成自由镜头（11.4 明确不允许）。
+       *   跟随目标必须是己方存活玩家（spectatableFor 的规则），不合法就
+       *   退回自己的视角，而不是降级成自由镜头（11.4 明确不允许）。
+       *   跟随只能是队友 ⇒ 共享段同一份；you 与 self 段换成被跟随者 ——
+       *   与此前 buildSpectatorSnapshot 复用队友视角的语义逐字相同。
        */
       const following = !viewer.alive && s.following !== undefined
         ? m.world.entities.get(s.following)
         : undefined;
-      const perViewerDeps = { ...snapDeps, seen: account.seen };
-      const snapshot = (following && buildSpectatorSnapshot(perViewerDeps, viewer, following))
-        ?? buildSnapshot(perViewerDeps, viewer);
+      const effectiveViewer =
+        following && isLegalFollow(following, viewer) ? following : viewer;
 
-      assertNoHiddenEntities(
-        snapshot, m.world, following ?? viewer,
-        m.ctf ? { ctf: m.ctf.state } : undefined,
-      );
+      const shared = sharedFor(effectiveViewer);
 
       /**
-       * ★ P11 装备通道：对本份快照可见的每个实体查它的**原始状态指纹**
-       *   （见 `equipFingerprints` —— 每实体每 tick 只算一次，与观察者无关），
-       *   与该会话上次发出的比对，变了（含首见）才构建视图进 `EntityLoadouts`。
-       *   指纹法而不是 sim 挂钩 —— 挂钩会有「新增一条改装备的路径忘了通知」
-       *   的静默失效，指纹漏不掉。**必须发在快照之前**：客户端 hydrate 从
-       *   装备缓存合回实体，首见的实体要在快照到达前拿到装备。
-       * ★ 视图按接收者的**有效视角**（观战 = 被跟随者）算 —— 与快照裁剪
-       *   同一个 viewer；跟随只能是队友（11.4），阵营视图不会因此错型。
+       * ★ P11 EntityMeta 通道：首见带静态块 + 装备，之后只在装备指纹变了时
+       *   带装备。指纹法而不是 sim 挂钩 —— 挂钩会有「新增一条改装备的路径
+       *   忘了通知」的静默失效，指纹漏不掉。**必须发在快照之前**：客户端
+       *   hydrate 从缓存合回实体，首见的实体要在快照到达前拿到元数据。
        */
-      const effectiveViewer = following ?? viewer;
-      let loadoutItems:
-        { entityId: EntityId; equipment: ReturnType<typeof equipmentViewFor> }[] | undefined;
-      for (const se of snapshot.entities) {
+      let metaItems:
+        {
+          entityId: EntityId;
+          statics?: ReturnType<typeof staticsOf>;
+          equipment?: ReturnType<typeof equipmentViewFor>;
+        }[] | undefined;
+      for (const se of shared.entities) {
         const fp = fpOf.get(se.id);
-        if (fp === undefined || account.equipFp.get(se.id) === fp) continue;
+        const firstSeen = !account.seen.has(se.id);
+        const equipChanged = fp !== undefined && account.equipFp.get(se.id) !== fp;
+        if (!firstSeen && !equipChanged) continue;
         const e = m.world.entities.get(se.id);
         if (!e) continue;
-        account.equipFp.set(se.id, fp);
-        (loadoutItems ??= []).push({
+        account.seen.add(se.id);
+        if (fp !== undefined) account.equipFp.set(se.id, fp);
+        (metaItems ??= []).push({
           entityId: se.id,
-          // ★ 只有指纹变了才走到这里 —— 视图构建（含数组拷贝）是稀有路径
+          ...(firstSeen ? { statics: staticsOf(e) } : {}),
+          // ★ 只有首见/指纹变了才构建视图（含数组拷贝）—— 稀有路径
           equipment: equipmentViewFor(e, effectiveViewer, m),
         });
       }
-      if (loadoutItems) s.send({ t: 'EntityLoadouts', items: loadoutItems });
+      if (metaItems) s.send({ t: 'EntityMeta', items: metaItems });
 
-      s.send({
-        t: 'Snapshot',
-        tick: snapshot.tick,
-        // P11：world.time 是浮点累加，17 位小数进快照顶层还渗进每个
-        // expiresAt 比较 —— 量化到毫秒（3 位）
-        time: Math.round(m.world.time * 1000) / 1000,
-        ackSeq: s.ackSeq,
-        you: snapshot.you,
-        entities: snapshot.entities,
-        projectiles: snapshot.projectiles,
-        grounds: snapshot.grounds,
-        drops: snapshot.drops,
-        armories: snapshot.armories,
-        match: snapshot.match,
-      });
+      const self = buildSelfState(snapDeps, effectiveViewer);
+      s.sendRaw(
+        `{"t":"Snapshot","ackSeq":${s.ackSeq},"you":${effectiveViewer.id},` +
+        `"self":${JSON.stringify(self)},${shared.fragment}}`,
+      );
     }
   }
 
@@ -1183,7 +1218,7 @@ export const referencedEntities = (msg: ServerMessage): EntityId[] => {
     //    赛后/房间广播（RoomState/RoundEnd/MatchEnd/MatchStats/Peer*，
     //    对局结束或房间阶段没有需要瞒的实体）──────────────────
     case 'Welcome': case 'RoomState': case 'MatchStart': case 'Snapshot':
-    case 'EntityLoadouts':
+    case 'EntityMeta':
     case 'CastFailed': case 'ArsenalOffer': case 'PickupResult':
     case 'RoundEnd': case 'MatchEnd': case 'MatchStats': case 'Rejected':
     case 'PeerDisconnected': case 'PeerReconnected': case 'PeerEliminated':

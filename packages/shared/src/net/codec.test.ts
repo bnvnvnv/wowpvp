@@ -7,15 +7,15 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { asClassId, asEntityId, asSkillId, TEAM_RED } from '../types/ids.js';
+import { asEntityId, asSkillId } from '../types/ids.js';
 import { School } from '../types/enums.js';
 import { decodeServerMessage, encodeServerMessage, parseClientMessage } from './codec.js';
 import type { ServerMessage } from './protocol.js';
 import type { EntitySnapshot } from './visibility.js';
 
 /**
- * 自己的一份最小实体快照（P11 wire 形态：位掩码 + 首见静态块 + 无装备）。
- * ★ 只为往返测试拼形状，不代表任何真实局面
+ * 一份最小实体快照（P11 波3 wire 形态：共享段，静态块/装备/self 字段
+ * 都走别的通道）。★ 只为往返测试拼形状，不代表任何真实局面
  */
 const selfEntity: EntitySnapshot = {
   id: asEntityId(1),
@@ -24,12 +24,6 @@ const selfEntity: EntitySnapshot = {
   health: 100,
   resources: { mana: 50 },
   auras: [],
-  // 静态块（首见形态）
-  name: '我',
-  team: TEAM_RED,
-  classId: asClassId('mage'),
-  maxHealth: 100,
-  maxResources: { mana: 100 },
 };
 
 describe('★ 服务器消息编解码往返', () => {
@@ -75,10 +69,12 @@ describe('★ 服务器消息编解码往返', () => {
    * 且只在成立时发）—— 与 crit/overkill 属于同一类，所以进同一张回归网：
    * 换二进制编码时最容易被漏掉的正是「不总是出现」的那几个。
    */
-  it('★ P10：快照的 focusId/gcdUntil 往返无损', () => {
+  it('★ P10/波3：self 段的 focusId/gcdUntil 往返无损', () => {
     const msg: ServerMessage = {
       t: 'Snapshot', tick: 3, time: 0.15, ackSeq: 7, you: asEntityId(1),
-      entities: [{ ...selfEntity, focusId: asEntityId(2), gcdUntil: 1.25 }],
+      // P11 波3：这两个字段住在每人的 self 段（实体段是全队共享的）
+      self: { cooldowns: { 'mage.blink': 5 }, focusId: asEntityId(2), gcdUntil: 1.25 },
+      entities: [selfEntity],
       projectiles: [], grounds: [], drops: [], armories: [],
       match: { dampening: 0, suddenDeath: false },
     };

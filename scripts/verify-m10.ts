@@ -151,12 +151,12 @@ console.log('\n── 验收 #5 / #36：裁剪发生在快照层，不是客户�
   const redEntity = match.world.entities.get(redId)!;
 
   /**
-   * ★ P11：开局那批 `EntityLoadouts`（每实体首见必发一次）要在 clear 之前
-   *   捕获 —— 装备视图按「指纹变了才发」下发，之后不再重复；check 2 的
-   *   非平凡半（蓝方真的收到过红方的装备视图）就靠这份。
+   * ★ P11：开局那批 `EntityMeta`（每实体首见必发静态块+装备）要在 clear 之前
+   *   捕获 —— 之后只在指纹变了才发；check 2 的非平凡半（蓝方真的收到过
+   *   红方的装备视图）就靠这份。
    */
   const earlyRedLoadouts = blue.msgs
-    .filter((m): m is Extract<ServerMessage, { t: 'EntityLoadouts' }> => m.t === 'EntityLoadouts')
+    .filter((m): m is Extract<ServerMessage, { t: 'EntityMeta' }> => m.t === 'EntityMeta')
     .flatMap((m) => m.items.filter((it) => it.entityId === redId));
 
   applyAura(match.auras, redEntity, STEALTH_AURA, redId, match.world.time);
@@ -181,8 +181,8 @@ console.log('\n── 验收 #5 / #36：裁剪发生在快照层，不是客户�
    *   entityId 出现在里面同样是泄露，纳入同一条断言的扫描面。
    */
   const loadoutsOf = (c: Client) =>
-    c.msgs.filter((m): m is Extract<ServerMessage, { t: 'EntityLoadouts' }> =>
-      m.t === 'EntityLoadouts');
+    c.msgs.filter((m): m is Extract<ServerMessage, { t: 'EntityMeta' }> =>
+      m.t === 'EntityMeta');
   const leakedLoadouts = loadoutsOf(blue)
     .filter((m) => m.items.some((it) => it.entityId === redId));
   check('1', '★★ 未被发现的潜行者不出现在传输字节里（快照与 EntityLoadouts 两条通道）',
@@ -209,20 +209,32 @@ console.log('\n── 验收 #5 / #36：裁剪发生在快照层，不是客户�
     ...earlyRedLoadouts,
     ...loadoutsOf(blue).flatMap((m) => m.items.filter((it) => it.entityId === redId)),
   ];
-  const spareLeak = redLoadoutsSeenByBlue.filter((it) => 'spareWeaponIds' in it.equipment);
-  check('2', '★★ 敌人的备用装备不出现在传输字节里（#36，EntityLoadouts 通道）',
+  const spareLeak = redLoadoutsSeenByBlue.filter(
+    (it) => it.equipment !== undefined && 'spareWeaponIds' in it.equipment,
+  );
+  check('2', '★★ 敌人的备用装备不出现在传输字节里（#36，EntityMeta 通道）',
     redLoadoutsSeenByBlue.length > 0 && spareLeak.length === 0,
     `检查了 ${redLoadoutsSeenByBlue.length} 份敌方装备视图，带备用槽位的有 ${spareLeak.length} 份`);
 
-  // 敌方技能冷却不发；自己的要发（快照通道 —— 冷却仍在快照里，只发给自己）
+  /**
+   * 敌方技能冷却不发；自己的要发。
+   * ★★ P11 波3 重定向：冷却整体离开实体段、住进每人的 `Snapshot.self` ——
+   *   断言跟着搬：蓝方帧里红方实体**结构上不含** cooldowns 字节（快照是
+   *   共享段，出现即泄露），蓝方的 self 只能是自己的（you === blueId），
+   *   红方自己的 self.cooldowns 要真的有内容（非平凡半）。
+   */
   const redAsSeenByBlue = snapsOf(blue)
     .flatMap((s) => s.entities.filter((e) => e.id === redId));
-  const cdLeak = redAsSeenByBlue.filter((e) => e.cooldowns !== undefined);
-  const ownCd = snapsOf(red).flatMap((s) => s.entities.filter((e) => e.id === redId))
-    .filter((e) => e.cooldowns !== undefined);
-  check('3', '★ 敌方技能冷却不出现在传输字节里（自己的仍然发）',
-    cdLeak.length === 0 && ownCd.length > 0,
-    `蓝方看到红方冷却＝${cdLeak.length} 份；红方看到自己的冷却＝${ownCd.length} 份`);
+  const cdLeak = snapsOf(blue).filter(
+    (s) => s.you !== blueId || JSON.stringify(s.entities).includes('cooldowns'),
+  );
+  // 与旧断言同强度：字段存在即可（此刻红方未必放过技能，冷却表可以为空）
+  const ownCd = snapsOf(red).filter(
+    (s) => s.self !== undefined && s.self.cooldowns !== undefined,
+  );
+  check('3', '★ 敌方技能冷却不出现在传输字节里（自己的在 self 段照发）',
+    cdLeak.length === 0 && ownCd.length > 0 && redAsSeenByBlue.length > 0,
+    `蓝方帧含他人冷却/错位 self＝${cdLeak.length} 份；红方 self 带冷却＝${ownCd.length} 份`);
 
   /**
    * ★★ 14.1 与验收 #5 的交叉点：被**看不见的人**打了一下，
