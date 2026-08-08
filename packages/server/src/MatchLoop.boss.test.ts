@@ -33,7 +33,9 @@ const fakeSession = (playerId: string, out: ServerMessage[]): Session =>
     following: undefined,
     takeInputs: () => [],
     send: (m: ServerMessage) => out.push(m),
-    sendRaw: () => { /* 不看消息 */ },
+    // ★ P11 波1b/波3 后事件广播与快照都走共享编码的 sendRaw —— 夹具必须
+    //   把它也收进 out，否则断言对着一条空数组扑空（这个坑就抓过一次）
+    sendRaw: (raw: string) => out.push(JSON.parse(raw) as ServerMessage),
     reject: () => { /* 不看消息 */ },
   } as unknown as Session);
 
@@ -110,13 +112,26 @@ describe('大 BOSS 在真实对局里可达', () => {
   it('★ BOSS 是普通实体，自然进快照（不需要为它加任何新通道）', () => {
     const r = rig({ boss: true });
     advanceUntil(r, () => r.match.boss?.activeId !== undefined, 1500);
+    // ★ P11 波2 后快照按 SNAPSHOT_RATE 分频 —— 出场那个 tick 未必是快照 tick，
+    //   再推几步让它进到下一份快照里
+    for (let i = 0; i < 4; i++) r.loop.advance();
 
     const snapshots = r.out.filter((m) => m.t === 'Snapshot');
     const last = snapshots[snapshots.length - 1]!;
     const bossId = r.match.boss!.activeId!;
     const view = last.entities.find((e) => e.id === bossId);
     expect(view).toBeDefined();
-    expect(view!.maxHealth).toBeGreaterThan(5000);
+    /**
+     * ★ P11 波3 后 maxHealth 住在 EntityMeta 的首见静态块（快照实体段是
+     *   全队共享的瘦身形态）—— 断言跟着搬：BOSS 首见时那条 meta 必须带
+     *   它的巨额生命上限。
+     */
+    const metaStatics = r.out
+      .filter((m) => m.t === 'EntityMeta')
+      .flatMap((m) => m.items.filter((it) => it.entityId === bossId && it.statics))
+      .map((it) => it.statics!);
+    expect(metaStatics.length).toBeGreaterThan(0);
+    expect(metaStatics[0]!.maxHealth).toBeGreaterThan(5000);
   });
 
   it('★★ 打死它：掉落落地 + 赏金入账 + **不算一个人头**（不影响先到 N 杀判胜）', () => {

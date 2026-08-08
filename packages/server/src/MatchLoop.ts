@@ -510,6 +510,16 @@ export class MatchLoop {
         ...(slain.killerId !== undefined ? { killerId: slain.killerId } : {}),
         ...(slain.bounty > 0 ? { bounty: slain.bounty } : {}),
       });
+      /**
+       * ★ P13 对接：大乱斗里 BOSS 赏金折进积分账（sim/match/ffa.ts 的
+       *   points —— 商店的同一本账），并标记商店余额需要重发。
+       *   `BossState.bounties` 只做播报口径，账目在这里只入一次。
+       */
+      if (this.match.ffa && slain.killerId !== undefined && slain.bounty > 0) {
+        const balance = (this.match.ffa.points.get(slain.killerId) ?? 0) + slain.bounty;
+        this.match.ffa.points.set(slain.killerId, balance);
+        this.shopDirty.add(slain.killerId);
+      }
     }
   }
 
