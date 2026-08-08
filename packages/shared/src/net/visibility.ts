@@ -642,6 +642,16 @@ export interface SnapshotDeps {
    * ★ 可选：不传 = 每份快照都带静态块（纯规则测试与试验场的旧行为）。
    */
   seen?: Set<EntityId>;
+  /**
+   * P11 波2（快照 10Hz）：**自上一份快照以来**瞬移过的实体。
+   *
+   * ★★ `MovementState.teleported` 是**每 tick 的脉冲** —— 快照分频后，
+   *   落在非快照 tick 上的瞬移（闪现/击退/复活）会在下一份快照里读到
+   *   false，插值器把 20 米的位置跳变当移动去平滑：角色以 40 米/秒滑行,
+   *   13.4 / 验收 #47 直接破。服务器逐 tick 累积、随快照消费并清空；
+   *   这里读「累积 ∪ 当前 tick」。不传 = 只看当前 tick（20Hz 时二者等价）。
+   */
+  teleportedSince?: ReadonlySet<EntityId>;
 }
 
 /**
@@ -771,7 +781,8 @@ const snapshotEntity = (
 
   const mask = packEntityFlags(
     e.alive,
-    deps.movement?.get(e.id)?.teleported ?? false,
+    (deps.movement?.get(e.id)?.teleported ?? false) ||
+      (deps.teleportedSince?.has(e.id) ?? false),
     e.flags,
   );
 

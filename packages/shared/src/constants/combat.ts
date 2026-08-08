@@ -249,8 +249,25 @@ export const SIM = {
   /** 权威服务器 tick 频率 */
   TICK_RATE: 20,
   TICK_DT: 1 / 20,
-  /** 状态广播频率（可低于 tick，客户端插值）*/
-  SNAPSHOT_RATE: 20,
-  /** 客户端插值缓冲，秒 */
-  INTERP_DELAY: 0.1,
+  /**
+   * 状态广播频率（可低于 tick，客户端插值）。
+   *
+   * ★ P11 波2：20 → 10。这个 affordance 从 M1 就声明了但一直零读者 ——
+   *   `broadcastSnapshots` 无条件每 tick 跑。现在 MatchLoop 真的按它分频：
+   *   快照（含其中的 ackSeq 确认）每 100ms 一份，**模拟仍是 20Hz**，
+   *   事件消息（Damage/CastStarted…）仍逐 tick 即时发 —— 打击反馈不变钝。
+   * ⚠️ 必须整除 TICK_RATE（MatchLoop 按 tick % divisor 分频）。
+   * ⚠️ 与 INTERP_DELAY 联动：插值窗必须 > 快照间隔 + 抖动余量，否则
+   *   插值器频繁落进「没有更新的帧」的退化分支（teleported:true 脉冲，
+   *   动画会闪）。改这里必须一起看下面那条。
+   */
+  SNAPSHOT_RATE: 10,
+  /**
+   * 客户端插值缓冲，秒。
+   * ★ P11 波2：0.1 → 0.15 —— 快照间隔 100ms 后，0.1 的窗刚好压在帧边界上，
+   *   一点抖动就退化。0.15 = 1.5× 快照间隔，是插值稳定的最小安全余量。
+   *   代价如实记：**远端实体**的显示比权威世界晚 150ms（原 100ms）；
+   *   自己的移动走预测（Predictor），不受此影响。
+   */
+  INTERP_DELAY: 0.15,
 } as const;

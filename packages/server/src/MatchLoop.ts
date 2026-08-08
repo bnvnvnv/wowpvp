@@ -99,6 +99,15 @@ import { log } from './log.js';
  */
 const MAX_CATCHUP_TICKS = 5;
 
+/**
+ * P11 波2：每几个 tick 发一份快照。必须整除（20/10=2）——
+ * 不整除的配置在这里立刻炸，而不是让快照节奏悄悄抖动。
+ */
+const SNAPSHOT_DIVISOR = SIM.TICK_RATE / SIM.SNAPSHOT_RATE;
+if (!Number.isInteger(SNAPSHOT_DIVISOR)) {
+  throw new Error(`SNAPSHOT_RATE(${SIM.SNAPSHOT_RATE}) 必须整除 TICK_RATE(${SIM.TICK_RATE})`);
+}
+
 export interface MatchLoopDeps {
   /** 当前**连着**的会话。断线的人不在这里，但他的实体还在世界里（11.5）*/
   sessions: () => Iterable<Session>;
@@ -194,6 +203,13 @@ export class MatchLoop {
   private readonly snapAccounts = new WeakMap<
     Session, { seen: Set<EntityId>; equipFp: Map<EntityId, string> }
   >();
+
+  /**
+   * P11 波2：自上一份快照以来瞬移过的实体（见 SnapshotDeps.teleportedSince）。
+   * 每 tick 累积、随快照广播消费后清空 —— 快照 10Hz 后，落在非快照 tick 的
+   * 闪现/击退/复活不能丢（13.4 / 验收 #47）。
+   */
+  private readonly teleportedSince = new Set<EntityId>();
 
   constructor(
     readonly match: Match,
@@ -365,7 +381,19 @@ export class MatchLoop {
 
     this.settleExpiredReconnects();
     this.dispatch(outbound);
-    this.broadcastSnapshots();
+
+    /**
+     * ★ P11 波2：快照按 `SIM.SNAPSHOT_RATE` 分频（20Hz tick / 10Hz 快照）。
+     *   事件（上面的 dispatch）仍逐 tick 即时发 —— 打击反馈不吃这 50ms。
+     *   瞬移是每 tick 的脉冲，非快照 tick 的要攒到下一份快照（13.4）。
+     */
+    for (const [id, ms] of this.match.movement) {
+      if (ms.teleported) this.teleportedSince.add(id);
+    }
+    if (this.tick % SNAPSHOT_DIVISOR === 0) {
+      this.broadcastSnapshots();
+      this.teleportedSince.clear();
+    }
     this.checkEnd();
   }
 
@@ -898,6 +926,8 @@ export class MatchLoop {
       ...(m.ctf ? { ctf: m.ctf.state } : {}),
       // 12.6 复活波次倒计时（W12：夺旗 HUD 与死亡遮罩都读它）
       ...(m.respawn ? { respawn: m.respawn } : {}),
+      // P11 波2：非快照 tick 攒下的瞬移（advance 里累积，广播后清空）
+      teleportedSince: this.teleportedSince,
     };
 
     /**
