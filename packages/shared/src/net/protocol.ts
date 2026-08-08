@@ -116,6 +116,13 @@ export type ClientMessage =
   | { t: 'SetRoomMode'; mode: GameMode }
   /** docs/14 §16b 人机补位开关。**只有房主、只在开赛前**，默认关 */
   | { t: 'SetFillWithBots'; enabled: boolean }
+  /**
+   * 随机大 BOSS 开关（玩家需求）。**只有房主、只在开赛前**，默认关。
+   *
+   * ★ 与 `SetRoomPreset` / `SetRoomMode` 同一个存在理由：**可达性**。
+   *   没有这条消息，`sim/boss.ts` 的全部规则在真实对局里一次都不会发生。
+   */
+  | { t: 'SetRoomBoss'; enabled: boolean }
   /** P5（P1c）：补位人机难度。同上：只有房主、只在开赛前，默认 normal */
   | { t: 'SetRoomBotDifficulty'; difficulty: 'easy' | 'normal' | 'hard' }
   /** 11.5 主动退出。★ 立即按淘汰处理，不能通过退出规避死亡统计 */
@@ -168,7 +175,8 @@ export type ClientMessageKind = ClientMessage['t'];
  */
 export const ALL_CLIENT_MESSAGE_KINDS: readonly ClientMessageKind[] = [
   'JoinRoom', 'SelectTeam', 'SelectClass', 'SetReady', 'SetRoomPreset',
-  'SetRoomMode', 'SetFillWithBots', 'SetRoomBotDifficulty', 'LeaveMatch', 'Reconnect',
+  'SetRoomMode', 'SetFillWithBots', 'SetRoomBotDifficulty', 'SetRoomBoss',
+  'LeaveMatch', 'Reconnect',
   'Input', 'SetTarget', 'TabTarget', 'CastRequest', 'CancelCast', 'UseTrinket',
   'InteractStart', 'InteractCancel', 'SwapWeapon', 'SwapArmor', 'UseConsumable',
   'OpenArmory', 'ChooseArsenal',
@@ -294,7 +302,9 @@ export type ServerMessage =
       hostId: string
       /** P5：人机补位与难度 —— 大厅要画出当前状态（此前 UI 连开关都没有）*/
       fillWithBots: boolean
-      botDifficulty: 'easy' | 'normal' | 'hard' }
+      botDifficulty: 'easy' | 'normal' | 'hard'
+      /** 随机大 BOSS 开关。★ 与 fillWithBots 同理：UI 要画出当前状态 */
+      bossEnabled: boolean }
   | { t: 'MatchStart'; mapId: MapId; you: EntityId; startsAt: number
       /** 17.3 重连令牌。★ 断线后凭它恢复，见 server/room/reconnect.ts */
       reconnectToken: string }
@@ -377,6 +387,19 @@ export type ServerMessage =
    */
   | { t: 'PickupResult'; dropId: number; ok: boolean; reason?: string }
   | { t: 'FlagEvent'; flagTeam: TeamId; state: FlagState; carrierId?: EntityId; position?: Vec3 }
+  /**
+   * 大 BOSS 的三件事：出场 / 狂暴 / 被击杀（玩家需求：「随机刷新」要**看得到**）。
+   *
+   * ★ 一条消息带一个 `kind` 而不是三条消息：三者共享同一组字段
+   *   （是谁、在哪），而且客户端的处理只有「往播报条上写一行」这一种。
+   *   拆三条会让 `referencedEntities` 的穷尽表和客户端的 switch 各多两个分支，
+   *   换不来任何表达力（与 `FlagEvent` 用一个 `state` 字段表达七种旗帜状态同源）。
+   * ★ **不带血量/伤害**：那些在快照里，事件流「不参与状态重建」（docs/08 §3.3）。
+   * ★ `bounty` 是**已经发生的记账结果**，服务器→客户端方向 ——
+   *   与 `Damage.amount` 同类，客户端永远不许上报（见 FORBIDDEN_CLIENT_FIELDS）。
+   */
+  | { t: 'BossEvent'; kind: 'spawned' | 'enraged' | 'slain'; entityId: EntityId
+      name: string; position?: Vec3; killerId?: EntityId; bounty?: number }
   | { t: 'RoundEnd'; winner: TeamId | 'draw'; round: number }
   | { t: 'MatchEnd'; winner: TeamId | 'draw' }
   /**
@@ -411,6 +434,6 @@ export const ALL_SERVER_MESSAGE_KINDS: readonly ServerMessageKind[] = [
   'Welcome', 'RoomState', 'MatchStart', 'Snapshot',
   'CastStarted', 'CastResolved', 'CastInterrupted', 'CastFailed', 'Damage', 'Heal',
   'AuraApplied', 'AuraRemoved', 'Death', 'ArsenalOffer', 'PickupResult',
-  'FlagEvent', 'RoundEnd', 'MatchEnd', 'MatchStats',
+  'FlagEvent', 'BossEvent', 'RoundEnd', 'MatchEnd', 'MatchStats',
   'Rejected', 'PeerDisconnected', 'PeerReconnected', 'PeerEliminated',
 ];

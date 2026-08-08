@@ -22,7 +22,7 @@
 
 // ★ 逐模块 import 而不是从 `../index.js` —— index 现在也导出本文件，
 //   走 index 会形成循环依赖。
-import { ALL_CLASSES, getSkill, getWeapon } from '../data/index.js';
+import { getClass, getSkill, getWeapon } from '../data/index.js';
 import type { AuraDef, SkillDef } from '../data/schema.js';
 import { CastFailure, CastKind, DrCategory } from '../types/enums.js';
 import { dirToYaw, distance2D, sub, yawToDir, type Vec3 } from '../math/vec3.js';
@@ -587,7 +587,14 @@ export const decideBotAction = (p: BotPerception): BotAction => {
     return { move: { forward: 0, strafe: 0, jump: false, yaw } };
   }
 
-  const skills = ALL_CLASSES.find((c) => c.id === self.classId)?.skills ?? [];
+  /**
+   * ★ 走 `getClass()`（**注册表**）而不是在 `ALL_CLASSES`（**可选职业清单**）
+   *   里找 —— 八个可选职业两者结果逐位相同，差别只在特殊职业：大 BOSS 的
+   *   ClassDef 刻意不进 `ALL_CLASSES`（见 `data/index.ts` 的 SPECIAL_CLASSES），
+   *   用清单去找会**静默**得到空技能表 —— BOSS 会走位、会抡白字，
+   *   但一个技能都不放，而且不会有任何报错。
+   */
+  const skills = getClass(self.classId)?.skills ?? [];
   /**
    * ★ 治疗要按**自己**为目标验，进攻要按**对手**为目标验。
    *   ⚠️ 早期版本全部技能都拿 foe 去 validateCast —— 于是 TargetFilter.Ally

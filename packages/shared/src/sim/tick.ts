@@ -30,6 +30,7 @@
  * | 8 | stats 折叠 | **必须在 matchRules 之前**：`carrierKills` 读 `flags.carryingFlag`，而 `tickFlags()` 会在死亡后把旗掉下来并清掉那个标志 | `stats.ts` 的 `ingestCombatEvents` 头部 |
  * | 9 | matchRules | **必须在 movement 与死亡之后**：`tickFlags` 要知道这一 tick 有没有位移；`tickArena` 读 `alive` 判胜负，顺序反了胜负慢一个 tick | `flag.ts` / `arena.ts` 头部 |
  * | 10 | settleDeaths | **必须在 swaps/pickups 之后**：那两个函数靠「实体已死」发出 `result:'death'` 事件（17.3 换装瞬间死亡），而 settleDeaths 会清掉进行中的换装 —— 放前面会把事件吃掉 | `death.ts` 头部 |
+ * | 10b | tickBoss | **必须在 settleDeaths 之后**：它靠「BOSS 已经走完整条死亡漏斗」才摘尸体、刷战利品；放前面会在 settleDeaths 眼皮底下把实体删掉 | `boss.ts` 头部 |
  * | 11 | pruneInvalidTargets | 目标可能在本 tick 死亡/离场 | `targeting.ts` |
  *
  * ⚠️ **注意 `alive = false` 不是一个独立步骤。**
@@ -59,6 +60,7 @@ import {
 } from './casting.js';
 import { resolveCastTargets } from './castResolve.js';
 import type { DrStore } from './dr.js';
+import { tickBoss, type BossState, type BossTickResult } from './boss.js';
 import { settleDeaths, type DeathSettlement } from './death.js';
 import { resolveEffects, useTrinket, type CombatEvent } from './effects/index.js';
 import { tickGround, type GroundStore } from './groundArea.js';
@@ -214,6 +216,14 @@ export interface TickDeps {
   ctf?: { state: CtfState; deps: CtfDeps; map: MapDef };
   arena?: ArenaState;
   respawn?: RespawnState;
+  /**
+   * 随机大 BOSS（房间设置 `bossEnabled` 打开时才有）。规则全在 `sim/boss.ts`。
+   *
+   * ★ **不传 = 这条玩法整个不存在**（连遍历都没有）—— 与 `swings` / `castQueue`
+   *   同一条规矩：默认关的玩法必须默认**结构上**不发生，这样 M1–M16 的
+   *   两百多项验收（全都建立在「场上就这么几个人」上）一寸不受影响。
+   */
+  boss?: BossState;
 
   /**
    * 传了就折叠战后统计。
@@ -278,6 +288,12 @@ export interface TickResult {
   consumables: { entityId: EntityId; consumableId: ConsumableId }[];
   /** 本 tick 军械点刷出的实体掉落（10.4）。空数组 = 这一 tick 没有补给刷新 */
   drops: GroundDrop[];
+  /**
+   * 本 tick 的 BOSS 事实（出场 / 狂暴 / 被击杀）。
+   * ★ 没开这条玩法、或这一 tick 什么都没发生时为 undefined —— 调用方据此
+   *   决定发不发播报。**规则不认识协议**，广播是 MatchLoop 的事。
+   */
+  boss?: BossTickResult;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -687,10 +703,37 @@ export const tickWorld = (
      */
     if (deps.respawn) {
       const dead = getEntity(deps.world, ev.entityId);
-      if (dead && !dead.isPet && !forfeited.has(ev.entityId)) {
+      /**
+       * ★ BOSS 排除在波次复活之外：12.6 是**玩家**的复活波次，把一只中立
+       *   BOSS 送进红/蓝任一方的墓地出口是没有意义的（它根本没有队伍墓地）。
+       *   它的「复活」是 `sim/boss.ts` 的 105 秒重刷，两套机制不该串线。
+       */
+      const isBoss = deps.boss?.activeId === ev.entityId;
+      if (dead && !dead.isPet && !isBoss && !forfeited.has(ev.entityId)) {
         enqueueRespawn(deps.respawn, ev.entityId, deps.world.time);
       }
     }
+  }
+
+  // ── 10b. BOSS（必须在 settleDeaths 之后 —— 见文件头表格）───
+  /**
+   * ★ 传本 tick 的**全部**事件：`tickBoss` 要从里面挑出 BOSS 的那条 `death`
+   *   来认最后一击者 —— 与统计、击杀播报读同一个来源，不另立一份真相。
+   */
+  if (deps.boss) {
+    const bossResult = tickBoss(
+      deps.boss,
+      {
+        world: deps.world, movement: deps.movement,
+        auras: deps.auras, arsenal: deps.arsenal,
+      },
+      result.events,
+      deps.world.time,
+    );
+    if (bossResult.spawned || bossResult.slain || bossResult.enraged !== undefined) {
+      result.boss = bossResult;
+    }
+    if (bossResult.slain) result.drops.push(...bossResult.slain.drops);
   }
 
   // ── 12. 统计的连续量采样 + 清理失效目标 ─────────────────────

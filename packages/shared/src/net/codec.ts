@@ -190,6 +190,13 @@ export const parseClientMessage = (raw: string): ParseResult => {
       return { ok: true, msg: { t, enabled } };
     }
 
+    // ★ 与 SetFillWithBots 同形（一条布尔开关），校验逐字相同
+    case 'SetRoomBoss': {
+      const enabled = v['enabled'];
+      if (typeof enabled !== 'boolean') return bad('enabled 必须是布尔值');
+      return { ok: true, msg: { t, enabled } };
+    }
+
     case 'SetRoomBotDifficulty': {
       // P5：三值白名单 —— 不受信任输入的门在这里（与 preset/mode 同规矩）
       const difficulty = v['difficulty'];

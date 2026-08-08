@@ -1131,6 +1131,31 @@ export class NetworkScene {
         break;
       }
 
+      /**
+       * 大 BOSS 的出场 / 狂暴 / 被击杀。
+       *
+       * ★ 走与旗帜播报同一条通道（战斗日志 + 中部提示）—— BOSS 的**位置与
+       *   血量在快照里**（它就是一个普通实体，姓名板与目标框自然认得它），
+       *   这条消息只负责「那一瞬间」的提醒：一只 15000 血的中立怪出现在
+       *   地图中央，玩家需要知道它出现了，而不是撞上去才发现。
+       * ★ `killerId` 可能被服务器抹掉（最后一击者是未被发现的潜行者）——
+       *   那时如实说「被击杀了」，不编一个凶手（与击杀播报同则）。
+       */
+      case 'BossEvent': {
+        const text =
+          msg.kind === 'spawned'
+            ? `${msg.name} 出现了！`
+            : msg.kind === 'enraged'
+              ? `${msg.name} 进入狂暴！`
+              : msg.killerId !== undefined
+                ? `${this.nameOf(msg.killerId)} 击杀了 ${msg.name}！` +
+                  (msg.bounty !== undefined ? `（赏金 ${msg.bounty}）` : '')
+                : `${msg.name} 被击杀了！`;
+        this.view.push(text, 'interrupt');
+        this.hud.showCenterNotice(text);
+        break;
+      }
+
       /** 16a 战后统计。★ 场景只负责转交给上层（大厅的结算页在渲染它）*/
       case 'MatchStats':
         this.onMatchStats?.(msg.rows, msg.awards);

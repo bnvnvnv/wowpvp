@@ -35,6 +35,7 @@ import {
   botSeatsNeeded,
   selectClass,
   selectSlot,
+  setBossEnabled,
   setBotDifficulty,
   setFillWithBots,
   setMode,
@@ -315,6 +316,9 @@ export class RoomServer {
         session, (sr) => setFillWithBots(sr.room, session.playerId, msg.enabled), 'SetFillWithBots');
       case 'SetRoomBotDifficulty': return this.onRoomMutation(
         session, (sr) => setBotDifficulty(sr.room, session.playerId, msg.difficulty), 'SetRoomBotDifficulty');
+      // ★ 随机大 BOSS。房主校验同样在 sim 的 `setBossEnabled()` 里
+      case 'SetRoomBoss': return this.onRoomMutation(
+        session, (sr) => setBossEnabled(sr.room, session.playerId, msg.enabled), 'SetRoomBoss');
       case 'LeaveMatch': return this.onLeave(session);
       case 'CastRequest': return this.onCastRequest(session, msg);
       case 'CancelCast': return this.enqueue(session, { t: 'CancelCast' });
@@ -547,6 +551,8 @@ export class RoomServer {
       onEliminate: (playerId, reason) => this.eliminate(sr, playerId, reason),
       onEnd: (winner) => this.endMatch(sr, winner),
       onPreTick: () => sr.bots?.tick(),
+      onBossSpawned: (entityId) => this.attachBossSeat(sr, entityId),
+      onBossDespawned: (entityId) => this.detachBossSeat(sr, entityId),
     });
 
     // 补位的人机现在有身体了，接管它们（与掉线接管走同一条路径）
@@ -616,6 +622,12 @@ export class RoomServer {
         sr.sessions.delete(s);
         s.roomId = undefined;
         s.phase = SessionPhase.Lobby;
+        /**
+         * ★ 假会话（BOSS 的席位）在这里彻底收掉 —— 它的 playerId 永远不在
+         *   `room.players` 里，所以只会走到这个分支。不删的话 `botSessions`
+         *   会每打一局多留一条指向上一局实体的死映射：不报错，只是慢慢变脏。
+         */
+        sr.botSessions.delete(s.playerId);
       }
     }
 
@@ -696,6 +708,60 @@ export class RoomServer {
       ...(reason === 'fill'
         ? { difficulty: sr.room.config.botDifficulty ?? 'normal' } : {}),
     });
+  }
+
+  // ── 大 BOSS 的席位 ───────────────────────────────────────────────
+
+  /**
+   * 让人机驱动一只刚出场的大 BOSS。
+   *
+   * ★★ **走的是与掉线接管一模一样的路**：一条 `BotSocket` 假会话 + 一个
+   *   `BotDriver` 席位。于是 BOSS 的每一次移动与施法都是一条**经过 codec
+   *   校验的协议消息**（`handleRaw` → parse → 阶段鉴权 → 排队 → tick），
+   *   而不是服务器直接改 world。M16b 那条红线（人机不许开第二条输入通道）
+   *   对 BOSS 同样成立，而且是同一份代码在保证。
+   *
+   * ★ 它需要 `entityOf` / `playerOf` 里有一条映射 —— `collectInputs()` 与
+   *   `viewerOf()` 都按 playerId 找实体。BOSS 不在 `room.players` 里
+   *   （名单、`canStart`、战后统计一概不认识它），只在这两张**对局内**的
+   *   映射表里有名字。id 前缀 `boss#` 与真人 id 不可能撞（真人 id 是 UUID/
+   *   `bot<序号>`），而且它从不进 `tokens`，所以没有任何令牌能兑换成它。
+   *
+   * ★ 难度固定 **hard**：需求要的是「很容易几下秒杀玩家」，而难度档影响的
+   *   只有「会不会/多快反应」（见 `botController.ts` 的 BotDifficulty 注释）——
+   *   easy 档的 BOSS 会呆站着挨打，那不是一只 BOSS。伤害数值一个字节都
+   *   不受难度影响，它们全在 `data/classes/boss.ts`。
+   */
+  private attachBossSeat(sr: ServerRoom, entityId: EntityId): void {
+    if (!sr.bots || !sr.match) return;
+    const playerId = `boss#${entityId as number}`;
+    if (sr.botSessions.has(playerId)) return;
+
+    sr.match.entityOf.set(playerId, entityId);
+    sr.match.playerOf.set(entityId, playerId);
+
+    const session = new Session(new BotSocket(), playerId, (s, msg) => this.handle(s, msg));
+    session.roomId = sr.room.id;
+    session.phase = SessionPhase.Match;
+    sr.sessions.add(session);
+    sr.botSessions.set(playerId, session);
+    sr.bots.add({ playerId, reason: 'fill', difficulty: 'hard' });
+  }
+
+  /**
+   * BOSS 死了：席位与映射一起收掉。
+   *
+   * ⚠️ **必须清 `entityOf` / `playerOf`** —— 留着的话下一只 BOSS 会拿到新的
+   *   实体 id 与新的 playerId，而上一条映射指向一个已经不存在的实体：
+   *   `collectInputs` 每 tick 都会为它查一次空，`sessionOfEntity` 也会
+   *   把消息投给一条早该消失的假会话。这类残留不会报错，只会慢慢变脏。
+   */
+  private detachBossSeat(sr: ServerRoom, entityId: EntityId): void {
+    const playerId = sr.match?.playerOf.get(entityId);
+    if (playerId === undefined) return;
+    sr.match?.playerOf.delete(entityId);
+    sr.match?.entityOf.delete(playerId);
+    this.handBackFromBot(sr, playerId);
   }
 
   /**
@@ -851,6 +917,8 @@ export class RoomServer {
       // P5：人机补位与难度 —— 大厅要画出当前状态
       fillWithBots: sr.room.config.fillWithBots,
       botDifficulty: sr.room.config.botDifficulty ?? 'normal',
+      // 随机大 BOSS 开关。★ 缺省 false —— 与 RoomConfig 的默认值同一句话
+      bossEnabled: sr.room.config.bossEnabled === true,
     });
   }
 

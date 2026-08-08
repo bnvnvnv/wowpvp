@@ -12,7 +12,7 @@
  */
 
 import * as THREE from 'three';
-import { GEOMETRY } from '@wowpvp/shared';
+import { BOSS_CLASS_ID, GEOMETRY } from '@wowpvp/shared';
 import { AnimState } from './AnimationController.js';
 import { ModelLibrary, type CharacterModel } from './ModelLibrary.js';
 import { buildUpperBodyAdditive } from './animLayer.js';
@@ -92,6 +92,15 @@ const DODGE_TILT = 0.16;
  */
 const MORPH_CREATURE = 'chicken_cow';
 
+/**
+ * 大 BOSS 的**视觉**放大倍数。⚠️ 占位值 2.2 —— 取「一眼看出不是玩家」的最小
+ * 倍数：2.0 米的人形放到 4.4 米，比场上任何职业都高出一头，又不至于把镜头挡死。
+ * ★★ 它**只**乘在渲染几何上，碰撞体与任何判定都不乘（见构造函数的注释）。
+ */
+const BOSS_VISUAL_SCALE = 2.2;
+/** ★ 从 shared 的注册表拿，不写字面量 —— 判据只有一处（`BOSS_CLASS_ID`）*/
+const BOSS_CLASS_ID_STR = BOSS_CLASS_ID as string;
+
 export class CharacterView {
   readonly group = new THREE.Group();
   /** 4.1 第一人称要隐藏的部分：胶囊阶段是头与躯干；模型阶段是整个模型 */
@@ -125,8 +134,24 @@ export class CharacterView {
   private weaponNodes: THREE.Object3D[] = [];
 
   constructor(classId?: string) {
-    const r = GEOMETRY.HITBOX_RADIUS;
-    const h = GEOMETRY.HITBOX_HEIGHT;
+    /**
+     * ★★ **只有大 BOSS 的「视觉」变大，碰撞体一寸不变。**
+     *
+     *   13.2 / 验收 #10 的原话是「模型大小不改变碰撞体」—— 这里正是那条
+     *   规则第一次被真正**用到**（此前八个职业本来就一样高，规则空转）。
+     *   放大的是躯干与头（下面用 `s` 缩放的那几何体）与真实模型；
+     *   `hitboxHelper` 线框**刻意不乘 `s`**：按 F1 打开时看到的就是
+     *   「一个大块头站在一个普通碰撞体里」，这正是判定的真相。
+     *
+     * ⚠️ 服务器侧 BOSS 的 `radius`/`height` 就是 `GEOMETRY` 的那两个值
+     *   （`createEntity` 全场统一）。它的「大」在规则上只体现为**武器触及
+     *   距离 5 米**（`data/classes/boss.ts` 的 reach）—— 那是数据，不是几何。
+     *   想让碰撞体也变大，得先给 `createEntity` 开一个口子，那会牵动软推开、
+     *   视线与投射物判定，不是一个渲染改动能顺手做的事。
+     */
+    const s = classId === BOSS_CLASS_ID_STR ? BOSS_VISUAL_SCALE : 1;
+    const r = GEOMETRY.HITBOX_RADIUS * s;
+    const h = GEOMETRY.HITBOX_HEIGHT * s;
 
     this.bodyMat = new THREE.MeshLambertMaterial({ color: STATE_COLOR[AnimState.Idle] });
 
@@ -140,10 +165,10 @@ export class CharacterView {
 
     // 头
     const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.22, 12, 10),
-      new THREE.MeshLambertMaterial({ color: 0xe8d0b0 }),
+      new THREE.SphereGeometry(0.22 * s, 12, 10),
+      new THREE.MeshLambertMaterial({ color: s > 1 ? 0xd85a2a : 0xe8d0b0 }),
     );
-    head.position.y = h - 0.2;
+    head.position.y = h - 0.2 * s;
     head.castShadow = true;
     this.group.add(head);
     this.hideInFirstPerson.push(head);
@@ -158,12 +183,18 @@ export class CharacterView {
     this.facingArrow.position.set(0, 0.05, -r - 0.3);
     this.group.add(this.facingArrow);
 
-    // 战斗碰撞体线框（F1 切换）。13.2：所有职业一致
+    /**
+     * 战斗碰撞体线框（F1 切换）。13.2：所有职业一致 ——
+     * ★ 用的是**未缩放**的 GEOMETRY，不是上面那对 `r`/`h`：
+     *   它画的是判定，而判定对 BOSS 与对玩家逐位相同（见构造函数头注释）。
+     */
     this.hitboxHelper = new THREE.LineSegments(
-      new THREE.EdgesGeometry(new THREE.CylinderGeometry(r, r, h, 16, 1, true)),
+      new THREE.EdgesGeometry(new THREE.CylinderGeometry(
+        GEOMETRY.HITBOX_RADIUS, GEOMETRY.HITBOX_RADIUS, GEOMETRY.HITBOX_HEIGHT, 16, 1, true,
+      )),
       new THREE.LineBasicMaterial({ color: 0xff4488 }),
     );
-    this.hitboxHelper.position.y = h / 2;
+    this.hitboxHelper.position.y = GEOMETRY.HITBOX_HEIGHT / 2;
     this.hitboxHelper.visible = false;
     this.group.add(this.hitboxHelper);
 
