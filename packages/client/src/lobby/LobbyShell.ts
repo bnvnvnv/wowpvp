@@ -572,13 +572,17 @@ export class LobbyShell {
            * 玩家反馈「12v12 很容易不满人」；建房者就是房主，这条必然被接受。
            * 房主随时可在房间里关掉；加入别人房间不发（不是房主，发也被拒）。
            */
-          if (this.pendingJoin.creating) {
+          /**
+           * P12：只有「大乱斗」一键房默认开人机补位 —— 它的定位就是即点即玩。
+           * ⚠️ 普通建房**不能**默认开：开了之后房主一按准备就会立刻和 bot
+           *   开局（canStart 的补位分支单人即满足），等朋友进房的那个人
+           *   会被 bot 拉走 —— m13 的双人流程当场撞破这一点。想单人打
+           *   bot 房，房间里那排「人机补位」开关就是干这个的。
+           */
+          if (this.pendingJoin.creating && this.pendingFfa) {
+            this.pendingFfa = false;
+            this.conn.send({ t: 'SetRoomMode', mode: GameMode.Ffa });
             this.conn.send({ t: 'SetFillWithBots', enabled: true });
-            // P12：从「大乱斗」入口建的房,建成即切模式（建房者必是房主）
-            if (this.pendingFfa) {
-              this.pendingFfa = false;
-              this.conn.send({ t: 'SetRoomMode', mode: GameMode.Ffa });
-            }
           }
           // JoinRoom 的成功答复就是第一条 RoomState（协议没有单独的 ack）
           this.pendingJoin = undefined;
