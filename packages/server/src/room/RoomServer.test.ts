@@ -223,8 +223,16 @@ describe('P12：大乱斗（FFA）', () => {
 
 describe('P13：大乱斗断线处理（bot 接管 90 秒 → 移除,不能替人夺冠）', () => {
   it('★★ 掉线即接管;宽限过后淘汰:判死、不复活、广播 PeerEliminated', async () => {
-    const a = await TestClient.connect(server.port);
-    const b = await TestClient.connect(server.port);
+    /**
+     * ★ 自建服务器并**关掉背压巡检**：本测试要白盒快进 91 秒模拟时间,
+     *   同步 tick 风暴会让在线客户端的发送缓冲短暂冲高 —— 共享服务器的
+     *   S2 看门狗在并发测试负载下会把它误判成慢读者踢掉（单跑不踢,
+     *   全量跑偶发）。这里测的是淘汰语义,不是背压。
+     */
+    const own = await startServer(0, { backpressureCheckMs: 0, heartbeatIntervalMs: 0 });
+    try {
+    const a = await TestClient.connect(own.port);
+    const b = await TestClient.connect(own.port);
     await a.waitFor('Welcome');
     await b.waitFor('Welcome');
     a.send({ t: 'JoinRoom', roomId: 'ffadc', name: '甲' });
@@ -240,8 +248,8 @@ describe('P13：大乱斗断线处理（bot 接管 90 秒 → 移除,不能替�
     const sb = await b.waitFor('MatchStart');
     await a.waitFor('MatchStart');
 
-    const match = server.rooms.matchOf('ffadc')!;
-    const loop = server.rooms.loopOf('ffadc')!;
+    const match = own.rooms.matchOf('ffadc')!;
+    const loop = own.rooms.loopOf('ffadc')!;
 
     // 乙拔线 —— 瞬间由 bot 接管（偏差 #14 前半不变）,实体还活着可被击杀
     b.close();
@@ -261,7 +269,8 @@ describe('P13：大乱斗断线处理（bot 接管 90 秒 → 移除,不能替�
       for (let i = 0; i < 183; i++) loop.advance();
       await new Promise((r) => setTimeout(r, 30));
     }
-    const elim = a.received.find((m) => m.t === 'PeerEliminated');
+    // ★ 轮询等而不是定长睡：并发测试负载下投递时延不可预算
+    const elim = await a.waitFor('PeerEliminated', 5000);
     expect(elim).toMatchObject({ t: 'PeerEliminated', reason: 'timeout' });
     expect(match.world.entities.get(sb.you)!.alive).toBe(false);
 
@@ -269,6 +278,9 @@ describe('P13：大乱斗断线处理（bot 接管 90 秒 → 移除,不能替�
     expect(match.world.entities.get(sb.you)!.alive).toBe(false);
 
     a.close();
+    } finally {
+      await own.close();
+    }
   });
 });
 
