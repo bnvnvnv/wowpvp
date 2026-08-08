@@ -21,6 +21,7 @@
  */
 
 import {
+  BOSS_CLASS_ID,
   HIDDEN_AURA_ID,
   INTERACT_RANGE,
   SIM,
@@ -44,6 +45,7 @@ import {
   equipmentViewFor,
   isLegalFollow,
   staticsOf,
+  getClass,
   getEntity,
   getWeapon,
   isVisibleTo,
@@ -71,6 +73,7 @@ import {
   type MovementInput,
   type ServerMessage,
   type TeamId,
+  type TickResult,
 } from '@wowpvp/shared';
 
 /**
@@ -141,6 +144,19 @@ export interface MatchLoopDeps {
    *   靠 `BotDriver` 那一侧的结构保证，见那个文件的文件头。
    */
   onPreTick?: () => void;
+  /**
+   * 一只大 BOSS 进场了 / 离场了。
+   *
+   * ★★ **循环自己不会让 BOSS 动起来。** 它的行为与人机走同一条路：
+   *   一个 `BotSocket` 席位 + 一条真会话（见 `BotDriver` 的文件头）。
+   *   而「建会话」是 `RoomServer` 的职责（它才持有 sessions / botSessions），
+   *   所以这里只报告事实，后果留在调用点 —— 与 `onEliminate` 同一个手法。
+   * ⚠️ 不接这两个钩子的调用方（测试夹具）会得到一只**站着不动的**BOSS：
+   *   规则、掉落、赏金全都照常，只是它不出手。这是有意的 —— 白盒测试
+   *   要的正是一个不会自己乱跑的靶子。
+   */
+  onBossSpawned?: (entityId: EntityId) => void;
+  onBossDespawned?: (entityId: EntityId) => void;
 }
 
 export class MatchLoop {
@@ -441,6 +457,8 @@ export class MatchLoop {
       });
     }
 
+    if (result.boss) this.applyBoss(result.boss, outbound);
+
     this.settleExpiredReconnects();
     this.dispatch(outbound);
     this.flushShop();
@@ -458,6 +476,41 @@ export class MatchLoop {
       this.teleportedSince.clear();
     }
     this.checkEnd();
+  }
+
+  /**
+   * 把 sim 报告的 BOSS 事实翻成「一条播报 + 一次席位增删」。
+   *
+   * ★★ **本方法不做任何判断。** 什么时候刷、掉什么、赏金多少全在
+   *   `sim/boss.ts` —— 这里只有 switch 与 push，与 `pushEvent()` 同一种角色。
+   *   往这里加一句 `if (血量 < …)` 就是在服务器里长出第二份规则。
+   */
+  private applyBoss(boss: NonNullable<TickResult['boss']>, out: ServerMessage[]): void {
+    const name = getClass(BOSS_CLASS_ID)?.name ?? '大 BOSS';
+
+    if (boss.spawned) {
+      // ★ 先接席位再播报：下一 tick 的 onPreTick 就能驱动它，不空转一帧
+      this.deps.onBossSpawned?.(boss.spawned.entityId);
+      out.push({
+        t: 'BossEvent', kind: 'spawned', entityId: boss.spawned.entityId,
+        name, position: boss.spawned.position,
+      });
+    }
+
+    if (boss.enraged !== undefined) {
+      out.push({ t: 'BossEvent', kind: 'enraged', entityId: boss.enraged, name });
+    }
+
+    if (boss.slain) {
+      const slain = boss.slain;
+      this.deps.onBossDespawned?.(slain.bossId);
+      out.push({
+        t: 'BossEvent', kind: 'slain', entityId: slain.bossId, name,
+        position: slain.position,
+        ...(slain.killerId !== undefined ? { killerId: slain.killerId } : {}),
+        ...(slain.bounty > 0 ? { bounty: slain.bounty } : {}),
+      });
+    }
   }
 
   // ── 输入 ──────────────────────────────────────────────────────
@@ -1013,6 +1066,17 @@ export class MatchLoop {
         return msg;
       }
       /**
+       * ★ 同样是「抹而不丢」：BOSS 死了是**全场公共事实**（战利品就摆在
+       *   地上，谁都看得见），但最后一击者可能是一个尚未被发现的潜行者 ——
+       *   整条丢弃会让其他人永远不知道 BOSS 没了，带上 killerId 又等于
+       *   给潜行者点名（验收 #5）。抹掉凶手，事实照发。
+       */
+      case 'BossEvent': {
+        if (visible(msg.killerId)) return msg;
+        const { killerId: _k, bounty: _b, ...rest } = msg;
+        return rest as ServerMessage;
+      }
+      /**
        * 与 Damage 同一套「抹而不丢」：施法者不可见就去掉 casterId（没有弹体起点），
        * 目标列表按可见性过滤（不可见目标不该在他屏幕上炸开一朵花）。
        * 两者都空 → 这条对他没有任何可画的内容，整条不发。
@@ -1362,6 +1426,13 @@ export const referencedEntities = (msg: ServerMessage): EntityId[] => {
     case 'FlagEvent': return msg.carrierId !== undefined ? [msg.carrierId] : [];
     // P13：击杀播报只有名字没有 id —— 全场公告,零实体引用（类型注释的 ★★）
     case 'FfaKill': return [];
+    /**
+     * ★ BOSS 播报有自己的**抹而不丢**分支（见 `redactFor`），正常走不到这里。
+     *   登记 `entityId` 是兜底：BOSS 从不潜行、被击杀时已离场，所以这条
+     *   兜底永远为真 —— 万一那个分支被删，最坏结果是过严（少一条播报），
+     *   不会漏出一个潜行者的 id。与 `AuraApplied` 的兜底同一个理由。
+     */
+    case 'BossEvent': return [msg.entityId];
     // ── 抹而不丢（redactFor 的专门分支，永远到不了这里）────────
     case 'Damage': case 'Heal': case 'CastResolved': return [];
     // ── 不走 dispatch() 的消息：私信（CastFailed/ArsenalOffer/PickupResult/

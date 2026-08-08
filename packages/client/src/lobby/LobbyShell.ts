@@ -169,6 +169,8 @@ export class LobbyShell {
   /** P12：从「大乱斗」入口建房 —— RoomState 到达后补发 SetRoomMode ffa */
   private pendingFfa = false;
   private botDifficulty: 'easy' | 'normal' | 'hard' = 'normal';
+  /** 随机大 BOSS。★ 默认关，与 RoomConfig 的默认值同一句话 */
+  private bossEnabled = false;
   /** P6：练习场配置（入口页点选，开始时拼进 ?testbed URL）。P10：默认见 DEFAULT_PRACTICE_CLASS */
   private practiceClass: string = DEFAULT_PRACTICE_CLASS;
   private practiceDiff: 'easy' | 'normal' | 'hard' = 'normal';
@@ -432,6 +434,19 @@ export class LobbyShell {
               <button class="lb-btn lb-small" data-action="bot-diff" data-diff="hard">困难</button>
               <span id="lb-bots-state" class="lb-fine"></span>
             </div>
+            <!--
+              随机大 BOSS（玩家需求）。★ 与上面两个开关同一条存在理由：
+              没有这个按钮，sim/boss.ts 的全部规则在真实对局里一次都不会发生。
+              校验（房主、开赛前）在 sim 的 setBossEnabled 里，这里只发意图。
+            -->
+            <div class="lb-row">
+              <span class="lb-fine">大 BOSS：</span>
+              <button class="lb-btn lb-small" data-action="boss" data-boss="on"
+                      id="lb-boss-on">开</button>
+              <button class="lb-btn lb-small" data-action="boss" data-boss="off"
+                      id="lb-boss-off">关</button>
+              <span id="lb-boss-state" class="lb-fine"></span>
+            </div>
             <div class="lb-row">
               <button class="lb-btn lb-primary" data-action="ready" id="lb-ready-btn">准备</button>
               <span id="lb-ready-why" class="lb-fine"></span>
@@ -566,6 +581,8 @@ export class LobbyShell {
         // P5：人机补位状态（房主改，全员看见）
         this.fillWithBots = msg.fillWithBots;
         this.botDifficulty = msg.botDifficulty;
+        // 大 BOSS 开关同理
+        this.bossEnabled = msg.bossEnabled;
         if (this.pendingJoin) {
           /**
            * P12：**建房**默认开人机补位（产品默认，服务器语义不变）——
@@ -816,6 +833,10 @@ export class LobbyShell {
       case 'fill-bots':
         // P5：同 preset —— 只发意图，房主/开赛前校验在服务器
         this.conn.send({ t: 'SetFillWithBots', enabled: btn?.dataset['fill'] === 'on' });
+        break;
+      case 'boss':
+        // 同 preset/fill-bots：只发意图，房主与开赛前的校验都在服务器
+        this.conn.send({ t: 'SetRoomBoss', enabled: btn?.dataset['boss'] === 'on' });
         break;
       case 'bot-diff': {
         const diff = btn?.dataset['diff'];
@@ -1168,6 +1189,23 @@ export class LobbyShell {
       this.fillWithBots
         ? '开局时人数不足的席位由人机补满'
         : (isHost ? '开启后可单人开局练习' : '由房主设置');
+
+    /**
+     * 随机大 BOSS。同一条显示规矩（非房主看得到、点不动）。
+     * ★ 文案里必须点出**掉落跟着规则预设走** —— 经典预设下开 BOSS 是
+     *   「有 BOSS、没战利品」（验收 #28 不生成任何临时武装）。
+     *   不说的话，房主会以为是掉落坏了。
+     */
+    for (const el of this.root.querySelectorAll<HTMLButtonElement>('[data-action="boss"]')) {
+      el.classList.toggle('lb-armed', (el.dataset['boss'] === 'on') === this.bossEnabled);
+      el.disabled = !isHost || this.roomStarted;
+    }
+    (this.root.querySelector('#lb-boss-state') as HTMLElement).textContent =
+      this.bossEnabled
+        ? (this.preset === ArenaPreset.Armed
+            ? '开局 60 秒后刷新中立大 BOSS，击杀掉落装备与积分'
+            : '开局 60 秒后刷新中立大 BOSS（战利品需切到武装竞技场）')
+        : (isHost ? '开启后地图里会随机刷新中立大 BOSS' : '由房主设置');
 
     const blocker = readyBlocker(self);
     const readyBtn = this.root.querySelector('#lb-ready-btn') as HTMLButtonElement;

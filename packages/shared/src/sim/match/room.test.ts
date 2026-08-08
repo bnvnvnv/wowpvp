@@ -6,7 +6,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { ALL_CLASSES } from '../../data/index.js';
+import { ALL_CLASSES, getClass } from '../../data/index.js';
 import { arena3v3 } from '../../data/maps/index.js';
 import { ArenaPreset, GameMode } from '../../types/enums.js';
 import { asClassId, TEAM_BLUE, TEAM_RED } from '../../types/ids.js';
@@ -24,6 +24,7 @@ import {
   botSeatsNeeded,
   selectClass,
   selectSlot,
+  setBossEnabled,
   setBotDifficulty,
   setFillWithBots,
   setMode,
@@ -157,6 +158,20 @@ describe('★ 3.2 / 验收 #22 自由职业选择', () => {
     joinRoom(room, 'a', 'A');
     selectSlot(room, 'a', Slot.Red);
     expect(selectClass(room, 'a', asClassId('nonexistent')).ok).toBe(false);
+  });
+
+  /**
+   * ★★ 大 BOSS 的 ClassDef **在注册表里查得到**（sim 要用它建实体、查技能），
+   *   所以「`getClass` 查得到就放行」会直接放过 `SelectClass{classId:'boss'}` ——
+   *   客户端点不出来不算门，协议是不受信任输入。判据必须是 `isPlayableClass`。
+   */
+  it('★★ 特殊职业（大 BOSS）玩家选不到 —— 哪怕注册表里查得到', () => {
+    joinRoom(room, 'a', 'A');
+    selectSlot(room, 'a', Slot.Red);
+    expect(getClass(asClassId('boss')), '注册表里必须查得到，否则 sim 建不出 BOSS')
+      .toBeDefined();
+    expect(selectClass(room, 'a', asClassId('boss')).ok).toBe(false);
+    expect(room.players.find((p) => p.id === 'a')?.classId).toBeUndefined();
   });
 });
 
@@ -377,6 +392,26 @@ describe('3.1 房间设置：规则预设与人机补位', () => {
 
     room.started = true;
     expect(setFillWithBots(room, 'host', false).ok).toBe(false);
+  });
+
+  it('★★ 随机大 BOSS **默认关**，且是房主专属、开赛前专属', () => {
+    expect(room.config.bossEnabled, '默认开会改变开局后世界里有几个实体').toBeUndefined();
+    expect(setBossEnabled(room, 'guest', true).ok).toBe(false);
+    expect(setBossEnabled(room, 'host', true).ok).toBe(true);
+    expect(room.config.bossEnabled).toBe(true);
+
+    room.started = true;
+    expect(setBossEnabled(room, 'host', false).ok).toBe(false);
+    expect(room.config.bossEnabled, '开赛后拒绝的写入不能落库').toBe(true);
+  });
+
+  it('★★ BOSS 开关不参与开局条件（它不是名单里的人）', () => {
+    addReady('a', Slot.Red, 'mage');
+    addReady('b', Slot.Blue, 'priest');
+    room.config.mode = GameMode.Arena2v2; // 2v2 才能用两个人开起来
+    const before = canStart(room);
+    setBossEnabled(room, 'host', true);
+    expect(canStart(room)).toEqual(before);
   });
 
   it('★★ P5 单人 + 人机补位 → 能开局（此前被两条人数规则拦死，补位形同虚设）', () => {

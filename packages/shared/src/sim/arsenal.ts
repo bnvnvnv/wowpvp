@@ -579,16 +579,32 @@ export const spawnArmoryCycle = (
   now: number,
 ): GroundDrop[] => {
   const spawned = spawnDropsFromRoster(store, rosterClassIds, armory.position, now);
-  const count = Math.max(1, spawned.length);
-  spawned.forEach((drop, i) => {
+  spreadOnRing(spawned, armory.position, ARMORY_DROP_RING_RADIUS);
+  return spawned;
+};
+
+/**
+ * 把一批掉落物沿一个确定性圆环摆开（原地改写 `position`）。
+ *
+ * ★ 提成函数是因为 BOSS 的战利品（`sim/boss.ts`）要的是**同一件事**：
+ *   `spawnDropsFromRoster()` 只收一个坐标，直接用会让 N 件东西重合成一件，
+ *   玩家没法选择捡哪个。角度按**下标**算而不是随机 —— 回放与配平复现
+ *   要求确定性（与本文件其它刷新点同一条规矩）。
+ */
+export const spreadOnRing = (
+  drops: readonly GroundDrop[],
+  center: Vec3,
+  radius: number,
+): void => {
+  const count = Math.max(1, drops.length);
+  drops.forEach((drop, i) => {
     const angle = (i / count) * Math.PI * 2;
     drop.position = {
-      x: armory.position.x + Math.cos(angle) * ARMORY_DROP_RING_RADIUS,
-      y: armory.position.y,
-      z: armory.position.z + Math.sin(angle) * ARMORY_DROP_RING_RADIUS,
+      x: center.x + Math.cos(angle) * radius,
+      y: center.y,
+      z: center.z + Math.sin(angle) * radius,
     };
   });
-  return spawned;
 };
 
 /**

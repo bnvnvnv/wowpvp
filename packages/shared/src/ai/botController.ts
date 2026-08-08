@@ -27,7 +27,7 @@
 
 // ★ 逐模块 import 而不是从 `../index.js` —— index 现在也导出本文件，
 //   走 index 会形成循环依赖。
-import { ALL_CLASSES, getSkill, getWeapon } from '../data/index.js';
+import { getClass, getSkill, getWeapon } from '../data/index.js';
 import type { AuraDef, SkillDef } from '../data/schema.js';
 import { CastFailure, CastKind, DrCategory } from '../types/enums.js';
 import { dirToYaw, distance2D, sub, yawToDir, type Vec3 } from '../math/vec3.js';
@@ -392,15 +392,19 @@ const STANDOFF_CACHE = new Map<string, number>();
 
 /**
  * 职业技能表缓存（P11 CPU 优化）。此前 `decideBotAction` 每 bot 每 tick 做一次
- * `ALL_CLASSES.find` —— 12v12 满人机 = 480 次线性查找/秒/房。
- * ALL_CLASSES 是模块级常量数据，进程内不变，缓存永不失效。
+ * 线性查找 —— 12v12 满人机 = 480 次/秒/房。注册表数据进程内不变，缓存永不失效。
+ *
+ * ★ 底层走 `getClass()`（**注册表**）而不是 `ALL_CLASSES`（**可选职业清单**）：
+ *   八个可选职业两者逐位相同，差别只在特殊职业 —— 大 BOSS 的 ClassDef 刻意
+ *   不进 `ALL_CLASSES`（`data/index.ts` 的 SPECIAL_CLASSES），用清单找会
+ *   **静默**得到空技能表：BOSS 会走位、会抡白字，但一个技能都不放且无报错。
  */
 const CLASS_SKILLS_CACHE = new Map<ClassId, readonly SkillDef[]>();
 
 const skillsOfClass = (classId: ClassId): readonly SkillDef[] => {
   let skills = CLASS_SKILLS_CACHE.get(classId);
   if (skills === undefined) {
-    skills = ALL_CLASSES.find((c) => c.id === classId)?.skills ?? [];
+    skills = getClass(classId)?.skills ?? [];
     CLASS_SKILLS_CACHE.set(classId, skills);
   }
   return skills;

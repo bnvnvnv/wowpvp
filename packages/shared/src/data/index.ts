@@ -15,6 +15,7 @@ import type {
 } from './schema.js';
 import type { ArmorId, ClassId, SkillId, WeaponId } from '../types/ids.js';
 
+import { boss } from './classes/boss.js';
 import { deathknight } from './classes/deathknight.js';
 import { druid } from './classes/druid.js';
 import { hunter } from './classes/hunter.js';
@@ -39,7 +40,29 @@ export const ALL_CLASSES: readonly ClassDef[] = [
   druid,
 ];
 
-export { warrior, paladin, deathknight, rogue, hunter, mage, priest, druid };
+/**
+ * **不可选**的特殊职业：场上会出现、但玩家选不到的实体（当前只有大 BOSS）。
+ *
+ * ★★ 分成两张表而不是给 `ClassDef` 加一个 `playable: boolean` 字段 ——
+ *   因为「可选职业」的清单被**大量**地方当作穷尽集合使用：客户端的技能图标表
+ *   （缺一个就红）、八属性技能签名、`ALL_SKILLS` 的 117 项下限、配平报告的
+ *   对战矩阵、选人界面。多一个布尔字段，这些地方就要各自记得过滤一次，
+ *   而**忘记过滤不会报错**，只会让 BOSS 悄悄出现在选人界面或让 CI 要求
+ *   给一个永不上技能栏的技能配图标。两张表则相反：什么都不改的地方
+ *   自动只看得见八个可选职业。
+ *
+ * ★ 特殊职业**进注册表**（下面的 `*_BY_ID`）：`getClass` / `getSkill` /
+ *   `getWeapon` 必须查得到它，否则 sim 里 BOSS 的技能查不到定义、
+ *   普攻查不到武器间隔 —— 那才是真正会静默出错的地方。
+ */
+export const SPECIAL_CLASSES: readonly ClassDef[] = [boss];
+
+/** 注册表覆盖的全部职业 = 可选 + 特殊。★ 只有查表用它，清单类用途一律用 ALL_CLASSES */
+const REGISTERED_CLASSES: readonly ClassDef[] = [...ALL_CLASSES, ...SPECIAL_CLASSES];
+
+export { warrior, paladin, deathknight, rogue, hunter, mage, priest, druid, boss };
+/** ★ BOSS 的 classId 单独导出：判断「这个实体是不是 BOSS」的唯一字面量来源 */
+export { BOSS_CLASS_ID, BOSS_ENRAGE_AURA } from './classes/boss.js';
 
 /** 大乱斗派对道具内容包（不属于任何职业，只从 FFA 掉落获得）*/
 export * from './party.js';
@@ -59,34 +82,48 @@ const buildIndex = <T>(items: Iterable<[string, T]>): ReadonlyMap<string, T> => 
 };
 
 export const CLASS_BY_ID: ReadonlyMap<string, ClassDef> = buildIndex(
-  ALL_CLASSES.map((c) => [c.id as string, c] as [string, ClassDef]),
+  REGISTERED_CLASSES.map((c) => [c.id as string, c] as [string, ClassDef]),
 );
 
 /**
- * ★★ `ALL_SKILLS` / `ALL_WEAPONS` 是**职业池**，大乱斗的派对道具
- *   （`data/party.ts`）刻意**不在**里面 —— 它们不属于任何职业，
- *   而这两个数组的既有读者全都在问「八个职业有什么」：
- *   验收 #31 的武器取舍、附录A#3 的九项标注、每职业三套武器方案…
- *   把 4 件派对武装混进去，那些断言问的就不再是它们想问的问题了。
+ * 玩家**能选**的职业（3.1 选人界面 / `selectClass` 的唯一判据）。
+ *
+ * ★★ 没有它的话，`selectClass` 里那句 `if (!getClass(classId))` 会**放行
+ *   `classId: 'boss'`** —— 客户端点不出来，但协议是不受信任输入，
+ *   一条手写消息就能让玩家顶着 15000 血和 470 伤害的巨锤开局。
+ *   「注册表里有」和「玩家能选」从此是两件事，判据也就必须是两个。
+ */
+export const isPlayableClass = (id: ClassId): boolean =>
+  ALL_CLASSES.some((c) => (c.id as string) === (id as string));
+
+/**
+ * ★★ `ALL_SKILLS` / `ALL_WEAPONS` 只含**可选职业池** —— 大 BOSS
+ *   （SPECIAL_CLASSES）与大乱斗派对道具（`data/party.ts`）都刻意不在里面：
+ *   这两个数组的既有读者全都在问「八个职业有什么」（验收 #31 的武器取舍、
+ *   附录A#3 的九项标注、图标表/技能签名/配平矩阵的穷尽校验…），
+ *   混进特殊内容那些断言问的就不再是它们想问的问题了。
  *
  * ★ 但**按 id 查得到**是另一回事：`getSkill()` / `getWeapon()` 是 sim 的
  *   唯一入口（`tickDepsOf` 把 `getSkill` 直接传给 `tickWorld`），查不到
- *   就等于「捡到了一把引擎不认识的武器」—— 表现是白字消失、技能放不出来
- *   且**没有任何报错**。所以下面两张索引表是**职业池 ∪ 派对池**。
+ *   就等于「捡到了引擎不认识的武器」—— 表现是白字消失、技能放不出来
+ *   且**没有任何报错**。所以两张索引表是**全注册职业池 ∪ 派对池**
+ *   （REGISTERED_CLASSES 含 BOSS）。
  */
 export const ALL_SKILLS: readonly SkillDef[] = ALL_CLASSES.flatMap((c) => c.skills);
 export const SKILL_BY_ID: ReadonlyMap<string, SkillDef> = buildIndex(
-  [...ALL_SKILLS, ...PARTY_SKILLS].map((s) => [s.id as string, s] as [string, SkillDef]),
+  [...REGISTERED_CLASSES.flatMap((c) => c.skills), ...PARTY_SKILLS]
+    .map((s) => [s.id as string, s] as [string, SkillDef]),
 );
 
 export const ALL_WEAPONS: readonly WeaponDef[] = ALL_CLASSES.flatMap((c) => c.weapons);
 export const WEAPON_BY_ID: ReadonlyMap<string, WeaponDef> = buildIndex(
-  [...ALL_WEAPONS, ...PARTY_WEAPONS].map((w) => [w.id as string, w] as [string, WeaponDef]),
+  [...REGISTERED_CLASSES.flatMap((c) => c.weapons), ...PARTY_WEAPONS]
+    .map((w) => [w.id as string, w] as [string, WeaponDef]),
 );
 
 export const ALL_ARMORS: readonly ArmorDef[] = ALL_CLASSES.flatMap((c) => c.armors);
 export const ARMOR_BY_ID: ReadonlyMap<string, ArmorDef> = buildIndex(
-  ALL_ARMORS.map((a) => [a.id as string, a] as [string, ArmorDef]),
+  REGISTERED_CLASSES.flatMap((c) => c.armors).map((a) => [a.id as string, a] as [string, ArmorDef]),
 );
 
 export const getClass = (id: ClassId): ClassDef | undefined => CLASS_BY_ID.get(id as string);
@@ -124,8 +161,15 @@ export const validateData = (): DataIssue[] => {
   const issues: DataIssue[] = [];
   const seenIds = new Set<string>();
 
-  for (const cls of ALL_CLASSES) {
+  for (const cls of REGISTERED_CLASSES) {
     const where = `class:${cls.id}`;
+    /**
+     * ★ 特殊职业（BOSS）**同样过体检** —— 它的技能一样会进 sim 结算，
+     *   id 写错、读条时间为 0、距离超过 45 米在它身上一样是缺陷。
+     *   唯一豁免的是下面那条验收 #21（必须有打断/沉默）：那是**对手要能
+     *   反制玩家**的要求，BOSS 不是玩家，给它一个打断只会让它更难打。
+     */
+    const playable = isPlayableClass(cls.id);
 
     // 默认武器/护甲必须存在且被标记为 isDefault
     const defW = cls.weapons.find((w) => (w.id as string) === (cls.defaultWeaponId as string));
@@ -141,11 +185,11 @@ export const validateData = (): DataIssue[] => {
     if (cls.armors.filter((a) => a.isDefault).length !== 1)
       issues.push({ where, problem: '必须恰好有一个 isDefault 护甲（10.6）' });
 
-    // 验收 #21：每个职业必须有至少一个专用打断或等价沉默
+    // 验收 #21：每个**可选**职业必须有至少一个专用打断或等价沉默（豁免见上）
     const hasInterrupt = cls.skills.some((s) =>
       s.effects.some((e) => e.kind === 'interrupt' || e.kind === 'silence'),
     );
-    if (!hasInterrupt)
+    if (playable && !hasInterrupt)
       issues.push({ where, problem: '没有任何专用打断或等价沉默技能（验收 #21）' });
 
     // 7.2：专用打断不触发公共冷却。

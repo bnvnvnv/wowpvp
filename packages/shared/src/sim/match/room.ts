@@ -13,7 +13,7 @@
 import { ArenaPreset, GameMode } from '../../types/enums.js';
 import { FFA } from '../../constants/combat.js';
 import { TEAM_BLUE, TEAM_RED, type ClassId, type MapId, type TeamId } from '../../types/ids.js';
-import { getClass } from '../../data/index.js';
+import { getClass, isPlayableClass } from '../../data/index.js';
 import { mapsForMode } from '../../data/maps/index.js';
 import { teamSizeOf } from './arena.js';
 
@@ -59,6 +59,16 @@ export interface RoomConfig {
    * ★ 可选字段 —— 老房间对象/老测试夹具没有它时按 'normal' 读。
    */
   botDifficulty?: 'easy' | 'normal' | 'hard';
+  /**
+   * 地图里随机刷新中立大 BOSS（玩家需求）。规则见 `sim/boss.ts`。
+   *
+   * ★★ **默认关**，理由与 `fillWithBots` 逐字相同：它会改变**开局之后
+   *   世界里有几个实体**，而 M1–M16 的两百多项验收全部建立在
+   *   「场上就这么几个人」这个前提上（`verify:m10` 数实体、`verify:m16`
+   *   按职业找掉落物…）。默认开等于用「更好玩」换掉整张回归网。
+   * ★ 可选字段 —— 老房间对象/老测试夹具没有它时按 false 读。
+   */
+  bossEnabled?: boolean;
 }
 
 export interface Room {
@@ -123,7 +133,13 @@ export const selectClass = (room: Room, playerId: string, classId: ClassId): Sel
   if (room.started) return { ok: false, reason: '比赛已开始，职业已锁定' };
   const p = room.players.find((x) => x.id === playerId);
   if (!p) return { ok: false, reason: '玩家不在房间中' };
-  if (!getClass(classId)) return { ok: false, reason: `未知职业：${classId}` };
+  /**
+   * ★★ 判据是 `isPlayableClass` 而不是 `getClass` —— 注册表里现在还有
+   *   **玩家选不到**的特殊职业（大 BOSS，见 `data/index.ts` 的 SPECIAL_CLASSES）。
+   *   用「查得到就放行」的话，一条手写的 `SelectClass{classId:'boss'}` 就能
+   *   让人顶着 15000 生命开局 —— 协议是不受信任输入，客户端点不出来不算门。
+   */
+  if (!isPlayableClass(classId)) return { ok: false, reason: `未知职业：${classId}` };
 
   p.classId = classId;
   return { ok: true };
@@ -221,6 +237,29 @@ export const setBotDifficulty = (
   if (room.started) return { ok: false, reason: '比赛已开始，不能更改人机难度' };
   if (room.hostId !== playerId) return { ok: false, reason: '只有房主能更改人机难度' };
   room.config.botDifficulty = difficulty;
+  return { ok: true };
+};
+
+/**
+ * 开关「随机刷新大 BOSS」。房主专属，开赛前 —— 与 `setFillWithBots` 同款守卫。
+ *
+ * ★★ **这个开关的存在理由是可达性，不是功能**（与 `setPreset` 的文件注释同源）：
+ *   没有它，`sim/boss.ts` 的全部规则就是又一批「写对了、单测全绿、真实对局里
+ *   一次都不会发生」的代码 —— 本仓库已经栽过五次的那个坑。
+ *
+ * ⚠️ **掉落跟着 10.1 的规则预设走**：BOSS 的战利品复用军械箱那套
+ *   `spawnDropsFromRoster()`，而经典竞技场按验收 #28 不生成任何临时武装。
+ *   所以经典预设下开 BOSS = 有 BOSS、有积分、**没有装备掉落**。
+ *   这里**不**强制预设（不替房主做决定），但客户端的开关旁写明了这一条。
+ */
+export const setBossEnabled = (
+  room: Room,
+  playerId: string,
+  enabled: boolean,
+): SelectResult => {
+  if (room.started) return { ok: false, reason: '比赛已开始，不能更改 BOSS 设置' };
+  if (room.hostId !== playerId) return { ok: false, reason: '只有房主能更改 BOSS 设置' };
+  room.config.bossEnabled = enabled;
   return { ok: true };
 };
 

@@ -22,7 +22,14 @@ import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.j
 import { clone as cloneWithSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { GEOMETRY, getWeapon, type WeaponDef } from '@wowpvp/shared';
 
-/** 八职业 → 玩家模型文件。上游恰好有八个外形互异的卡通人形模型（基调见规格书 13.2）*/
+/**
+ * 八职业 → 玩家模型文件。上游恰好有八个外形互异的卡通人形模型（基调见规格书 13.2）。
+ *
+ * ★ 大 BOSS（`boss`）**故意不在表里**：素材包里没有巨怪，而
+ *   `characterFor()` 查不到就返回 null，`CharacterView` 于是保留程序化胶囊 ——
+ *   放大 2.2 倍、脑袋烧成熔岩色的那一只。这与「素材整体可选」是同一条兜底路径，
+ *   不是缺陷。将来有模型了，在这里加一行即可。
+ */
 const CLASS_MODEL: Readonly<Record<string, string>> = {
   warrior: 'barbarian',
   paladin: 'paladin',

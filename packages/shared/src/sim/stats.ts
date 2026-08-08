@@ -424,7 +424,22 @@ export const ingestCombatEvents = (
         if (victim) victim.general.deaths += 1;
 
         const killer = of(store, ev.killerId);
-        if (killer) {
+        /**
+         * ★★ **只有杀死一名已登记玩家才算一次击杀。**
+         *
+         *   `victim === undefined` 意味着死的是一个不在统计里的实体 ——
+         *   宠物、图腾、召唤物（2.1 明说它们不计人数），以及大 BOSS。
+         *   此前这里不看受害者是谁，于是打死一只宠物也 +1 击杀；
+         *   BOSS 进来之后这条会变成实打实的漏洞：**打死 BOSS 会给最后
+         *   一击者记一个人头**，而大乱斗的胜负判据正是「先到 N 杀」——
+         *   一只 BOSS 白送一个胜点。BOSS 的奖励走它自己的赏金账
+         *   （`sim/boss.ts` 的 `bounties`），不该混进击杀数。
+         *
+         * ★ 助攻同理：下面那段助攻循环也只在受害者已登记时才有意义 ——
+         *   它读的 `recentDamage` 无论如何都要清掉（见循环后），
+         *   所以清理留在外面，只把**记账**收进这个条件里。
+         */
+        if (killer && victim) {
           killer.general.kills += 1;
           // 16.2 因争夺补给发生的击杀
           const supplyAt = store.lastSupplyAt.get(killer.entityId);
@@ -440,13 +455,18 @@ export const ingestCombatEvents = (
           }
         }
 
-        // 助攻：窗口内造成过伤害、且不是击杀者本人
-        for (const [attacker, at] of store.recentDamage.get(ev.targetId) ?? []) {
-          if (attacker === ev.killerId) continue;
-          if (now - at > STATS.ASSIST_WINDOW_SECONDS) continue;
-          const a = of(store, attacker);
-          if (a) a.general.assists += 1;
+        // 助攻：窗口内造成过伤害、且不是击杀者本人。★ 与击杀同一条门槛
+        //（受害者必须是已登记玩家）—— 否则打了 BOSS 一下的人满场都是助攻
+        if (victim) {
+          for (const [attacker, at] of store.recentDamage.get(ev.targetId) ?? []) {
+            if (attacker === ev.killerId) continue;
+            if (now - at > STATS.ASSIST_WINDOW_SECONDS) continue;
+            const a = of(store, attacker);
+            if (a) a.general.assists += 1;
+          }
         }
+        // ★ 清理**无条件**：BOSS/宠物的伤害记录同样该随它的死亡出账，
+        //   留着只会在实体 id 被复用时把上一具尸体的攻击者算成助攻
         store.recentDamage.delete(ev.targetId);
         break;
       }

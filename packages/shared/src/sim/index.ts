@@ -21,6 +21,7 @@ export * from './match/respawn.js';
 export * from './match/setup.js';
 export * from './loadout.js';
 export * from './arsenal.js';
+export * from './boss.js';
 export * from './stats.js';
 export * from './death.js';
 export * from './tick.js';

@@ -28,6 +28,7 @@ import type { MapDef, SpawnPoint } from '../../data/maps/schema.js';
 import type { Vec3 } from '../../math/vec3.js';
 import { TEAM_BLUE, TEAM_NEUTRAL, TEAM_RED, type EntityId, type TeamId } from '../../types/ids.js';
 import { createAuraStore, type AuraStore } from '../aura.js';
+import { createBossState, type BossState } from '../boss.js';
 import {
   createArsenalStore, createPickupStore, setupArmories, setupPartyDrops,
   type ArsenalStore, type PickupStore,
@@ -108,6 +109,13 @@ export interface Match {
    * stats）；积分/连杀记账在 sim/match/ffa.ts —— 数值只有那一个文件。
    */
   ffa?: FfaState;
+  /**
+   * 房主开了「随机大 BOSS」才有（`RoomConfig.bossEnabled`，默认关；
+   * 大乱斗一键房默认开 —— 见 createMatch 的 ffa 收尾）。
+   * ★ 与 ctf/arena 一样是**可选**字段：没开这条玩法时它整个不存在，
+   *   `tickDepsOf` 因此也不会把它接给 tick —— 见 `TickDeps.boss` 的注释。
+   */
+  boss?: BossState;
 
   /** 房间玩家 id → 实体 id。断线重连要靠它找回自己的角色 */
   entityOf: Map<string, EntityId>;
@@ -327,6 +335,20 @@ export const createMatch = (room: Room, map: MapDef): Match => {
     });
   }
 
+  /**
+   * 随机大 BOSS（玩家需求）。**房主开了才有**，见 `RoomConfig.bossEnabled`；
+   * 大乱斗地图**默认有**（P13：BOSS 是大乱斗玩法的一部分，与派对掉落同一档）。
+   *
+   * ★ 与模式无关：BOSS 是 `TEAM_NEUTRAL`，`aliveCount()`/`teamWiped()` 都按
+   *   队伍数人，所以它既不会让竞技场的「一方全灭」判不出来，也不参与
+   *   夺旗的比分。哪种模式想要它，房主开一下就是了。
+   * ⚠️ 掉落跟着 10.1 的预设走（经典预设 = 有 BOSS、没战利品），
+   *   理由与提示写在 `setBossEnabled` 那里。
+   */
+  if (room.config.bossEnabled === true || map.family === 'ffa') {
+    match.boss = createBossState(map, world.time);
+  }
+
   return match;
 };
 
@@ -386,6 +408,7 @@ export const tickDepsOf = (
   ...(m.ctf ? { ctf: m.ctf } : {}),
   ...(m.arena ? { arena: m.arena } : {}),
   ...(m.respawn ? { respawn: m.respawn } : {}),
+  ...(m.boss ? { boss: m.boss } : {}),
 });
 
 /** 某个房间玩家在这局里的实体。断线重连、快照裁剪都要它 */
