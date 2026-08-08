@@ -164,6 +164,8 @@ export class LobbyShell {
   private preset: ArenaPreset = ArenaPreset.Classic;
   /** P5：人机补位状态（由 RoomState 同步，房主可改）*/
   private fillWithBots = false;
+  /** P12：点了「刷新房间列表」但连接还没通 —— Welcome 到达时补发 ListRooms */
+  private pendingBrowse = false;
   private botDifficulty: 'easy' | 'normal' | 'hard' = 'normal';
   /** P6：练习场配置（入口页点选，开始时拼进 ?testbed URL）。P10：默认见 DEFAULT_PRACTICE_CLASS */
   private practiceClass: string = DEFAULT_PRACTICE_CLASS;
@@ -287,6 +289,16 @@ export class LobbyShell {
                    value="${escapeHtml(this.opts.joinCode ?? '')}"/>
             <button class="lb-btn" data-action="join">加入房间</button>
           </div>
+          <!--
+            P12 房间浏览（玩家反馈「大厅很薄弱」）：不再只能靠房间码口口相传。
+            点刷新拉一次列表；每行一键加入。进行中的房间只展示不可入
+            （JoinRoom 对已开局房间本来就拒，按钮直接不给）。
+          -->
+          <div class="lb-row">
+            <button class="lb-btn lb-small" data-action="browse">刷新房间列表</button>
+            <span class="lb-fine" id="lb-roomlist-hint"></span>
+          </div>
+          <div id="lb-roomlist"></div>
           <hr/>
           <div class="lb-row">
             <!--
@@ -518,6 +530,15 @@ export class LobbyShell {
     switch (msg.t) {
       case 'Welcome':
         this.playerId = msg.playerId;
+        // P12：为浏览房间列表而建立的连接就绪了 —— 补发那次 ListRooms
+        if (this.pendingBrowse) {
+          this.pendingBrowse = false;
+          this.conn.send({ t: 'ListRooms' });
+        }
+        break;
+
+      case 'RoomList':
+        this.renderRoomList(msg.rooms);
         break;
 
       case 'RoomState': {
@@ -632,6 +653,28 @@ export class LobbyShell {
       case 'create':
         this.join(makeRoomCode(), true);
         break;
+      case 'browse': {
+        /**
+         * P12 房间浏览。连接是懒建立的（此前只有建/加房才连）——
+         * 浏览也要先连上；连上后的 Welcome 不会自动拉列表,
+         * 由 pendingBrowse 在连接就绪时补发一次 ListRooms。
+         */
+        const hint = this.root.querySelector('#lb-roomlist-hint') as HTMLElement | null;
+        if (this.conn.connected) {
+          this.conn.send({ t: 'ListRooms' });
+          if (hint) hint.textContent = '刷新中…';
+        } else {
+          this.pendingBrowse = true;
+          if (hint) hint.textContent = '连接服务器…';
+          this.conn.connect();
+        }
+        break;
+      }
+      case 'join-listed': {
+        const code = btn?.dataset['code'];
+        if (code) this.join(code, false);
+        break;
+      }
       case 'join': {
         const code = normalizeRoomCode(
           (this.root.querySelector('#lb-code') as HTMLInputElement)?.value ?? '',
@@ -805,6 +848,40 @@ export class LobbyShell {
       default:
         break;
     }
+  }
+
+  /**
+   * P12 房间列表渲染。就地更新（不走整页 render —— 列表是标题页的局部）。
+   * ★ 模式名转成人话（arena5v5 → 竞技场 5v5）；进行中的房间不给加入键
+   *   （JoinRoom 对已开局的本来就拒，按钮直接不出现，别让人点了吃拒绝）。
+   */
+  private renderRoomList(
+    rooms: readonly {
+      roomId: string; mode: string; players: number;
+      capacity: number; started: boolean; fillWithBots: boolean;
+    }[],
+  ): void {
+    const box = this.root.querySelector('#lb-roomlist') as HTMLElement | null;
+    const hint = this.root.querySelector('#lb-roomlist-hint') as HTMLElement | null;
+    if (!box) return;
+    if (hint) hint.textContent = rooms.length === 0 ? '现在没有开着的房间 —— 创建一个吧' : '';
+    const modeLabel = (m: string): string => {
+      const a = /^arena(\d+)v\d+$/.exec(m);
+      if (a) return `竞技场 ${a[1]}v${a[1]}`;
+      const c = /^ctf(\d+)v\d+$/.exec(m);
+      if (c) return `夺旗 ${c[1]}v${c[1]}`;
+      return m;
+    };
+    box.innerHTML = rooms.map((r) => `
+      <div class="lb-row lb-fine" style="gap:8px;align-items:center">
+        <b class="lb-code" style="font-size:13px">${escapeHtml(r.roomId)}</b>
+        <span>${modeLabel(r.mode)}</span>
+        <span>${r.players}/${r.capacity} 人${r.fillWithBots ? '（人机补位）' : ''}</span>
+        ${r.started
+          ? '<span style="opacity:.6">对局进行中</span>'
+          : `<button class="lb-btn lb-small" data-action="join-listed"
+                     data-code="${escapeHtml(r.roomId)}">加入</button>`}
+      </div>`).join('');
   }
 
   private join(code: string, creating: boolean): void {

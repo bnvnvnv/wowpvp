@@ -354,6 +354,7 @@ export const parseClientMessage = (raw: string): ParseResult => {
     }
 
     // 无参数消息
+    case 'ListRooms':
     case 'LeaveMatch':
     case 'CancelCast':
     case 'UseTrinket':

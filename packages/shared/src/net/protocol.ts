@@ -123,6 +123,11 @@ export type ClientMessage =
   | { t: 'LeaveMatch' }
   /** 17.3 重连：带上服务器给的令牌 */
   | { t: 'Reconnect'; token: string }
+  /**
+   * P12 房间浏览：请求当前可见的房间列表（回 RoomList）。
+   * ★ 只读、无参数、任何阶段可发 —— 大厅刷新列表用。
+   */
+  | { t: 'ListRooms' }
 
   // ── 战斗阶段 ──
   | InputMessage
@@ -170,6 +175,7 @@ export type ClientMessageKind = ClientMessage['t'];
 export const ALL_CLIENT_MESSAGE_KINDS: readonly ClientMessageKind[] = [
   'JoinRoom', 'SelectTeam', 'SelectClass', 'SetReady', 'SetRoomPreset',
   'SetRoomMode', 'SetFillWithBots', 'SetRoomBotDifficulty', 'LeaveMatch', 'Reconnect',
+  'ListRooms',
   'Input', 'SetTarget', 'TabTarget', 'CastRequest', 'CancelCast', 'UseTrinket',
   'InteractStart', 'InteractCancel', 'SwapWeapon', 'SwapArmor', 'UseConsumable',
   'OpenArmory', 'ChooseArsenal',
@@ -302,6 +308,15 @@ export type ServerMessage =
       /** P5：人机补位与难度 —— 大厅要画出当前状态（此前 UI 连开关都没有）*/
       fillWithBots: boolean
       botDifficulty: 'easy' | 'normal' | 'hard' }
+  /**
+   * P12 房间浏览的应答。★ 与 /healthz 刻意不列房间码的立场（S6）的关系：
+   *   healthz 是**无鉴权 HTTP 端点**，会被扫描器批量抓；本消息走 ws 会话、
+   *   是大厅的产品功能 —— 房间在本产品里就是公开可浏览的（没有私房概念，
+   *   将来加密码房时这里按 visibility 过滤）。列表只含房间摘要，不含玩家名单。
+   */
+  | { t: 'RoomList'
+      rooms: readonly { roomId: string; mode: GameMode; players: number
+        capacity: number; started: boolean; fillWithBots: boolean }[] }
   | { t: 'MatchStart'; mapId: MapId; you: EntityId; startsAt: number
       /** 17.3 重连令牌。★ 断线后凭它恢复，见 server/room/reconnect.ts */
       reconnectToken: string }
@@ -430,7 +445,7 @@ export type ServerMessage =
 export type ServerMessageKind = ServerMessage['t'];
 
 export const ALL_SERVER_MESSAGE_KINDS: readonly ServerMessageKind[] = [
-  'Welcome', 'RoomState', 'MatchStart', 'Snapshot', 'EntityMeta',
+  'Welcome', 'RoomState', 'RoomList', 'MatchStart', 'Snapshot', 'EntityMeta',
   'CastStarted', 'CastResolved', 'CastInterrupted', 'CastFailed', 'Damage', 'Heal',
   'AuraApplied', 'AuraRemoved', 'Death', 'ArsenalOffer', 'PickupResult',
   'FlagEvent', 'RoundEnd', 'MatchEnd', 'MatchStats',

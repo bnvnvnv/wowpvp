@@ -41,6 +41,7 @@ import {
   setPreset,
   setReady,
   startMatch,
+  teamSizeOf,
   SIM,
   Slot,
   type ClientMessage,
@@ -299,6 +300,7 @@ export class RoomServer {
   private handle(session: Session, msg: ClientMessage): void {
     switch (msg.t) {
       case 'JoinRoom': return this.onJoin(session, msg.roomId, msg.name);
+      case 'ListRooms': return this.onListRooms(session);
       case 'Reconnect': return this.onReconnect(session, msg.token);
       case 'SelectTeam': return this.onRoomMutation(
         session, (sr) => selectSlot(sr.room, session.playerId, msg.team as Slot), 'SelectTeam');
@@ -495,6 +497,31 @@ export class RoomServer {
     this.broadcastRoomState(sr);
 
     if (canStart(sr.room).ok) this.beginMatch(sr);
+  }
+
+  /**
+   * P12 房间浏览（玩家反馈「游戏大厅很薄弱」—— 此前只能靠房间码口口相传）。
+   *
+   * ★ 与 `/healthz` 不列房间码的立场（healthSnapshot 的注释）不冲突：
+   *   那是无鉴权 HTTP 端点、扫描器可批量抓；这条走 ws 会话，是大厅的
+   *   产品功能 —— 房间在本产品里就是公开可加入的（JoinRoom 本无密码），
+   *   浏览列表只是把「可加入」这个既有事实做成了可见。摘要不含玩家名单。
+   * ★ 上限 50 条按人数降序 —— 列表是给人挑的，不是全量目录（S3 的
+   *   MAX_ROOMS 才是资源上限）。
+   */
+  private onListRooms(session: Session): void {
+    const rooms = [...this.rooms.values()]
+      .map((sr) => ({
+        roomId: sr.room.id,
+        mode: sr.room.config.mode,
+        players: sr.room.players.filter((p) => p.slot !== Slot.Spectator).length,
+        capacity: teamSizeOf(sr.room.config.mode) * 2,
+        started: sr.room.started,
+        fillWithBots: sr.room.config.fillWithBots === true,
+      }))
+      .sort((a, b) => b.players - a.players)
+      .slice(0, 50);
+    session.send({ t: 'RoomList', rooms });
   }
 
   // ── 开局 ──────────────────────────────────────────────────────

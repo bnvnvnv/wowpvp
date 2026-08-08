@@ -1217,7 +1217,7 @@ export const referencedEntities = (msg: ServerMessage): EntityId[] => {
     //    与 broadcastSnapshots 的同一张可见实体表保证）、
     //    赛后/房间广播（RoomState/RoundEnd/MatchEnd/MatchStats/Peer*，
     //    对局结束或房间阶段没有需要瞒的实体）──────────────────
-    case 'Welcome': case 'RoomState': case 'MatchStart': case 'Snapshot':
+    case 'Welcome': case 'RoomState': case 'RoomList': case 'MatchStart': case 'Snapshot':
     case 'EntityMeta':
     case 'CastFailed': case 'ArsenalOffer': case 'PickupResult':
     case 'RoundEnd': case 'MatchEnd': case 'MatchStats': case 'Rejected':
