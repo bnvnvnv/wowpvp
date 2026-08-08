@@ -900,6 +900,18 @@ export class MatchLoop {
       ...(m.respawn ? { respawn: m.respawn } : {}),
     };
 
+    /**
+     * ★ P11：装备的**原始状态指纹**每实体每 tick 只算一次 —— 它读的是
+     *   weaponId/armorId/loadout/swap 的底层状态，与观察者无关（视图才
+     *   分敌我，而敌我关系对每个 (会话,实体) 对是常量）。第一版按
+     *   (会话 × 实体) 算并顺手构建了完整视图，2.9 万次/秒的数组拷贝把
+     *   省下的又吃回去了 —— 40 房 3v3 实测反而涨了 0.13 核。
+     */
+    const fpOf = new Map<EntityId, string>();
+    for (const e of listEntities(m.world)) {
+      fpOf.set(e.id, equipFingerprint(e, m.loadouts.get(e.id), m.swaps.get(e.id)));
+    }
+
     for (const s of this.deps.sessions()) {
       /**
        * ★ P2（技术债总账）：人机会话跳过快照的**构建与序列化** ——
@@ -939,11 +951,12 @@ export class MatchLoop {
       );
 
       /**
-       * ★ P11 装备通道：对本份快照可见的每个实体算一个廉价指纹，与上次
-       *   发出的比对，变了（含首见）才进 `EntityLoadouts`。指纹法而不是
-       *   sim 挂钩 —— 挂钩会有「新增一条改装备的路径忘了通知」的静默失效，
-       *   指纹漏不掉。**必须发在快照之前**：客户端 hydrate 从装备缓存合回
-       *   实体，首见的实体要在快照到达前拿到装备。
+       * ★ P11 装备通道：对本份快照可见的每个实体查它的**原始状态指纹**
+       *   （见 `equipFingerprints` —— 每实体每 tick 只算一次，与观察者无关），
+       *   与该会话上次发出的比对，变了（含首见）才构建视图进 `EntityLoadouts`。
+       *   指纹法而不是 sim 挂钩 —— 挂钩会有「新增一条改装备的路径忘了通知」
+       *   的静默失效，指纹漏不掉。**必须发在快照之前**：客户端 hydrate 从
+       *   装备缓存合回实体，首见的实体要在快照到达前拿到装备。
        * ★ 视图按接收者的**有效视角**（观战 = 被跟随者）算 —— 与快照裁剪
        *   同一个 viewer；跟随只能是队友（11.4），阵营视图不会因此错型。
        */
@@ -951,13 +964,16 @@ export class MatchLoop {
       let loadoutItems:
         { entityId: EntityId; equipment: ReturnType<typeof equipmentViewFor> }[] | undefined;
       for (const se of snapshot.entities) {
+        const fp = fpOf.get(se.id);
+        if (fp === undefined || account.equipFp.get(se.id) === fp) continue;
         const e = m.world.entities.get(se.id);
         if (!e) continue;
-        const view = equipmentViewFor(e, effectiveViewer, m);
-        const fp = equipFingerprint(view);
-        if (account.equipFp.get(se.id) === fp) continue;
         account.equipFp.set(se.id, fp);
-        (loadoutItems ??= []).push({ entityId: se.id, equipment: view });
+        (loadoutItems ??= []).push({
+          entityId: se.id,
+          // ★ 只有指纹变了才走到这里 —— 视图构建（含数组拷贝）是稀有路径
+          equipment: equipmentViewFor(e, effectiveViewer, m),
+        });
       }
       if (loadoutItems) s.send({ t: 'EntityLoadouts', items: loadoutItems });
 
@@ -1059,18 +1075,22 @@ export class MatchLoop {
 }
 
 /**
- * 装备视图的变更指纹（P11）。字段全列 —— 漏一个字段就等于那个字段的变化
- * 永远不下发。`|` 分隔即可：id 都是 `warrior.sword_shield` 这类不含竖线的
- * 词法，数组直接 join。
+ * 装备的**原始状态**指纹（P11）。读的是视图的全部上游输入 —— 当前武器/
+ * 护甲、备用槽全量、消耗品、换装条目；任何一个变了，敌我两种视图里
+ * **可能**变的都变了（宁可多发一条同内容的视图，不可漏发）。
+ * 字段全列 —— 漏一个上游就等于那个字段的变化永远不下发。
+ * `|`/`,` 分隔即可：id 都是 `warrior.sword_shield` 这类不含分隔符的词法。
  */
 const equipFingerprint = (
-  v: ReturnType<typeof equipmentViewFor>,
+  e: CombatEntity,
+  l: { spareWeapons: readonly unknown[]; spareArmors: readonly unknown[];
+       consumables: readonly unknown[] } | undefined,
+  swap: { kind: SwapKind; endsAt: number } | undefined,
 ): string =>
-  'spareWeaponIds' in v
-    ? `A|${v.currentWeaponId}|${v.currentArmorId}|${v.spareWeaponIds.join(',')}` +
-      `|${v.spareArmorIds.join(',')}|${v.allWeaponIds.join(',')}|${v.allArmorIds.join(',')}` +
-      `|${v.consumableIds.join(',')}|${v.swapping}|${v.swapKind ?? ''}|${v.swapEndsAt ?? ''}`
-    : `E|${v.currentWeaponId ?? ''}|${v.armorArchetype ?? ''}|${v.swapping}`;
+  `${e.weaponId}|${e.armorId}` +
+  `|${l ? l.spareWeapons.join(',') : ''}|${l ? l.spareArmors.join(',') : ''}` +
+  `|${l ? l.consumables.join(',') : ''}` +
+  `|${swap ? `${swap.kind},${swap.endsAt}` : ''}`;
 
 /**
  * 10.5 的中断原因转成给玩家看的话。
