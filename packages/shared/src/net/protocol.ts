@@ -24,6 +24,7 @@ import type {
 import type { ClassId, EntityId, MapId, SkillId, TeamId } from '../types/ids.js';
 import type { Vec3 } from '../math/vec3.js';
 import type { ArsenalOption } from '../sim/arsenal.js';
+import type { FfaOffer } from '../sim/match/ffa.js';
 import type {
   AllyEquipmentSnapshot, ArmorySnapshot, DropSnapshot, EnemyEquipmentSnapshot,
   EntitySnapshot, EntityStaticsSnapshot, GroundAreaSnapshot, MatchSnapshot,
@@ -162,6 +163,14 @@ export type ClientMessage =
   | { t: 'OpenArmory'; armoryId: number }
   /** 10.4 从自己打开的军械箱里领走三选一之一 */
   | { t: 'ChooseArsenal'; armoryId: number; choice: ArsenalChoice }
+  /**
+   * P13 大乱斗积分商店：兑换一件商品（玩家原话「积分兑换装备和其他东西」）。
+   *
+   * ★★ **只发商品编号，不发价格、不发余额、不发「我买到了什么」** ——
+   *   那三样都是**结果**，而结果由服务器算（本文件 §2 的第一条约束）。
+   *   带上价格的话，改一行前端就是一件 0 分的武器。
+   */
+  | { t: 'FfaBuy'; offerId: string }
 
   // ── 观战（11.4：只能跟随己方存活玩家）──
   | { t: 'SpectateFollow'; entityId: EntityId };
@@ -178,7 +187,7 @@ export const ALL_CLIENT_MESSAGE_KINDS: readonly ClientMessageKind[] = [
   'ListRooms',
   'Input', 'SetTarget', 'TabTarget', 'CastRequest', 'CancelCast', 'UseTrinket',
   'InteractStart', 'InteractCancel', 'SwapWeapon', 'SwapArmor', 'UseConsumable',
-  'OpenArmory', 'ChooseArsenal',
+  'OpenArmory', 'ChooseArsenal', 'FfaBuy',
   'SpectateFollow',
 ];
 
@@ -413,6 +422,17 @@ export type ServerMessage =
   | { t: 'FfaKill'; killerName: string; victimName: string
       streak: number; bounty: number; killerScore: number }
   /**
+   * P13 大乱斗积分商店的货架与余额。
+   *
+   * ★★ **这是私信，不是广播** —— 与 `ArsenalOffer` 同一条理由：货架按
+   *   **接收者的职业**生成（卖给战士一把法杖没有意义），而余额是他一个人的账。
+   *   广播出去等于把全场的经济状况摊开给所有人看。
+   * ★ 「进对局发一次 + 余额一变就重发」：客户端因此**永远**只显示服务器的
+   *   账，不自己减。本地先减一份的话，被拒绝的那次购买会让面板与真账
+   *   长期错开，而玩家只会觉得「分数算错了」。
+   */
+  | { t: 'FfaShop'; balance: number; offers: readonly FfaOffer[] }
+  /**
    * 10.4：军械箱被打开后的三个横向选择。
    *
    * ★★ **这是私信，不是广播。** 原文是「只向**打开者**显示其职业的三个
@@ -462,7 +482,7 @@ export type ServerMessageKind = ServerMessage['t'];
 export const ALL_SERVER_MESSAGE_KINDS: readonly ServerMessageKind[] = [
   'Welcome', 'QueueStatus', 'RoomState', 'RoomList', 'MatchStart', 'Snapshot', 'EntityMeta',
   'CastStarted', 'CastResolved', 'CastInterrupted', 'CastFailed', 'Damage', 'Heal',
-  'AuraApplied', 'AuraRemoved', 'Death', 'FfaKill', 'ArsenalOffer', 'PickupResult',
+  'AuraApplied', 'AuraRemoved', 'Death', 'FfaKill', 'FfaShop', 'ArsenalOffer', 'PickupResult',
   'FlagEvent', 'RoundEnd', 'MatchEnd', 'MatchStats',
   'Rejected', 'PeerDisconnected', 'PeerReconnected', 'PeerEliminated',
 ];

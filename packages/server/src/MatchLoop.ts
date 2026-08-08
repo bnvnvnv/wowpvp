@@ -34,10 +34,12 @@ import {
   beginSwing,
   buildSnapshot,
   buildSelfState,
+  buyFfaOffer,
   cancelCast,
   cancelFlagInteract,
   chooseFromArmory,
   ctfWinner,
+  ffaShopFor,
   distance2D,
   equipmentViewFor,
   isLegalFollow,
@@ -61,6 +63,7 @@ import {
   type CastIntent,
   type CombatEntity,
   type CombatEvent,
+  type EffectDef,
   type EntityId,
   type InteractTarget,
   type Match,
@@ -86,7 +89,9 @@ export type MatchCommand =
   | { t: 'InteractStart'; target: InteractTarget }
   | { t: 'InteractCancel' }
   | { t: 'OpenArmory'; armoryId: number }
-  | { t: 'ChooseArsenal'; armoryId: number; choice: ArsenalChoice };
+  | { t: 'ChooseArsenal'; armoryId: number; choice: ArsenalChoice }
+  /** P13 大乱斗积分商店的兑换。★ 与开箱/领取同规矩：排队，不是收到就改世界 */
+  | { t: 'FfaBuy'; offerId: string };
 
 import { takeExpired, type ReconnectRegistry } from './room/reconnect.js';
 import type { Session } from './room/Session.js';
@@ -193,6 +198,19 @@ export class MatchLoop {
   private readonly pendingForfeits = new Set<EntityId>();
   /** 本 tick 的战斗意志请求（8.3，W8）。与技能/消耗品同规矩：只排意图 */
   private readonly pendingTrinkets = new Set<EntityId>();
+  /**
+   * P13：本 tick 兑换出来的即时效果（「立即满血」）。
+   * ★ 账已经在 `applyCommands` 里扣了（`buyFfaOffer`），但**效果**要等
+   *   `tickWorld` 的 itemGrants 那一步 —— 结算只有那一个出口（A1/A2）。
+   */
+  private readonly pendingItemGrants = new Map<EntityId, readonly EffectDef[]>();
+  /**
+   * P13：余额变过、需要重发一份 `FfaShop` 的人。
+   *
+   * ★ 攒到 tick 末尾一起发，而不是在扣账/入账的那一行立刻发：一个 tick 里
+   *   「杀了人 + 买了东西」会连发两条，后一条才是真账 —— 攒起来天然只发最终值。
+   */
+  private readonly shopDirty = new Set<EntityId>();
 
   /**
    * P11 快照瘦身的每会话记账：
@@ -299,6 +317,17 @@ export class MatchLoop {
     this.tick++;
     const outbound: ServerMessage[] = [];
 
+    /**
+     * P13：开局第一 tick 把货架发给每个参战者（余额 0）。
+     * ★ 挂在 tick 而不是 `beginMatch`：MatchLoop 是「一局一个」的对象，
+     *   第一 tick 是它唯一不需要外部谁记得调用的开局钩子 ——
+     *   而「商店只在开局发一次」这种事，靠调用方记得就迟早会漏
+     *   （本仓库「规则写对了、没有人调用它」那一家的预防）。
+     */
+    if (this.tick === 1 && this.match.ffa) {
+      for (const entityId of this.match.playerOf.keys()) this.shopDirty.add(entityId);
+    }
+
     // ★ 人机在这里发出本 tick 的 Input/CastRequest（走完整协议栈，见 BotDriver）
     this.deps.onPreTick?.();
     this.applyCommands();
@@ -310,6 +339,7 @@ export class MatchLoop {
         consumableRequests: this.pendingConsumables,
         forfeits: this.pendingForfeits,
         trinketRequests: this.pendingTrinkets,
+        itemGrants: this.pendingItemGrants,
       },
       SIM.TICK_DT,
       {
@@ -370,6 +400,8 @@ export class MatchLoop {
                   bounty: fact.bounty,
                   killerScore: fact.killerScore,
                 });
+                // 赏金入账了 —— 他的商店面板要看到新余额（tick 末尾统一重发）
+                if (ev.killerId !== undefined) this.shopDirty.add(ev.killerId);
               }
             }
           }
@@ -395,6 +427,7 @@ export class MatchLoop {
     this.pendingConsumables.clear();
     this.pendingForfeits.clear();
     this.pendingTrinkets.clear();
+    this.pendingItemGrants.clear();
 
     for (const ev of result.flags) {
       const flag = this.match.ctf?.state.flags[ev.flagTeam as number];
@@ -410,6 +443,7 @@ export class MatchLoop {
 
     this.settleExpiredReconnects();
     this.dispatch(outbound);
+    this.flushShop();
 
     /**
      * ★ P11 波2：快照按 `SIM.SNAPSHOT_RATE` 分频（20Hz tick / 10Hz 快照）。
@@ -651,6 +685,35 @@ export class MatchLoop {
           break;
         }
 
+        /**
+         * P13 大乱斗积分商店。
+         *
+         * ★ 规则全在 sim 的 `buyFfaOffer()`：扣分只走 `spendPoints`、
+         *   给东西只走 loadout 的既有出口。这里只做三件事 ——
+         *   翻译（offerId → 结果）、转达拒绝、把「满血」的效果排给 tickWorld。
+         * ★ 与 ChooseArsenal 一样，**成功不回执**：新装备在下一份快照的
+         *   装备段里，新余额由 `flushShop()` 的 `FfaShop` 带 ——
+         *   再发一条「你买到了」就是第三个真相源。
+         */
+        case 'FfaBuy': {
+          const ffa = this.match.ffa;
+          if (!ffa) {
+            this.sessionOfEntity(e.id)?.reject('FfaBuy', '本模式没有积分商店');
+            break;
+          }
+          const loadout = this.match.loadouts.get(e.id);
+          if (!loadout) break;
+          const r = buyFfaOffer(ffa, e, loadout, cmd.offerId);
+          if (!r.ok) {
+            this.sessionOfEntity(e.id)?.reject('FfaBuy', r.reason);
+            break;
+          }
+          // ★ 满血不在这里结算 —— 排进 itemGrants，由 tickWorld 出 heal 事件
+          if (r.effects) this.pendingItemGrants.set(e.id, r.effects);
+          this.shopDirty.add(e.id);
+          break;
+        }
+
         case 'InteractCancel': {
           this.match.pickups.delete(e.id);
           for (const flag of Object.values(this.match.ctf?.state.flags ?? {})) {
@@ -735,6 +798,51 @@ export class MatchLoop {
         t: 'PickupResult', dropId: target.dropId, ok: false, reason: r.reason,
       });
     }
+  }
+
+  // ── P13 积分商店 ──────────────────────────────────────────────
+
+  /**
+   * 把这一 tick 里余额变过的人的货架重发一遍。
+   *
+   * ★★ **客户端永远只显示服务器发来的余额，不自己减。** 本地先减一份的话，
+   *   被拒绝的那次购买会让面板与真账长期错开 —— 而玩家只会觉得「分数算错了」，
+   *   查起来要一路查到协议。所以扣账的唯一出口（`spendPoints`）与显示的
+   *   唯一来源（这条消息）之间没有第二条路。
+   */
+  private flushShop(): void {
+    if (this.shopDirty.size === 0) return;
+    for (const entityId of this.shopDirty) this.sendShop(entityId);
+    this.shopDirty.clear();
+  }
+
+  /** 给一个人私信他的货架与余额。★ 人机跳过 —— BotSocket 反正把它丢掉 */
+  private sendShop(entityId: EntityId): void {
+    const ffa = this.match.ffa;
+    if (!ffa) return;
+    const session = this.sessionOfEntity(entityId);
+    if (!session || session.isBot) return;
+    const e = this.match.world.entities.get(entityId);
+    if (!e) return;
+    session.send({
+      t: 'FfaShop',
+      balance: ffa.points.get(entityId) ?? 0,
+      // ★ 按**他的**职业生成（与 ArsenalOffer 同则）——货架不是全职业目录
+      offers: ffaShopFor(e.classId),
+    });
+  }
+
+  /**
+   * 重连后补一份货架。由 `RoomServer.onReconnect` 调。
+   *
+   * ★ 与快照「不单独补发、下一 tick 自然会到」的做法不同：`FfaShop` 是
+   *   **事件式**的（余额变了才发），重连的人可能几分钟内都等不到下一次变动，
+   *   那期间他的面板是空的。这条补发是它必须存在的理由。
+   */
+  sendShopTo(playerId: string): void {
+    if (!this.match.ffa) return;
+    const entityId = this.match.entityOf.get(playerId);
+    if (entityId !== undefined) this.sendShop(entityId);
   }
 
   // ── 断线超时 ──────────────────────────────────────────────────
@@ -1257,14 +1365,15 @@ export const referencedEntities = (msg: ServerMessage): EntityId[] => {
     // ── 抹而不丢（redactFor 的专门分支，永远到不了这里）────────
     case 'Damage': case 'Heal': case 'CastResolved': return [];
     // ── 不走 dispatch() 的消息：私信（CastFailed/ArsenalOffer/PickupResult/
-    //    Rejected/Welcome/MatchStart）、按接收者构建（Snapshot/EntityLoadouts ——
-    //    它们若出现在 dispatch 里本身就是接线错误，可见性由 buildSnapshot
-    //    与 broadcastSnapshots 的同一张可见实体表保证）、
+    //    FfaShop/Rejected/Welcome/MatchStart）、按接收者构建（Snapshot/
+    //    EntityLoadouts —— 它们若出现在 dispatch 里本身就是接线错误，
+    //    可见性由 buildSnapshot 与 broadcastSnapshots 的同一张可见实体表保证）、
     //    赛后/房间广播（RoomState/RoundEnd/MatchEnd/MatchStats/Peer*，
     //    对局结束或房间阶段没有需要瞒的实体）──────────────────
+    //    ★ P13 FfaShop 归在私信一列：sendShop 直发 session，形状里也没有实体 id
     case 'Welcome': case 'QueueStatus': case 'RoomState': case 'RoomList':
     case 'MatchStart': case 'Snapshot':
-    case 'EntityMeta':
+    case 'EntityMeta': case 'FfaShop':
     case 'CastFailed': case 'ArsenalOffer': case 'PickupResult':
     case 'RoundEnd': case 'MatchEnd': case 'MatchStats': case 'Rejected':
     case 'PeerDisconnected': case 'PeerReconnected': case 'PeerEliminated':

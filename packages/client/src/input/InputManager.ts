@@ -73,6 +73,12 @@ export const Action = {
   ToggleScoreboard: 'toggleScoreboard',
   /** W9（技术债总账）：设置面板。音量/画质/无障碍此前只有快捷键盲切 */
   OpenSettings: 'openSettings',
+  /**
+   * P13 大乱斗积分商店的展开/收起。
+   * ★ 展开时数字键 1–9 改为买货（`FfaShopHud.buySlot` 会吃掉那一下按键）——
+   *   所以**必须**有一个显式的开关键，不能让商店常驻抢 4.2 的技能键位。
+   */
+  ToggleShop: 'toggleShop',
 } as const;
 export type Action = (typeof Action)[keyof typeof Action];
 
@@ -116,6 +122,8 @@ export const DEFAULT_BINDINGS: Readonly<Record<Action, string>> = {
   [Action.ToggleMute]: 'KeyM',
   [Action.ToggleScoreboard]: 'KeyO',
   [Action.OpenSettings]: 'F10',
+  // ★ N：4.2 按键表里没占的字母键之一（Q/E/R/B/G/Z/X/V/K/M/O/F 都已有主）
+  [Action.ToggleShop]: 'KeyN',
 };
 
 /** 角色转向速度，弧度/秒。A/D 未按右键时用它转身 */

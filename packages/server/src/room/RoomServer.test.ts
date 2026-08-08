@@ -109,6 +109,21 @@ const readyUp = async (
   c.send({ t: 'SetReady', ready: true });
 };
 
+/** P13：等到收到一条余额为 `balance` 的 `FfaShop`（一次购买的到账回执）*/
+const waitForShopBalance = async (c: TestClient, balance: number): Promise<void> => {
+  const deadline = Date.now() + 3000;
+  for (;;) {
+    const shops = c.received.filter(
+      (m): m is Extract<ServerMessage, { t: 'FfaShop' }> => m.t === 'FfaShop',
+    );
+    if (shops.some((m) => m.balance === balance)) return;
+    if (Date.now() > deadline) {
+      throw new Error(`等余额 ${balance} 的 FfaShop 超时；收到过：${shops.map((m) => m.balance).join(', ')}`);
+    }
+    await new Promise((r) => setTimeout(r, 20));
+  }
+};
+
 describe('P12：大乱斗（FFA）', () => {
   it('★★ 两名玩家同槽参战 → 独立阵营互为敌人；杀满目标数出 MatchEnd', async () => {
     const a = await TestClient.connect(server.port);
@@ -145,6 +160,62 @@ describe('P12：大乱斗（FFA）', () => {
     server.rooms.loopOf('ffa1')!.advance();
     const end = await a.waitFor('MatchEnd');
     expect(end.winner).toBe(ea.team);
+
+    a.close(); b.close();
+  });
+
+  /**
+   * P13 积分商店的**接线**验收（玩家原话：「积分兑换装备和其他东西」）。
+   *
+   * ★ 规则（先验后扣、不透支）由 `ffa.test.ts` 钉；这里只验从协议到装备栏
+   *   这条**真实链路**通不通 —— 本仓库最常见的失败模式恰恰是
+   *   「规则写对了、没有人调用它」。
+   */
+  it('★★ 白盒给分 → FfaBuy → 装备进 loadout + 余额减；不足被拒且余额不动', async () => {
+    const a = await TestClient.connect(server.port);
+    const b = await TestClient.connect(server.port);
+    await a.waitFor('Welcome');
+    await b.waitFor('Welcome');
+
+    a.send({ t: 'JoinRoom', roomId: 'ffa2', name: '甲' });
+    await a.waitFor('RoomState');
+    a.send({ t: 'SetRoomMode', mode: 'ffa' as never });
+    b.send({ t: 'JoinRoom', roomId: 'ffa2', name: '乙' });
+    await b.waitFor('RoomState');
+    for (const c of [a, b]) {
+      c.send({ t: 'SelectTeam', team: 'red' });
+      c.send({ t: 'SelectClass', classId: asClassId('warrior') });
+      c.send({ t: 'SetReady', ready: true });
+    }
+    const sa = await a.waitFor('MatchStart');
+
+    // ★ 进对局就该收到一份货架（余额 0）—— 「客户端必须始终能显示余额」
+    const shop = await a.waitFor('FfaShop');
+    expect(shop.balance).toBe(0);
+    expect(shop.offers.length).toBeGreaterThanOrEqual(3);
+
+    const match = server.rooms.matchOf('ffa2')!;
+    const weapon = shop.offers.find((o) => o.kind === 'weapon')!;
+
+    // ── 1. 买不起：被拒，余额一分不动 ────────────────────────
+    a.send({ t: 'FfaBuy', offerId: weapon.offerId });
+    const rejected = await a.waitFor('Rejected');
+    expect(rejected.what).toBe('FfaBuy');
+    expect(match.ffa!.points.get(sa.you) ?? 0).toBe(0);
+    expect(match.loadouts.get(sa.you)!.spareWeapons).toHaveLength(0);
+
+    // ── 2. 白盒发工资，再买一次 ──────────────────────────────
+    match.ffa!.points.set(sa.you, weapon.cost + 25);
+    a.send({ t: 'FfaBuy', offerId: weapon.offerId });
+
+    /**
+     * ★ 等**结果到达**，不是睡一个固定毫秒数：指令要排到下一 tick 开头才执行
+     *   （MatchLoop 的排队纪律），而这条 `FfaShop` 就是「扣完账了」的回执 ——
+     *   余额变动后重发货架，客户端因此从不自己减账。
+     */
+    await waitForShopBalance(a, 25);
+    expect(match.loadouts.get(sa.you)!.spareWeapons).toHaveLength(1);
+    expect(match.ffa!.points.get(sa.you)).toBe(25);
 
     a.close(); b.close();
   });

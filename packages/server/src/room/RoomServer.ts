@@ -335,6 +335,12 @@ export class RoomServer {
         return this.enqueue(session, {
           t: 'ChooseArsenal', armoryId: msg.armoryId, choice: msg.choice,
         });
+      /**
+       * P13 大乱斗积分商店。★ 这里只做路由 —— 「有没有这件商品」「买不买得起」
+       *   「买了用不上」全在 sim 的 `buyFfaOffer()`，与本文件头「规则不在这里」同则。
+       */
+      case 'FfaBuy':
+        return this.enqueue(session, { t: 'FfaBuy', offerId: msg.offerId });
       case 'SpectateFollow': return this.onSpectateFollow(session, msg.entityId);
 
       case 'UseTrinket': {
@@ -807,6 +813,12 @@ export class RoomServer {
         startsAt: now,
         reconnectToken: token,
       });
+      /**
+       * P13：大乱斗的商店面板要补一份。★ 与快照「不补发、下一 tick 自然会到」
+       *   的做法分道扬镳是有理由的 —— `FfaShop` 只在余额变动时发，
+       *   重连的人可能几分钟内等不到下一次变动（见 `sendShopTo` 的注释）。
+       */
+      sr.loop?.sendShopTo(r.playerId);
     }
     this.broadcast(sr, { t: 'PeerReconnected', playerId: r.playerId });
     /**

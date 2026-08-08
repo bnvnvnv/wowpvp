@@ -504,6 +504,28 @@
       .ap-opt-cost { color: #d8a07e; margin-top: 2px; }
       .ap-foot { font-size: 10px; color: #6f7a90; margin-top: 8px; text-align: center; }
 
+      /* ── P13 大乱斗积分商店（玩家原话：「积分兑换装备和其他东西」）───── */
+      /* 折叠态只有一行余额 —— 积分是本模式的核心反馈，不该藏进面板里 */
+      #ffa-shop { position: absolute; left: 14px; top: 120px; width: 236px;
+                  background: rgba(16,19,25,.9); border: 1px solid #3a4152;
+                  border-radius: 8px; padding: 6px 8px; z-index: 18; font-size: 12px; }
+      .fs-head { display: flex; justify-content: space-between; align-items: baseline;
+                 cursor: pointer; }
+      .fs-balance { color: #ffcf6f; font-weight: 700; }
+      .fs-key { color: #6f7a90; font-size: 10px; }
+      .fs-list { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+      .fs-row { display: flex; gap: 6px; align-items: baseline; width: 100%;
+                text-align: left; cursor: pointer; color: #cfd6e4;
+                background: rgba(30,34,44,.9); border: 1px solid #2c313d;
+                border-radius: 5px; padding: 4px 6px; font: inherit; font-size: 11px; }
+      .fs-row:hover { border-color: #6fd0ff; background: rgba(45,60,78,.9); }
+      /* 17.2：买不起时**变暗**而不是隐藏 —— 玩家要知道攒到多少能买什么 */
+      .fs-row.fs-poor { opacity: .45; }
+      .fs-hotkey { color: #8b95a8; font-size: 10px; width: 10px; }
+      .fs-name { flex: 1; }
+      .fs-cost { color: #ffcf6f; }
+      .fs-foot { font-size: 10px; color: #6f7a90; margin-top: 6px; }
+
       /* ── 16a 击杀播报与死亡回顾（docs/14 §16a）───────────────────── */
       #kill-feed { position: absolute; right: 14px; top: 90px; width: 260px;
                    text-align: right; pointer-events: none; font-size: 12px; }

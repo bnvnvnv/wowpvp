@@ -336,6 +336,22 @@ export const parseClientMessage = (raw: string): ParseResult => {
       return { ok: true, msg: { t, armoryId, choice: choice as ArsenalChoice } };
     }
 
+    case 'FfaBuy': {
+      const offerId = v['offerId'];
+      /**
+       * ★ 长度上限 64（与 JoinRoom 的 roomId 同理由，S2）：这是不受信任的
+       *   字符串，虽然只被拿去 `find()` 一次、不会被长期持有，但没有上限
+       *   就等于允许一条消息塞进来一个 10MB 的字符串走一遍比较。
+       * ★ **不在这里校验「商品是否存在」**：货架按职业生成，codec 没有
+       *   world 也就查不到这个人是什么职业 —— 与 `SetTarget` 的可见性
+       *   同属「调用方的活」（见本函数的 ⚠️）。
+       */
+      if (typeof offerId !== 'string' || offerId.length === 0 || offerId.length > 64) {
+        return bad('offerId 无效（1–64 字符）');
+      }
+      return { ok: true, msg: { t, offerId } };
+    }
+
     case 'SpectateFollow': {
       const entityId = parseEntityId(v['entityId']);
       if (entityId === undefined) return bad('entityId 无效');

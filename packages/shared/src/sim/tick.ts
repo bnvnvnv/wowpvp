@@ -19,6 +19,7 @@
  * | # | 步骤 | 约束 | 出处 |
  * |---|---|---|---|
  * | 0 | forfeits（弃权判死）| **必须在统计折叠 / matchRules / settleDeaths 之前** —— 三者都要在本 tick 看到弃权产生的死亡；放在最前还让弃权者的技能请求与移动经由 `!alive` 自然失效 | 11.5 / 技术债总账 A1 |
+ * | 1b' | itemGrants（道具兑换的即时效果）| 与消耗品同属 applyInputs；**效果结算只有本文件一个出口** —— 商店那边只算账，不改血 | P13 / 技术债总账 A1、A2 |
  * | 1c | trinketRequests（战斗意志）| 与技能/消耗品同属 applyInputs；**刻意不查任何控制状态** —— 8.3「默认允许在昏迷中使用」，解控就是为昏迷造的 | 8.3 / 技术债总账 W8 |
  * | 1 | movement | —— | docs/02 §3 |
  * | 2 | casting | **必须在 movement 之后**：7.3「主动移动停止原地施放的读条」，先算完移动才知道这一 tick 有没有位移 | `casting.ts` 头部 |
@@ -44,7 +45,7 @@
  */
 
 import type { Aabb } from '../math/geometry.js';
-import type { SkillDef } from '../data/schema.js';
+import type { EffectDef, SkillDef } from '../data/schema.js';
 import type { MapDef } from '../data/maps/schema.js';
 import { asSkillId, type ClassId, type EntityId, type SkillId } from '../types/ids.js';
 import { PVP_TRINKET } from '../constants/combat.js';
@@ -190,6 +191,19 @@ export interface TickDeps {
    */
   trinketRequests?: ReadonlySet<EntityId>;
   /**
+   * 本 tick 由**道具兑换**产生的即时效果（P13 大乱斗积分商店的「立即满血」）。
+   * 键是受益人，值是要在他身上结算的效果清单。
+   *
+   * ★★ 与消耗品同一条理由：**效果结算只有 tick 一个出口**。
+   *   调用方直接写 `e.health = e.maxHealth` 是能跑的，但那样不产生 `heal`
+   *   事件 —— 治疗数字不广播、16.1 的治疗统计漏账，两样都不会报错
+   *   （技术债总账 A1/A2 同族）。所以商店那边只算「买没买成」，
+   *   效果排到这里来结算。
+   * ★ 通道是**通用**的（一份效果清单），不是「满血」专用分支：
+   *   将来商店加「立即解控」「护盾」只需要换清单，tick 这一步不用再改。
+   */
+  itemGrants?: ReadonlyMap<EntityId, readonly EffectDef[]>;
+  /**
    * 本 tick 要弃权判死的实体（11.5「主动退出立即按淘汰处理，**不能通过
    * 退出规避死亡统计**」；超时淘汰同路）。
    *
@@ -279,6 +293,14 @@ export interface TickResult {
   /** 本 tick 军械点刷出的实体掉落（10.4）。空数组 = 这一 tick 没有补给刷新 */
   drops: GroundDrop[];
 }
+
+/**
+ * `itemGrants` 结算时挂的来源 id（`resolve` 的 skillId 位）。
+ *
+ * ★ 不借用某个技能 id：那会让「商店买的满血」在死亡回顾与统计里
+ *   显示成一个玩家根本没按过的技能。这是个**道具**来源，如实起个名字。
+ */
+export const ITEM_GRANT_SOURCE_ID = 'item.grant';
 
 // ════════════════════════════════════════════════════════════════
 //  推进
@@ -430,6 +452,21 @@ export const tickWorld = (
     if (def.cooldown > 0) user.cooldowns.set(def.id as never, deps.world.time + def.cooldown);
     result.consumables.push({ entityId: id, consumableId });
     sinks.onConsumable?.(id, def);
+  }
+
+  /**
+   * ── 1b'. 道具兑换的即时效果（P13 大乱斗商店）。同属「applyInputs」──
+   *
+   * ★ 与 1b 隔一步而不是并进去：消耗品要先从装备栏里**取出来**
+   *   （`takeConsumable` 有它自己的死亡/硬控判定），而兑换在买的那一刻
+   *   就已经付过账了 —— 两者的前置条件不同，合成一段会让其中一套失效。
+   * ★ 死人不结算：买完到 tick 之间被打死属正常时序，效果作废（钱不退，
+   *   与消耗品「用了一半被打死」同口径）。
+   */
+  for (const [id, effects] of deps.itemGrants ?? []) {
+    const e = getEntity(deps.world, id);
+    if (!e || !e.alive) continue;
+    resolve(id, ITEM_GRANT_SOURCE_ID, effects, [id]);
   }
 
   // ── 1c. 通用解控「战斗意志」（8.3，技术债总账 W8）────────────

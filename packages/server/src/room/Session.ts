@@ -81,6 +81,8 @@ const MATCH_ONLY: ReadonlySet<ClientMessage['t']> = new Set([
   'Input', 'SetTarget', 'TabTarget', 'CastRequest', 'CancelCast', 'UseTrinket',
   'InteractStart', 'InteractCancel', 'SwapWeapon', 'SwapArmor', 'UseConsumable',
   'OpenArmory', 'ChooseArsenal',
+  // P13 大乱斗积分商店：兑换只在对局中有意义（房间阶段既没有积分也没有装备栏）
+  'FfaBuy',
   'SpectateFollow',
 ]);
 

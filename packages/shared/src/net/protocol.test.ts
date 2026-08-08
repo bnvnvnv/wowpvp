@@ -9,6 +9,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { asClassId, asEntityId, asSkillId } from '../types/ids.js';
+import { FfaOfferId } from '../sim/match/ffa.js';
 import {
   ALL_CLIENT_MESSAGE_KINDS,
   ALL_SERVER_MESSAGE_KINDS,
@@ -285,6 +286,30 @@ describe('★★ 入站校验是反作弊边界', () => {
         expect(parse({ t }).ok, t).toBe(true);
       }
     });
+
+    /**
+     * P13 积分商店。★ 只验**形状与长度** —— 「有没有这件商品」查不了：
+     * 货架按职业生成，codec 没有 world（与 SetTarget 的可见性同属调用方的活）。
+     */
+    it('★ FfaBuy 的 offerId 是受限字符串（不受信任输入的门在这里）', () => {
+      expect(parse({ t: 'FfaBuy', offerId: FfaOfferId.Weapon }).ok).toBe(true);
+      expect(parse({ t: 'FfaBuy', offerId: '' }).ok).toBe(false);
+      expect(parse({ t: 'FfaBuy', offerId: 'x'.repeat(65) }).ok).toBe(false);
+      expect(parse({ t: 'FfaBuy', offerId: 7 }).ok).toBe(false);
+      expect(parse({ t: 'FfaBuy' }).ok).toBe(false);
+    });
+
+    /**
+     * ★★ 客户端**发不出价格**：`FfaBuy` 只有 offerId，多带的字段一律被丢掉。
+     *   带得进去的话，改一行前端就是一件 0 分的武器 —— docs/08 §2 的
+     *   「只发意图不发结果」在这条消息上就是这个意思。
+     */
+    it('★★ FfaBuy 只保留 offerId（伪造的 cost/balance 进不了 sim）', () => {
+      const r = parse({ t: 'FfaBuy', offerId: FfaOfferId.Weapon, cost: 0, balance: 999999 });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(Object.keys(r.msg).sort()).toEqual(['offerId', 't']);
+    });
   });
 });
 
@@ -335,6 +360,7 @@ describe('编解码往返（docs/08 §7：语义与编码分离）', () => {
       { t: 'CastRequest', skillId: asSkillId('mage.frostbolt'), targetId: asEntityId(3) },
       { t: 'CancelCast' },
       { t: 'SwapWeapon', slot: 1 },
+      { t: 'FfaBuy', offerId: FfaOfferId.Heal },
     ];
     for (const msg of messages) {
       const r = parseClientMessage(encodeClientMessage(msg));

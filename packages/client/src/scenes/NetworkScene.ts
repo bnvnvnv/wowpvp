@@ -66,6 +66,7 @@ import {
 
 import { ArsenalView, type Interactable } from '../arsenal/ArsenalView.js';
 import { ArsenalHud, type InteractPrompt } from '../hud/ArsenalHud.js';
+import { FfaShopHud } from '../hud/FfaShopHud.js';
 import { KillFeed } from '../hud/KillFeed.js';
 import { CameraController } from '../camera/CameraController.js';
 import { AnimationController } from '../entity/AnimationController.js';
@@ -306,6 +307,11 @@ export class NetworkScene {
    */
   private readonly arsenalView = new ArsenalView();
   private arsenalHud!: ArsenalHud;
+  /**
+   * P13 大乱斗积分商店。★ 自己判断显不显示（收到过 `FfaShop` 才显示）——
+   *   「哪些模式有商店」这条规则只有服务器一份，客户端不复述。
+   */
+  private ffaShopHud!: FfaShopHud;
   /** 16a 击杀播报 + 死亡回顾 */
   private killFeed!: KillFeed;
   private lastDrops: readonly DropSnapshot[] = [];
@@ -379,6 +385,12 @@ export class NetworkScene {
     this.arsenalHud = new ArsenalHud(canvas.parentElement ?? document.body);
     this.arsenalHud.onChoose = (armoryId, choice) =>
       this.conn.send({ t: 'ChooseArsenal', armoryId, choice });
+    /**
+     * P13 大乱斗积分商店。★ 客户端**只发意图**（商品编号）——
+     *   价格、余额、能不能买全在服务器（`buyFfaOffer`），这边一个判据都不复述。
+     */
+    this.ffaShopHud = new FfaShopHud(canvas.parentElement ?? document.body);
+    this.ffaShopHud.onBuy = (offerId) => this.conn.send({ t: 'FfaBuy', offerId });
     // 16a 击杀播报与死亡回顾。★ 名字从快照查 —— 本类不持有任何战斗状态
     this.killFeed = new KillFeed(canvas.parentElement ?? document.body);
     this.killFeed.nameOf = (id) =>
@@ -916,6 +928,20 @@ export class NetworkScene {
           this.arsenalHud.toast(msg.reason, this.serverTime);
           this.pickingUp = false;
         }
+        /**
+         * P13：买不成也要在人眼看的地方说 —— 玩家此刻正盯着商店面板，
+         * 「积分不足（需要 200）」落在左下角战斗日志里等于没说。
+         * ★ 复用军械 toast 通道，不为商店另造一个提示框（同一件事一份实现）。
+         */
+        if (msg.what === 'FfaBuy') this.arsenalHud.toast(msg.reason, this.serverTime);
+        break;
+
+      /**
+       * P13 大乱斗积分商店：余额 + 这个职业的货架。
+       * ★ 私信；进对局发一次、余额一变就重发 —— 面板从不自己算账（见 FfaShopHud）。
+       */
+      case 'FfaShop':
+        this.ffaShopHud.update(msg.balance, msg.offers);
         break;
 
       /** 10.4：军械箱的三选一。★ 这是私信，只有打开者会收到 */
@@ -1296,9 +1322,24 @@ export class NetworkScene {
      *   永远按不出来**：HUD 画着它、`skillBarDefsFor` 也确实取了 9 个、
      *   `Action.skill9` 也绑着键，只有这里的循环少转一圈。
      */
+    /**
+     * P13 大乱斗积分商店：N 开合。
+     * ★ 放在技能键之前 —— 同一帧里「按 N 展开」不该顺带把这一帧的数字键
+     *   也判成买货（也不会：pressed 是按帧采样的集合，但顺序仍写清楚）。
+     */
+    if (input.pressed.has(Action.ToggleShop)) this.ffaShopHud.toggle();
+
     let pressedSlot: number | null = null;
     for (let i = 0; i < SKILL_BAR_SLOTS; i++) {
       if (input.pressed.has(`skill${i + 1}` as Action)) pressedSlot = i;
+    }
+    /**
+     * ★★ 商店展开时数字键**改为买货并吃掉这一下**（`buySlot` 返回 true）。
+     *   不吃掉的话，按 1 会同时买第一件商品和放第一个技能 —— 而那是
+     *   「按了没反应」的反面：按了反应了两次，玩家更没法理解发生了什么。
+     */
+    if (pressedSlot !== null && this.ffaShopHud.buySlot(pressedSlot)) {
+      pressedSlot = null;
     }
     // 鼠标点技能格：与数字键**走同一条**瞄准流程（地面技能同样要选落点）
     if (this.clickedSlot !== null) {
@@ -1364,6 +1405,10 @@ export class NetworkScene {
     // 三选一面板开着时，Esc 关掉它（不消耗读条取消 —— 那条在上面已经处理过）
     if (this.arsenalHud.offerOpen && input.pressed.has(Action.CancelCast)) {
       this.arsenalHud.closeOffer();
+    }
+    // P13：商店同规矩 —— Esc 收起（数字键随即交还给技能栏）
+    if (this.ffaShopHud.open && input.pressed.has(Action.CancelCast)) {
+      this.ffaShopHud.close();
     }
 
     if (input.pressed.has(Action.FlagInteract)) {
