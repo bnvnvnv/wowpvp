@@ -504,12 +504,7 @@ export type ServerMessageKind = ServerMessage['t'];
 export const ALL_SERVER_MESSAGE_KINDS: readonly ServerMessageKind[] = [
   'Welcome', 'QueueStatus', 'RoomState', 'RoomList', 'MatchStart', 'Snapshot', 'EntityMeta',
   'CastStarted', 'CastResolved', 'CastInterrupted', 'CastFailed', 'Damage', 'Heal',
-<<<<<<< HEAD
   'AuraApplied', 'AuraRemoved', 'Death', 'FfaKill', 'FfaShop', 'ArsenalOffer', 'PickupResult',
-  'FlagEvent', 'RoundEnd', 'MatchEnd', 'MatchStats',
-=======
-  'AuraApplied', 'AuraRemoved', 'Death', 'ArsenalOffer', 'PickupResult',
   'FlagEvent', 'BossEvent', 'RoundEnd', 'MatchEnd', 'MatchStats',
->>>>>>> worktree-agent-adadee45a922ef447
   'Rejected', 'PeerDisconnected', 'PeerReconnected', 'PeerEliminated',
 ];
