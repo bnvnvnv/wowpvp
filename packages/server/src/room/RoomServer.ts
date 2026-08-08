@@ -32,6 +32,7 @@ import {
   markReconnected,
   resetForRematch,
   ALL_CLASSES,
+  FFA,
   botSeatsNeeded,
   selectClass,
   selectSlot,
@@ -210,8 +211,17 @@ export class RoomServer {
        *   ★ 也刻意不用 `Infinity`：它过不了 JSON（会变成 null），
        *     而 `PeerDisconnected.graceRemaining` 是要发出去的。
        */
+      /**
+       * P13：大乱斗的宽限是 90 秒不是整局（FFA.DISCONNECT_GRACE_SECONDS 的
+       * ★★）—— 到期走既有的 takeExpired → eliminate 链：弃权判死（尸体可被
+       * 收割）、不再复活（tick.ts 的 forfeited 守卫）、bot 下台、积分冻结。
+       * 组队模式维持偏差 #14 的整局语义不动。
+       */
+      const graceSeconds = sr.room.config.mode === GameMode.Ffa
+        ? FFA.DISCONNECT_GRACE_SECONDS
+        : TAKEOVER_GRACE_SECONDS;
       const entry = registerDisconnect(sr.reconnects, session.playerId, now, {
-        graceSeconds: TAKEOVER_GRACE_SECONDS,
+        graceSeconds,
         ...(token ? { tokenFactory: () => token } : {}),
       });
       markDisconnected(sr.room, session.playerId);

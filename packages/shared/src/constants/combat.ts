@@ -145,6 +145,14 @@ export const FFA = {
   FILL_TARGET: 20,
   /** P13 复活波次间隔（秒）。混战节奏比夺旗快,12 秒罚站太漫长 */
   RESPAWN_SECONDS: 8,
+  /**
+   * P13 断线宽限（秒）。偏差 #14 的「整局有效」是给**组队**模式的语义
+   * （队友等你回来）；大乱斗是单人局 —— bot 接管 90 秒等重连,没回来就
+   * 从对局移除（弃权判死、不再复活、bot 下台、积分冻结）。
+   * ★★ 关键动机：**bot 不能替第一名夺冠** —— 24 小时宽限下,领先者拔线
+   *   后 normal 档 bot 可以一路杀到 100 杀替他赢下整局。
+   */
+  DISCONNECT_GRACE_SECONDS: 90,
 } as const;
 
 export const CTF = {

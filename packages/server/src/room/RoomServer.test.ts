@@ -221,6 +221,57 @@ describe('P12：大乱斗（FFA）', () => {
   });
 });
 
+describe('P13：大乱斗断线处理（bot 接管 90 秒 → 移除,不能替人夺冠）', () => {
+  it('★★ 掉线即接管;宽限过后淘汰:判死、不复活、广播 PeerEliminated', async () => {
+    const a = await TestClient.connect(server.port);
+    const b = await TestClient.connect(server.port);
+    await a.waitFor('Welcome');
+    await b.waitFor('Welcome');
+    a.send({ t: 'JoinRoom', roomId: 'ffadc', name: '甲' });
+    await a.waitFor('RoomState');
+    a.send({ t: 'SetRoomMode', mode: 'ffa' as never });
+    b.send({ t: 'JoinRoom', roomId: 'ffadc', name: '乙' });
+    await b.waitFor('RoomState');
+    for (const c of [a, b]) {
+      c.send({ t: 'SelectTeam', team: 'red' });
+      c.send({ t: 'SelectClass', classId: asClassId('warrior') });
+      c.send({ t: 'SetReady', ready: true });
+    }
+    const sb = await b.waitFor('MatchStart');
+    await a.waitFor('MatchStart');
+
+    const match = server.rooms.matchOf('ffadc')!;
+    const loop = server.rooms.loopOf('ffadc')!;
+
+    // 乙拔线 —— 瞬间由 bot 接管（偏差 #14 前半不变）,实体还活着可被击杀
+    b.close();
+    await new Promise((r) => setTimeout(r, 200));
+    const eb = match.world.entities.get(sb.you)!;
+    expect(eb.alive).toBe(true);
+
+    /**
+     * ★ 白盒快进 91 秒模拟时间（1830 tick）：大乱斗宽限 90 秒,
+     *   到点走 takeExpired → eliminate —— 弃权判死。
+     *   随后再推 300 tick（>8 秒复活波)：淘汰者**不复活**
+     *   （tick.ts 的 forfeited 守卫）,bot 不能替他继续打。
+     */
+    // ★ 分块推进：一口气 1830 个同步 tick 会堵死事件循环,905 份快照积压
+    //   触发 S2 背压把在线的甲也误踢 —— 每 200 tick 让 socket 排空一次
+    for (let c = 0; c < 10; c++) {
+      for (let i = 0; i < 183; i++) loop.advance();
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    const elim = a.received.find((m) => m.t === 'PeerEliminated');
+    expect(elim).toMatchObject({ t: 'PeerEliminated', reason: 'timeout' });
+    expect(match.world.entities.get(sb.you)!.alive).toBe(false);
+
+    for (let i = 0; i < 300; i++) loop.advance();
+    expect(match.world.entities.get(sb.you)!.alive).toBe(false);
+
+    a.close();
+  });
+});
+
 describe('A3：两个真客户端从房间跑到快照', () => {
   it('★ 连上就收到 Welcome（含 tick 频率与插值缓冲）', async () => {
     const c = await TestClient.connect(server.port);
