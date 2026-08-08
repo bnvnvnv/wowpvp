@@ -149,6 +149,16 @@ console.log('\n── 验收 #5 / #36：裁剪发生在快照层，不是客户�
    *    但失败的是测试而不是产品。）真的施加一个潜行光环才作数。
    */
   const redEntity = match.world.entities.get(redId)!;
+
+  /**
+   * ★ P11：开局那批 `EntityLoadouts`（每实体首见必发一次）要在 clear 之前
+   *   捕获 —— 装备视图按「指纹变了才发」下发，之后不再重复；check 2 的
+   *   非平凡半（蓝方真的收到过红方的装备视图）就靠这份。
+   */
+  const earlyRedLoadouts = blue.msgs
+    .filter((m): m is Extract<ServerMessage, { t: 'EntityLoadouts' }> => m.t === 'EntityLoadouts')
+    .flatMap((m) => m.items.filter((it) => it.entityId === redId));
+
   applyAura(match.auras, redEntity, STEALTH_AURA, redId, match.world.time);
 
   blue.clear();
@@ -165,9 +175,20 @@ console.log('\n── 验收 #5 / #36：裁剪发生在快照层，不是客户�
 
   const blueSnaps = snapsOf(blue);
   const leaked = blueSnaps.filter((s) => s.entities.some((e) => e.id === redId));
-  check('1', '★★ 未被发现的潜行者不出现在传输字节里',
-    blueSnaps.length > 0 && leaked.length === 0,
-    `蓝方收到 ${blueSnaps.length} 份快照，其中含红方实体 ${redId} 的有 ${leaked.length} 份`);
+  /**
+   * ★ P11：`EntityLoadouts` 是**又一条带 entityId 的通道**（装备移出快照后
+   *   走它下发）。它的 items 只含接收者本份快照可见的实体 —— 潜行者的
+   *   entityId 出现在里面同样是泄露，纳入同一条断言的扫描面。
+   */
+  const loadoutsOf = (c: Client) =>
+    c.msgs.filter((m): m is Extract<ServerMessage, { t: 'EntityLoadouts' }> =>
+      m.t === 'EntityLoadouts');
+  const leakedLoadouts = loadoutsOf(blue)
+    .filter((m) => m.items.some((it) => it.entityId === redId));
+  check('1', '★★ 未被发现的潜行者不出现在传输字节里（快照与 EntityLoadouts 两条通道）',
+    blueSnaps.length > 0 && leaked.length === 0 && leakedLoadouts.length === 0,
+    `蓝方收到 ${blueSnaps.length} 份快照，其中含红方实体 ${redId} 的有 ${leaked.length} 份；` +
+    `EntityLoadouts 含它的有 ${leakedLoadouts.length} 条`);
 
   clearAuras(match.auras, redId);
   blue.clear();
@@ -176,15 +197,26 @@ console.log('\n── 验收 #5 / #36：裁剪发生在快照层，不是客户�
     snapsOf(blue).some((s) => s.entities.some((e) => e.id === redId)),
     `蓝方重新看到了红方`);
 
-  // #36：敌人的备用装备槽位一律不发
+  /**
+   * #36：敌人的备用装备槽位一律不发。
+   *
+   * ★★ P11 重定向：装备已整体移出快照（`EntitySnapshot` 结构上没有
+   *   equipment 字段），这条断言**必须**跟着搬到 `EntityLoadouts` 消息流 ——
+   *   留在快照上它会因「字段根本不存在」而恒真，红线验收静默变成空断言。
+   *   非平凡性一并搬：蓝方必须真的收到过红方的装备视图（>0 条）。
+   */
+  const redLoadoutsSeenByBlue = [
+    ...earlyRedLoadouts,
+    ...loadoutsOf(blue).flatMap((m) => m.items.filter((it) => it.entityId === redId)),
+  ];
+  const spareLeak = redLoadoutsSeenByBlue.filter((it) => 'spareWeaponIds' in it.equipment);
+  check('2', '★★ 敌人的备用装备不出现在传输字节里（#36，EntityLoadouts 通道）',
+    redLoadoutsSeenByBlue.length > 0 && spareLeak.length === 0,
+    `检查了 ${redLoadoutsSeenByBlue.length} 份敌方装备视图，带备用槽位的有 ${spareLeak.length} 份`);
+
+  // 敌方技能冷却不发；自己的要发（快照通道 —— 冷却仍在快照里，只发给自己）
   const redAsSeenByBlue = snapsOf(blue)
     .flatMap((s) => s.entities.filter((e) => e.id === redId));
-  const spareLeak = redAsSeenByBlue.filter((e) => 'spareWeaponIds' in e.equipment);
-  check('2', '★★ 敌人的备用装备不出现在传输字节里（#36）',
-    redAsSeenByBlue.length > 0 && spareLeak.length === 0,
-    `检查了 ${redAsSeenByBlue.length} 份敌方实体视图，带备用槽位的有 ${spareLeak.length} 份`);
-
-  // 敌方技能冷却不发；自己的要发
   const cdLeak = redAsSeenByBlue.filter((e) => e.cooldowns !== undefined);
   const ownCd = snapsOf(red).flatMap((s) => s.entities.filter((e) => e.id === redId))
     .filter((e) => e.cooldowns !== undefined);

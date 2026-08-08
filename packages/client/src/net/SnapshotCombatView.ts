@@ -37,11 +37,11 @@ import {
   usesNoTarget,
   type CastState,
   type EntityId,
-  type EntitySnapshot,
+  type HydratedEntitySnapshot as EntitySnapshot,
   type School,
   type SkillDef,
   type SkillId,
-  type Snapshot,
+  type HydratedSnapshot as Snapshot,
   CastFailure,
 } from '@wowpvp/shared';
 
@@ -77,7 +77,7 @@ export const toHudUnit = (e: EntitySnapshot): HudUnit => ({
   maxHealth: e.maxHealth,
   resources: toMap(e.resources),
   maxResources: toMap(e.maxResources),
-  weaponId: e.equipment.currentWeaponId,
+  weaponId: e.equipment?.currentWeaponId,
   flags: e.flags,
 });
 

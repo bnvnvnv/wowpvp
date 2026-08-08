@@ -25,8 +25,8 @@ import type { ClassId, EntityId, MapId, SkillId, TeamId } from '../types/ids.js'
 import type { Vec3 } from '../math/vec3.js';
 import type { ArsenalOption } from '../sim/arsenal.js';
 import type {
-  ArmorySnapshot, DropSnapshot, EntitySnapshot, GroundAreaSnapshot, MatchSnapshot,
-  ProjectileSnapshot,
+  AllyEquipmentSnapshot, ArmorySnapshot, DropSnapshot, EnemyEquipmentSnapshot,
+  EntitySnapshot, GroundAreaSnapshot, MatchSnapshot, ProjectileSnapshot,
 } from './visibility.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -299,6 +299,19 @@ export type ServerMessage =
       /** 17.3 重连令牌。★ 断线后凭它恢复，见 server/room/reconnect.ts */
       reconnectToken: string }
   | SnapshotMessage
+  /**
+   * P11：装备视图的独立通道 —— 装备**不再每 tick 进快照**（基本静态的
+   * 153B/实体被 20Hz 重发曾是快照第二大字节项）。服务器在发快照**之前**
+   * 按「该接收者视角下的视图指纹变了」才发这条（含首见），客户端按
+   * entityId 缓存并在 hydrate 时合回实体。
+   * ★ 裁剪语义原样：items 里只有**该接收者本份快照可见**的实体，敌人是
+   *   `EnemyEquipmentSnapshot`（无备用槽位，10.6 / 验收 #36）——
+   *   `verify:m10` 第 2 条现在盯的就是这条消息流。
+   * ★ 不走 dispatch() 广播 —— 与 Snapshot 同为按接收者构建的私信。
+   */
+  | { t: 'EntityLoadouts'
+      items: readonly { entityId: EntityId
+        equipment: AllyEquipmentSnapshot | EnemyEquipmentSnapshot }[] }
 
   // ── 事件流：驱动表现与统计，**不参与状态重建**（docs/08 §3.3）──
   | { t: 'CastStarted'; casterId: EntityId; skillId: SkillId; duration: number
@@ -408,7 +421,7 @@ export type ServerMessage =
 export type ServerMessageKind = ServerMessage['t'];
 
 export const ALL_SERVER_MESSAGE_KINDS: readonly ServerMessageKind[] = [
-  'Welcome', 'RoomState', 'MatchStart', 'Snapshot',
+  'Welcome', 'RoomState', 'MatchStart', 'Snapshot', 'EntityLoadouts',
   'CastStarted', 'CastResolved', 'CastInterrupted', 'CastFailed', 'Damage', 'Heal',
   'AuraApplied', 'AuraRemoved', 'Death', 'ArsenalOffer', 'PickupResult',
   'FlagEvent', 'RoundEnd', 'MatchEnd', 'MatchStats',

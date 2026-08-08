@@ -21,8 +21,8 @@ import {
   asClassId,
   asEntityId,
   type EntityId,
-  type EntitySnapshot,
-  type Snapshot,
+  type HydratedEntitySnapshot as EntitySnapshot,
+  type HydratedSnapshot as Snapshot,
 } from '@wowpvp/shared';
 
 import { SnapshotCombatView } from './SnapshotCombatView.js';

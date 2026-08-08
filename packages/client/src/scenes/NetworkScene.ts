@@ -53,7 +53,7 @@ import {
   type EntityId,
   type GroundAreaSnapshot,
   type MapDef,
-  type EntitySnapshot,
+  type HydratedEntitySnapshot,
   type MovementInput,
   type ProjectileSnapshot,
   type ServerMessage,
@@ -79,6 +79,7 @@ import { SceneShell } from './SceneShell.js';
 import { Environment } from '../render/Environment.js';
 import { Connection, type NetLink } from '../net/Connection.js';
 import { Interpolator } from '../net/Interpolator.js';
+import { SnapshotHydrator } from '../net/SnapshotHydrator.js';
 import { Predictor } from '../net/Predictor.js';
 import { pickTabTargetFromSnapshot } from '../net/snapshotTargeting.js';
 import { CombatHud } from '../hud/CombatHud.js';
@@ -242,6 +243,8 @@ export class NetworkScene {
   /** 自己：预测；其他人：插值。★ 两条完全不同的路径，见 docs/08 §5 */
   private predictor?: Predictor;
   private readonly interp = new Interpolator();
+  /** P11 解码边界（位掩码/静态块/装备的还原，见 SnapshotHydrator）*/
+  private readonly hydrator = new SnapshotHydrator();
 
   private readonly selfView = new CharacterView();
   private readonly selfAnim = new AnimationController();
@@ -324,7 +327,7 @@ export class NetworkScene {
   private selfTeam: TeamId | null = null;
   private currentTargetId: EntityId | undefined;
   /** 最近一份快照的实体列表，Tab 从它里面挑 */
-  private lastEntities: readonly EntitySnapshot[] = [];
+  private lastEntities: readonly HydratedEntitySnapshot[] = [];
   private started = false;
   private characterYaw = 0;
   private pendingInput: FrameInput | null = null;
@@ -827,10 +830,18 @@ export class NetworkScene {
          * ★ 重连也走这条分支（服务器重连成功后会再发一次 MatchStart）。
          *   docs/08 §6：「客户端丢弃所有本地状态」—— 插值缓冲一并清空，
          *   否则会拿 90 秒前的帧去插值。
+         * ★ P11：hydrator 的静态块/装备缓存同步清空 —— 服务器侧的
+         *   per-Session 记账此刻也是空的（重连 = 新 Session），两边对齐。
          */
         this.interp.reset();
+        this.hydrator.reset();
         break;
       }
+
+      /** P11 装备通道 —— 必然先于含新实体的快照到达（服务器保证顺序）*/
+      case 'EntityLoadouts':
+        this.hydrator.setLoadouts(msg.items);
+        break;
 
       case 'Snapshot': {
         this.snapshotCount++;
@@ -847,8 +858,14 @@ export class NetworkScene {
             for (const k of this.seqSentAt.keys()) if (k <= msg.ackSeq) this.seqSentAt.delete(k);
           }
         }
-        this.interp.push(msg.time, msg.entities);
-        this.lastEntities = msg.entities;
+        /**
+         * ★ P11 解码边界：wire 形态在这里一次性还原成完整形态
+         *   （位掩码展开、静态块合并、装备合并 —— 见 SnapshotHydrator），
+         *   下游全部读 `entities`，不再看 msg.entities。
+         */
+        const entities = this.hydrator.hydrate(msg.entities);
+        this.interp.push(msg.time, entities);
+        this.lastEntities = entities;
         // 14.4 投射物 / 14.3 地面区域：留给 draw 里的 spellVfx.frame 消费
         this.lastProjectiles = msg.projectiles;
         this.lastGrounds = msg.grounds;
@@ -856,23 +873,23 @@ export class NetworkScene {
         this.lastDrops = msg.drops;
         this.lastArmories = msg.armories;
         this.lastMatch = msg.match;
-        this.selfTeam = msg.entities.find((e) => e.id === msg.you)?.team ?? this.selfTeam;
+        this.selfTeam = entities.find((e) => e.id === msg.you)?.team ?? this.selfTeam;
         /**
          * 5.1 焦点回读。★ 服务器是切换语义的唯一实现处，所以焦点**只从快照来**
          *   （字段只发给自己、且焦点不可见时不发 —— 见 visibility.ts）。
          *   焦点离场/潜行遁走时字段自然消失，客户端不需要一条「清焦点」的逻辑。
          */
-        this.view.focusId = msg.entities.find((e) => e.id === msg.you)?.focusId;
+        this.view.focusId = entities.find((e) => e.id === msg.you)?.focusId;
         this.view.ingest(
           {
-            tick: msg.tick, you: msg.you, entities: msg.entities,
+            tick: msg.tick, you: msg.you, entities,
             projectiles: msg.projectiles, grounds: msg.grounds,
             drops: msg.drops, armories: msg.armories, match: msg.match,
           },
           msg.time,
         );
 
-        const me = msg.entities.find((e) => e.id === msg.you);
+        const me = entities.find((e) => e.id === msg.you);
         if (me && this.predictor) {
           const before = { ...this.predictor.position };
           this.predictor.reconcile(
@@ -2068,7 +2085,7 @@ export class NetworkScene {
     this.selfView.setCasting(this.view.playerCast !== undefined);
     const meSnap = this.lastEntities.find((e) => e.id === this.selfId);
     if (meSnap) {
-      this.syncWeapon(meSnap.id as number, this.selfView, meSnap.equipment.currentWeaponId as string | undefined);
+      this.syncWeapon(meSnap.id as number, this.selfView, meSnap.equipment?.currentWeaponId as string | undefined);
       // 8.2「迷惑」= 被变形（快照 auras 是权威，重连也不丢）
       this.selfView.setMorphed(meSnap.auras.some((a) => a.auraId === MORPH_AURA_ID));
       this.updateMarkersFor(meSnap, this.selfView);
@@ -2134,7 +2151,7 @@ export class NetworkScene {
       view.setTransform(e.position, e.yaw);
       view.setAnimState(anim.state);
       view.setLocomotionTimeScale(anim.timeScale);
-      this.syncWeapon(id, view, e.snapshot.equipment.currentWeaponId as string | undefined);
+      this.syncWeapon(id, view, e.snapshot.equipment?.currentWeaponId as string | undefined);
       // 8.2「迷惑」= 被变形；14.3 控制标记 —— 都从快照读，与试验场同一套表现
       view.setMorphed(e.snapshot.auras.some((a) => a.auraId === MORPH_AURA_ID));
       this.updateMarkersFor(e.snapshot, view);
@@ -2161,7 +2178,7 @@ export class NetworkScene {
    * ★ 护盾数据来自快照新增的 `absorbRemaining/absorbInitial`（M16d 协议债，
    *   此前这里只能如实不画）。
    */
-  private updateMarkersFor(snap: EntitySnapshot, view: CharacterView): void {
+  private updateMarkersFor(snap: HydratedEntitySnapshot, view: CharacterView): void {
     let m = this.statusMarkers.get(snap.id as number);
     if (!m) {
       m = new StatusMarkers();

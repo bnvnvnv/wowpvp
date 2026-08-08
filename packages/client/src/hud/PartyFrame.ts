@@ -23,7 +23,7 @@ import {
   getClass,
   type ClassId,
   type CombatEntity,
-  type EntitySnapshot,
+  type HydratedEntitySnapshot as EntitySnapshot,
   type Resource,
 } from '@wowpvp/shared';
 

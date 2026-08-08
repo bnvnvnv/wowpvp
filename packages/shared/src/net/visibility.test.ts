@@ -20,12 +20,16 @@ import { createCtf, type CtfState } from '../sim/match/flag.js';
 import { addEntity, allocEntityId, createWorld, type World } from '../sim/world.js';
 import {
   CULLING_RULES,
+  ENTITY_FLAG_BITS,
   HIDDEN_AURA_ID,
   SUDDEN_DEATH_BLIP_GRID,
   assertNoHiddenEntities,
   buildSnapshot,
   buildSpectatorSnapshot,
+  displayFlagsOf,
+  equipmentViewFor,
   isVisibleTo,
+  packEntityFlags,
   spectatableFor,
   type AllyEquipmentSnapshot,
   type EnemyEquipmentSnapshot,
@@ -183,42 +187,91 @@ describe('12.2 旗手位置对双方持续可见', () => {
 
 // ════════════════════════════════════════════════════════════════
 
-describe('docs/08 §4.2 敌方装备裁剪（验收 #36）', () => {
+describe('docs/08 §4.2 敌方装备裁剪（验收 #36）—— P11 后语义住在 equipmentViewFor', () => {
   beforeEach(() => {
-    // 给敌人塞一件备用武器 —— 它绝对不能出现在我的快照里
+    // 给敌人塞一件备用武器 —— 它绝对不能出现在发给我的字节里
     const l = loadouts.get(foe.id)!;
     addWeapon(l, warrior.weapons.find((w) => !w.isDefault)!.id);
   });
 
-  it('★★ 敌人的备用装备完全不出现在快照里（10.6 / 验收 #36）', () => {
+  it('★★ P11：装备完全不在快照实体里 —— 通道换了，快照侧结构性归零', () => {
     const snap = buildSnapshot(deps(), me);
     const foeSnap = snap.entities.find((e) => e.id === foe.id)!;
-    const eq = foeSnap.equipment as EnemyEquipmentSnapshot;
+    // wire 形态没有 equipment 字段（EntityLoadouts 消息才有）
+    expect('equipment' in foeSnap).toBe(false);
+    // 备用武器的 id 不能以任何形式出现在整份快照里
+    const spareId = String(loadouts.get(foe.id)!.spareWeapons[0]);
+    expect(JSON.stringify(snap)).not.toContain(spareId);
+  });
 
+  it('★★ 敌人的备用装备不出现在装备视图里（10.6 / 验收 #36）', () => {
+    const eq = equipmentViewFor(foe, me, { loadouts, swaps }) as EnemyEquipmentSnapshot;
     expect(eq.currentWeaponId).toBe(warrior.defaultWeaponId);
     expect(eq.armorArchetype).toBeDefined();
     // 结构上就没有这些字段
     expect(Object.keys(eq).sort()).toEqual(['armorArchetype', 'currentWeaponId', 'swapping']);
-    // 备用武器的 id 不能以任何形式出现在整份快照里
     const spareId = String(loadouts.get(foe.id)!.spareWeapons[0]);
-    const foeJson = JSON.stringify(foeSnap);
-    expect(foeJson).not.toContain(spareId);
+    expect(JSON.stringify(eq)).not.toContain(spareId);
   });
 
   it('队友的完整装备栏可见（含备用）', () => {
     const l = loadouts.get(mate.id)!;
     addWeapon(l, priest.weapons.find((w) => !w.isDefault)!.id);
-
-    const snap = buildSnapshot(deps(), me);
-    const mateSnap = snap.entities.find((e) => e.id === mate.id)!;
-    const eq = mateSnap.equipment as AllyEquipmentSnapshot;
+    const eq = equipmentViewFor(mate, me, { loadouts, swaps }) as AllyEquipmentSnapshot;
     expect(eq.spareWeaponIds).toHaveLength(1);
   });
 
   it('敌人的换装动作可见，但看不出在换什么', () => {
-    const snap = buildSnapshot(deps(), me);
-    const eq = snap.entities.find((e) => e.id === foe.id)!.equipment as EnemyEquipmentSnapshot;
+    const eq = equipmentViewFor(foe, me, { loadouts, swaps }) as EnemyEquipmentSnapshot;
     expect(eq.swapping).toBe(false);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+
+describe('P11 快照瘦身 —— 位掩码 / 静态块 / 量化', () => {
+  it('位掩码往返：pack → displayFlagsOf 逐位还原', () => {
+    const flags = {
+      stunned: true, feared: false, rooted: true, silenced: false, disarmed: true,
+      carryingFlag: true, immuneAll: false, immunePhysical: true, immuneMagic: false,
+    };
+    const mask = packEntityFlags(false, true, flags);
+    expect((mask & ENTITY_FLAG_BITS.dead) !== 0).toBe(true);
+    expect((mask & ENTITY_FLAG_BITS.teleported) !== 0).toBe(true);
+    expect(displayFlagsOf(mask)).toEqual({ ...flags });
+  });
+
+  it('常态（活着、无瞬移、无状态）掩码为 0，字段整个省略', () => {
+    const snap = buildSnapshot(deps(), me);
+    const meSnap = snap.entities.find((e) => e.id === me.id)!;
+    expect('f' in meSnap).toBe(false);
+  });
+
+  it('★ 静态块首见即发、再见省略；不传 seen 则每份都带（旧行为）', () => {
+    const seen = new Set<ReturnType<typeof allocEntityId>>();
+    const first = buildSnapshot({ ...deps(), seen }, me);
+    const firstFoe = first.entities.find((e) => e.id === foe.id)!;
+    expect(firstFoe.name).toBeDefined();
+    expect(firstFoe.maxHealth).toBeDefined();
+    expect(firstFoe.team).toBeDefined();
+
+    const second = buildSnapshot({ ...deps(), seen }, me);
+    const secondFoe = second.entities.find((e) => e.id === foe.id)!;
+    expect('name' in secondFoe).toBe(false);
+    expect('maxHealth' in secondFoe).toBe(false);
+
+    // 不传 seen —— 每份都带（试验场/纯规则测试的旧行为）
+    const third = buildSnapshot(deps(), me);
+    expect(third.entities.find((e) => e.id === foe.id)!.name).toBeDefined();
+  });
+
+  it('★ 位置量化到 2 位小数（Predictor.IGNORE_BELOW=0.02m 的硬下界之内）', () => {
+    me.position = { x: 1.23456789012345, y: 0.111111111, z: -9.87654321 };
+    const snap = buildSnapshot(deps(), me);
+    const meSnap = snap.entities.find((e) => e.id === me.id)!;
+    expect(meSnap.position).toEqual({ x: 1.23, y: 0.11, z: -9.88 });
+    // 量化步长 0.01 的最大表观偏差 √3·s/2 ≈ 0.0087 < 0.02
+    expect((Math.sqrt(3) * 0.01) / 2).toBeLessThan(0.02);
   });
 });
 

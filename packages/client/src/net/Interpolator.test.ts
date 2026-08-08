@@ -10,7 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   SIM, asClassId, asTeamId, distance, vec3,
-  type EntityId, type EntitySnapshot, type Vec3,
+  type EntityId, type HydratedEntitySnapshot as EntitySnapshot, type Vec3,
 } from '@wowpvp/shared';
 
 import { Interpolator, lerpAngle } from './Interpolator.js';

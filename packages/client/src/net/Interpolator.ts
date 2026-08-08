@@ -22,7 +22,7 @@ import {
   lerp,
   distance,
   type EntityId,
-  type EntitySnapshot,
+  type HydratedEntitySnapshot as EntitySnapshot,
   type Vec3,
 } from '@wowpvp/shared';
 

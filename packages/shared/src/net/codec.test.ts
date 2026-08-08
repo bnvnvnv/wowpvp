@@ -13,27 +13,23 @@ import { decodeServerMessage, encodeServerMessage, parseClientMessage } from './
 import type { ServerMessage } from './protocol.js';
 import type { EntitySnapshot } from './visibility.js';
 
-/** 自己的一份最小实体快照。★ 只为往返测试拼形状，不代表任何真实局面 */
+/**
+ * 自己的一份最小实体快照（P11 wire 形态：位掩码 + 首见静态块 + 无装备）。
+ * ★ 只为往返测试拼形状，不代表任何真实局面
+ */
 const selfEntity: EntitySnapshot = {
   id: asEntityId(1),
+  position: { x: 0, y: 0, z: 0 },
+  yaw: 0,
+  health: 100,
+  resources: { mana: 50 },
+  auras: [],
+  // 静态块（首见形态）
   name: '我',
   team: TEAM_RED,
   classId: asClassId('mage'),
-  position: { x: 0, y: 0, z: 0 },
-  yaw: 0,
-  teleported: false,
-  health: 100,
   maxHealth: 100,
-  alive: true,
-  resources: { mana: 50 },
   maxResources: { mana: 100 },
-  auras: [],
-  carryingFlag: false,
-  flags: {
-    stunned: false, feared: false, rooted: false, silenced: false, disarmed: false,
-    carryingFlag: false, immuneAll: false, immunePhysical: false, immuneMagic: false,
-  },
-  equipment: { currentWeaponId: undefined, armorArchetype: undefined, swapping: false },
 };
 
 describe('★ 服务器消息编解码往返', () => {

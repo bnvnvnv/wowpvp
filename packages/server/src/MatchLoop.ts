@@ -39,6 +39,7 @@ import {
   chooseFromArmory,
   ctfWinner,
   distance2D,
+  equipmentViewFor,
   getEntity,
   getWeapon,
   isVisibleTo,
@@ -179,6 +180,20 @@ export class MatchLoop {
   private readonly pendingForfeits = new Set<EntityId>();
   /** 本 tick 的战斗意志请求（8.3，W8）。与技能/消耗品同规矩：只排意图 */
   private readonly pendingTrinkets = new Set<EntityId>();
+
+  /**
+   * P11 快照瘦身的每会话记账：
+   *   · `seen` —— 该会话见过哪些实体（静态块首见即发，见 SnapshotDeps.seen）
+   *   · `equipFp` —— 每实体上次发出的装备视图指纹（变了才发 EntityLoadouts）
+   *
+   * ★ 键是 **Session 对象身份**：重连建的是新 Session（RoomServer.connect），
+   *   自动拿到空记账 → 静态块与装备全量重发，恰好配合客户端在 MatchStart
+   *   分支清缓存（重连也走 MatchStart）。MatchLoop 又是每对局一个 ——
+   *   「再来一局」的实体 id 复用也不会撞上旧记账。
+   */
+  private readonly snapAccounts = new WeakMap<
+    Session, { seen: Set<EntityId>; equipFp: Map<EntityId, string> }
+  >();
 
   constructor(
     readonly match: Match,
@@ -898,6 +913,13 @@ export class MatchLoop {
       const viewer = this.viewerOf(s.playerId);
       if (!viewer) continue;
 
+      // P11 每会话记账（seen/装备指纹），生命周期见 snapAccounts 的注释
+      let account = this.snapAccounts.get(s);
+      if (!account) {
+        account = { seen: new Set(), equipFp: new Map() };
+        this.snapAccounts.set(s, account);
+      }
+
       /**
        * ★ 11.4：**死了**才走观战视角，活着的人跟随别人就是透视。
        *   `buildSpectatorSnapshot` 复用被跟随者的裁剪结果，所以观战者
@@ -907,17 +929,44 @@ export class MatchLoop {
       const following = !viewer.alive && s.following !== undefined
         ? m.world.entities.get(s.following)
         : undefined;
-      const snapshot = (following && buildSpectatorSnapshot(snapDeps, viewer, following))
-        ?? buildSnapshot(snapDeps, viewer);
+      const perViewerDeps = { ...snapDeps, seen: account.seen };
+      const snapshot = (following && buildSpectatorSnapshot(perViewerDeps, viewer, following))
+        ?? buildSnapshot(perViewerDeps, viewer);
 
       assertNoHiddenEntities(
         snapshot, m.world, following ?? viewer,
         m.ctf ? { ctf: m.ctf.state } : undefined,
       );
+
+      /**
+       * ★ P11 装备通道：对本份快照可见的每个实体算一个廉价指纹，与上次
+       *   发出的比对，变了（含首见）才进 `EntityLoadouts`。指纹法而不是
+       *   sim 挂钩 —— 挂钩会有「新增一条改装备的路径忘了通知」的静默失效，
+       *   指纹漏不掉。**必须发在快照之前**：客户端 hydrate 从装备缓存合回
+       *   实体，首见的实体要在快照到达前拿到装备。
+       * ★ 视图按接收者的**有效视角**（观战 = 被跟随者）算 —— 与快照裁剪
+       *   同一个 viewer；跟随只能是队友（11.4），阵营视图不会因此错型。
+       */
+      const effectiveViewer = following ?? viewer;
+      let loadoutItems:
+        { entityId: EntityId; equipment: ReturnType<typeof equipmentViewFor> }[] | undefined;
+      for (const se of snapshot.entities) {
+        const e = m.world.entities.get(se.id);
+        if (!e) continue;
+        const view = equipmentViewFor(e, effectiveViewer, m);
+        const fp = equipFingerprint(view);
+        if (account.equipFp.get(se.id) === fp) continue;
+        account.equipFp.set(se.id, fp);
+        (loadoutItems ??= []).push({ entityId: se.id, equipment: view });
+      }
+      if (loadoutItems) s.send({ t: 'EntityLoadouts', items: loadoutItems });
+
       s.send({
         t: 'Snapshot',
         tick: snapshot.tick,
-        time: m.world.time,
+        // P11：world.time 是浮点累加，17 位小数进快照顶层还渗进每个
+        // expiresAt 比较 —— 量化到毫秒（3 位）
+        time: Math.round(m.world.time * 1000) / 1000,
         ackSeq: s.ackSeq,
         you: snapshot.you,
         entities: snapshot.entities,
@@ -1010,6 +1059,20 @@ export class MatchLoop {
 }
 
 /**
+ * 装备视图的变更指纹（P11）。字段全列 —— 漏一个字段就等于那个字段的变化
+ * 永远不下发。`|` 分隔即可：id 都是 `warrior.sword_shield` 这类不含竖线的
+ * 词法，数组直接 join。
+ */
+const equipFingerprint = (
+  v: ReturnType<typeof equipmentViewFor>,
+): string =>
+  'spareWeaponIds' in v
+    ? `A|${v.currentWeaponId}|${v.currentArmorId}|${v.spareWeaponIds.join(',')}` +
+      `|${v.spareArmorIds.join(',')}|${v.allWeaponIds.join(',')}|${v.allArmorIds.join(',')}` +
+      `|${v.consumableIds.join(',')}|${v.swapping}|${v.swapKind ?? ''}|${v.swapEndsAt ?? ''}`
+    : `E|${v.currentWeaponId ?? ''}|${v.armorArchetype ?? ''}|${v.swapping}`;
+
+/**
  * 10.5 的中断原因转成给玩家看的话。
  * ★ `taken` 与其余四条要分得开 —— 「被别人抢走了」是玩法信息（下次要抢快点），
  *   「你动了」是操作信息（下次站住别动）。混成一句「拾取失败」两条都丢了。
@@ -1064,11 +1127,13 @@ export const referencedEntities = (msg: ServerMessage): EntityId[] => {
     // ── 抹而不丢（redactFor 的专门分支，永远到不了这里）────────
     case 'Damage': case 'Heal': case 'CastResolved': return [];
     // ── 不走 dispatch() 的消息：私信（CastFailed/ArsenalOffer/PickupResult/
-    //    Rejected/Welcome/MatchStart）、按接收者构建（Snapshot —— 它若出现在
-    //    dispatch 里本身就是接线错误，可见性由 buildSnapshot 保证）、
+    //    Rejected/Welcome/MatchStart）、按接收者构建（Snapshot/EntityLoadouts ——
+    //    它们若出现在 dispatch 里本身就是接线错误，可见性由 buildSnapshot
+    //    与 broadcastSnapshots 的同一张可见实体表保证）、
     //    赛后/房间广播（RoomState/RoundEnd/MatchEnd/MatchStats/Peer*，
     //    对局结束或房间阶段没有需要瞒的实体）──────────────────
     case 'Welcome': case 'RoomState': case 'MatchStart': case 'Snapshot':
+    case 'EntityLoadouts':
     case 'CastFailed': case 'ArsenalOffer': case 'PickupResult':
     case 'RoundEnd': case 'MatchEnd': case 'MatchStats': case 'Rejected':
     case 'PeerDisconnected': case 'PeerReconnected': case 'PeerEliminated':

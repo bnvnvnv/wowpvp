@@ -135,9 +135,18 @@ export interface AllyEquipmentSnapshot {
 
 export interface AuraSnapshot {
   auraId: string;
-  stacks: number;
-  /** 剩余秒数。persistent 光环为 null */
-  remaining: number | null;
+  /** 叠层。★ 省略 = 1（绝大多数光环不叠层，P11：默认值不付字节）*/
+  stacks?: number;
+  /**
+   * 到期时刻（**服务器时间**，与 `Snapshot.time` 同钟）。persistent 光环省略。
+   * ★ P11 把此前的 `remaining: number | null` 改成了这个口径 —— 与同文件
+   *   `GroundAreaSnapshot.expiresAt` / `ProjectileSnapshot.impactAt` /
+   *   `ArmorySnapshot.availableAt` / `EntitySnapshot.gcdUntil` 归一：
+   *   服务器发**事实**（何时到期），剩余量由客户端用 `time` 自己算。
+   *   remaining 本来就是这批字段里唯一的例外，而且每 tick 都在变 ——
+   *   对将来的 delta 编码是纯噪声；expiresAt 在光环整个生命周期里不变。
+   */
+  expiresAt?: number;
   /**
    * 吸收盾的剩余量 / 初始量。**只有吸收类光环才有这两个字段**（>0 才投影）。
    *
@@ -207,49 +216,112 @@ export interface DisplayFlags {
   immuneMagic: boolean;
 }
 
+/**
+ * P11：`EntitySnapshot.f` 位掩码的位序。
+ *
+ * ★★ **此前 9 个布尔带着长键名每 tick 每实体全量重发** —— 12v12 快照里
+ *   flags 一项就占 30%（163B/实体），而绝大多数 tick 里它们全是 false。
+ *   现在合成一个整数：常态（活着、没瞬移、无任何状态）掩码为 0，
+ *   **整个字段省略** —— 与 `cooldowns`/`gcdUntil` 同一条「可选即事实」的规矩。
+ *
+ * ★ bit0 是 **dead** 而不是 alive —— 位序按「常态为 0」取，活着是常态。
+ * ★ `carryingFlag` 此前在快照里发了**两遍**（顶层 + flags 内同一个值），
+ *   合并进掩码顺带消掉这处重复。
+ * ⚠️ 加位只能**追加**，不能重排 —— 客户端按同一张表解码（两端 import 同一份）。
+ */
+export const ENTITY_FLAG_BITS = {
+  dead: 1 << 0,
+  teleported: 1 << 1,
+  stunned: 1 << 2,
+  feared: 1 << 3,
+  rooted: 1 << 4,
+  silenced: 1 << 5,
+  disarmed: 1 << 6,
+  carryingFlag: 1 << 7,
+  immuneAll: 1 << 8,
+  immunePhysical: 1 << 9,
+  immuneMagic: 1 << 10,
+} as const;
+
+/** 编码侧（服务器 snapshotEntity 用）。掩码为 0 时调用方省略字段 */
+export const packEntityFlags = (
+  alive: boolean,
+  teleported: boolean,
+  flags: {
+    stunned: boolean; feared: boolean; rooted: boolean; silenced: boolean;
+    disarmed: boolean; carryingFlag: boolean;
+    immuneAll: boolean; immunePhysical: boolean; immuneMagic: boolean;
+  },
+): number =>
+  (alive ? 0 : ENTITY_FLAG_BITS.dead) |
+  (teleported ? ENTITY_FLAG_BITS.teleported : 0) |
+  (flags.stunned ? ENTITY_FLAG_BITS.stunned : 0) |
+  (flags.feared ? ENTITY_FLAG_BITS.feared : 0) |
+  (flags.rooted ? ENTITY_FLAG_BITS.rooted : 0) |
+  (flags.silenced ? ENTITY_FLAG_BITS.silenced : 0) |
+  (flags.disarmed ? ENTITY_FLAG_BITS.disarmed : 0) |
+  (flags.carryingFlag ? ENTITY_FLAG_BITS.carryingFlag : 0) |
+  (flags.immuneAll ? ENTITY_FLAG_BITS.immuneAll : 0) |
+  (flags.immunePhysical ? ENTITY_FLAG_BITS.immunePhysical : 0) |
+  (flags.immuneMagic ? ENTITY_FLAG_BITS.immuneMagic : 0);
+
+/** 解码侧（客户端 hydrate 用）。掩码字段缺席时传 0 */
+export const displayFlagsOf = (f: number): DisplayFlags => ({
+  stunned: (f & ENTITY_FLAG_BITS.stunned) !== 0,
+  feared: (f & ENTITY_FLAG_BITS.feared) !== 0,
+  rooted: (f & ENTITY_FLAG_BITS.rooted) !== 0,
+  silenced: (f & ENTITY_FLAG_BITS.silenced) !== 0,
+  disarmed: (f & ENTITY_FLAG_BITS.disarmed) !== 0,
+  carryingFlag: (f & ENTITY_FLAG_BITS.carryingFlag) !== 0,
+  immuneAll: (f & ENTITY_FLAG_BITS.immuneAll) !== 0,
+  immunePhysical: (f & ENTITY_FLAG_BITS.immunePhysical) !== 0,
+  immuneMagic: (f & ENTITY_FLAG_BITS.immuneMagic) !== 0,
+});
+
+/**
+ * 快照里的实体 —— **wire 形态**（P11 瘦身后的传输形状）。
+ *
+ * ★★ 三条瘦身规则，每条都有对应的还原方：
+ *   1. **位掩码 `f`**：alive/teleported/DisplayFlags 九项合成一个整数，
+ *      常态（掩码 0）整个字段省略。解码用 `displayFlagsOf()`。
+ *   2. **静态块首见即发**：`name/team/classId/maxHealth/maxResources`
+ *      一局内不变，只在「该接收者第一次看到这个实体」的那份快照里携带
+ *      （含潜行者现身、宠物召出 —— 判据是进没进过这条会话的可见集合，
+ *      见 `SnapshotDeps.seen`），之后省略。客户端按实体 id 缓存。
+ *   3. **数字量化**：position 2 位小数（⚠️ 硬下界不是口味 —— 量化步长 s
+ *      的表观偏差上界 √3·s/2，s=0.01 得 0.0087m < Predictor 的
+ *      IGNORE_BELOW=0.02m，落在「当没偏」档；再粗每次对账都会掉进
+ *      平滑档 = 持续橡皮筋，且不会有任何断言变红）、yaw 3 位、
+ *      health/resources 1 位（用 round 不用 floor —— hasResourceFor 是
+ *      「宁可显示可用」的保守口径，round 落在安全侧）。
+ *
+ * 客户端在**解码边界**（NetworkScene 的 hydrate）把它还原成
+ * `HydratedEntitySnapshot`，下游（插值器/HUD/画面）读的仍是完整形状 ——
+ * 与试验场共用的那些契约（DisplayFlags 等）一个都不用改。
+ */
 export interface EntitySnapshot {
   id: EntityId;
-  name: string;
-  team: TeamId;
-  classId: ClassId;
   position: Vec3;
   yaw: number;
   health: number;
-  maxHealth: number;
-  alive: boolean;
   /** 15.2：敌方资源值也要发，目标框需要显示 */
   resources: Readonly<Record<string, number>>;
-  maxResources: Readonly<Record<string, number>>;
   auras: readonly AuraSnapshot[];
-  carryingFlag: boolean;
   /**
-   * 可显示的状态标志。15.2 要求目标框显示状态，14.3 / M8 的控制标记也读它。
+   * 状态位掩码（`ENTITY_FLAG_BITS`）。**省略 = 0 = 活着且无任何状态**。
    *
-   * ★★ **不是整个 `StatusFlags`，只是能显示的那一部分。**
-   *   `stealthed` / `stealthRevealed` **刻意不在这里** —— 未被发现的潜行者
-   *   压根不进快照（`isVisibleTo`），而**进了快照的潜行者**（队友、旗手）
-   *   把「他在潜行」发出去是安全的；但把这两个字段做成通用字段会诱使
-   *   将来有人「顺手也发给敌人」，那就退回到 docs/08 §4.1 明确否掉的
-   *   「发 stealthed 让客户端别画」那条路上了。
-   *
-   * ⚠️ 在此之前快照**根本没有状态标志** —— 联网场景的 HUD 因此无法显示
-   *   「昏迷 / 沉默 / 缴械」，而 15.2 要求它显示。这是接 HUD 时才暴露的缺口，
-   *   与 `teleported`、`selfMovement` 是同一类：**规则在，数据没传**。
+   * ★★ 潜行相关字段刻意不在位表里（原 flags 字段的规矩原样搬来）：
+   *   未被发现的潜行者压根不进快照（`isVisibleTo`），而进了快照的潜行者
+   *   把「他在潜行」发出去是安全的；做成通用位会诱使将来有人「顺手也发给
+   *   敌人」，那就退回到 docs/08 §4.1 明确否掉的路上了。
    */
-  flags: DisplayFlags;
-  /**
-   * 本 tick 这个实体是**瞬移**过来的（闪现、击退、位置纠正、复活）。
-   *
-   * ★★ **13.4 的硬要求靠它：「传送、位置纠正和大位移不能被识别为高速跑步」。**
-   *   客户端对其他玩家做 100ms 插值，两帧之间位置差得远时它分不清
-   *   「跑得快」和「闪现了」—— 插过去的话角色会以 40 米/秒滑行，
-   *   而 `AnimationController` 会把那个速度判成冲刺。
-   *
-   * ★ 用**服务器的事实**而不是客户端的距离阈值来判：距离启发式在
-   *   「20 米闪现」和「网络抖动导致两帧间隔变长」之间会猜错，
-   *   而 `MovementState.teleported`（M1 就留了）是权威的。
-   */
-  teleported: boolean;
+  f?: number;
+  // ── 静态块（首见即发，见文件头第 2 条）──────────────────────
+  name?: string;
+  team?: TeamId;
+  classId?: ClassId;
+  maxHealth?: number;
+  maxResources?: Readonly<Record<string, number>>;
   /**
    * 自己的完整移动状态。★ 只有**自己**有这个字段（与 `cooldowns` 同理）。
    *
@@ -293,11 +365,45 @@ export interface EntitySnapshot {
    * ★ 敌方的不发，理由与 `cooldowns` 同条（docs/08 §4.3：削弱博弈）。
    */
   gcdUntil?: number;
+}
+
+/**
+ * 客户端 hydrate 之后的实体形状 —— 下游（插值器/HUD/画面）读的完整形态。
+ *
+ * ★ wire 形态（`EntitySnapshot`）里省掉的一切在这里都是必填：静态块从
+ *   首见缓存合回来、位掩码展开回 `DisplayFlags`、装备从 `EntityLoadouts`
+ *   通道的缓存合回来。**服务器不产出这个类型** —— 它只存在于客户端
+ *   解码边界之后，所以「静态块忘了发」在客户端表现为 hydrate 缺缓存，
+ *   不会静默产出一个字段为 undefined 的实体（hydrate 会兜底跳过并告警）。
+ */
+export interface HydratedEntitySnapshot {
+  id: EntityId;
+  name: string;
+  team: TeamId;
+  classId: ClassId;
+  position: Vec3;
+  yaw: number;
+  health: number;
+  maxHealth: number;
+  alive: boolean;
+  resources: Readonly<Record<string, number>>;
+  maxResources: Readonly<Record<string, number>>;
+  auras: readonly AuraSnapshot[];
+  carryingFlag: boolean;
+  /** 位掩码展开（`displayFlagsOf`）。与试验场共用的 HudUnit 契约读它 */
+  flags: DisplayFlags;
+  /** 13.4：本 tick 是瞬移（位掩码 bit1 展开）*/
+  teleported: boolean;
+  selfMovement?: SelfMovementSnapshot;
+  cooldowns?: Readonly<Record<string, number>>;
+  focusId?: EntityId;
+  gcdUntil?: number;
   /**
-   * 装备。队友是完整视图，敌人是裁剪视图 —— **两个不相交的类型**。
-   * 想在敌人视图里读备用装备是类型错误（10.6 / 验收 #36）。
+   * 装备（来自 `EntityLoadouts` 通道的缓存）。队友是完整视图，敌人是
+   * 裁剪视图 —— 两个不相交的类型，想在敌人视图里读备用装备是类型错误
+   * （10.6 / 验收 #36）。P11 后它不再每 tick 进快照，改为变化时下发。
    */
-  equipment: AllyEquipmentSnapshot | EnemyEquipmentSnapshot;
+  equipment?: AllyEquipmentSnapshot | EnemyEquipmentSnapshot;
 }
 
 /**
@@ -474,6 +580,11 @@ export interface MatchSnapshot {
   respawnIn?: number;
 }
 
+/** P11：客户端 hydrate 之后的快照形状（`entities` 换成完整形态，其余同构）*/
+export interface HydratedSnapshot extends Omit<Snapshot, 'entities'> {
+  entities: readonly HydratedEntitySnapshot[];
+}
+
 export interface Snapshot {
   tick: number;
   /** 接收者自己的实体 id，客户端用它区分「我」和别人 */
@@ -522,6 +633,15 @@ export interface SnapshotDeps {
    * （`store.enabled` 为假时它本来也是空的 —— 验收 #28）。
    */
   arsenal?: ArsenalStore;
+  /**
+   * P11 静态块的「首见」记账（**会被本函数写入**）：该接收者已经见过哪些
+   * 实体。在集合里 = 静态块（name/team/classId/maxHealth/maxResources）省略。
+   *
+   * ★ 生命周期归调用方：服务器按 (Session, MatchLoop) 持有 —— 新对局
+   *   新循环、重连换新 Session，两条路都天然拿到空集合，静态块自动重发。
+   * ★ 可选：不传 = 每份快照都带静态块（纯规则测试与试验场的旧行为）。
+   */
+  seen?: Set<EntityId>;
 }
 
 /**
@@ -621,7 +741,6 @@ const snapshotEntity = (
   deps: SnapshotDeps,
 ): EntitySnapshot => {
   const isSelf = e.id === viewer.id;
-  const friendly = isFriendly(e, viewer);
   const ctx: VisibilityContext = deps.ctf ? { ctf: deps.ctf } : {};
   /**
    * ★ S7：光环 id（`rogue.rupture`）泄露施加者职业。施加者对 viewer 不可见时
@@ -636,30 +755,44 @@ const snapshotEntity = (
     return !src || isVisibleTo(src, viewer, ctx);
   };
 
+  /**
+   * P11 量化（有损，方向与下界见 `EntitySnapshot` 文件头第 3 条）。
+   * `world.time += dt` 的浮点累加让几乎每个数都拖着 17 位小数尾巴 ——
+   * 每实体白付 ~55B/tick。
+   */
+  const q2 = (v: number): number => Math.round(v * 100) / 100;
+  const q3 = (v: number): number => Math.round(v * 1000) / 1000;
+  const q1 = (v: number): number => Math.round(v * 10) / 10;
+  const q1Record = (m: ReadonlyMap<string, number>): Record<string, number> => {
+    const out: Record<string, number> = {};
+    for (const [k, v] of m) out[k] = q1(v);
+    return out;
+  };
+
+  const mask = packEntityFlags(
+    e.alive,
+    deps.movement?.get(e.id)?.teleported ?? false,
+    e.flags,
+  );
+
   const snap: EntitySnapshot = {
     id: e.id,
-    name: e.name,
-    team: e.team,
-    classId: e.classId,
-    position: { ...e.position },
-    yaw: e.yaw,
-    teleported: deps.movement?.get(e.id)?.teleported ?? false,
-    health: e.health,
-    maxHealth: e.maxHealth,
-    alive: e.alive,
-    resources: Object.fromEntries(e.resources),
-    maxResources: Object.fromEntries(e.maxResources),
+    position: { x: q2(e.position.x), y: q2(e.position.y), z: q2(e.position.z) },
+    yaw: q3(e.yaw),
+    health: q1(e.health),
+    resources: q1Record(e.resources),
     auras: aurasOf(deps.auras, e.id).map((a) => {
       // S7：施加者不可见 → 掩 id、连学派一起藏（学派也是线索）
       const hidden = !auraSourceVisible(a);
       return {
         auraId: hidden ? HIDDEN_AURA_ID : a.def.id,
-        stacks: a.stacks,
-        remaining: Number.isFinite(a.expiresAt) ? Math.max(0, a.expiresAt - deps.world.time) : null,
+        // P11：省略默认值（stacks=1 / persistent 无到期）—— 见 AuraSnapshot 注释
+        ...(a.stacks > 1 ? { stacks: a.stacks } : {}),
+        ...(Number.isFinite(a.expiresAt) ? { expiresAt: q2(a.expiresAt) } : {}),
         // ★ 非吸收光环一个字节都不带（八职业 90 技能里只有 4 个盾）
         //   掩码的 debuff 本就来自敌人，不会是自己/队友给的盾，无需保留吸收量
         ...(!hidden && a.absorbRemaining > 0
-          ? { absorbRemaining: a.absorbRemaining, absorbInitial: a.absorbInitial }
+          ? { absorbRemaining: q1(a.absorbRemaining), absorbInitial: q1(a.absorbInitial) }
           : {}),
         // ★ 同理：只有**控制类**光环带学派（掩码时连学派也不给）
         ...(!hidden && a.def.drCategory !== undefined && a.def.school !== undefined
@@ -667,22 +800,23 @@ const snapshotEntity = (
           : {}),
       };
     }),
-    carryingFlag: e.flags.carryingFlag,
-    flags: {
-      stunned: e.flags.stunned,
-      feared: e.flags.feared,
-      rooted: e.flags.rooted,
-      silenced: e.flags.silenced,
-      disarmed: e.flags.disarmed,
-      carryingFlag: e.flags.carryingFlag,
-      immuneAll: e.flags.immuneAll,
-      immunePhysical: e.flags.immunePhysical,
-      immuneMagic: e.flags.immuneMagic,
-    },
-    equipment: friendly
-      ? allyEquipment(e, deps)
-      : enemyEquipment(e, deps),
+    ...(mask !== 0 ? { f: mask } : {}),
   };
+
+  /**
+   * P11 静态块：只在该接收者**第一次**看到这个实体时携带（含潜行者现身、
+   * 宠物召出）。★ 这段代码物理上在 `buildSnapshot` 的可见性闸门之后 ——
+   * 「静态块只可能发给已经通过 isVisibleTo 的实体」是结构性的。
+   * 没传 seen（纯规则测试、试验场）= 每份都带 —— 行为与旧版等价。
+   */
+  if (!deps.seen || !deps.seen.has(e.id)) {
+    deps.seen?.add(e.id);
+    snap.name = e.name;
+    snap.team = e.team;
+    snap.classId = e.classId;
+    snap.maxHealth = e.maxHealth;
+    snap.maxResources = q1Record(e.maxResources);
+  }
 
   // docs/08 §4.3：只有自己能看到自己的冷却
   if (isSelf) {
@@ -717,7 +851,29 @@ const snapshotEntity = (
   return snap;
 };
 
-const allyEquipment = (e: CombatEntity, deps: SnapshotDeps): AllyEquipmentSnapshot => {
+/**
+ * P11：某接收者视角下这个实体的装备视图。
+ *
+ * ★★ 装备**不再每 tick 进快照** —— 基本静态的 153B/实体被 20Hz 重发是
+ *   快照第二大的字节项。改由服务器（MatchLoop.broadcastSnapshots）按
+ *   「指纹变了才发」的节奏走独立的 `EntityLoadouts` 消息，客户端按实体
+ *   缓存合回 `HydratedEntitySnapshot.equipment`。
+ * ★ 视图只依赖**接收者的阵营**（isFriendly 是纯队伍比较），观战跟随
+ *   只能跟队友（11.4）—— 所以按会话缓存指纹不会因视角切换而错型。
+ * ★ 裁剪语义原样：敌人走 `enemyLoadoutView()`（10.6 / 验收 #36），
+ *   这里只是换了投递通道，不改任何可见性判定。
+ */
+export const equipmentViewFor = (
+  e: CombatEntity,
+  viewer: CombatEntity,
+  deps: Pick<SnapshotDeps, 'loadouts' | 'swaps'>,
+): AllyEquipmentSnapshot | EnemyEquipmentSnapshot =>
+  isFriendly(e, viewer) ? allyEquipment(e, deps) : enemyEquipment(e, deps);
+
+const allyEquipment = (
+  e: CombatEntity,
+  deps: Pick<SnapshotDeps, 'loadouts' | 'swaps'>,
+): AllyEquipmentSnapshot => {
   const l = deps.loadouts.get(e.id);
   const swap = deps.swaps.get(e.id);
   return {
@@ -738,7 +894,10 @@ const allyEquipment = (e: CombatEntity, deps: SnapshotDeps): AllyEquipmentSnapsh
  * ★ 走 `enemyLoadoutView()` 而不是自己挑字段。
  *   验收 #36 的实现处只有一个，网络层照抄它的返回值就不可能泄露备用装备。
  */
-const enemyEquipment = (e: CombatEntity, deps: SnapshotDeps): EnemyEquipmentSnapshot => {
+const enemyEquipment = (
+  e: CombatEntity,
+  deps: Pick<SnapshotDeps, 'loadouts' | 'swaps'>,
+): EnemyEquipmentSnapshot => {
   const v = enemyLoadoutView(e, deps.swaps);
   return {
     currentWeaponId: v.currentWeapon?.id,
@@ -819,8 +978,10 @@ export const assertNoHiddenEntities = (
     const e = world.entities.get(s.id);
     if (!e) continue;
     if (!isVisibleTo(e, viewer, ctx)) {
+      // ★ P11 后 name 是首见才带的可选字段 —— 报错只用 id，别让兜底断言
+      //   在最不该出二次故障的时刻踩 undefined
       throw new Error(
-        `快照泄露：实体 ${s.id}（${s.name}）对接收者 ${viewer.id} 不可见却进了快照。` +
+        `快照泄露：实体 ${s.id} 对接收者 ${viewer.id} 不可见却进了快照。` +
           `见 docs/08 §4.1 与验收 #5。`,
       );
     }

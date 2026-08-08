@@ -28,7 +28,7 @@ import {
   nextTabPick,
   sub,
   type EntityId,
-  type EntitySnapshot,
+  type HydratedEntitySnapshot as EntitySnapshot,
   type TabRanking,
   type TeamId,
   type Vec3,

@@ -26,7 +26,7 @@ import {
   mage,
   warrior,
   type EntityId,
-  type EntitySnapshot,
+  type HydratedEntitySnapshot as EntitySnapshot,
   type World,
 } from '@wowpvp/shared';
 

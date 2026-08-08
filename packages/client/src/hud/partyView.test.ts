@@ -16,7 +16,7 @@ import {
   createEntity,
   getClass,
   vec3,
-  type EntitySnapshot,
+  type HydratedEntitySnapshot as EntitySnapshot,
 } from '@wowpvp/shared';
 
 import { controlKindsOf, partyViewFromSnapshot, partyViewOf } from './PartyFrame.js';
