@@ -258,4 +258,25 @@ export const signatures: Record<string, SkillSignature> = {
     impactRate: 1.15,
     tintShift: -0.01,
   },
+
+  /**
+   * ★★ 暗影斗篷 —— P11 保命轮新增，120 秒大招（与疾跑同一档，一回合只有一次）。
+   *
+   *   声音要一听就分得出它**不是**遁形：遁形是"人不见了"，斗篷是
+   *   "披风抖开、法术打在布面上滑掉"。所以施法音取暗影铺底压到 0.7
+   *   （全表最慢，"罩下来"而不是"闪出去"），命中层用 buff_apply 给
+   *   免疫窗口一个明确的起始回执 —— 玩家要知道保护是**从这一刻**开始的。
+   * ★ Orbit 形态：环绕轨道粒子是本仓库护盾/免疫类的统一语汇
+   *   （法师冰盾、圣骑复仇圣盾同款），玩家的心智模型直接迁移。
+   */
+  'rogue.cloak_of_shadows': {
+    castSound: 'cast_shadow',
+    castRate: 0.7,
+    impactSound: 'impact_shadow',
+    impactRate: 0.72,
+    impactLayer: 'buff_apply',
+    tintShift: -0.07,
+    scale: 1.5,
+    form: SignatureForm.Orbit,
+  },
 };

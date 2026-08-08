@@ -494,6 +494,68 @@ const skills: SkillDef[] = [
     ],
     description: '掀起一阵刺骨寒风，对 10 米内最多 5 名敌人造成冰霜伤害并减速 40%，持续 5 秒。',
   },
+
+  /**
+   * ★★ P11 保命轮：死骑补**冰封坚韧** —— 抗咒护罩只挡魔法，物理侧是全空的。
+   *
+   *   审计口径「按下后能扛住 3 秒集火」在死骑身上此前只有半张牌：
+   *     · 抗咒护罩 —— 25% 最大生命的吸收，但 `absorbSchools` 只收魔法学派，
+   *       对面是战士/盗贼/猎人时**一点都不吸**；
+   *     · 符文守护 —— 20% 减伤 + 120 吸收，然而它是**骨盾方案专属**，
+   *       默认的双手符文剑与双持符文刃两档一个都摸不到；
+   *   于是默认武器的死骑面对物理集火时，手上一个减伤键都没有。
+   *   1200 血是全场最高，但「血多」不等于「有应对」—— 集火三秒照样躺。
+   *
+   * ★ 量级依据（WoW 冰封之韧：30% 减伤 + 免疫昏迷 / 8 秒 / CD 180）：
+   *   CD 按疾跑那次的口径落到 **120**（竞技场一回合最多一次）。
+   *   减伤取 **50%** 而不是正式服的 30%：那 30% 的另一半价值在「免疫昏迷」，
+   *   而本仓库的 `AuraFlags` 没有「免疫昏迷」这一档 —— 有的是 immuneAll
+   *   （完全免疫，量级过头）、immuneMagicControl（护罩已占）、
+   *   immuneMovementImpair（只管减速定身）。**不新加 flag**：本仓库反复
+   *   吃过「schema 加了字段、结算侧没人读、规则静默失效」的亏（寒缚链的
+   *   decay、疾行步的 moveSpeedFloor、盗贼潜行的脱战限制，三次）。
+   *   把控制免疫那半张牌折算进减伤数值，是**能立刻兑现**的表达。
+   *   代价如实写进 counters：它真的不免疫昏迷。
+   *
+   * ★ 持续 5 秒（短于战士盾墙的 8 秒）：死骑有 1200 血（全场最高）+ 汲血斩
+   *   自愈 + 抗咒护罩，生存底盘本就厚；再给 8 秒会把 9.x 的「攻击节奏偏重、
+   *   依赖近身」变成没有代价的强项。
+   */
+  {
+    id: asSkillId('deathknight.icebound_fortitude'),
+    name: '冰封坚韧',
+    classId: CLASS_ID,
+    targeting: Targeting.Self,
+    targetFilter: TargetFilter.Self,
+    range: { min: 0, max: 0 },
+    shape: { kind: 'single' },
+    cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
+    school: School.Frost,
+    cooldown: 120,
+    triggersGcd: true,
+    // 8.3：被控住却开不了减伤等于没有这个键
+    usableWhileStunned: true,
+    // 保命键刻意不收符文能量：符文能量靠重击产出，开场被秒时它恰好是 0
+    counters:
+      '**不免疫控制** —— 与正式服不同，这里的冰封坚韧不免疫昏迷：扼喉链、裁决之锤、昏击照常把死骑按住，减伤只是让他死得慢一点；只有 5 秒（比战士盾墙短 3 秒），对手拉开等它过期即可；**120 秒冷却比竞技场单回合上限（90 秒）还长**，一回合只有一次；冰霜魔法技能，**沉默或冰霜学派锁定期间用不出来**（7.3）—— 法师一发断法锁冰霜 4 秒就能把它连同寒缚链、凛冬号叫一起封死，这是它与抗咒护罩（暗影系）分属两系的意义，也是它自己的破绽；不可驱散，但也洗不掉身上已有的减益。',
+    effects: [
+      {
+        kind: 'applyAura',
+        target: 'self',
+        aura: {
+          id: 'deathknight.icebound_fortitude',
+          name: '冰封坚韧',
+          kind: 'buff',
+          duration: 5,
+          dispelType: DispelType.None,
+          clearableByTrinket: false,
+          modifiers: { damageTaken: 0.5 },
+          description: '受到的伤害降低 50%。',
+        },
+      },
+    ],
+    description: '以寒冰包裹自身，5 秒内受到的伤害降低 50%。可在昏迷中使用，一回合只有一次。',
+  },
 ];
 
 // ── 武器方案（附录A#4：职业、攻击间隔、距离、优势、代价、改变的技能）──

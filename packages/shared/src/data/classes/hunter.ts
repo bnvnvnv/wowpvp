@@ -233,8 +233,20 @@ const skills: SkillDef[] = [
     triggersGcd: true,
     counters:
       '受竞技场战斗抑制影响（8.5），后期实际回复量会随抑制层数持续下降；属于自然学派的治疗，被自然学派锁定或降低治疗的减益（致死打击等）大幅削弱；瞬发但仍会被昏迷、变形和沉默期间的施法限制卡住，60 秒冷却让它无法应对连续爆发。',
-    effects: [{ kind: 'healPercentMaxHealth', percent: 0.25 }],
-    description: '立即恢复 25% 最大生命。受竞技场战斗抑制影响。',
+    /**
+     * ★ P11 保命轮：0.25 → 0.35，对齐 WoW 振奋（正式服：恢复 30% 最大生命 /
+     *   CD 120）。取 35% 而不是 30% 是因为冷却只有它的一半（60 秒），
+     *   但**总量仍然低于**正式服的「每 120 秒 30%」× 两次窗口。
+     *
+     * ★ 为什么加在这里而不是只加强龟甲护体：龟甲带 `cannotAttack`，
+     *   `botController` 的 `isSelfDefenseSkill` **明文排除**这类交易型保命
+     *   （分步归因实测：让 bot 无脑低血就缩壳，猎人 23.8→7.1%）——
+     *   也就是说光加强龟甲，人机猎人一次都不会按它，配平基线上完全看不见。
+     *   振作走的是治疗步骤（`isHealSkill`），bot 会用，真人也会用。
+     *   1000 血的锁甲远程被贴脸时，350 点即时回血是他唯一的「再站三秒」。
+     */
+    effects: [{ kind: 'healPercentMaxHealth', percent: 0.35 }],
+    description: '立即恢复 35% 最大生命。受竞技场战斗抑制影响。',
   },
   {
     id: asSkillId('hunter.aspect_of_the_turtle'),
@@ -249,7 +261,22 @@ const skills: SkillDef[] = [
     cooldown: 60,
     triggersGcd: true,
     counters:
-      '期间完全不能攻击或射击，是纯粹的攻防取舍，对手可以直接脱战或去打猎人的队友；只偏转**正面**投射物，绕到背后或侧面的射击照常命中；不是免疫，持续伤害、范围技能和全部控制链依然生效；4 秒结束后猎人需要重新起手瞄准射击。',
+      '期间完全不能攻击或射击，是纯粹的攻防取舍，对手可以直接脱战或去打猎人的队友；只偏转**正面**投射物，绕到背后或侧面的射击照常命中；不是免疫，持续伤害、范围技能和全部控制链依然生效；5 秒结束后猎人需要重新起手瞄准射击。',
+    /**
+     * ★ P11 保命轮：35% 减伤 / 4 秒 → **60% 减伤 / 5 秒**，冷却 60 秒不动。
+     *
+     *   审计判据是「按下后能扛住 3 秒集火」。35% 达不到：1000 血的猎人
+     *   被近战贴上，35% 减伤只是把 3 秒变成 4.6 秒，而这 4 秒里他
+     *   **一枪都打不出去** —— 净亏。这正是玩家说的「按了也没用」。
+     *   对齐 WoW 龟甲/威慑（正式服：减伤 30%~全免疫，多次改版，
+     *   共同点是**按下去当回合就死不了**）。取 60% 而不是免疫，
+     *   是因为 `cannotAttack` 的代价已经在这里，再给免疫就是白送。
+     *
+     * ⚠️ **人机不会按这个键**：`botController.isSelfDefenseSkill` 明文排除
+     *   带 `cannotAttack` 的交易型保命（它需要读对手的爆发窗口，bot 读不了）。
+     *   因此这条加强**不会**出现在 `pnpm balance` 的数字里 —— 它是给真人的。
+     *   猎人在配平基线上的生存改善由同批的振作（25%→35%）承担。
+     */
     effects: [
       {
         kind: 'applyAura',
@@ -258,15 +285,15 @@ const skills: SkillDef[] = [
           id: 'hunter.aspect_of_the_turtle',
           name: '龟甲护体',
           kind: 'buff',
-          duration: 4,
+          duration: 5,
           dispelType: DispelType.None,
-          modifiers: { damageTaken: 0.65 },
+          modifiers: { damageTaken: 0.4 },
           flags: { cannotAttack: true, deflectFrontProjectiles: true },
-          description: '受到伤害降低 35%，偏转正面投射物，期间不能攻击或射击。',
+          description: '受到伤害降低 60%，偏转正面投射物，期间不能攻击或射击。',
         },
       },
     ],
-    description: '4 秒内受到伤害降低 35% 并偏转正面投射物，期间不能攻击或射击。',
+    description: '5 秒内受到伤害降低 60% 并偏转正面投射物，期间不能攻击或射击。',
   },
   // 武器方案授予的技能
   {

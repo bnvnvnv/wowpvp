@@ -246,4 +246,26 @@ export const signatures: Record<string, SkillSignature> = {
     scale: 1.7,
     form: SignatureForm.Ring,
   },
+
+  /**
+   * ★★ 盾墙 —— P11 保命轮新增，120 秒大招（战士冷却最长的键）。
+   *
+   *   与防御架势（30 秒一转的节奏键）必须一耳朵分开：架势用的是
+   *   buff_apply 起手 + 轻金属落点，这里改成**格挡音本身**做起手
+   *   （combat_block_2 压到 0.7 —— 全表最慢，盾牌"砸"进地面的重量），
+   *   命中层再叠 buff_apply 给减伤窗口一个明确的起始回执。
+   * ★ Orbit + scale 1.5：护体类的统一语汇（法师冰盾、圣骑复仇圣盾同款），
+   *   规模压过架势的 1.15 —— 对手看一眼就知道该拉开等它过期，
+   *   而不是继续把爆发倒进一面 50% 减伤的墙里（14.2 高可读性）。
+   */
+  'warrior.shield_wall': {
+    castSound: 'combat_block_2',
+    castRate: 0.7,
+    impactSound: 'impact_metal_3',
+    impactRate: 0.72,
+    impactLayer: 'buff_apply',
+    tintShift: -0.05,
+    scale: 1.5,
+    form: SignatureForm.Orbit,
+  },
 };

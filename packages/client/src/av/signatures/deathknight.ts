@@ -269,4 +269,24 @@ export const signatures: Record<string, SkillSignature> = {
     scale: 1.25,
     form: SignatureForm.Ring,
   },
+
+  /**
+   * ★★ 冰封坚韧 —— P11 保命轮新增，120 秒大招（死骑冷却最长的键）。
+   *
+   *   必须与抗咒护罩听得出区别：护罩是**暗影**的黑壳（30 秒一转的节奏键），
+   *   坚韧是**冰霜**的硬壳（一回合一次）。于是这里全线走冰系音源并压到
+   *   0.72 —— 慢、厚、沉，与护罩那种"啪"地一罩形成对照。
+   * ★ Orbit 形态 + scale 1.5：与法师冰盾同一族的护体语汇，
+   *   规模明显高过护罩（1.15），"这是他攒了两分钟的键"看得见。
+   */
+  'deathknight.icebound_fortitude': {
+    castSound: 'cast_frost',
+    castRate: 0.72,
+    impactSound: 'impact_frost',
+    impactRate: 0.7,
+    impactLayer: 'buff_apply',
+    tintShift: -0.04,
+    scale: 1.5,
+    form: SignatureForm.Orbit,
+  },
 };

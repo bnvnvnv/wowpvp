@@ -35,6 +35,10 @@ export const SKILL_ICON_FILES: Readonly<Record<string, string>> = {
   'warrior.heroic_strike': 'warrior/heroic_strike',
   'warrior.spell_reflection': 'warrior/iron_resolve', // ◆ 硬守化解 —— 承伤锐减
   'warrior.intimidating_shout': 'warrior/intimidating_shout',
+  // P11 保命轮：一回合一次的硬减伤
+  // ◆ 上游没有 shield_wall；`warrior/raised_guard`（举盾）已被挡援占用（同职业不得重复），
+  //   退而取同为「防御性大冷却」的 die_by_sword
+  'warrior.shield_wall': 'warrior/die_by_sword',
 
   // ── 圣骑士 ────────────────────────────────────────────────────
   'paladin.crusader_strike': 'paladin/seal_of_righteousness', // ◆ 圣印蓄力的武器击
@@ -72,6 +76,8 @@ export const SKILL_ICON_FILES: Readonly<Record<string, string>> = {
   'deathknight.plague_strike': 'warlock/corruption', // ◆ 暗影腐蚀持续侵蚀
   'deathknight.necrotic_strike': 'warlock/curse_of_agony', // ◆ 缠身不散的痛苦
   'deathknight.howling_blast': 'mage/glacial_front', // ◆ 扑面推开的冰霜锋面
+  // P11 保命轮：物理侧的硬减伤（抗咒护罩只挡魔法）
+  'deathknight.icebound_fortitude': 'mage/ice_barrier', // ◆ 裹住自身的冰壳
 
   // ── 盗贼 ──────────────────────────────────────────────────────
   'rogue.stealth': 'rogue/stealth',
@@ -95,6 +101,11 @@ export const SKILL_ICON_FILES: Readonly<Record<string, string>> = {
   // P9 扩充：唯一没有速度爆发的近战补上机动键
   //（`rogue/sprint` 同时被 deathknight.deaths_advance 借用 —— 跨职业复用是允许的）
   'rogue.sprint': 'rogue/sprint',
+  // P11 保命轮：只挡魔法的斗篷（物理照旧穿透，「正面承伤低」原样保留）
+  // ◆ 上游 rogue 目录没有斗篷；取暗色护体的 demon_skin
+  //（同时被 deathknight.anti_magic_shell 借用 —— 跨职业复用是允许的，
+  //   而且两者恰好是同一件事：只挡魔法的壳）
+  'rogue.cloak_of_shadows': 'warlock/demon_skin',
 
   // ── 猎人 ──────────────────────────────────────────────────────
   // hunter.auto_shot 已于 M14 删除 —— 自动射击回归 7.6 挥击系统，不再是按钮技能
