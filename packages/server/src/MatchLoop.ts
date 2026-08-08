@@ -750,12 +750,34 @@ export class MatchLoop {
    */
   private dispatch(messages: readonly ServerMessage[]): void {
     if (messages.length === 0) return;
+    /**
+     * ★ P11：事件消息的编码按**对象身份**共享。`redactFor` 仍然逐接收者跑
+     *   （红线：裁剪一寸不让），但它对无需裁剪的接收者**原样返回同一个对象**
+     *   （下面三个分支的 `return msg`）—— 于是全体这样的接收者天然命中同
+     *   一条编码缓存；发生了裁剪的接收者拿到新对象、自己占一格。
+     *   键是对象身份而不是内容，**结构上不可能**把两个不同的裁剪结果并成
+     *   一条编码。与 `broadcastStats` 的 sendRaw 共享编码（P5）同一手法。
+     */
+    const encoded = new Map<ServerMessage, string>();
     for (const s of this.deps.sessions()) {
+      /**
+       * ★ P11：人机会话跳过整段（与 `broadcastSnapshots` 的 P2 同源同理由）：
+       *   BotSocket.send 把字符串直接丢掉，但此前每条事件仍对每个人机白付
+       *   一次 redactFor + 编码。人机决策层（BotDriver）读的是 world，
+       *   从不消费事件消息 —— 跳的是浪费，不是语义。
+       */
+      if (s.isBot) continue;
       const viewer = this.viewerOf(s.playerId);
       if (!viewer) continue;
       for (const msg of messages) {
         const safe = this.redactFor(msg, viewer);
-        if (safe) s.send(safe);
+        if (!safe) continue;
+        let raw = encoded.get(safe);
+        if (raw === undefined) {
+          raw = encodeServerMessage(safe);
+          encoded.set(safe, raw);
+        }
+        s.sendRaw(raw);
       }
     }
   }
