@@ -64,7 +64,7 @@ import { settleDeaths, type DeathSettlement } from './death.js';
 import { resolveEffects, useTrinket, type CombatEvent } from './effects/index.js';
 import { tickGround, type GroundStore } from './groundArea.js';
 import {
-  tickArsenal, tickPickups,
+  tickArsenal, tickPartyDrops, tickPickups,
   type ArsenalStore, type GroundDrop, type PickupStore, type PickupTickEvent,
 } from './arsenal.js';
 import { takeConsumable, tickSwaps, type LoadoutStore, type SwapStore, type SwapTickEvent } from './loadout.js';
@@ -668,6 +668,14 @@ export const tickWorld = (
     const roster = rosterClassesOf(deps.world);
     const spawned = tickArsenal(deps.arsenal, roster, deps.world.time);
     if (spawned.length > 0) result.drops.push(...spawned);
+    /**
+     * ★ 大乱斗的派对掉落（`arsenal.party` 有值时才有）。与军械点**并列**
+     *   而不是二选一：军械点是「两队对称争夺的补给点」，派对掉落是
+     *   「满地随机刷的玩具」，两套规则互不干扰（见 `armoryLayoutFor` 的
+     *   default 分支注释）。当前只有 FFA 地图会装上它。
+     */
+    const party = tickPartyDrops(deps.arsenal, deps.world.time);
+    if (party.length > 0) result.drops.push(...party);
   }
 
   // ── 9. 统计折叠（必须在 matchRules 之前 —— 见文件头）─────

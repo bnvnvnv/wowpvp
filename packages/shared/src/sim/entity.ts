@@ -8,7 +8,7 @@
 
 import { GEOMETRY } from '../constants/combat.js';
 import type { Vec3 } from '../math/vec3.js';
-import type { ClassDef } from '../data/schema.js';
+import type { ClassDef, WeaponDef } from '../data/schema.js';
 import { Resource, School } from '../types/enums.js';
 import type { ArmorId, ClassId, EntityId, SkillId, TeamId, WeaponId } from '../types/ids.js';
 
@@ -161,6 +161,19 @@ export interface CombatEntity {
    */
   availableSkills: ReadonlySet<SkillId>;
   /**
+   * 大乱斗「变身药水」借来的职业（`borrowClassKit` 效果）。
+   *
+   * ★★ **`classId` 一个字节都没变** —— 借的只是「你能放什么技能」。
+   *   真改 classId 会牵动出生装备、统计注册、客户端模型与技能栏缓存
+   *   （理由见 `schema.ts` 的 `borrowClassKit`）。这里是那次降级的落点：
+   *   一个可选字段，只有 `refreshAvailableSkills()` 一个读者。
+   *
+   * ★ 生命周期：**持续到死亡或回合结束**。`onDeath()` / `resetLoadouts()`
+   *   本来就要把装备打回原形，清掉借来的身份是同一处收口 ——
+   *   光环系统没有到期回调，靠 `duration` 复原会变成没人执行的承诺。
+   */
+  borrowedClassId?: ClassId;
+  /**
    * 9.x 资源表的每秒回复率，`tickWorld` 第 6c 步消费。
    * ⚠️ M14 之前 `regenPerSecond` 同样是死数据（全 sim 零读取方）——
    *   所有职业实际在用「开局资源池 + 白字」打完整场。
@@ -185,9 +198,20 @@ export interface CombatEntity {
  * 声明过的技能是「方案专属」，只有声明它的方案才**新增**它，其余方案没有。
  * ★ 纯函数（只吃 ClassDef），createEntity 与 loadout 的换装/复位路径共用 ——
  *   两处各写一遍的话，迟早一处漏改。
+ *
+ * ★★ `equipped` 是给**职业池以外**的武器留的口子（大乱斗的派对武装）：
+ *   它们不在 `cls.weapons` 里，所以 `find` 找不到，于是它们的 `grantsSkills`
+ *   会**静默失效** —— 玩家捡到「山崩巨锤」却发现没有山崩一击，而没有任何
+ *   报错。调用方（`loadout.ts` 的换装路径）拿着注册表，把查到的定义传进来即可。
+ *   ⚠️ 仍然保持纯函数：本文件不 import 数据注册表。
  */
-export const skillsAvailableWith = (cls: ClassDef, weaponId: WeaponId): ReadonlySet<SkillId> => {
-  const current = cls.weapons.find((w) => w.id === weaponId);
+export const skillsAvailableWith = (
+  cls: ClassDef,
+  weaponId: WeaponId,
+  equipped?: WeaponDef,
+): ReadonlySet<SkillId> => {
+  const current = cls.weapons.find((w) => w.id === weaponId)
+    ?? (equipped?.id === weaponId ? equipped : undefined);
   const out = new Set<SkillId>();
   for (const s of cls.skills) {
     if (current?.removesSkills?.includes(s.id)) continue;
@@ -195,6 +219,11 @@ export const skillsAvailableWith = (cls: ClassDef, weaponId: WeaponId): Readonly
     if (granters.length > 0 && !granters.some((w) => w.id === weaponId)) continue;
     out.add(s.id);
   }
+  /**
+   * ★ 当前武器授予的技能一律补齐。对职业武器是**幂等**的（上面的循环已经
+   *   加过了），只有派对武装的跨池 grants 会在这里第一次被加进来。
+   */
+  for (const id of current?.grantsSkills ?? []) out.add(id);
   return out;
 };
 

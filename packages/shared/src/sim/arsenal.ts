@@ -14,9 +14,13 @@
  */
 
 import { EQUIP, RANGE } from '../constants/combat.js';
-import { CONSUMABLES } from '../data/consumables.js';
+import { CONSUMABLES, getConsumable } from '../data/consumables.js';
 import { distance2D, type Vec3 } from '../math/vec3.js';
-import { ALL_CLASSES, getArmor, getClass, getWeapon } from '../data/index.js';
+import {
+  ALL_CLASSES, getArmor, getClass, getWeapon, isPartyItemId,
+  PARTY_CONSUMABLES, PARTY_WEAPONS,
+} from '../data/index.js';
+import { deriveRngSeed } from './world.js';
 import { ArenaPreset, ArsenalChoice, GameMode } from '../types/enums.js';
 import type { ArmorId, ClassId, ConsumableId, EntityId, WeaponId } from '../types/ids.js';
 import type { CombatEntity } from './entity.js';
@@ -79,12 +83,32 @@ export interface Armory {
   lastCycleAt?: number;
 }
 
+/**
+ * 大乱斗（FFA）的派对掉落状态。★ 竞技场与夺旗都是 `undefined`。
+ *
+ * ★★ 只存三个数字，**不存计划表** —— 整张时刻表是
+ *   `partyDropPlan(seed, index)` 的纯函数产物，服务器重启、回放、
+ *   配平复现都能算出一模一样的一局。存一份数组反而要考虑序列化与漂移。
+ */
+export interface PartyDropState {
+  /** 掷点种子。约定用 `world.seed`，于是「一个种子决定整局」这条不变量不破 */
+  seed: number;
+  /** 下一件要刷的序号（0 起）。★ 场满跳过时也会 +1 —— 见 `tickPartyDrops` */
+  nextIndex: number;
+  /** 掉落散布的半径，米。由地图 bounds 推导 */
+  radius: number;
+  /** 第一件掉落的时刻（绝对秒）*/
+  firstAt: number;
+}
+
 export interface ArsenalStore {
   drops: GroundDrop[];
   armories: Armory[];
   nextId: number;
   /** 10.1：经典竞技场不生成任何临时武装（验收 #28）*/
   enabled: boolean;
+  /** 大乱斗派对掉落。★ 由 `setupPartyDrops()` 装上，其余模式恒为 undefined */
+  party?: PartyDropState;
 }
 
 export const createArsenalStore = (preset: ArenaPreset): ArsenalStore => ({
@@ -120,9 +144,172 @@ export const armoryLayoutFor = (mode: GameMode): { role: Armory['role']; offset:
         { role: 'tactical', offset: { x: 0, y: 0, z: 18 } },
       ];
     default:
-      // 12.x：夺旗模式首版关闭临时装备
+      /**
+       * 12.x：夺旗模式首版关闭临时装备。
+       * ★ 大乱斗（FFA）也走这里 —— 它**没有军械点**。理由不是「还没做」，
+       *   而是 10.4 的军械点是一个**争夺目标**：固定位置、固定倒计时、
+       *   先到者独占一轮，这套结构服务的是两队对称对抗。混战里
+       *   「一个固定点每 60 秒发一件」等于「全场围着一个点打」——
+       *   派对模式要的是**遍地都有东西捡**，所以它走另一条通道：
+       *   `partyDropPlan()` 的随机点位刷新。
+       */
       return [];
   }
+};
+
+// ── 大乱斗（FFA）派对掉落调度 ────────────────────────────────────
+
+/**
+ * 派对掉落的全部可调参数。★ 占位值，实测后再调（与数据层同一条纪律）。
+ */
+export const PARTY_DROP = {
+  /** 开局多久后掉第一件 */
+  FIRST_AT: 20,
+  /** 间隔区间，秒。每一轮在 [MIN, MAX] 里掷一次 —— 玩家背不出下一件在哪一秒 */
+  MIN_INTERVAL: 30,
+  MAX_INTERVAL: 45,
+  /**
+   * 场上**同时**存在的派对掉落上限。
+   * ★ 满了就跳过这一轮而不是排队补刷：不清的话一局 15 分钟能堆出三十件，
+   *   地面变成自助餐，「抢到大锤」就不再是一件事了。
+   */
+  MAX_ALIVE: 6,
+  /**
+   * 掷出**夸张武装**的概率，其余全是消耗品。
+   * ★ 0.25 = 平均四件里有一件是武器。武器是「全场焦点」，出现频率必须低于
+   *   道具，否则场上同时四把大锤，谁都不是焦点。
+   */
+  WEAPON_CHANCE: 0.25,
+  /** 掉落点距场地中心的最小半径 —— 别老是刷在正中央那团人脚下 */
+  MIN_RADIUS: 5,
+} as const;
+
+/** 一件计划中的派对掉落。★ 纯函数产物，同一个 (seed, index) 恒等 */
+export interface PartyDropPlan {
+  index: number;
+  /** 计划刷新的绝对时刻 */
+  at: number;
+  kind: 'weapon' | 'consumable';
+  itemId: string;
+  position: Vec3;
+}
+
+/**
+ * 把 `deriveRngSeed` 的 32 位哈希折成 [0,1)。
+ *
+ * ★ 复用世界的那个哈希而不是另写一个：它已经是纯函数、已经有测试，
+ *   而「再写一个随机数生成器」是本仓库最不需要的东西。
+ * ★ `salt` 让同一轮里的四次掷点（间隔/类型/选货/角度）互不相关。
+ */
+const roll01 = (seed: number, index: number, salt: number): number =>
+  deriveRngSeed(seed ^ (salt * 0x9e37), index + 1) / 4294967296;
+
+/**
+ * 第 `index` 件派对掉落的完整计划。**纯函数**。
+ *
+ * ★★ `at` 要把前面每一轮的间隔累加起来，所以这里是个 O(index) 的循环 ——
+ *   一局 20 分钟大约 30 轮，代价可以忽略；换来的是「时刻表不需要被存下来」
+ *   （见 `PartyDropState` 的注释）。
+ */
+export const partyDropPlan = (
+  seed: number,
+  index: number,
+  radius: number,
+  firstAt: number = PARTY_DROP.FIRST_AT,
+): PartyDropPlan => {
+  const span = PARTY_DROP.MAX_INTERVAL - PARTY_DROP.MIN_INTERVAL;
+  let at = firstAt;
+  for (let i = 0; i < index; i++) {
+    at += PARTY_DROP.MIN_INTERVAL + roll01(seed, i, 1) * span;
+  }
+
+  const isWeapon = roll01(seed, index, 2) < PARTY_DROP.WEAPON_CHANCE;
+  const pool: readonly { id: unknown }[] = isWeapon ? PARTY_WEAPONS : PARTY_CONSUMABLES;
+  const pick = Math.min(pool.length - 1, Math.floor(roll01(seed, index, 3) * pool.length));
+
+  // 均匀撒在圆环里：sqrt 让面积均匀，否则会全挤在圆心附近
+  const angle = roll01(seed, index, 4) * Math.PI * 2;
+  const r = PARTY_DROP.MIN_RADIUS
+    + Math.sqrt(roll01(seed, index, 5)) * Math.max(0, radius - PARTY_DROP.MIN_RADIUS);
+
+  return {
+    index,
+    at,
+    kind: isWeapon ? 'weapon' : 'consumable',
+    itemId: String(pool[pick]?.id ?? ''),
+    position: { x: Math.cos(angle) * r, y: 0, z: Math.sin(angle) * r },
+  };
+};
+
+/**
+ * 打开大乱斗的派对掉落。由 `match/setup.ts` 的 FFA 分支调用。
+ *
+ * ★ 它**顺手把 `enabled` 打开**：`createArsenalStore()` 只认竞技场预设
+ *   （经典 = 关、武装 = 开），而大乱斗的临时武装是模式自带的玩法，
+ *   不该要求房主再去勾一个「武装」开关。
+ */
+export const setupPartyDrops = (
+  store: ArsenalStore,
+  opts: { seed: number; radius: number; firstAt?: number },
+): void => {
+  store.enabled = true;
+  store.party = {
+    seed: opts.seed >>> 0,
+    nextIndex: 0,
+    radius: Math.max(PARTY_DROP.MIN_RADIUS + 1, opts.radius),
+    firstAt: opts.firstAt ?? PARTY_DROP.FIRST_AT,
+  };
+};
+
+/** 场上现存的派对掉落（用于 `MAX_ALIVE` 与 HUD 提示）*/
+export const partyDropsOnGround = (store: ArsenalStore): GroundDrop[] =>
+  store.drops.filter((d) =>
+    isPartyItemId(String(d.weaponId ?? d.consumableId ?? '')),
+  );
+
+/**
+ * 推进派对掉落一个 tick。由 `tickWorld` 第 8b 步调用。
+ *
+ * ★ 「场满」时**跳过这一轮**（`nextIndex` 照样 +1），而不是把它推迟：
+ *   推迟会让时刻表整体漂移，于是「距离下一件还有多久」这个 HUD 提示
+ *   在场满时会一直显示 0；跳过则语义清晰 —— 那一轮的货没人要，作废。
+ * ★ while 循环而不是 if：服务器卡顿或测试大步跳时间时，一次要补上好几轮。
+ *   上限 `MAX_ALIVE` 天然把循环次数关死，不会跑飞。
+ */
+export const tickPartyDrops = (store: ArsenalStore, now: number): GroundDrop[] => {
+  const party = store.party;
+  if (!store.enabled || !party) return [];
+
+  const spawned: GroundDrop[] = [];
+  let alive = partyDropsOnGround(store).length;
+
+  for (;;) {
+    const plan = partyDropPlan(party.seed, party.nextIndex, party.radius, party.firstAt);
+    if (plan.at > now) break;
+    party.nextIndex++;
+
+    if (alive >= PARTY_DROP.MAX_ALIVE) continue;
+    if (plan.itemId === '') continue;
+
+    const drop: GroundDrop = {
+      id: store.nextId++,
+      kind: plan.kind,
+      ...(plan.kind === 'weapon'
+        ? { weaponId: plan.itemId as GroundDrop['weaponId'] }
+        : { consumableId: plan.itemId as GroundDrop['consumableId'] }),
+      /**
+       * ★ **刻意不写 `classId`** —— 派对武装不属于任何职业池，
+       *   借一个职业 id 会让 `dropViewFor()` 把它显示成某个职业的东西
+       *   （与消耗品无归属同一条理由，见 `GroundDrop.classId` 的注释）。
+       */
+      position: { ...plan.position },
+      spawnedAt: now,
+    };
+    store.drops.push(drop);
+    spawned.push(drop);
+    alive++;
+  }
+  return spawned;
 };
 
 /**
@@ -631,12 +818,30 @@ export const dropViewFor = (
   viewerLoadout: Loadout,
 ): DropView => {
   const cls = drop.classId === undefined ? undefined : getClass(drop.classId);
-  const item = drop.weaponId ? getWeapon(drop.weaponId) : drop.armorId ? getArmor(drop.armorId) : undefined;
+  /**
+   * ★ 消耗品此前恒显示「未知物品」—— 这一行只查了武器和护甲，而
+   *   `GroundDrop.consumableId` 从 M11 起就有了。大乱斗满地都是消耗品，
+   *   不补上的话玩家看到的是一地「未知物品」。
+   */
+  const item = drop.weaponId
+    ? getWeapon(drop.weaponId)
+    : drop.armorId
+      ? getArmor(drop.armorId)
+      : drop.consumableId
+        ? getConsumable(drop.consumableId as string)
+        : undefined;
+  /**
+   * ★ 派对武装带着伪职业 id `ffa`（`getClass` 查不到它），所以要显式说
+   *   「人人可捡」而不是把 `ffa` 这个内部 id 打到玩家脸上。
+   */
+  const partyItem = isPartyItemId(String(drop.weaponId ?? drop.consumableId ?? ''));
   return {
     id: drop.id,
     kind: drop.kind,
     // ★ 无归属（消耗品）时显示「通用」，而不是把 undefined 打出去
-    ownerClassName: cls?.name ?? (drop.classId === undefined ? '通用' : String(drop.classId)),
+    ownerClassName: partyItem
+      ? '人人可捡'
+      : cls?.name ?? (drop.classId === undefined ? '通用' : String(drop.classId)),
     itemName: item?.name ?? '未知物品',
     position: drop.position,
     pickableByViewer: checkPickup(viewer, viewerLoadout, drop).ok,

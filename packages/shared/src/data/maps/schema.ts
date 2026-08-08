@@ -162,6 +162,14 @@ export interface MapDecorDef {
 export interface MapDef {
   id: MapId;
   name: string;
+<<<<<<< HEAD
+=======
+  /**
+   * ★ `'ffa'` = 大乱斗场。**装配层据它开启派对掉落**
+   *   （`match/setup.ts` → `setupPartyDrops`）—— 派对武装与新奇道具是
+   *   这一族地图自带的玩法，不需要房主再勾一个「武装」开关。
+   */
+>>>>>>> worktree-agent-ac31954a589347c76
   family: 'arena' | 'ctf' | 'ffa' | 'testbed';
   modes: readonly GameMode[];
 

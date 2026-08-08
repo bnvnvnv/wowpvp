@@ -223,6 +223,8 @@ export class CharacterView {
     this.hideInFirstPerson = [m.root];
     m.root.visible = !this.firstPerson;
     this.group.add(m.root);
+    // 模型是异步挂上来的 —— 挂之前设过的体型要在这里补上（巨人化中途换模型）
+    if (this.bodyScale !== 1) m.root.scale.setScalar(this.bodyScale);
 
     // ★ 就在这里量身高：**绑定姿势、尚未挂武器**（见 modelHeight 注释）
     const box = new THREE.Box3().setFromObject(m.root);
@@ -554,6 +556,30 @@ export class CharacterView {
       });
     }
     this.applyMorphVisibility();
+  }
+
+  // ── 体型（大乱斗巨人化药水）──────────────────────────────────
+
+  private bodyScale = 1;
+
+  /**
+   * 视觉体型倍数。1 = 常态，1.6 = 巨人化药水。
+   *
+   * ★★ **只放大模型，碰撞体一个字节都没变**（验收 #10：模型大小不改变碰撞体）。
+   *   证据在代码结构里：`hitboxHelper` 与 `facingArrow` 是 `group` 的**兄弟**
+   *   节点，这里缩放的是 `model.root` —— 想连碰撞体一起放大就得显式去改
+   *   `GEOMETRY` 常量，而那在 shared 里、客户端够不着。
+   *   规则侧的「变大更好打中」由光环的 `damageTaken` 表达（见 data/party.ts）。
+   *
+   * ★ 缩放挂在 `model.root`（`characterFor` 返回的 wrapper）上，不是它的子节点 ——
+   *   子节点扛着 13.2 的身高归一化，动它会把「八职业视觉身高一致」搞坏。
+   * ★ 没有模型（素材缺失 / `?art=off`）时**什么都不做**，与 `setMorphed` 同一条
+   *   兜底规矩：胶囊体阶段的体型由头顶增益图标表达，画面不假装有这件事。
+   */
+  setBodyScale(scale: number): void {
+    if (this.bodyScale === scale) return;
+    this.bodyScale = scale;
+    this.model?.root.scale.setScalar(scale);
   }
 
   private applyMorphVisibility(): void {

@@ -13,6 +13,7 @@
 
 import { DispelType, School } from '../types/enums.js';
 import { asConsumableId } from '../types/ids.js';
+import { PARTY_CONSUMABLES } from './party.js';
 import type { ConsumableDef } from './schema.js';
 
 export const CONSUMABLES: readonly ConsumableDef[] = [
@@ -92,6 +93,17 @@ export const CONSUMABLES: readonly ConsumableDef[] = [
   },
 ];
 
-const BY_ID = new Map(CONSUMABLES.map((c) => [c.id as string, c]));
+/**
+ * ★★ `CONSUMABLES` 是**竞技场补给池**（`spawnDropsFromRoster` 按下标轮着刷），
+ *   大乱斗的派对消耗品刻意不在里面 —— 混进去会让「巨人化」「跳跳地雷」
+ *   出现在 3v3 的军械点旁边，那是另一个游戏。
+ *
+ * ★ 但按 id **查得到**是另一回事：`tickWorld` 第 1b 步用 `getConsumable()`
+ *   把槽位里的 id 换成效果，查不到就直接 `continue` —— 表现是喝了一瓶
+ *   什么也没发生，且没有任何报错。所以索引表是**两池合一**。
+ */
+const BY_ID = new Map(
+  [...CONSUMABLES, ...PARTY_CONSUMABLES].map((c) => [c.id as string, c]),
+);
 
 export const getConsumable = (id: string): ConsumableDef | undefined => BY_ID.get(id);
