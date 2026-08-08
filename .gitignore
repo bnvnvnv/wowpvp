@@ -40,3 +40,6 @@ m12-*.png
 # T1 仅本地（非 GitHub 源且禁止再分发，如 Mixamo FBX）—— docs/09 §0.2
 # GitHub 已公开分发的美术/音频放 assets/art、assets/music，**可以入库**，不要放这里。
 assets/local/
+
+# Claude 并行工作树（会话级临时目录,不入库）
+.claude/
