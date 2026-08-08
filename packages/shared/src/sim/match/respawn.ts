@@ -73,10 +73,12 @@ export const createRespawn = (
   exitsByTeam: Record<number, readonly Vec3[]>,
   now = 0,
   overtime = false,
+  /** P13：模式自定波次间隔（大乱斗 8 秒 —— 混战节奏死 12 秒太漫长）。不传走 12.6 默认 */
+  intervalOverride?: number,
 ): RespawnState => {
-  const waveInterval = overtime
+  const waveInterval = intervalOverride ?? (overtime
     ? CTF.RESPAWN_WAVE_SECONDS_OVERTIME
-    : CTF.RESPAWN_WAVE_SECONDS;
+    : CTF.RESPAWN_WAVE_SECONDS);
   return {
     pending: [],
     nextWaveAt: now + waveInterval,

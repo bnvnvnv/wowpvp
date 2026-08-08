@@ -1147,6 +1147,25 @@ export class NetworkScene {
       }
 
       /** 16a 战后统计。★ 场景只负责转交给上层（大厅的结算页在渲染它）*/
+      /**
+       * P13 大乱斗击杀播报。文案在这里拼（服务器只发事实）：
+       * 连杀分级取 MOBA 惯用口径,≥3 连用 interrupt 档（战斗日志里的高亮）。
+       */
+      case 'FfaKill': {
+        const streakText =
+          msg.streak >= 5 ? `超神（${msg.streak} 连杀）！`
+          : msg.streak === 4 ? '大杀特杀！'
+          : msg.streak === 3 ? '三连杀！'
+          : msg.streak === 2 ? '双杀！'
+          : '';
+        this.view.push(
+          `${msg.killerName} 击杀了 ${msg.victimName}${streakText ? ' —— ' + streakText : ''}` +
+          `（+${msg.bounty} 分，共 ${msg.killerScore}）`,
+          msg.streak >= 3 ? 'interrupt' : 'info',
+        );
+        break;
+      }
+
       case 'MatchStats':
         // P12 大乱斗：MatchEnd 的 winner 是独立队号，报名字要靠这份名单反查
         this.lastStatsRows = msg.rows;

@@ -50,6 +50,7 @@ import { createStats, registerPlayer, type StatsStore } from '../stats.js';
 import type { CastIntent, TickDeps } from '../tick.js';
 import { addEntity, allocEntityId, createWorld, type World } from '../world.js';
 import { createArena, type ArenaState } from './arena.js';
+import { createFfa, type FfaState } from './ffa.js';
 import { createCtf, type CtfDeps, type CtfState } from './flag.js';
 import { createRespawn, type RespawnState } from './respawn.js';
 import { Slot, type Room, type RoomPlayer } from './room.js';
@@ -103,10 +104,10 @@ export interface Match {
   /** 竞技场模式才有：2.1 的回合与平局窗口 */
   arena?: ArenaState;
   /**
-   * P12 大乱斗才有。规则只有一条：先到 killTarget 杀获胜（读 stats 的
-   * kills —— 统计是既有的，胜负判定在 MatchLoop.checkEnd 的 ffa 分支）。
+   * P12/P13 大乱斗才有。胜负 = 先到 killTarget 杀（MatchLoop.checkEnd 读
+   * stats）；积分/连杀记账在 sim/match/ffa.ts —— 数值只有那一个文件。
    */
-  ffa?: { killTarget: number };
+  ffa?: FfaState;
 
   /** 房间玩家 id → 实体 id。断线重连要靠它找回自己的角色 */
   entityOf: Map<string, EntityId>;
@@ -260,13 +261,13 @@ export const createMatch = (room: Room, map: MapDef): Match => {
      * · 不建 arena（没有回合/抑制/平局窗口）也不布军械（armoryLayoutFor
      *   对未知模式返回空 —— 大乱斗首版与夺旗同口径关闭临时装备）
      */
-    match.ffa = { killTarget: FFA.KILL_TARGET };
+    match.ffa = createFfa(FFA.KILL_TARGET);
     const exits = (map.graveyards ?? []).flatMap((g) => g.exits);
     const exitsByTeam: Record<number, readonly Vec3[]> = {};
     for (const team of new Set([...playerOf.keys()].map((id) => world.entities.get(id)!.team))) {
       exitsByTeam[team as number] = exits;
     }
-    match.respawn = createRespawn(exitsByTeam, 0);
+    match.respawn = createRespawn(exitsByTeam, 0, false, FFA.RESPAWN_SECONDS);
   } else if (map.family === 'ctf') {
     const flagOf = (team: TeamId): Vec3 =>
       map.flags!.find((f) => f.team === team)!.position;

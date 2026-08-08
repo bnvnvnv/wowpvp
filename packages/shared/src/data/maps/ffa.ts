@@ -22,12 +22,12 @@ import type { Vec3 } from '../../math/vec3.js';
 import { box, type MapDef, type MapVolume, type SpawnPoint } from './schema.js';
 
 /** 场地半径：横穿 ~20 秒的大圆桌（比 5v5 竞技场大一圈，装得下百人混战） */
-const HALF = 10 * MOVE.BASE_SPEED; // 70m
+const HALF = 13 * MOVE.BASE_SPEED; // 91m —— P13 放大（原 70m,百人档要更大的场）
 const ARENA_HALF = HALF + 6;
 const WALL_H = 8;
 
 /** 外圈出生/复活点数量。100 人开局按此轮转落位（setup.ts 的游标） */
-const SPAWN_COUNT = 24;
+const SPAWN_COUNT = 32;
 
 const spawns: SpawnPoint[] = Array.from({ length: SPAWN_COUNT }, (_, i) => {
   const a = (i / SPAWN_COUNT) * Math.PI * 2;
@@ -44,18 +44,18 @@ const spawns: SpawnPoint[] = Array.from({ length: SPAWN_COUNT }, (_, i) => {
 const exits: Vec3[] = spawns.map((s) => ({ ...s.position }));
 
 const pillars: MapVolume[] = [
-  // 外圈 12 根
-  ...Array.from({ length: 12 }, (_, i) => {
-    const a = (i / 12) * Math.PI * 2 + Math.PI / 12;
+  // 外圈 16 根（P13 随场地放大加密,柱间通道宽度由环径同步放大保持）
+  ...Array.from({ length: 16 }, (_, i) => {
+    const a = (i / 16) * Math.PI * 2 + Math.PI / 16;
     return box(
       `ffa_pillar_out_${i}`, 'pillar',
       { x: Math.cos(a) * HALF * 0.6, y: 0, z: Math.sin(a) * HALF * 0.6 },
       { w: 2.4, h: 5, d: 2.4 },
     );
   }),
-  // 内圈 6 根
-  ...Array.from({ length: 6 }, (_, i) => {
-    const a = (i / 6) * Math.PI * 2;
+  // 内圈 8 根
+  ...Array.from({ length: 8 }, (_, i) => {
+    const a = (i / 8) * Math.PI * 2;
     return box(
       `ffa_pillar_in_${i}`, 'pillar',
       { x: Math.cos(a) * HALF * 0.28, y: 0, z: Math.sin(a) * HALF * 0.28 },

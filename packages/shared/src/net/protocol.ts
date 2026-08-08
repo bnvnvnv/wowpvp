@@ -405,6 +405,14 @@ export type ServerMessage =
       reason: 'expired' | 'dispelled' | 'broken' | 'cancelled' | 'shieldBroken' | 'trinket' }
   | { t: 'Death'; entityId: EntityId; killerId?: EntityId }
   /**
+   * P13 大乱斗击杀播报：积分入账 + 连杀（2=双杀 3=三杀 4=大杀特杀 ≥5=超神,
+   * 文案在客户端拼 —— 服务器只发事实）。
+   * ★★ 刻意**只有名字没有实体 id** —— 与 SuddenDeathBlip 同手法,零泄露面:
+   *   击杀公告是全场信息,但不该顺手给出「可选中的 id」。
+   */
+  | { t: 'FfaKill'; killerName: string; victimName: string
+      streak: number; bounty: number; killerScore: number }
+  /**
    * 10.4：军械箱被打开后的三个横向选择。
    *
    * ★★ **这是私信，不是广播。** 原文是「只向**打开者**显示其职业的三个
@@ -454,7 +462,7 @@ export type ServerMessageKind = ServerMessage['t'];
 export const ALL_SERVER_MESSAGE_KINDS: readonly ServerMessageKind[] = [
   'Welcome', 'QueueStatus', 'RoomState', 'RoomList', 'MatchStart', 'Snapshot', 'EntityMeta',
   'CastStarted', 'CastResolved', 'CastInterrupted', 'CastFailed', 'Damage', 'Heal',
-  'AuraApplied', 'AuraRemoved', 'Death', 'ArsenalOffer', 'PickupResult',
+  'AuraApplied', 'AuraRemoved', 'Death', 'FfaKill', 'ArsenalOffer', 'PickupResult',
   'FlagEvent', 'RoundEnd', 'MatchEnd', 'MatchStats',
   'Rejected', 'PeerDisconnected', 'PeerReconnected', 'PeerEliminated',
 ];

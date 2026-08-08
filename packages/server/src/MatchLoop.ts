@@ -49,6 +49,7 @@ import {
   openArmory,
   pickAwards,
   setHardTarget,
+  settleFfaKill,
   statsRows,
   stopSwing,
   tabTarget,
@@ -347,7 +348,32 @@ export class MatchLoop {
           skillId: skill.id,
           targetIds: targets.map((t) => t.id),
         }),
-        onEffects: (events) => { for (const ev of events) this.pushEvent(outbound, ev); },
+        onEffects: (events) => {
+          for (const ev of events) {
+            this.pushEvent(outbound, ev);
+            /**
+             * P13 大乱斗击杀结算：积分/连杀记账在 sim（settleFfaKill），
+             * 这里只把返回的事实翻成一条 FfaKill 播报（只带名字,零 id）。
+             * 环境死/自杀返回 null —— 清连杀但没有可播的主语,不发。
+             */
+            if (ev.t === 'death' && this.match.ffa) {
+              const fact = settleFfaKill(this.match.ffa, ev.killerId, ev.targetId);
+              const killer = ev.killerId !== undefined
+                ? this.match.world.entities.get(ev.killerId) : undefined;
+              const victim = this.match.world.entities.get(ev.targetId);
+              if (fact && killer && victim) {
+                outbound.push({
+                  t: 'FfaKill',
+                  killerName: killer.name,
+                  victimName: victim.name,
+                  streak: fact.streak,
+                  bounty: fact.bounty,
+                  killerScore: fact.killerScore,
+                });
+              }
+            }
+          }
+        },
         /**
          * 10.5「多人同时拾取只允许第一个完成者成功；其他人收到**明确失败反馈**」。
          *
@@ -1226,6 +1252,8 @@ export const referencedEntities = (msg: ServerMessage): EntityId[] => {
     case 'CastStarted': return [msg.casterId];
     case 'CastInterrupted': return [msg.casterId];
     case 'FlagEvent': return msg.carrierId !== undefined ? [msg.carrierId] : [];
+    // P13：击杀播报只有名字没有 id —— 全场公告,零实体引用（类型注释的 ★★）
+    case 'FfaKill': return [];
     // ── 抹而不丢（redactFor 的专门分支，永远到不了这里）────────
     case 'Damage': case 'Heal': case 'CastResolved': return [];
     // ── 不走 dispatch() 的消息：私信（CastFailed/ArsenalOffer/PickupResult/

@@ -137,12 +137,14 @@ export const ARENA = {
 // ── 12 夺旗战场 ──────────────────────────────────────────────────
 /** P12 大乱斗 */
 export const FFA = {
-  /** 先到这么多杀获胜。混战节奏下 ~8-12 分钟一局 */
-  KILL_TARGET: 15,
+  /** 先到这么多杀获胜。P13 拍板 100 —— 让积分累积/兑换的经济循环转得起来（15 杀太短,商店还没用上局就完了） */
+  KILL_TARGET: 100,
   /** 参战人数上限（房间另留观战余量,LIMITS.MAX_FFA_ROOM_MEMBERS） */
   MAX_PLAYERS: 100,
   /** 人机补位把参战人数补到这个数（不是补到上限 —— 100 个 bot 是 DoS 自己） */
   FILL_TARGET: 20,
+  /** P13 复活波次间隔（秒）。混战节奏比夺旗快,12 秒罚站太漫长 */
+  RESPAWN_SECONDS: 8,
 } as const;
 
 export const CTF = {
