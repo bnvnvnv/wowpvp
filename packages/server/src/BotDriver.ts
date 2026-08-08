@@ -21,8 +21,16 @@
  *
  * ★ 决策层不在这里：`shared/src/ai/botController.ts` 的 `decideBotAction()`
  *   是全仓库唯一经过实证（168 场确定性对局）的 AI，试验场的实战模式用的
- *   也是它。本文件只负责**把它的产出翻成协议消息**。
- *   ★★ 那个模块连 world 的写权限都没拿到 —— 红线在那里是结构性成立的。
+ *   也是它。本文件负责**把它的产出翻成协议消息**，外加一件决策层做不到的事：
+ *   **队伍层协同**。
+ *
+ * ★★ 为什么协同必须在这里而不在决策层：`decideBotAction` 是按人调用的纯函数，
+ *   它看不见「谁和我是一队的人机」（world 里的队友既有真人也有人机，
+ *   而人机名册只有本驱动器知道）。所以 B1 的分工是 ——
+ *     · 这里：按队算一次**集火呼叫**（`callFocusTarget`）+ 收一份**队友名册**
+ *     · 决策层：拿呼叫当选目标的偏置、拿名册去奶血最少的队友
+ *   ⚠️ 协同**没有**给人机开任何新通道：呼叫只能给「本来就在我候选集里」的
+ *   目标减分（A4 不透视），治疗仍然走 `validateCast`（P3 的 HPS 恒 0 教训）。
  */
 
 import {
@@ -39,6 +47,7 @@ import {
   type CombatEntity,
   type EntityId,
   type Match,
+  type TeamId,
   type VisibilityContext,
 } from '@wowpvp/shared';
 import type { SessionSocket } from './room/Session.js';
@@ -122,17 +131,30 @@ export class BotDriver {
   seatOf(playerId: string): BotSeat | undefined { return this.seats.get(playerId); }
   get size(): number { return this.seats.size; }
 
+  /**
+   * 每队上一 tick 的集火呼叫。
+   * ★ 驱动器的**局部**记忆，不是 world 的影子状态 —— `callFocusTarget` 每 tick
+   *   都会重新拿它过一遍候选集，死了/隐身了当场失效（见该函数注释）。
+   *   之所以敢记（对比 `self.targets.hard` 那条「不自记」的纪律）：world 里
+   *   压根没有「队伍集火目标」这个字段，没有可分叉的第二份事实。
+   */
+  private readonly lastCalls = new Map<TeamId, EntityId>();
+
   /** 每 tick 调用一次。★ 它只发消息，不碰 world —— 红线在这里是结构性的 */
   tick(): void {
     const m = this.match();
     if (!m) return;
 
     /**
-     * ★ P11：实体列表在本函数内是不变量（tick() 只发消息，不碰 world ——
-     *   正是上面那条红线保证的），取一次给全部席位的 pickFoe 共用。
-     *   此前每个人机各取一次 = 满人机房 24 次数组展开/tick。
+     * ★★ 队伍层的两样东西**每 tick 只算一次**，而不是每个人机各算一遍：
+     *   · 集火呼叫（`calls`）—— 算法上就得是「一队一个」，人手一份就没有配合
+     *   · 队友名册（`roster`）—— 喂给决策层的治疗步骤（奶血最少的队友）
+     *   ⚠️ 都是只读遍历，不碰 world。12v12 满员时这是每 tick 两趟实体遍历，
+     *      比「每个人机各遍历一趟」还省。
      */
-    const entities = listEntities(m.world);
+    const calls = this.focusCalls(m);
+    const roster = teamRoster(m);
+
     for (const [playerId, seat] of this.seats) {
       const entityId = m.entityOf.get(playerId);
       if (entityId === undefined) continue;
@@ -144,8 +166,12 @@ export class BotDriver {
        *   而不是驱动器自己记一份：那是服务器 world 里真正生效的目标
        *   （`SetTarget` 可能被服务器拒掉，比如目标已经隐身），自记的
        *   影子状态会和它悄悄分叉。
+       * ★ B1：多喂一个**本队集火呼叫**。它只是偏置 —— 候选集与可见性
+       *   仍然由 `pickFoe` 里的 `isFoeCandidate` 说了算（A4 红线）。
        */
-      const foe = pickFoe(m, self, seat.difficulty ?? 'normal', self.targets.hard, entities);
+      const foe = pickFoe(
+        m, self, seat.difficulty ?? 'normal', self.targets.hard, calls.get(self.team),
+      );
       if (!foe) continue;
 
       const action = decideBotAction({
@@ -162,6 +188,8 @@ export class BotDriver {
         auras: m.auras,
         // P4：控制递减仓（只读）—— 出控制前看递减层数，免疫不空放
         dr: m.dr,
+        // B1：队友名册（只读）—— 治疗职业改奶血最少的那个人，不再只奶自己
+        allies: roster.get(self.team),
       });
 
       /**
@@ -203,12 +231,64 @@ export class BotDriver {
        *   用一套真人没有的瞄准方式。如实少一类技能，不假装它会用。
        */
       if (needsGroundPlacement(skill)) continue;
+      /**
+       * ⚠️⚠️ **目标取 `cast.targetId`，不是 `foe.id`。**
+       *
+       *   这里原本硬写着 `targetId: foe.id` —— 决策层辛辛苦苦挑好的目标
+       *   在最后一行被丢掉了。后果**只在服务器上、只对队向技能成立**，
+       *   所以两年都没人发现：
+       *     · 自身增益（保命键、加速）是 `Targeting.Self` → 走上面那条
+       *       `usesNoTarget` 分支，**没受影响**，看着一切正常
+       *     · 而单体治疗、护心屏障、痛苦压制、净化术这类
+       *       `Targeting.Direct` + `TargetFilter.Ally` 的技能，被当成
+       *       「对敌人施放」发出去 → `validateCast` 判 `InvalidTarget` →
+       *       **静默失败**（人机的失败提示是丢掉的，见 `BotSocket`）
+       *   也就是说：**联网对局里的人机治疗职业从来没有奶中过一次**，
+       *   HPS 恒 0 —— 与 P3 那次「拿 foe 去验治疗」是同一个病的第二次发作，
+       *   只是这回病灶在协议翻译层而不是决策层。B1 的队友治疗如果不连它一起
+       *   修，新写的整条协作链在真实对局里同样一发都落不下去。
+       *
+       * ★ `?? foe.id` 只是兜底：`decideBotAction` 每一条出招路径都带 targetId，
+       *   但 `CastIntent.targetId` 是可选字段，不在类型上装作它一定有。
+       */
       this.feed(playerId, encodeClientMessage(
         usesNoTarget(skill)
           ? { t: 'CastRequest', skillId: skill.id, facing: self.yaw }
-          : { t: 'CastRequest', skillId: skill.id, targetId: foe.id },
+          : { t: 'CastRequest', skillId: skill.id, targetId: cast.targetId ?? foe.id },
       ));
     }
+  }
+
+  /**
+   * 按队算出这一 tick 的集火呼叫。
+   *
+   * ★ **谁参与**：本驱动器管着的、活着的、**非 easy** 的人机。
+   *   · easy 不参与 —— 与它不打断/不躲圈同一条难度门（木桩不喊集火）
+   *   · 真人队友不参与 —— 人机没有「读队友心思」的通道，真人的目标是他自己
+   *     的事；把真人的硬目标当呼叫等于给人机开一条真人没有的信息通道
+   * ★ 呼叫按**实体所在队伍**分组，不是按房间席位 —— 队伍才是集火的单位。
+   */
+  private focusCalls(m: Match): Map<TeamId, EntityId> {
+    const byTeam = new Map<TeamId, CombatEntity[]>();
+    for (const [playerId, seat] of this.seats) {
+      if ((seat.difficulty ?? 'normal') === 'easy') continue;
+      const entityId = m.entityOf.get(playerId);
+      if (entityId === undefined) continue;
+      const e = m.world.entities.get(entityId);
+      if (!e || !e.alive) continue;
+      const list = byTeam.get(e.team);
+      if (list) list.push(e); else byTeam.set(e.team, [e]);
+    }
+
+    const out = new Map<TeamId, EntityId>();
+    for (const [team, bots] of byTeam) {
+      const call = callFocusTarget(m, bots, this.lastCalls.get(team));
+      // ★ 一个候选都没有（全场只剩潜行者 / 敌人全死）→ 连记忆一起清掉，
+      //   免得下一波复活时拿一个陈旧的 id 当「上一次呼叫」去续粘性
+      if (call) { out.set(team, call.id); this.lastCalls.set(team, call.id); }
+      else this.lastCalls.delete(team);
+    }
+    return out;
   }
 
   private readonly seqs = new Map<string, number>();
@@ -218,6 +298,24 @@ export class BotDriver {
     return next;
   }
 }
+
+/**
+ * 按队分组的**活人名册**（含真人队友，排除宠物与尸体）。喂给决策层的治疗步骤。
+ *
+ * ★ 真人队友**要**进来 —— 人机奶真人正是「团队配合」里玩家最想看到的一幕，
+ *   而且它没有信息优势问题：队友的位置与血量对同队一切人本来就可见
+ *   （`isVisibleTo` 对队友恒为真，docs/08 §4.1），真队伍框里也是这么显示的。
+ * ★ 尸体排除掉是省一次 `validateCast`：死人本来就验不过（`isSelectableBy`）。
+ */
+const teamRoster = (m: Match): Map<TeamId, CombatEntity[]> => {
+  const out = new Map<TeamId, CombatEntity[]>();
+  for (const e of listEntities(m.world)) {
+    if (!e.alive || e.isPet) continue;
+    const list = out.get(e.team);
+    if (list) list.push(e); else out.set(e.team, [e]);
+  }
+  return out;
+};
 
 /**
  * 最近的**可见**敌人。
@@ -236,16 +334,11 @@ export class BotDriver {
  *   的实现（hard 走血量优先的集火评分）。保留独立导出是因为它有自己的
  *   A4 回归测试，而且「最近敌人」是 hard 评分退化后的语义基准。
  */
-export const nearestFoe = (
-  m: Match,
-  self: CombatEntity,
-  /** 调用方已持有实体列表时传入复用（P11）。不传则现取 —— 行为一致 */
-  entities?: readonly CombatEntity[],
-): CombatEntity | undefined => {
+export const nearestFoe = (m: Match, self: CombatEntity): CombatEntity | undefined => {
   const ctx = m.ctf ? { ctf: m.ctf.state } : undefined;
   let best: CombatEntity | undefined;
   let bestD = Infinity;
-  for (const e of entities ?? listEntities(m.world)) {
+  for (const e of listEntities(m.world)) {
     if (!isFoeCandidate(e, self, ctx)) continue;
     const d = distance2D(self.position, e.position);
     if (d < bestD) { bestD = d; best = e; }
@@ -282,11 +375,31 @@ const isFoeCandidate = (
 const SWITCH_HYSTERESIS = 20;
 
 /**
- * 选目标。easy/normal = 最近敌人（原样）；hard = 按血量优先的集火评分。
+ * 集火呼叫的**分数减免**。占位值 25。
  *
- * ★★ 集火是**涌现**的，不是调度出来的：全队 hard 人机各自跑同一个确定性
- *   评分函数、看同一份 world，于是自然会评出同一个残血目标 —— 不需要任何
- *   队内通信，也就不需要一条「AI 才有、真人没有」的信息通道。
+ * ★★ 取值理由只有一条，但它是硬的：**必须严格大于 `SWITCH_HYSTERESIS`(20)。**
+ *   不然呼叫在「两个敌人分数相当」时永远推不动粘性 —— 而那恰恰是集火唯一
+ *   有用的场合（分差本来就大的时候，不用呼叫大家也会评到同一个人）。
+ *   25 > 20 意味着「队友喊的目标」自带约 25% 血的优势：足以打破平手，
+ *   又不足以把人从一个快死的目标身上拽走（呼叫差 30 分以上就拽不动了）。
+ * ⚠️ 与 SWITCH_HYSTERESIS 一样没有配平实测支撑，配平后再定。
+ */
+const FOCUS_CALL_BONUS = 25;
+
+/**
+ * 选目标。easy = 最近敌人（原样）；normal = 最近敌人 + 跟队伍集火呼叫；
+ * hard = 血量优先的集火评分 + 呼叫加成 + 粘性。
+ *
+ * ★★ B1 之前这里写着「集火是**涌现**的，不是调度出来的」—— 那句话对了一半。
+ *   同一个确定性评分确实让全队评出同一个人，**但每个人是按自己的位置评的**：
+ *   `foeScore` 里的距离项以 self 为原点，于是场地两头的两个队友算出来的
+ *   最优解常常是两个不同的人。用户反馈的「BOT 都是单独行动」就是这一幕。
+ *   B1 补的正是缺的那一半：调用方**按队算一次**呼叫（`callFocusTarget`），
+ *   个体拿它当**偏置**而不是命令。
+ *
+ * ★★ 红线：呼叫**不能**扩大任何人的候选集。它只是给「本来就在我候选集里」
+ *   的那个 id 减分 —— 队友喊了一个我看不见的潜行者，对我而言等于没喊
+ *   （A4：人机不透视，`isFoeCandidate` 一寸不动）。
  *
  * ★ 评分 = 血量百分比 * 100 + 平面距离 * 2，**取最小**。
  *   两项的量纲被有意拉到同一个数量级：50% 血 = 50 分 = 25 米。
@@ -301,11 +414,26 @@ export const pickFoe = (
   self: CombatEntity,
   difficulty: BotDifficulty,
   currentTargetId?: EntityId,
-  /** 调用方已持有实体列表时传入复用（P11）。不传则现取 —— 行为一致 */
-  entities?: readonly CombatEntity[],
+  /** 本队这一 tick 的集火呼叫（`callFocusTarget` 的产出）。不传 = 没有呼叫 */
+  focusCallId?: EntityId,
 ): CombatEntity | undefined => {
-  // ★ 只有 hard 改行为：easy/normal 走原路径，既有回归网一寸不动
-  if (difficulty !== 'hard') return nearestFoe(m, self, entities);
+  /**
+   * ★ easy 不参与协作 —— 与它不打断/不躲圈/不开保命同一条难度门：
+   *   木桩手感卖的就是「他不会配合」。
+   * ★ normal 保留「最近敌人」的骨架，只多一件事：**呼叫在我的候选集里就跟**。
+   *   没有呼叫时逐位走老路径（既有回归网一寸不动）。
+   *   ⚠️ 取舍如实记：normal 没有评分也没有粘性，跟呼叫等于**无条件转火** ——
+   *   贴脸打我的人会被放着不管。防抖由呼叫自己的粘性兜（见 callFocusTarget），
+   *   给 normal 也补一套个体粘性是 hard 的活，那正是两档的分界。
+   */
+  if (difficulty !== 'hard') {
+    if (difficulty === 'easy' || focusCallId === undefined) return nearestFoe(m, self);
+    const ctx = m.ctf ? { ctf: m.ctf.state } : undefined;
+    for (const e of listEntities(m.world)) {
+      if (e.id === focusCallId && isFoeCandidate(e, self, ctx)) return e;
+    }
+    return nearestFoe(m, self);
+  }
 
   const ctx = m.ctf ? { ctf: m.ctf.state } : undefined;
   let best: CombatEntity | undefined;
@@ -313,17 +441,73 @@ export const pickFoe = (
   let current: CombatEntity | undefined;
   let currentScore = Infinity;
 
-  for (const e of entities ?? listEntities(m.world)) {
+  for (const e of listEntities(m.world)) {
     if (!isFoeCandidate(e, self, ctx)) continue;
-    const score = foeScore(self, e);
+    // ★ 呼叫只在这一行生效：减分，不是短路 —— 候选集与可见性都没被碰过
+    const score = foeScore(self, e) - (e.id === focusCallId ? FOCUS_CALL_BONUS : 0);
     if (score < bestScore) { bestScore = score; best = e; }
     // ★ 当前目标的分数**在同一次遍历里**算 —— 它必须同样过候选集：
     //   目标死了/隐身了/被治满了都该正常脱粘，而不是粘在一个非法目标上
+    //   ★ 减免同样适用于它：我已经在打被呼叫的那个人时，粘性只会更牢
     if (e.id === currentTargetId) { current = e; currentScore = score; }
   }
 
   // 粘性：新目标没好出一个身位就不换（见 SWITCH_HYSTERESIS）
   if (current && bestScore >= currentScore - SWITCH_HYSTERESIS) return current;
+  return best;
+};
+
+/**
+ * ★★ **集火呼叫：一队人机每 tick 商定的那一个目标。**
+ *
+ *   规则一句话：**全队（参与协作的）人机各自的候选集并起来，取 `foeScore`
+ *   最优的那一个。** 于是呼叫天然满足两件事 ——
+ *   · 它一定是**至少一个队友看得见**的敌人（候选集是逐人过 `isFoeCandidate`
+ *     算出来的，A4 红线在这里也是结构性成立的：这个函数根本没有别的入口
+ *     能碰到实体）
+ *   · 它是全队视角下「最该死的那个」，而不是某一个人视角下的
+ *
+ *   ⚠️ **它不是命令。** 个体照样跑自己的 `pickFoe`：呼叫在我的候选集里才有
+ *   分量，不在（比如队友看见的潜行者对我仍然隐身）就当没喊过。
+ *   这条区分是「人机不透视」与「人机会配合」能同时成立的全部原因。
+ *
+ * ★ **粘性用的是同一个 `SWITCH_HYSTERESIS`**，只是抬到了队伍层：上一次的
+ *   呼叫只要还在候选集里、且新的最优没好出 20 分，就继续喊它。
+ *   ⚠️ 没有这一层，两个分数接近的敌人会让**整队**每 tick 一起横跳 ——
+ *   个体粘性拦不住它（个体粘性只在 hard 有，而且此时呼叫每 tick 都在换边）。
+ *
+ * ★ `previousCallId` 由调用方（`BotDriver`）按队记着。它是驱动器的**局部**
+ *   记忆，不是 world 的影子状态：每 tick 都要重新过一遍候选集才算数，
+ *   死了/隐身了/换队了都会当场失效 —— 不存在「粘在一个非法目标上」。
+ *
+ * @param bots 同一队里**参与协作**的人机（easy 已由调用方剔除）
+ */
+export const callFocusTarget = (
+  m: Match,
+  bots: readonly CombatEntity[],
+  previousCallId?: EntityId,
+): CombatEntity | undefined => {
+  const ctx = m.ctf ? { ctf: m.ctf.state } : undefined;
+  let best: CombatEntity | undefined;
+  let bestScore = Infinity;
+  let prev: CombatEntity | undefined;
+  let prevScore = Infinity;
+
+  for (const self of bots) {
+    if (!self.alive) continue;
+    for (const e of listEntities(m.world)) {
+      if (!isFoeCandidate(e, self, ctx)) continue;
+      const score = foeScore(self, e);
+      if (score < bestScore) { bestScore = score; best = e; }
+      /**
+       * ★ 老呼叫取**全队最好的那个视角**的分（同一个人，站得近的队友算出来
+       *   的分更低）—— 与 best 用同一把尺子，两边才可比。
+       */
+      if (e.id === previousCallId && score < prevScore) { prevScore = score; prev = e; }
+    }
+  }
+
+  if (prev && bestScore >= prevScore - SWITCH_HYSTERESIS) return prev;
   return best;
 };
 

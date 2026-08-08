@@ -16,8 +16,13 @@
  *   那 168 场就是这份逻辑的回归网，改坏了 `pnpm balance` 的基线会立刻变。
  *
  * ⚠️ **它不会的事**（写在这里免得下一个人误以为它是「强 AI」）：
- *   不会假读条骗打断、不会留打断、不会绕柱走位、不会换目标、不会选地面落点。
+ *   不会假读条骗打断、不会绕柱走位、不会选地面落点、不会挡援（chargeToAlly）。
  *   它是「同等操作水平的下限」，用来当靶子和回归基线，不是用来演示反制链的。
+ *
+ * ★ **队友感知**（B1 余账「保队友」的第一步）：`allies` 是**可选**感知项 ——
+ *   不传就退化成「队伍里只有我一个」，1v1 与全部老调用方逐位不变。
+ *   目前它只喂治疗（奶血最少的那个队友），选敌的队伍层协同在调用方
+ *   （`server/BotDriver.ts` 的集火呼叫）—— 那里才看得见「谁是同一队的人机」。
  */
 
 // ★ 逐模块 import 而不是从 `../index.js` —— index 现在也导出本文件，
@@ -272,6 +277,15 @@ const TACTICS = {
   /** 血量低于最大值的这个比例 → 开保命键（比半血治疗更晚：保命键 CD 长）*/
   SURVIVAL_HEALTH: 0.35,
   /**
+   * 血量低于最大值的这个比例 → 值得为他花一个公共冷却去治疗。
+   * ★ 这个 0.5 不是新数：它是原先写死在治疗步骤里的那个「半血」，B1 只是把它
+   *   提成常量，好让**自己与队友共用同一条线** —— 两条线会立刻带出
+   *   「先奶谁」的第二个可调参数，而没有任何数据支撑第二个数。
+   * ⚠️ 与 SURVIVAL_HEALTH(0.35) 的高低关系是刻意的：治疗先于保命键触发
+   *   （治疗冷却短、可重复），保命键留到更危险的时候。
+   */
+  HEAL_HEALTH: 0.5,
+  /**
    * B2：血量低于最大值的这个比例 → hard 档考虑「转身跑」。**占位值**。
    * 取 0.3 的理由：必须**严格低于** SURVIVAL_HEALTH(0.35) —— 逃跑是
    * 「保命键都交完了」之后的最后一步，先于它触发就会抢掉本该开的保命键，
@@ -511,6 +525,51 @@ const escapeDir = (
   return { x: dx, z: dz };
 };
 
+// ── 治疗协作（B1：奶队友，不只是奶自己）──────────────────────────
+
+/**
+ * ★★ **该奶谁**：血量百分比最低的那个（含自己），按「越残越靠前」排好。
+ *
+ *   提成纯函数是因为它是这次改动里唯一有**顺序语义**的东西 ——
+ *   排序稳不稳、平手怎么办、自己算不算队友，全在这里一次说清，
+ *   决策链那边只负责「按这个顺序试，谁先验得过就奶谁」。
+ *
+ * 四条规则：
+ *   · **自己永远在候选里** —— 队伍感知不传（1v1、试验场、balance-report）时
+ *     这里就只剩自己，行为与 B1 之前逐位一致
+ *   · 死人 / 宠物不奶 —— 死人奶不活（validateCast 也会判掉），宠物不是配合
+ *   · 血量 ≥ HEAL_HEALTH 的人**不进列表** —— 满血队友不值一个公共冷却，
+ *     而且列表为空时决策链一个 `rng()` 都不消耗（回放/种子复现的前提）
+ *   · 平手按实体 id 排 —— ⚠️ **必须有一个确定性的二级键**：两个队友血量
+ *     恰好相等时若靠数组顺序决定，同一份 world 在不同调用方（遍历顺序不同）
+ *     下会奶不同的人，回放当场分叉
+ *
+ * ⚠️ 这里**不**判「奶得到吗」（射程/视线/沉默/蓝量）—— 那是 `validateCast`
+ *   的活，抄一份镜像迟早漂移。决策链拿着这个顺序逐个去验，验不过就试下一个。
+ *
+ * @param allies 队友（可含自己，重复会去重）。不传 = 队伍里只有我
+ */
+export const healTargets = (
+  self: CombatEntity,
+  allies?: readonly CombatEntity[],
+  threshold: number = TACTICS.HEAL_HEALTH,
+): CombatEntity[] => {
+  const out: CombatEntity[] = [];
+  const seen = new Set<EntityId>();
+  for (const e of [self, ...(allies ?? [])]) {
+    if (seen.has(e.id)) continue;
+    seen.add(e.id);
+    if (!e.alive || e.isPet || e.maxHealth <= 0) continue;
+    if (e.health >= e.maxHealth * threshold) continue;
+    out.push(e);
+  }
+  return out.sort((a, b) => {
+    const pa = a.health / a.maxHealth;
+    const pb = b.health / b.maxHealth;
+    return pa !== pb ? pa - pb : a.id - b.id;
+  });
+};
+
 // ── 决策 ─────────────────────────────────────────────────────────
 
 /** 一次决策需要看到的全部东西。★ 只读 —— 这个模块拿不到任何写入口 */
@@ -520,10 +579,23 @@ export interface BotPerception {
   self: CombatEntity;
   /**
    * 当前对手。
-   * ⚠️ 本版只支持**单目标**：选敌 / 换目标 / 保队友都还没有，
-   *   3v3 与 12v12 要用必须先补这一块（docs/14 §M16b）。
+   * ⚠️ 本版**打击面**仍是单目标：选敌与换目标由调用方决定（服务器走
+   *   `BotDriver.pickFoe` + 队伍集火呼叫），决策层拿到的就是那一个人。
+   *   「挡援 / 给队友驱散 / 给队友上盾」仍然没有（docs/14 §M16b、B1 余账）。
    */
   foe: CombatEntity;
+  /**
+   * B1：**队友名册**（含自己也行，会去重）。目前只喂治疗步骤 ——
+   * 「奶血最少的那个人」是团队配合里最便宜也最显眼的一环。
+   *
+   * ★ 不传 → 退化成「队伍里只有我一个」，只奶自己：1v1、试验场假人、
+   *   `balance-report` 的 168 场全部逐位不变（与 `difficulty?`/`auras?` 同一手法）。
+   * ★ 只读，与其余感知项同一条红线：决策层拿不到任何写入口。
+   * ⚠️ 名册**不做可见性裁剪** —— `isVisibleTo` 对队友恒为真（docs/08 §4.1
+   *   「队友的潜行对己方可见」），所以队友这一侧不存在 A4 那类透视问题；
+   *   真正的「够不够得着」由 `validateCast` 的射程/视线判，不在这里抄一份。
+   */
+  allies?: readonly CombatEntity[];
   /**
    * 0..1 随机源。★ **必须由调用方注入**：sim 的确定性（回放、
    * `pnpm balance` 的种子复现）依赖这里不出现 `Math.random()`。
@@ -571,9 +643,10 @@ export interface BotAction {
  * （easy 全部不用，保持木桩手感）；**hard 还会在弹尽粮绝时转身拉扯** ——
  * 治疗与保命键全在冷却、对手是近战且血比自己厚时，转身满速跑（见 `retreating`）。
  *
- * ★ 仍然不会的事（B1 余账，逐条有原因）：换目标/保队友（单目标感知）、
- *   选地面落点、德鲁伊形态轮换、盗贼潜行开场、瞬闪逃脱（yaw 模型）、
- *   连击点终结技（两次实测打回未定位）、绕柱寻路。
+ * ★ B1「保队友」已开第一刀：**治疗会奶血最少的队友**（见治疗步骤）。
+ * ★ 仍然不会的事（B1 余账，逐条有原因）：给队友驱散/上盾/挡援（治疗之外的
+ *   队友向技能一律没接）、选地面落点、德鲁伊形态轮换、盗贼潜行开场、
+ *   瞬闪逃脱（yaw 模型）、连击点终结技（两次实测打回未定位）、绕柱寻路。
  */
 export const decideBotAction = (p: BotPerception): BotAction => {
   const { world, casting, self, foe, rng } = p;
@@ -737,7 +810,9 @@ export const decideBotAction = (p: BotPerception): BotAction => {
    *   · 自己血低于 RETREAT_HEALTH（残局才谈跑，见该常量注释）
    *   · **没有任何可用治疗** —— `usableOn` 走 validateCast，冷却中/没蓝/
    *     被沉默会**一并**判掉：用户要的「结合魔法值与技能冷却」就落在这里，
-   *     不需要决策层自己抄一份资源与冷却的镜像
+   *     不需要决策层自己抄一份资源与冷却的镜像。
+   *     ⚠️ 这里验的是**奶自己**，B1 的队友治疗刻意不算进来：能奶队友救不了
+   *     我的命，把它算成「手里还有牌」只会让残血的我站着不跑也不奶自己
    *   · **没有任何可用保命键** —— 同上。手里还有一张牌就不该跑（而且保命
    *     步骤排在前面，真有牌根本走不到这里）
    *   · 对手拿**近战武器** —— 与 kiting 同一道门：对远程转身跑等于送后背，
@@ -934,15 +1009,32 @@ export const decideBotAction = (p: BotPerception): BotAction => {
     }
   }
 
-  // 半血以下且有治疗可用 → 先保命。这是「同等操作水平」的底线共识，
-  // 不属于反制链博弈。治疗仍随机挑 —— 三个奶技能差异不大，权重不值得建模
-  // ★ P4：后撤窗口内只挑瞬发治疗（castableNow）—— 读条治疗留到拉开之后
-  if (self.health < self.maxHealth * 0.5) {
-    const heals = skills.filter((sk) => isHealSkill(sk) && castableNow(sk) && usableOn(sk, self));
-    if (heals.length > 0) {
-      const pick = heals[Math.floor(rng() * heals.length)]!;
-      return { move: advance, cast: { skillId: pick.id, targetId: self.id } };
-    }
+  /**
+   * ★★ **半血治疗 —— B1 起会奶队友，不再只奶自己。**
+   *
+   *   用户反馈原话：「BOT 都是单独行动，团队 PK 没有配合逻辑」。三个治疗职业
+   *   守着一手队伍治疗只往自己身上按，是这句话里最大的一个单点缺失。
+   *
+   * ⚠️⚠️ **改这段之前先读 `usableOn` 上面那条 P3 教训**：早期版本拿 `foe` 去
+   *   验治疗，于是 `TargetFilter.Ally` 的技能永远验不过 —— 三个治疗职业
+   *   HPS 恒为 0，基线里「治疗职业」根本不存在。所以这里给队友治疗走的是
+   *   **同一个 `usableOn`、以队友为目标**：Ally 过滤、射程、视线、蓝量、
+   *   冷却、沉默全部由 `validateCast` 一次判掉，**不开第二条施法通道**。
+   *
+   *   ★ 顺序 = `healTargets` 排好的「越残越靠前」，逐个试到第一个验得过的：
+   *     残血队友站在 40 米外（超出 30 米治疗射程）时不会白等，会退回来奶自己。
+   *   ★ 治疗技能本身仍随机挑 —— 三个奶技能差异不大，权重不值得建模。
+   *     ⚠️ `rng()` 只在**真的要出手**时消耗（列表空 / 一个都验不过就不动它）：
+   *     这是老行为的逐位前提，动了它 `pnpm balance` 的 168 场会整体漂移。
+   *   ★ P4：后撤窗口内只挑瞬发治疗（castableNow）—— 读条治疗留到拉开之后。
+   *   ★ easy 不奶队友（`allies` 直接不看，只剩自己）—— 与它不打断/不躲圈/
+   *     不参与集火呼叫同一条难度门：easy 卖的是木桩手感，配合是判断力。
+   */
+  for (const ally of healTargets(self, difficulty === 'easy' ? undefined : p.allies)) {
+    const heals = skills.filter((sk) => isHealSkill(sk) && castableNow(sk) && usableOn(sk, ally));
+    if (heals.length === 0) continue;
+    const pick = heals[Math.floor(rng() * heals.length)]!;
+    return { move: advance, cast: { skillId: pick.id, targetId: ally.id } };
   }
 
   /**
