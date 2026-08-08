@@ -29,6 +29,8 @@ export default defineConfig({
      *   各包的 tsconfig 已经用 `exclude: ["**\/*.test.ts"]` 不再编译测试，
      *   这里是第二道防线 —— 万一哪天有人去掉那个 exclude。
      */
-    exclude: ['**/node_modules/**', '**/dist/**', '**/.{git,cache,output,temp}/**'],
+    // ★ .claude/worktrees 是并行开发的隔离工作树 —— 各有各的测试副本，
+    //   主树的 vitest 扫进去会因缺 node_modules 链接而假红
+    exclude: ['**/node_modules/**', '**/dist/**', '**/.{git,cache,output,temp}/**', '**/.claude/**'],
   },
 });

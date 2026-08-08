@@ -44,10 +44,29 @@ interface ArenaSpec {
   envPreset: string;
 }
 
+/**
+ * P12：1v1–12v12 全梯子（玩家反馈「开房间时可以任意拖动人数」）。
+ *
+ * ★ 2/3/5 三行是 M 系列的原值**一字不动** —— 那三张图有截图基线与文档引用，
+ *   历史数字不回填。新尺寸插进梯子：出生秒数与柱数都**严格递增**
+ *   （maps.test 的两条排序断言按整个梯子循环验，不再点名三张）。
+ * ★ 柱数 ≈ 人数 + 1：11.2 的立意是「掩体密度跟上交战人数」；
+ *   环半径随 spawnToCenterSeconds 缩放（buildArena 内 half*0.55），
+ *   柱间通道宽度天然保持 —— 11.3 的「不能无限绕柱」不因加图而破。
+ */
 const SPECS: readonly ArenaSpec[] = [
+  { id: 'arena_1v1', name: '试炼环·单挑', mode: GameMode.Arena1v1, spawnToCenterSeconds: 5, teamSize: 1, pillarCount: 2, envPreset: 'dusk' },
   { id: 'arena_2v2', name: '试炼环·小型', mode: GameMode.Arena2v2, spawnToCenterSeconds: 6, teamSize: 2, pillarCount: 3, envPreset: 'dusk' },
   { id: 'arena_3v3', name: '试炼环·标准', mode: GameMode.Arena3v3, spawnToCenterSeconds: 8, teamSize: 3, pillarCount: 4, envPreset: 'day' },
+  { id: 'arena_4v4', name: '试炼环·进阶', mode: GameMode.Arena4v4, spawnToCenterSeconds: 9, teamSize: 4, pillarCount: 5, envPreset: 'day' },
   { id: 'arena_5v5', name: '试炼环·大型', mode: GameMode.Arena5v5, spawnToCenterSeconds: 10, teamSize: 5, pillarCount: 6, envPreset: 'overcast' },
+  { id: 'arena_6v6', name: '试炼环·团战', mode: GameMode.Arena6v6, spawnToCenterSeconds: 11, teamSize: 6, pillarCount: 7, envPreset: 'dusk' },
+  { id: 'arena_7v7', name: '试炼环·七雄', mode: GameMode.Arena7v7, spawnToCenterSeconds: 11.5, teamSize: 7, pillarCount: 8, envPreset: 'day' },
+  { id: 'arena_8v8', name: '试炼环·八阵', mode: GameMode.Arena8v8, spawnToCenterSeconds: 12, teamSize: 8, pillarCount: 9, envPreset: 'overcast' },
+  { id: 'arena_9v9', name: '试炼环·九霄', mode: GameMode.Arena9v9, spawnToCenterSeconds: 12.5, teamSize: 9, pillarCount: 10, envPreset: 'dusk' },
+  { id: 'arena_10v10', name: '试炼环·十面', mode: GameMode.Arena10v10, spawnToCenterSeconds: 13, teamSize: 10, pillarCount: 11, envPreset: 'day' },
+  { id: 'arena_11v11', name: '试炼环·十一联队', mode: GameMode.Arena11v11, spawnToCenterSeconds: 13.5, teamSize: 11, pillarCount: 12, envPreset: 'overcast' },
+  { id: 'arena_12v12', name: '试炼环·全面战争', mode: GameMode.Arena12v12, spawnToCenterSeconds: 14, teamSize: 12, pillarCount: 13, envPreset: 'dusk' },
 ];
 
 /** 出生点沿 ±Z 对称摆放，队友沿 X 展开 */
@@ -84,7 +103,7 @@ const makePillars = (count: number, ringRadius: number): MapVolume[] =>
  * （外墙本来就挡人，树贴着墙种视觉与判定天然一致）。
  * 位置全部是 spec 的确定性函数 —— 同一张图在每个客户端一个样。
  */
-const makeDecor = (spec: ArenaSpec, half: number, arenaHalf: number): MapDecorDef[] => {
+const makeDecor = (spec: ArenaSpec, half: number, arenaHalf: number, prepHalfW: number): MapDecorDef[] => {
   const out: MapDecorDef[] = [];
 
   // 四角火盆
@@ -125,7 +144,7 @@ const makeDecor = (spec: ArenaSpec, half: number, arenaHalf: number): MapDecorDe
     const a = i * (Math.PI / 4) + Math.PI / 8;
     const x = Math.cos(a) * ring;
     const z = Math.sin(a) * ring;
-    if (Math.abs(x) < 12) continue;
+    if (Math.abs(x) < prepHalfW + 2) continue;
     out.push({ model: `foliage/pine_${(i % 5) + 1}`, position: { x, y: 0, z }, yaw: a * 2 });
   }
   return out;
@@ -136,6 +155,12 @@ const buildArena = (spec: ArenaSpec): MapDef => {
   const arenaHalf = half + 6; // 出生点后面再留一点空间
   const size = arenaHalf * 2;
   const wallH = 8;
+  /**
+   * P12：准备区/大门半宽随人数放大 —— 出生点一排 2.5 米间距，12 人排面
+   * 27.5 米，塞不进原来 ±10 的准备区（出生在禁入体积外＝开局即被推挤）。
+   * ≤5 人取原值 10：2v2/3v3/5v5 三张老图逐字节不变（历史基线不动）。
+   */
+  const prepHalfW = Math.max(10, ((spec.teamSize - 1) * 2.5) / 2 + 3);
 
   const geometry: MapVolume[] = [
     box('floor', 'floor', { x: 0, y: -1, z: 0 }, { w: size, h: 1, d: size }, { blocksSight: false }),
@@ -163,8 +188,8 @@ const buildArena = (spec: ArenaSpec): MapDef => {
       id: `prep_${team as number}`,
       team,
       volume: {
-        min: { x: -10, y: 0, z: z - prepDepth / 2 },
-        max: { x: 10, y: wallH, z: z + prepDepth / 2 },
+        min: { x: -prepHalfW, y: 0, z: z - prepDepth / 2 },
+        max: { x: prepHalfW, y: wallH, z: z + prepDepth / 2 },
       },
       // 红方在 +Z 面向 -Z（yaw 0），蓝方在 -Z 面向 +Z（yaw π）
       spawns: makeSpawns(team, z, spec.teamSize, idx === 0 ? 0 : Math.PI),
@@ -178,7 +203,7 @@ const buildArena = (spec: ArenaSpec): MapDef => {
     const z = sign * (arenaHalf - prepDepth);
     return {
       id: room.gateId,
-      volume: { min: { x: -10, y: 0, z: z - 0.5 }, max: { x: 10, y: wallH, z: z + 0.5 } },
+      volume: { min: { x: -prepHalfW, y: 0, z: z - 0.5 }, max: { x: prepHalfW, y: wallH, z: z + 0.5 } },
       // 11.1：双方大门**同时**开启
       opensAt: 0,
       openDuration: 1.5,
@@ -195,7 +220,7 @@ const buildArena = (spec: ArenaSpec): MapDef => {
       max: { x: arenaHalf, y: 40, z: arenaHalf },
     },
     geometry,
-    decor: makeDecor(spec, half, arenaHalf),
+    decor: makeDecor(spec, half, arenaHalf, prepHalfW),
     envPreset: spec.envPreset,
     // 11.3：开门后准备区对所有人禁入
     forbidden: prepRooms.map((r) => ({
@@ -218,11 +243,12 @@ const buildArena = (spec: ArenaSpec): MapDef => {
   };
 };
 
-export const arena2v2 = buildArena(SPECS[0]!);
-export const arena3v3 = buildArena(SPECS[1]!);
-export const arena5v5 = buildArena(SPECS[2]!);
+/** P12：全梯子一次生成。命名导出保留三张老图（既有 import 不动） */
+export const ARENA_MAPS = SPECS.map(buildArena);
 
-export const ARENA_MAPS = [arena2v2, arena3v3, arena5v5] as const;
+export const arena2v2 = ARENA_MAPS.find((m) => (m.id as string) === 'arena_2v2')!;
+export const arena3v3 = ARENA_MAPS.find((m) => (m.id as string) === 'arena_3v3')!;
+export const arena5v5 = ARENA_MAPS.find((m) => (m.id as string) === 'arena_5v5')!;
 
 /** 11.2 的规格数据，供测试断言与文档生成 */
 export const ARENA_SPECS = SPECS;

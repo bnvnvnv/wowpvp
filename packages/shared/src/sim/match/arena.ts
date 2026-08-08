@@ -282,13 +282,15 @@ export const isBalanced = (world: World): boolean =>
   aliveCount(world, TEAM_RED) === aliveCount(world, TEAM_BLUE);
 
 /** 各模式的每队人数 */
-export const teamSizeOf = (mode: GameMode): number => {
-  switch (mode) {
-    case GameMode.Arena2v2: return 2;
-    case GameMode.Arena3v3: return 3;
-    case GameMode.Arena5v5: return 5;
-    case GameMode.Ctf6v6: return 6;
-    case GameMode.Ctf8v8: return 8;
-    case GameMode.Ctf12v12: return 12;
-  }
+/**
+ * P12：15 个模式后 switch 太长，换成 Record —— 穷尽性由类型系统保证
+ * （少一个键编译不过），与 switch 的 never 手法同一保障等级。
+ */
+const TEAM_SIZE: Record<GameMode, number> = {
+  arena1v1: 1, arena2v2: 2, arena3v3: 3, arena4v4: 4, arena5v5: 5,
+  arena6v6: 6, arena7v7: 7, arena8v8: 8, arena9v9: 9,
+  arena10v10: 10, arena11v11: 11, arena12v12: 12,
+  ctf6v6: 6, ctf8v8: 8, ctf12v12: 12,
 };
+
+export const teamSizeOf = (mode: GameMode): number => TEAM_SIZE[mode];

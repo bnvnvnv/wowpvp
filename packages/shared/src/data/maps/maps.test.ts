@@ -44,16 +44,14 @@ describe('11.2 竞技场尺寸与掩体（验收 #24）', () => {
     });
   }
 
-  it('三张地图尺寸依次递增（2v2 < 3v3 < 5v5）', () => {
+  it('地图尺寸沿梯子严格递增（P12：1v1 → 12v12）', () => {
     const sizes = ARENA_MAPS.map((m) => m.bounds.max.x - m.bounds.min.x);
-    expect(sizes[0]!).toBeLessThan(sizes[1]!);
-    expect(sizes[1]!).toBeLessThan(sizes[2]!);
+    for (let i = 1; i < sizes.length; i++) expect(sizes[i - 1]!).toBeLessThan(sizes[i]!);
   });
 
-  it('掩体数量依次递增', () => {
+  it('掩体数量沿梯子严格递增', () => {
     const counts = ARENA_MAPS.map((m) => m.geometry.filter((v) => v.tag === 'pillar').length);
-    expect(counts[0]!).toBeLessThan(counts[1]!);
-    expect(counts[1]!).toBeLessThan(counts[2]!);
+    for (let i = 1; i < counts.length; i++) expect(counts[i - 1]!).toBeLessThan(counts[i]!);
   });
 });
 
@@ -126,16 +124,14 @@ describe('11.3 公平约束', () => {
 });
 
 describe('地图注册表', () => {
-  it('三张竞技场地图都已注册', () => {
+  it('全部竞技场地图都已注册', () => {
     for (const m of ARENA_MAPS) {
       expect(ALL_MAPS.map((x) => x.id)).toContain(m.id);
     }
   });
 
-  it('每张竞技场地图只服务一个模式', () => {
-    expect(ARENA_MAPS.map((m) => m.modes)).toEqual([
-      [GameMode.Arena2v2], [GameMode.Arena3v3], [GameMode.Arena5v5],
-    ]);
+  it('每张竞技场地图只服务一个模式（P12 全梯子按 SPECS 对齐）', () => {
+    expect(ARENA_MAPS.map((m) => m.modes)).toEqual(ARENA_SPECS.map((s) => [s.mode]));
   });
 
   it('地图 id 唯一', () => {

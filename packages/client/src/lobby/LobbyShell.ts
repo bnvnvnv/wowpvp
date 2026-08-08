@@ -375,13 +375,15 @@ export class LobbyShell {
               换模式连带换地图与人数档。
             -->
             <div class="lb-row" id="lb-modes">
-              <span class="lb-fine">模式：</span>
-              <button class="lb-btn lb-small" data-action="mode" data-mode="arena2v2">2v2</button>
-              <button class="lb-btn lb-small" data-action="mode" data-mode="arena3v3">3v3</button>
-              <button class="lb-btn lb-small" data-action="mode" data-mode="arena5v5">5v5</button>
-              <button class="lb-btn lb-small" data-action="mode" data-mode="ctf6v6">夺旗 6v6</button>
-              <button class="lb-btn lb-small" data-action="mode" data-mode="ctf8v8">夺旗 8v8</button>
-              <button class="lb-btn lb-small" data-action="mode" data-mode="ctf12v12">夺旗 12v12</button>
+              <span class="lb-fine">竞技场人数：</span>
+              <input type="range" id="lb-size" min="1" max="12" step="1" value="3"
+                     style="flex:1;min-width:110px;max-width:200px"
+                     title="拖动选择每队人数（1v1–12v12），不满员可由人机补位"/>
+              <b id="lb-size-label" style="min-width:52px;font-size:13px">3v3</b>
+              <span class="lb-fine">夺旗：</span>
+              <button class="lb-btn lb-small" data-action="mode" data-mode="ctf6v6">6v6</button>
+              <button class="lb-btn lb-small" data-action="mode" data-mode="ctf8v8">8v8</button>
+              <button class="lb-btn lb-small" data-action="mode" data-mode="ctf12v12">12v12</button>
               <span id="lb-mode-why" class="lb-fine"></span>
             </div>
             <!--
@@ -476,6 +478,24 @@ export class LobbyShell {
       this.name = sanitizeName((el as HTMLInputElement).value);
       this.saveName(this.name);
     });
+    /**
+     * P12 竞技场人数滑杆（玩家反馈「开房间时任意拖动 1v1–12v12」）。
+     * input = 实时更新标签（纯本地反馈）；change = 松手才发 SetRoomMode ——
+     * 拖动途中每一格都发的话，非房主会收到一串 Rejected toast。
+     * 合法性照旧由服务器 codec 白名单验，这里只发意图。
+     */
+    this.root.addEventListener('input', (ev) => {
+      const el = ev.target as HTMLInputElement;
+      if (el.id !== 'lb-size') return;
+      const label = this.root.querySelector('#lb-size-label');
+      if (label) label.textContent = `${el.value}v${el.value}`;
+    });
+    this.root.addEventListener('change', (ev) => {
+      const el = ev.target as HTMLInputElement;
+      if (el.id !== 'lb-size') return;
+      this.conn.send({ t: 'SetRoomMode', mode: `arena${el.value}v${el.value}` as GameMode });
+    });
+
     // 悬停哪张职业卡就预览哪个模型（选中另算，见 render）
     this.root.addEventListener('mouseover', (ev) => {
       const card = (ev.target as HTMLElement).closest<HTMLElement>('.lb-card');
@@ -511,6 +531,14 @@ export class LobbyShell {
         this.fillWithBots = msg.fillWithBots;
         this.botDifficulty = msg.botDifficulty;
         if (this.pendingJoin) {
+          /**
+           * P12：**建房**默认开人机补位（产品默认，服务器语义不变）——
+           * 玩家反馈「12v12 很容易不满人」；建房者就是房主，这条必然被接受。
+           * 房主随时可在房间里关掉；加入别人房间不发（不是房主，发也被拒）。
+           */
+          if (this.pendingJoin.creating) {
+            this.conn.send({ t: 'SetFillWithBots', enabled: true });
+          }
           // JoinRoom 的成功答复就是第一条 RoomState（协议没有单独的 ack）
           this.pendingJoin = undefined;
           this.page = 'room';
@@ -960,6 +988,24 @@ export class LobbyShell {
     for (const el of this.root.querySelectorAll<HTMLButtonElement>('#lb-modes [data-mode]')) {
       el.classList.toggle('lb-armed', el.dataset['mode'] === (this.mode as string | undefined));
       el.disabled = !isHost || this.roomStarted;
+    }
+    /**
+     * P12 人数滑杆与 RoomState 同步 —— 权威值来自服务器广播（W12 的口径：
+     * 「不是本地记的按钮」），非房主看得到拖不动。夺旗模式下滑杆归位到
+     * 上次的竞技场档但不高亮（当前模式是夺旗，滑杆只是待命）。
+     */
+    {
+      const slider = this.root.querySelector('#lb-size') as HTMLInputElement | null;
+      const label = this.root.querySelector('#lb-size-label') as HTMLElement | null;
+      const m = /^arena(\d+)v\d+$/.exec((this.mode as string | undefined) ?? '');
+      if (slider && label) {
+        if (m) {
+          slider.value = m[1]!;
+          label.textContent = `${m[1]}v${m[1]}`;
+        }
+        slider.disabled = !isHost || this.roomStarted;
+        label.style.opacity = m ? '1' : '.5';
+      }
     }
     (this.root.querySelector('#lb-mode-why') as HTMLElement).textContent = isCtf
       ? '夺旗：拔起敌方旗帜送回己方基地（G 交互）'

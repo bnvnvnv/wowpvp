@@ -6,7 +6,7 @@ import type { GameMode } from '../../types/enums.js';
 import type { ForbiddenVolume, MapDef } from './schema.js';
 import { testbed } from './testbed.js';
 import { tutorialMap } from './tutorial.js';
-import { arena2v2, arena3v3, arena5v5 } from './arena.js';
+import { ARENA_MAPS } from './arena.js';
 import { ctfMap } from './ctf.js';
 
 export * from './schema.js';
@@ -18,8 +18,9 @@ export {
 export { arena2v2, arena3v3, arena5v5, ARENA_MAPS, ARENA_SPECS } from './arena.js';
 export { ctfMap, routeLength, routeSeconds, graveyardSeesFlag, CTF_MAP_METRICS } from './ctf.js';
 
+// P12：竞技场是 1v1–12v12 全梯子（arena.ts SPECS 一次生成），逐张点名会漏
 export const ALL_MAPS: readonly MapDef[] =
-  [testbed, tutorialMap, arena2v2, arena3v3, arena5v5, ctfMap];
+  [testbed, tutorialMap, ...ARENA_MAPS, ctfMap];
 
 export const MAP_BY_ID: ReadonlyMap<string, MapDef> = new Map(
   ALL_MAPS.map((m) => [m.id as string, m]),

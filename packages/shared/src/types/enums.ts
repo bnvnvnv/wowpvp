@@ -182,9 +182,26 @@ export type CastFailure = (typeof CastFailure)[keyof typeof CastFailure];
 
 // ── 2. 游戏模式 ──────────────────────────────────────────────────
 export const GameMode = {
+  /**
+   * P12（玩家反馈）：竞技场人数从三档放开到 1v1–12v12 连续可选 ——
+   * 「12v12 很容易不满人，玩家应该能在开房间时拖动选择人数」。
+   * 每个尺寸一张按规格生成的地图（data/maps/arena.ts 的 SPECS 梯子），
+   * 不满员用人机补位（SetFillWithBots，房主可关）。
+   * ★ 仍然一个尺寸一个模式值而不是「模式+人数」两个字段 ——
+   *   RoomState/SetRoomMode 的形状不变，旧客户端字段零迁移。
+   */
+  Arena1v1: 'arena1v1',
   Arena2v2: 'arena2v2',
   Arena3v3: 'arena3v3',
+  Arena4v4: 'arena4v4',
   Arena5v5: 'arena5v5',
+  Arena6v6: 'arena6v6',
+  Arena7v7: 'arena7v7',
+  Arena8v8: 'arena8v8',
+  Arena9v9: 'arena9v9',
+  Arena10v10: 'arena10v10',
+  Arena11v11: 'arena11v11',
+  Arena12v12: 'arena12v12',
   Ctf6v6: 'ctf6v6',
   Ctf8v8: 'ctf8v8',
   Ctf12v12: 'ctf12v12',
