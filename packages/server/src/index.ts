@@ -103,6 +103,11 @@ export interface ServerOptions {
   rate?: RateLimitConfig;
   /** P6 全员掉线后的回收宽限（毫秒，转交 RoomServer） */
   abandonGraceMs?: number;
+  /**
+   * P11 波2：出站 permessage-deflate。默认**开**（参数见 wss 构造处的注释）；
+   * `false` = 关（CPU 紧张的部署、或需要在线上字节里做明文断言的测试）。
+   */
+  perMessageDeflate?: boolean;
 }
 
 /**
@@ -148,6 +153,31 @@ export const startServer = async (port = 0, opts: ServerOptions = {}): Promise<S
   const wss = new WebSocketServer({
     server: httpServer,
     maxPayload: opts.maxPayloadBytes ?? LIMITS.MAX_PAYLOAD_BYTES,
+    /**
+     * ★ P11 波2：permessage-deflate。浏览器端自动协商解压，零客户端改动。
+     *
+     *   参数是**量过的**（scripts/.diag 定价，瘦身后的 12v12 快照 4KB）：
+     *   · level 1 + 上下文接管 → 压缩比 3.79×（连续快照 ~80% 是重复结构，
+     *     接管让上一份留在窗口里 —— 「穷人的 delta」）。level 6 只多 ~0.1×
+     *     但 CPU 翻倍，不值
+     *   · serverMaxWindowBits 13 (8KB 窗口，够罩住上一份快照) + memLevel 6
+     *     → 每连接出站上下文 ~64KB。wb15 快 30% 但 256KB/连接 ——
+     *     在 1G 内存的部署目标下 480 连接就是 123MB，不划算
+     *   · threshold 1024：事件消息（Damage ~150B）不压 —— 单条收益抵不过
+     *     每条的 zlib 调度；快照（>1KB）才压
+     *   · 入站方向压不压由客户端定；`clientNoContextTakeover` 让服务器的
+     *     inflate 上下文用完即弃（入站只有 ~150B 的 Input，不需要跨消息窗口）
+     *
+     *   代价如实记：每份快照 ~150µs 压缩 CPU（24 人房 10Hz ≈ 37 m-core/房）。
+     *   换的是下行 3.79×。带宽是部署第一约束（P11），这笔交换是赚的；
+     *   CPU 紧张的部署可用 `perMessageDeflate: false` 关掉。
+     */
+    perMessageDeflate: opts.perMessageDeflate === false ? false : {
+      threshold: 1024,
+      serverMaxWindowBits: 13,
+      clientNoContextTakeover: true,
+      zlibDeflateOptions: { level: 1, memLevel: 6 },
+    },
     /**
      * ★ S3 Origin 白名单在**握手层**（verifyClient）拒绝，而不是握手后再关 ——
      *   区别是本质的：握手后再关，攻击页面仍拿到过一个 open 的 socket；

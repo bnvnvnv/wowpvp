@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 
 import {
+  SIM,
   TRINKET_COOLDOWN_KEY,
   applyAura,
   asClassId,
@@ -113,7 +114,7 @@ describe('A3：两个真客户端从房间跑到快照', () => {
     const c = await TestClient.connect(server.port);
     const welcome = await c.waitFor('Welcome');
     expect(welcome.tickRate).toBe(20);
-    expect(welcome.interpDelay).toBeCloseTo(0.1, 6);
+    expect(welcome.interpDelay).toBeCloseTo(SIM.INTERP_DELAY, 6);
     c.close();
   });
 
