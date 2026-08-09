@@ -168,6 +168,13 @@ export class LobbyShell {
   private pendingBrowse = false;
   /** P12：从「大乱斗」入口建房 —— RoomState 到达后补发 SetRoomMode ffa */
   private pendingFfa = false;
+  /**
+   * X10 二轮（用户：「大乱斗不是快速开始吗，怎么还进了 PVP 的选择界面」）：
+   * 「快速开始」是**直通流程** —— 建房后跳过房间页直进选职业页，选完职业
+   * 自动参战 + 准备（canStart 的补位分支单人即满足，服务器立刻开局）。
+   * 房间页对快速开始的人从头到尾不出现；协议消息与手动路径完全同一套。
+   */
+  private ffaQuick = false;
   private botDifficulty: 'easy' | 'normal' | 'hard' = 'normal';
   /** 随机大 BOSS。★ 默认关，与 RoomConfig 的默认值同一句话 */
   private bossEnabled = false;
@@ -266,6 +273,13 @@ export class LobbyShell {
     this.app.innerHTML = '';
     this.root = document.createElement('div');
     this.root.id = 'lobby';
+    /**
+     * X10 二轮：?art=off（软件渲染档，验收 e2e 全用它）连大厅的重活儿也
+     * 一并关 —— backdrop-filter 与无限动画在 SwiftShader 上能把合成器打满，
+     * 满到**点击事件都被饿死**（m13 第一步 click 超时 30s 当场抓到）。
+     * 真机默认 art 开，视觉效果全量保留；CSS 里按 .lb-noart 收口。
+     */
+    this.root.classList.toggle('lb-noart', !this.art);
     // 17.2 界面缩放：与 HUD 同一个 CSS 变量、同一个夹取函数
     this.root.style.setProperty(
       '--ui-scale',
@@ -387,7 +401,7 @@ export class LobbyShell {
           <div id="lb-hints" class="lb-hints"></div>
           <div class="lb-room-actions">
             <div class="lb-row">
-              <span class="lb-fine">阵营：</span>
+              <span class="lb-fine" id="lb-team-label">阵营：</span>
               <button class="lb-btn lb-small lb-red" data-action="team" data-team="red">红方</button>
               <button class="lb-btn lb-small lb-blue" data-action="team" data-team="blue">蓝方</button>
               <button class="lb-btn lb-small" data-action="team" data-team="spectator">观战</button>
@@ -400,15 +414,20 @@ export class LobbyShell {
               换模式连带换地图与人数档。
             -->
             <div class="lb-row" id="lb-modes">
-              <span class="lb-fine">竞技场人数：</span>
-              <input type="range" id="lb-size" min="1" max="12" step="1" value="3"
-                     style="flex:1;min-width:110px;max-width:200px"
-                     title="拖动选择每队人数（1v1–12v12），不满员可由人机补位"/>
-              <b id="lb-size-label" style="min-width:52px;font-size:13px">3v3</b>
-              <span class="lb-fine">夺旗：</span>
-              <button class="lb-btn lb-small" data-action="mode" data-mode="ctf6v6">6v6</button>
-              <button class="lb-btn lb-small" data-action="mode" data-mode="ctf8v8">8v8</button>
-              <button class="lb-btn lb-small" data-action="mode" data-mode="ctf12v12">12v12</button>
+              <!-- X10 二轮：大乱斗房间里这组 PVP 专属控件整体隐藏（人数档与
+                   夺旗对 FFA 无意义，此前照常显示 —— 用户即由此认成「PVP 的
+                   选择界面」）。display:contents 的包裹层不改布局。 -->
+              <span id="lb-pvp-modes" style="display:contents">
+                <span class="lb-fine">竞技场人数：</span>
+                <input type="range" id="lb-size" min="1" max="12" step="1" value="3"
+                       style="flex:1;min-width:110px;max-width:200px"
+                       title="拖动选择每队人数（1v1–12v12），不满员可由人机补位"/>
+                <b id="lb-size-label" style="min-width:52px;font-size:13px">3v3</b>
+                <span class="lb-fine">夺旗：</span>
+                <button class="lb-btn lb-small" data-action="mode" data-mode="ctf6v6">6v6</button>
+                <button class="lb-btn lb-small" data-action="mode" data-mode="ctf8v8">8v8</button>
+                <button class="lb-btn lb-small" data-action="mode" data-mode="ctf12v12">12v12</button>
+              </span>
               <span id="lb-mode-why" class="lb-fine"></span>
             </div>
             <!--
@@ -418,7 +437,7 @@ export class LobbyShell {
               服务器只接受房主的这条消息（校验在 sim 的 setPreset 里）。
               ★ 注意这段是模板字符串里的 HTML —— 注释里不能出现反引号。
             -->
-            <div class="lb-row">
+            <div class="lb-row" id="lb-preset-row">
               <span class="lb-fine">规则：</span>
               <button class="lb-btn lb-small" data-action="preset" data-preset="classic"
                       id="lb-preset-classic">经典竞技场</button>
@@ -471,8 +490,11 @@ export class LobbyShell {
       <section class="lb-page" data-page="class">
         <div class="lb-panel lb-class">
           <div class="lb-class-head">
-            <h2>选择职业</h2>
-            <button class="lb-btn lb-small" data-action="back-room">返回房间</button>
+            <div>
+              <h2 id="lb-class-title">选择职业</h2>
+              <p id="lb-class-sub" class="lb-fine" hidden>人人为敌 · 其余名额人机补满 · 选完立刻开局</p>
+            </div>
+            <button class="lb-btn lb-small" data-action="back-room" id="lb-class-back">返回房间</button>
           </div>
           <div class="lb-class-body">
             <div id="lb-cards" class="lb-cards">${this.classCardsHtml()}</div>
@@ -610,10 +632,18 @@ export class LobbyShell {
             this.pendingFfa = false;
             this.conn.send({ t: 'SetRoomMode', mode: GameMode.Ffa });
             this.conn.send({ t: 'SetFillWithBots', enabled: true });
+            /**
+             * 快速开始：直接替玩家「参战」—— 大乱斗没有阵营，红槽只是
+             * 战斗席（createMatch 的 ffa 分支按独立阵营重新分）。这一步
+             * 提前到这里，选职业页里点一张卡就只差 SetReady 一条消息。
+             */
+            if (this.ffaQuick) this.conn.send({ t: 'SelectTeam', team: 'red' });
           }
           // JoinRoom 的成功答复就是第一条 RoomState（协议没有单独的 ack）
           this.pendingJoin = undefined;
-          this.page = 'room';
+          // 快速开始跳过房间页：下一步（也是唯一一步）就是选职业
+          this.page = this.ffaQuick ? 'class' : 'room';
+          if (this.ffaQuick) this.showPreview(ALL_CLASSES[0]!.id as string);
           this.clearToast();
           this.setTitleBusy(false); // 离开房间回到标题页时按钮得是活的
         }
@@ -707,6 +737,7 @@ export class LobbyShell {
       case 'create-ffa':
         // P12 大乱斗：建房成功后（RoomState 到达）由 pendingJoin 分支补发换模式
         this.pendingFfa = true;
+        this.ffaQuick = true; // 快速开始直通：跳房间页，选完职业即开局
         this.join(makeRoomCode(), true);
         break;
       case 'browse': {
@@ -868,6 +899,8 @@ export class LobbyShell {
         this.showPreview((this.self()?.classId as string | undefined) ?? (ALL_CLASSES[0]!.id as string));
         break;
       case 'back-room':
+        // 快速开始没有「房间页」可回 —— 这颗按钮在直通流程里就是「不玩了」
+        if (this.ffaQuick) { this.act('leave'); break; }
         this.page = 'room';
         this.render();
         break;
@@ -875,6 +908,16 @@ export class LobbyShell {
         const classId = btn?.dataset['class'];
         if (!classId) return;
         this.conn.send({ t: 'SelectClass', classId: classId as ClassId });
+        if (this.ffaQuick) {
+          /**
+           * 快速开始：选职业就是最后一步 —— 自动准备，服务器侧 canStart
+           * （补位分支）立即成立并开局。停在本页等 MatchStart；
+           * 被拒绝会有 Rejected toast（page=class 走房间同一条提示路）。
+           */
+          this.conn.send({ t: 'SetReady', ready: true });
+          this.toast('正在集结人机对手，马上开打…', 12000);
+          break;
+        }
         this.page = 'room'; // 服务器的确认以 RoomState 回来；被拒绝会有 toast
         this.render();
         break;
@@ -889,6 +932,8 @@ export class LobbyShell {
         this.conn.send({ t: 'LeaveMatch' });
         this.players = [];
         this.roomCode = '';
+        this.ffaQuick = false; // 直通流程随房间一起结束
+        this.clearToast();
         this.page = 'title';
         this.render();
         break;
@@ -1025,6 +1070,8 @@ export class LobbyShell {
     scene.deliver(msg); // MatchStart 本体交给场景做 bootstrap（地图/预测器/实体 id）
 
     this.preview?.stop();
+    this.ffaQuick = false; // 直通完成 —— 战后回到的是正常的（大乱斗版）房间页
+    this.clearToast();
     this.page = 'match';
     this.render();
   }
@@ -1095,12 +1142,20 @@ export class LobbyShell {
     const size = this.mode ? teamSizeOf(this.mode) : 0;
     const metaCtf = this.mapId !== undefined
       && MAP_BY_ID.get(this.mapId as string)?.family === 'ctf';
-    // W12：夺旗房间不该顶着「经典竞技场」的帽子（预设在夺旗里不生效）
-    const modeLabel = metaCtf
-      ? '夺旗战场'
-      : this.preset === ArenaPreset.Armed ? '武装竞技场' : '经典竞技场';
+    // X10 二轮：大乱斗判断提前 —— meta/名单/整排 PVP 控件都要按它分家
+    const isFfa = (this.mode as string | undefined) === 'ffa';
+    // W12：夺旗房间不该顶着「经典竞技场」的帽子（预设在夺旗里不生效）；
+    // 大乱斗同理 —— 它也没有 NvN，人数写的是「几人参战」
+    const modeLabel = isFfa
+      ? '大乱斗'
+      : metaCtf
+        ? '夺旗战场'
+        : this.preset === ArenaPreset.Armed ? '武装竞技场' : '经典竞技场';
+    const sizeLabel = isFfa
+      ? `${this.players.filter((p) => p.team !== 'spectator').length} 人参战`
+      : `${size}v${size}`;
     (this.root.querySelector('#lb-room-meta') as HTMLElement).textContent = this.mode
-      ? `${modeLabel} ${size}v${size} · ${mapName}${this.roomStarted ? ' · 对局进行中' : ''}`
+      ? `${modeLabel} ${sizeLabel} · ${mapName}${this.roomStarted ? ' · 对局进行中' : ''}`
       : '';
 
     const roster = splitRoster(this.players);
@@ -1113,12 +1168,18 @@ export class LobbyShell {
             : list.map((p) => this.rosterRow(p)).join('')
         }</ul>
       </div>`;
-    (this.root.querySelector('#lb-roster') as HTMLElement).innerHTML =
-      column('红方', roster.red, size || null, 'lb-col-red') +
-      column('蓝方', roster.blue, size || null, 'lb-col-blue') +
-      column('观战席', roster.spectators, null, '');
+    // 大乱斗没有红蓝：战斗席合并成一列「参战者」（红蓝槽都算 —— 服务器
+    // createMatch 的 ffa 分支本来就只看「在不在战斗槽」）
+    (this.root.querySelector('#lb-roster') as HTMLElement).innerHTML = isFfa
+      ? column('参战者', [...roster.red, ...roster.blue], null, 'lb-col-red') +
+        column('观战席', roster.spectators, null, '')
+      : column('红方', roster.red, size || null, 'lb-col-red') +
+        column('蓝方', roster.blue, size || null, 'lb-col-blue') +
+        column('观战席', roster.spectators, null, '');
 
-    (this.root.querySelector('#lb-hints') as HTMLElement).innerHTML = this.hintsHtml();
+    // 阵容提示（缺治疗等）是组队口径 —— 人人为敌的大乱斗不适用
+    (this.root.querySelector('#lb-hints') as HTMLElement).innerHTML =
+      isFfa ? '' : this.hintsHtml();
 
     const self = this.self();
     const classBtn = this.root.querySelector('#lb-class-btn') as HTMLElement;
@@ -1160,13 +1221,24 @@ export class LobbyShell {
      * 红方按钮改叫「参战」，蓝方按钮藏起来（发 SelectTeam blue 也没意义，
      * createMatch 的 ffa 分支只按「在不在战斗槽」分独立阵营）。
      */
-    const isFfa = (this.mode as string | undefined) === 'ffa';
     {
       const redBtn = this.root.querySelector('[data-action="team"][data-team="red"]');
       const blueBtn = this.root.querySelector('[data-action="team"][data-team="blue"]');
       if (redBtn) redBtn.textContent = isFfa ? '参战' : '红方';
       if (blueBtn) (blueBtn as HTMLElement).hidden = isFfa;
+      const teamLabelEl = this.root.querySelector('#lb-team-label') as HTMLElement | null;
+      if (teamLabelEl) teamLabelEl.textContent = isFfa ? '席位：' : '阵营：';
     }
+    /**
+     * X10 二轮：大乱斗房间隐藏 PVP 专属控件（人数档 / 夺旗 / 规则预设）。
+     * ⚠️ 用 style.display 而不是 hidden 属性 —— .lb-row 的 display:flex
+     *   （作者样式）会压过 UA 的 [hidden]{display:none}，hidden 会静默失效
+     *   （.lb-end[hidden] 那条同款教训）。
+     */
+    (this.root.querySelector('#lb-pvp-modes') as HTMLElement).style.display =
+      isFfa ? 'none' : 'contents';
+    (this.root.querySelector('#lb-preset-row') as HTMLElement).style.display =
+      isFfa ? 'none' : '';
     (this.root.querySelector('#lb-mode-why') as HTMLElement).textContent = isCtf
       ? '夺旗：拔起敌方旗帜送回己方基地（G 交互）'
       : isFfa
@@ -1254,6 +1326,12 @@ export class LobbyShell {
     for (const card of this.root.querySelectorAll<HTMLElement>('.lb-card')) {
       card.classList.toggle('selected', card.dataset['class'] === chosen);
     }
+    // 快速开始的选职业页换口径：这里就是开局前的最后一步，不是房间的配菜
+    (this.root.querySelector('#lb-class-title') as HTMLElement).textContent =
+      this.ffaQuick ? '🔥 大乱斗 —— 选好职业马上开打' : '选择职业';
+    (this.root.querySelector('#lb-class-sub') as HTMLElement).hidden = !this.ffaQuick;
+    (this.root.querySelector('#lb-class-back') as HTMLElement).textContent =
+      this.ffaQuick ? '返回大厅' : '返回房间';
   }
 
   private rosterRow(p: RoomPlayerView): string {

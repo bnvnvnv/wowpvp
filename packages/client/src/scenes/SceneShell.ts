@@ -38,9 +38,11 @@ export class SceneShell {
     // X10 真机实测：双显卡笔记本上浏览器默认把 WebGL 分给省电核显，
     // 24 实体同屏 15fps；显式要高性能 GPU 后同机 33fps。不传这个参数
     // 等于把一半帧率白送掉。
-    this.renderer = new THREE.WebGLRenderer({
-      canvas, antialias: true, powerPreference: 'high-performance',
-    });
+    // ⚠️ X10 二轮：hp 提示只在 art 开着（真机档）时请求 —— ?art=off 是
+    //   「软件渲染也要能跑」的验收档（m1–m13 全用它 + SwiftShader），那里
+    //   没有第二块 GPU 可挑，提示零收益，还会在负载下间歇性建不出上下文
+    //   （m13 重连步两页同时重建 renderer 时当场炸出）。真机不受影响。
+    this.renderer = SceneShell.createRenderer(canvas, this.art);
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     // M12：HDR 环境是线性高动态的，不做色调映射会大面积过曝成白板。
@@ -66,6 +68,20 @@ export class SceneShell {
 
     window.addEventListener('resize', this.onResize);
     this.onResize();
+  }
+
+  /** 见构造函数头注 —— 真机档带高性能提示，创建失败回退默认参数再试一次 */
+  private static createRenderer(canvas: HTMLCanvasElement, art: boolean): THREE.WebGLRenderer {
+    if (art) {
+      try {
+        return new THREE.WebGLRenderer({
+          canvas, antialias: true, powerPreference: 'high-performance',
+        });
+      } catch {
+        // 双显卡真机上 hint 拿不到就回退默认 —— 有画面比有提示重要
+      }
+    }
+    return new THREE.WebGLRenderer({ canvas, antialias: true });
   }
 
   /**

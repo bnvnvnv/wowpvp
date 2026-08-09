@@ -611,101 +611,227 @@
       .lb-page { display: none; }
       .lb-page.active { display: flex; align-items: center; justify-content: center;
                         position: absolute; inset: 0; pointer-events: auto;
-                        background: radial-gradient(1200px 700px at 50% 30%, #2a3352 0%, #171a28 70%); }
-      /* ── X10 追加轮首页重构：Q 版高饱和标题页（用户拍板「不够 Q、吸引不了
-         玩家」）。糖果色渐层天空 + 飘浮光斑；只作用于标题页，房间/选职业页
-         保持深色作战底（信息密度高的页面糖果底会晃眼）。 ── */
+                        background: radial-gradient(1200px 700px at 50% 30%, #232c4c 0%, #12141f 72%); }
+      /* ── X10 二轮大厅视觉翻新（用户：「Q 版但像二十年前的，和现代化 Q 版
+         相差很大」）。现代手游 Q 版的三件套照单全上：
+           ① 高饱和糖果天空 + 缓慢漂移的气泡光斑（纯 CSS，零素材）；
+           ② 玻璃拟态卡片 —— 大圆角、内高光描边、按色调染色的投影；
+           ③ 弹性微交互 —— 回弹曲线的悬停抬升、按下压扁、CTA 流光。
+         标题字弃用衬线体 Cinzel（衬线金字 = 老式端游脸），改重磅无衬线
+         贴纸字。只动大厅，HUD/战斗界面一个选择器没碰。 ── */
       .lb-page[data-page="title"].active {
+        overflow: hidden;
         background:
-          radial-gradient(560px 340px at 12% 18%, rgba(255,255,255,.20), transparent 60%),
-          radial-gradient(640px 420px at 88% 78%, rgba(255,214,110,.25), transparent 60%),
-          linear-gradient(158deg, #43b7ff 0%, #6f7bff 46%, #b06bff 76%, #ff7ec2 100%);
+          radial-gradient(900px 520px at 14% -8%, rgba(255,255,255,.30), transparent 55%),
+          radial-gradient(760px 520px at 88% 104%, rgba(255,150,92,.38), transparent 62%),
+          linear-gradient(160deg, #34bdf6 0%, #5b76ff 40%, #9a58ff 72%, #ff6fb1 100%);
       }
-      .lb-title-wrap { width: 860px; max-width: 96vw; text-align: center; }
-      .lb-hero { margin-bottom: 18px; }
-      .lb-logo { margin: 0; font-family: Cinzel, serif; font-size: 64px; letter-spacing: 8px;
-                 background: linear-gradient(180deg, #fff7d6 20%, #ffd23e 55%, #ff9a3d 100%);
+      /* 漂移气泡：两层同图错相位，反向慢速漂 —— 静止页面也是活的 */
+      .lb-page[data-page="title"].active::before,
+      .lb-page[data-page="title"].active::after {
+        content: ''; position: absolute; inset: -22%; pointer-events: none;
+        background:
+          radial-gradient(circle at 18% 28%, rgba(255,255,255,.15) 0 58px, transparent 59px),
+          radial-gradient(circle at 72% 16%, rgba(255,255,255,.10) 0 40px, transparent 41px),
+          radial-gradient(circle at 86% 62%, rgba(255,255,255,.12) 0 76px, transparent 77px),
+          radial-gradient(circle at 38% 82%, rgba(255,255,255,.09) 0 34px, transparent 35px),
+          radial-gradient(circle at 56% 44%, rgba(255,255,255,.06) 0 96px, transparent 97px);
+        animation: lb-drift 30s ease-in-out infinite;
+      }
+      .lb-page[data-page="title"].active::after {
+        animation-direction: reverse; animation-duration: 44s; opacity: .55; }
+      @keyframes lb-drift {
+        0%, 100% { transform: translate3d(0,0,0) rotate(0deg); }
+        50% { transform: translate3d(2.5%, -3%, 0) rotate(4deg); }
+      }
+      .lb-title-wrap { width: 880px; max-width: 96vw; text-align: center;
+                       position: relative; z-index: 1; }
+      .lb-hero { margin-bottom: 22px; }
+      /* 贴纸标题：重磅斜体 + 糖果渐层 + 白描边光晕 + 紫色厚底影 */
+      .lb-logo { margin: 0; font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+                 font-size: 78px; font-weight: 900; font-style: italic; line-height: 1;
+                 letter-spacing: 1px; transform: rotate(-2deg);
+                 background: linear-gradient(180deg, #fffdf4 8%, #ffe45e 46%, #ffab2e 80%, #ff8a3d 100%);
                  -webkit-background-clip: text; background-clip: text; color: transparent;
-                 filter: drop-shadow(0 4px 0 rgba(90,40,120,.55)) drop-shadow(0 10px 24px rgba(40,10,80,.35));
+                 filter: drop-shadow(0 0 1.5px rgba(255,255,255,.95))
+                         drop-shadow(0 0 1px rgba(255,255,255,.8))
+                         drop-shadow(0 6px 0 rgba(116,40,168,.92))
+                         drop-shadow(0 16px 32px rgba(56,14,110,.5));
                  animation: lb-bob 3.2s ease-in-out infinite; }
-      .lb-sub { color: rgba(255,255,255,.92); font-size: 14px; margin: 6px 0 0;
-                text-shadow: 0 1px 6px rgba(50,20,90,.5); }
-      @keyframes lb-bob { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-6px) } }
-      .lb-modes { display: flex; gap: 18px; align-items: stretch; justify-content: center; }
-      .lb-mode { flex: 1; min-width: 0; text-align: center; border-radius: 22px; padding: 18px 20px 16px;
-                 background: rgba(16,18,34,.82); backdrop-filter: blur(4px);
-                 box-shadow: 0 14px 40px rgba(30,10,70,.35), inset 0 1px 0 rgba(255,255,255,.14);
-                 transition: transform .15s ease; }
-      .lb-mode:hover { transform: translateY(-4px); }
-      .lb-mode-pvp { border: 3px solid #ff6a5e; }
-      .lb-mode-ffa { border: 3px solid #ffc23e; }
-      .lb-mode-art { font-size: 44px; line-height: 1; margin: 2px 0 6px;
-                     filter: drop-shadow(0 4px 8px rgba(0,0,0,.4)); }
-      .lb-mode h2 { margin: 0; font-size: 22px; color: #fff; letter-spacing: 2px; }
-      .lb-mode-pvp h2 { color: #ffb0a8; } .lb-mode-ffa h2 { color: #ffe08a; }
-      .lb-mode-tag { font-size: 12px; color: #aab3c8; margin: 4px 0 12px; }
+      /* 副标改胶囊徽章 —— 一行孤字飘在天上是老式标题页的做法 */
+      .lb-sub { display: inline-block; margin: 16px 0 0; padding: 7px 20px;
+                font-size: 13px; font-weight: 600; letter-spacing: 2px; color: #fff;
+                background: rgba(28,18,66,.35); border: 1px solid rgba(255,255,255,.38);
+                border-radius: 999px; backdrop-filter: blur(6px);
+                text-shadow: 0 1px 4px rgba(40,15,80,.6); }
+      @keyframes lb-bob { 0%,100% { transform: rotate(-2deg) translateY(0) }
+                          50% { transform: rotate(-2deg) translateY(-7px) } }
+      .lb-modes { display: flex; gap: 22px; align-items: stretch; justify-content: center; }
+      /* 模式卡：玻璃拟态 + 顶部色晕 + 回弹抬升 */
+      .lb-mode { position: relative; flex: 1; min-width: 0; text-align: center;
+                 border-radius: 26px; padding: 22px 22px 18px; overflow: hidden;
+                 background: linear-gradient(180deg, rgba(30,28,68,.86), rgba(15,15,38,.92));
+                 border: 1px solid rgba(255,255,255,.16); backdrop-filter: blur(10px);
+                 box-shadow: 0 22px 48px rgba(28,10,68,.45), inset 0 1px 0 rgba(255,255,255,.22);
+                 transition: transform .22s cubic-bezier(.3,1.5,.5,1), box-shadow .22s ease,
+                             border-color .22s ease; }
+      .lb-mode::before { content: ''; position: absolute; inset: 0 0 auto 0; height: 120px;
+                         pointer-events: none; opacity: .38; }
+      .lb-mode-pvp::before { background: radial-gradient(75% 100% at 50% 0%, #ff6a5e, transparent 74%); }
+      .lb-mode-ffa::before { background: radial-gradient(75% 100% at 50% 0%, #ffb02e, transparent 74%); }
+      .lb-mode:hover { transform: translateY(-6px) scale(1.015);
+                       box-shadow: 0 30px 62px rgba(28,10,68,.58), inset 0 1px 0 rgba(255,255,255,.26); }
+      .lb-mode-pvp { border-color: rgba(255,124,112,.5); }
+      .lb-mode-ffa { border-color: rgba(255,190,80,.5); }
+      .lb-mode-pvp:hover { border-color: rgba(255,124,112,.8); }
+      .lb-mode-ffa:hover { border-color: rgba(255,190,80,.8); }
+      .lb-mode-art { position: relative; font-size: 54px; line-height: 1; margin: 2px 0 8px;
+                     filter: drop-shadow(0 6px 12px rgba(0,0,0,.45));
+                     animation: lb-art-bob 3s ease-in-out infinite; }
+      .lb-mode-ffa .lb-mode-art { animation-delay: -1.5s; }
+      @keyframes lb-art-bob { 0%,100% { transform: translateY(0) scale(1) }
+                              50% { transform: translateY(-5px) scale(1.05) } }
+      .lb-mode h2 { position: relative; margin: 0; font-size: 24px; font-weight: 900;
+                    color: #fff; letter-spacing: 3px;
+                    text-shadow: 0 2px 8px rgba(20,8,50,.65); }
+      .lb-mode-tag { font-size: 12px; color: #b6bede; margin: 6px 0 14px; letter-spacing: .5px; }
       .lb-list-head { display: flex; align-items: center; gap: 6px; justify-content: center;
-                      font-size: 12px; color: #8d97ab; margin: 12px 0 4px; }
+                      font-size: 12px; color: #97a0ba; margin: 14px 0 4px; }
       .lb-roomlist { max-height: 150px; overflow-y: auto; text-align: left; }
-      .lb-room-row { gap: 8px; align-items: center; background: rgba(255,255,255,.05);
-                     border-radius: 10px; padding: 4px 10px; margin: 6px 0; }
+      .lb-roomlist::-webkit-scrollbar { width: 6px; }
+      .lb-roomlist::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 3px; }
+      .lb-room-row { gap: 8px; align-items: center; background: rgba(255,255,255,.06);
+                     border: 1px solid rgba(255,255,255,.07); border-radius: 12px;
+                     padding: 5px 12px; margin: 6px 0; transition: background .15s ease; }
+      .lb-room-row:hover { background: rgba(255,255,255,.10); }
       .lb-empty { padding: 8px 0; text-align: center; }
-      .lb-secondary { justify-content: center; margin-top: 16px; }
+      .lb-secondary { justify-content: center; margin-top: 18px; }
       .lb-secondary .lb-btn { width: auto; }
       .lb-name-mini { display: inline-flex; align-items: center; gap: 6px;
-                      font-size: 12px; color: rgba(255,255,255,.85); }
-      .lb-name-mini input { width: 110px; padding: 6px 10px; background: rgba(12,14,26,.7);
-                            border: 2px solid rgba(255,255,255,.25); border-radius: 999px;
-                            color: #fff; font-size: 13px; outline: none; text-align: center; }
-      .lb-name-mini input:focus { border-color: #ffd23e; }
+                      font-size: 12px; color: rgba(255,255,255,.88); }
+      .lb-name-mini input { width: 110px; padding: 7px 10px; background: rgba(14,13,36,.55);
+                            border: 1.5px solid rgba(255,255,255,.32); border-radius: 999px;
+                            color: #fff; font-size: 13px; outline: none; text-align: center;
+                            backdrop-filter: blur(6px); transition: border-color .15s, box-shadow .15s; }
+      .lb-name-mini input:focus { border-color: #ffd23e; box-shadow: 0 0 0 3px rgba(255,210,62,.25); }
       .lb-devrow { justify-content: center; }
-      .lb-panel { background: rgba(20,23,30,.92); border: 1px solid #2c313d;
-                  border-radius: 16px; padding: 22px 26px; box-shadow: 0 12px 40px rgba(0,0,0,.45); }
+      /* P6 练习场配置也是一张卡 —— 裸浮在糖果天上像页面漏了底 */
+      .lb-practice { margin-top: 14px; text-align: left;
+                     background: linear-gradient(180deg, rgba(30,28,68,.86), rgba(15,15,38,.92));
+                     border: 1px solid rgba(255,255,255,.16); border-radius: 20px;
+                     padding: 12px 18px 14px; backdrop-filter: blur(10px);
+                     box-shadow: 0 18px 40px rgba(28,10,68,.4), inset 0 1px 0 rgba(255,255,255,.18); }
+      .lb-panel { background: linear-gradient(180deg, rgba(26,29,44,.94), rgba(17,20,32,.96));
+                  border: 1px solid rgba(255,255,255,.10); border-radius: 22px;
+                  padding: 24px 28px;
+                  box-shadow: 0 24px 60px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.08); }
       .lb-title { width: 380px; text-align: center; }
       .lb-join input, .lb-share input {
-        width: 100%; box-sizing: border-box; margin-top: 4px; padding: 8px 10px;
-        background: #171b24; border: 1px solid #333a48; border-radius: 999px;
-        color: #e6ebf4; font-size: 14px; outline: none; }
-      .lb-join input:focus { border-color: #ffd23e; }
+        width: 100%; box-sizing: border-box; margin-top: 4px; padding: 9px 12px;
+        background: rgba(10,12,26,.65); border: 1.5px solid rgba(255,255,255,.14);
+        border-radius: 999px; color: #e6ebf4; font-size: 14px; outline: none;
+        transition: border-color .15s, box-shadow .15s; }
+      .lb-join input:focus { border-color: #ffd23e; box-shadow: 0 0 0 3px rgba(255,210,62,.22); }
       .lb-row { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
       .lb-join { display: flex; gap: 8px; }
       .lb-join input { margin-top: 0; text-transform: uppercase; letter-spacing: 2px; text-align: center; }
       #lobby hr { border: none; border-top: 1px solid #2c313d; margin: 16px 0 10px; }
       .lb-fine { font-size: 11px; color: #7d8698; }
-      /* Q 版按钮：圆角胶囊 + 厚底边（软糖立体感）+ 悬停放大 */
-      .lb-btn { pointer-events: auto; cursor: pointer; font-weight: 600;
-                border: 0; border-bottom: 4px solid #2b3350; background: #3d476e; color: #f2f5ff;
-                border-radius: 999px; padding: 9px 18px; font-size: 14px; width: 100%;
-                transition: transform .1s ease, filter .1s ease; }
-      .lb-btn:hover { filter: brightness(1.18); transform: translateY(-1px); }
-      .lb-btn:active { transform: translateY(2px); border-bottom-width: 2px; }
-      .lb-btn:disabled { opacity: .45; cursor: not-allowed; }
-      .lb-btn.lb-primary { background: linear-gradient(180deg,#4f9cff,#3866e8); border-bottom-color: #24449c; font-weight: 800; }
-      .lb-btn.lb-armed { background: linear-gradient(180deg,#3ecf7c,#22a45c); border-bottom-color: #157a41; }
-      .lb-btn.lb-ghost { background: transparent; border-bottom-color: transparent; box-shadow: inset 0 0 0 2px rgba(255,255,255,.22); }
-      .lb-btn.lb-small { width: auto; padding: 5px 14px; font-size: 12px; white-space: nowrap; }
-      .lb-btn.lb-tiny { width: auto; padding: 2px 10px; font-size: 12px; }
-      .lb-btn.lb-red { background: linear-gradient(180deg,#ff7a6e,#e84a44); border-bottom-color: #a32c28; }
-      .lb-btn.lb-blue { background: linear-gradient(180deg,#5f9cff,#3f6ce8); border-bottom-color: #2a49a8; }
-      /* 两大模式卡的 CTA：糖果大按钮 */
-      .lb-btn.lb-cta { font-size: 17px; font-weight: 900; padding: 12px 18px; letter-spacing: 2px;
-                       background: linear-gradient(180deg,#ff8a63,#ff5d5d); border-bottom-color: #b93838;
+      /* 现代 Q 版按钮：软糖胶囊 —— 内顶高光 + 同色厚底影（box-shadow 而不是
+         border-bottom：按下时不再改变布局高度）+ 回弹曲线微交互 */
+      .lb-btn { pointer-events: auto; cursor: pointer; font-weight: 700; font-family: inherit;
+                border: 0; background: linear-gradient(180deg,#57608e,#3b4270); color: #f2f5ff;
+                border-radius: 999px; padding: 10px 18px; font-size: 14px; width: 100%;
+                box-shadow: 0 4px 0 #262c52, 0 8px 16px rgba(8,8,26,.35),
+                            inset 0 1px 0 rgba(255,255,255,.28);
+                transition: transform .18s cubic-bezier(.3,1.6,.5,1), box-shadow .15s ease,
+                            filter .15s ease; }
+      .lb-btn:hover { filter: brightness(1.12); transform: translateY(-2px);
+                      box-shadow: 0 6px 0 #262c52, 0 12px 22px rgba(8,8,26,.4),
+                                  inset 0 1px 0 rgba(255,255,255,.32); }
+      .lb-btn:active { transform: translateY(2px); filter: brightness(.96);
+                       box-shadow: 0 1px 0 #262c52, 0 3px 8px rgba(8,8,26,.35),
+                                   inset 0 1px 0 rgba(255,255,255,.2); }
+      .lb-btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+      .lb-btn.lb-primary { background: linear-gradient(180deg,#54a2ff,#3564ea);
+                           box-shadow: 0 4px 0 #1d3d92, 0 8px 18px rgba(50,110,255,.35),
+                                       inset 0 1px 0 rgba(255,255,255,.35); font-weight: 800; }
+      .lb-btn.lb-primary:hover { box-shadow: 0 6px 0 #1d3d92, 0 12px 26px rgba(50,110,255,.45),
+                                             inset 0 1px 0 rgba(255,255,255,.4); }
+      .lb-btn.lb-armed { background: linear-gradient(180deg,#3ecf7c,#1fa458);
+                         box-shadow: 0 4px 0 #12793f, 0 8px 18px rgba(46,190,110,.35),
+                                     inset 0 1px 0 rgba(255,255,255,.35); }
+      .lb-btn.lb-ghost { background: rgba(255,255,255,.04);
+                         box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.26); }
+      .lb-btn.lb-ghost:hover { background: rgba(255,255,255,.09);
+                               box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.36); }
+      .lb-btn.lb-ghost:active { box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.26); }
+      .lb-btn.lb-small { width: auto; padding: 6px 14px; font-size: 12px; white-space: nowrap; }
+      .lb-btn.lb-tiny { width: auto; padding: 3px 10px; font-size: 12px; }
+      .lb-btn.lb-red { background: linear-gradient(180deg,#ff7a6e,#e84a44);
+                       box-shadow: 0 4px 0 #9e2925, 0 8px 16px rgba(232,74,68,.3),
+                                   inset 0 1px 0 rgba(255,255,255,.35); }
+      .lb-btn.lb-blue { background: linear-gradient(180deg,#5f9cff,#3f6ce8);
+                        box-shadow: 0 4px 0 #2a49a8, 0 8px 16px rgba(63,108,232,.3),
+                                    inset 0 1px 0 rgba(255,255,255,.35); }
+      /* 两大模式卡的 CTA：糖果大按钮 + 周期流光扫过 */
+      .lb-btn.lb-cta { position: relative; overflow: hidden;
+                       font-size: 18px; font-weight: 900; padding: 14px 20px; letter-spacing: 2px;
+                       background: linear-gradient(180deg,#ff8a63,#ff5555);
+                       box-shadow: 0 5px 0 #b23131, 0 12px 26px rgba(255,90,90,.45),
+                                   inset 0 1px 0 rgba(255,255,255,.4);
                        text-shadow: 0 1px 2px rgba(120,20,20,.5); }
-      .lb-btn.lb-cta-ffa { background: linear-gradient(180deg,#ffd23e,#ff9a1f); border-bottom-color: #b96a10;
+      .lb-btn.lb-cta:hover { box-shadow: 0 7px 0 #b23131, 0 16px 34px rgba(255,90,90,.55),
+                                         inset 0 1px 0 rgba(255,255,255,.45); }
+      .lb-btn.lb-cta::after { content: ''; position: absolute; top: 0; bottom: 0; left: -80%;
+                              width: 45%; transform: skewX(-22deg); pointer-events: none;
+                              background: linear-gradient(105deg, transparent,
+                                          rgba(255,255,255,.5), transparent);
+                              animation: lb-shine 3.6s ease-in-out infinite; }
+      @keyframes lb-shine { 0%, 55% { left: -80% } 100% { left: 135% } }
+      .lb-btn.lb-cta-ffa { background: linear-gradient(180deg,#ffd23e,#ff9a1f);
+                           box-shadow: 0 5px 0 #b06510, 0 12px 26px rgba(255,170,45,.5),
+                                       inset 0 1px 0 rgba(255,255,255,.55);
                            color: #4a2c00; text-shadow: none; }
+      .lb-btn.lb-cta-ffa:hover { box-shadow: 0 7px 0 #b06510, 0 16px 34px rgba(255,170,45,.6),
+                                             inset 0 1px 0 rgba(255,255,255,.6); }
+      /* ── 轻量档：?art=off（软件渲染，验收 e2e 同款）与「减少动态」偏好 ──
+         backdrop-filter 与无限动画在 SwiftShader 上能把合成器打满到点击
+         事件被饿死（m13 首步 click 超时抓到）。真机默认不走这里。 */
+      #lobby.lb-noart .lb-page[data-page="title"].active::before,
+      #lobby.lb-noart .lb-page[data-page="title"].active::after,
+      #lobby.lb-noart .lb-btn.lb-cta::after { display: none; }
+      #lobby.lb-noart .lb-logo, #lobby.lb-noart .lb-mode-art { animation: none; }
+      #lobby.lb-noart .lb-mode, #lobby.lb-noart .lb-practice, #lobby.lb-noart .lb-sub,
+      #lobby.lb-noart .lb-name-mini input, #lobby.lb-noart #lb-toast,
+      #lobby.lb-noart .lb-end { backdrop-filter: none; }
+      @media (prefers-reduced-motion: reduce) {
+        #lobby .lb-page[data-page="title"].active::before,
+        #lobby .lb-page[data-page="title"].active::after,
+        #lobby .lb-btn.lb-cta::after { display: none; }
+        #lobby .lb-logo, #lobby .lb-mode-art { animation: none; }
+        #lobby .lb-mode, #lobby .lb-mode:hover, #lobby .lb-card, #lobby .lb-btn {
+          transition: none; }
+      }
 
       /* 房间页 */
       .lb-room { width: 620px; }
       .lb-room-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; }
-      .lb-code { font-family: Cinzel, serif; font-size: 30px; letter-spacing: 6px; color: #e8d9a0; }
+      /* 房间码弃衬线金字，改重磅无衬线（与新标题同族）*/
+      .lb-code { font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+                 font-weight: 900; font-size: 30px; letter-spacing: 6px; color: #ffd76e;
+                 text-shadow: 0 2px 10px rgba(255,180,60,.25); }
       .lb-share { flex: 1; display: flex; gap: 6px; align-items: center; max-width: 330px; }
       .lb-share input { font-size: 11px; color: #8d97ab; }
       .lb-roster { display: flex; gap: 10px; margin: 12px 0 4px; }
-      .lb-col { flex: 1; border: 1px solid #2c313d; border-radius: 8px; padding: 8px 10px; min-height: 108px; }
+      .lb-col { flex: 1; border: 1px solid rgba(255,255,255,.08); border-radius: 14px;
+                padding: 9px 12px; min-height: 108px; background: rgba(255,255,255,.03); }
       .lb-col h3 { margin: 0 0 6px; font-size: 13px; color: #b9c1d1; }
       .lb-col h3 i { color: #6f7a90; font-style: normal; font-weight: 400; }
-      .lb-col-red { border-color: #52333a; } .lb-col-red h3 { color: #e08a8a; }
-      .lb-col-blue { border-color: #33405f; } .lb-col-blue h3 { color: #8fb7ff; }
+      .lb-col-red { border-color: rgba(224,110,110,.35); background: rgba(224,110,110,.05); }
+      .lb-col-red h3 { color: #ff9d92; }
+      .lb-col-blue { border-color: rgba(120,160,255,.35); background: rgba(120,160,255,.05); }
+      .lb-col-blue h3 { color: #92bcff; }
       .lb-col ul { list-style: none; margin: 0; padding: 0; }
       .lb-col li { display: flex; gap: 6px; align-items: baseline; padding: 3px 0; font-size: 13px; }
       .lb-col li span { color: #8d97ab; font-size: 11px; }
@@ -721,23 +847,34 @@
       /* 选职业页 */
       .lb-class { width: 900px; max-width: 96vw; }
       .lb-class-head { display: flex; justify-content: space-between; align-items: center; }
-      .lb-class-head h2 { margin: 0; font-size: 18px; color: #e8d9a0; }
+      .lb-class-head h2 { margin: 0; font-size: 20px; font-weight: 900; color: #ffd76e;
+                          letter-spacing: 1px; }
       .lb-class-body { display: flex; gap: 14px; margin-top: 12px; }
       .lb-cards { flex: 1; display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
-      .lb-card { text-align: left; background: #1a1f2a; border: 1px solid #2c313d; border-radius: 9px;
-                 padding: 10px 12px; cursor: pointer; display: flex; flex-direction: column; gap: 4px;
-                 color: #cfd6e4; }
-      .lb-card:hover { border-color: #4a6f8f; background: #202737; }
-      .lb-card.selected { border-color: #d0a85a; box-shadow: 0 0 0 1px #d0a85a inset; }
+      .lb-card { text-align: left; font-family: inherit;
+                 background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
+                 border: 1px solid rgba(255,255,255,.10); border-radius: 16px;
+                 padding: 11px 13px; cursor: pointer; display: flex; flex-direction: column; gap: 4px;
+                 color: #cfd6e4;
+                 transition: transform .18s cubic-bezier(.3,1.5,.5,1), border-color .15s ease,
+                             background .15s ease, box-shadow .15s ease; }
+      .lb-card:hover { border-color: rgba(120,180,255,.55); background:
+                         linear-gradient(180deg, rgba(120,180,255,.10), rgba(120,180,255,.04));
+                       transform: translateY(-3px);
+                       box-shadow: 0 10px 24px rgba(8,10,26,.45); }
+      .lb-card.selected { border-color: #ffcf5e;
+                          background: linear-gradient(180deg, rgba(255,200,80,.12), rgba(255,200,80,.04));
+                          box-shadow: 0 0 0 1.5px #ffcf5e inset, 0 8px 24px rgba(255,190,60,.2); }
       .lb-card-head b { font-size: 15px; color: #e6ebf4; }
       .lb-card-role { font-size: 11px; color: #6fd0ff; }
       .lb-card-skills { display: flex; gap: 3px; flex-wrap: wrap; margin: 3px 0; }
-      .lb-card-skills .sk-icon { border-radius: 4px; }
+      .lb-card-skills .sk-icon { border-radius: 5px; }
       .lb-card-line { font-size: 11px; color: #9ad48f; }
       .lb-card-line.lb-weak { color: #d8a07e; }
-      .lb-preview { width: 300px; border: 1px solid #2c313d; border-radius: 9px;
+      .lb-preview { width: 300px; border: 1px solid rgba(255,255,255,.09); border-radius: 16px;
                     display: flex; flex-direction: column; align-items: center; justify-content: center;
-                    background: #12151d; padding: 8px; }
+                    background: radial-gradient(80% 60% at 50% 38%, #1b2233 0%, #10131d 80%);
+                    padding: 8px; }
       .lb-preview canvas { width: 280px; height: 340px; }
 
       /* ── M15 新手教学任务面板（docs/14 §M15）──────────────────────
@@ -780,15 +917,20 @@
 
       /* 结算横幅（浮在战场上）与 toast */
       .lb-end { position: absolute; inset: 0; display: flex; align-items: center;
-                justify-content: center; pointer-events: auto; background: rgba(10,12,17,.55); }
+                justify-content: center; pointer-events: auto;
+                background: rgba(8,9,16,.6); backdrop-filter: blur(3px); }
       /* ⚠️ display:flex 的优先级高于 UA 的 [hidden]{display:none} ——
          不补这条的话横幅**从一开始就悬在标题页上拦截所有点击**（首跑验收抓到的）*/
       .lb-end[hidden] { display: none; }
       .lb-end-panel { text-align: center; min-width: 300px; }
-      .lb-end-panel h2 { font-family: Cinzel, serif; color: #e8d9a0; letter-spacing: 2px; }
+      .lb-end-panel h2 { font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+                         font-weight: 900; color: #ffd76e; letter-spacing: 2px;
+                         text-shadow: 0 2px 12px rgba(255,180,60,.3); }
       #lb-toast { position: absolute; top: 24px; left: 50%; transform: translateX(-50%);
-                  background: rgba(20,23,30,.95); border: 1px solid #4a6f8f; border-radius: 8px;
-                  padding: 9px 18px; font-size: 13px; pointer-events: none; z-index: 40; }
+                  background: rgba(22,24,38,.92); border: 1px solid rgba(255,255,255,.2);
+                  border-radius: 999px; padding: 10px 22px; font-size: 13px; font-weight: 600;
+                  pointer-events: none; z-index: 40; backdrop-filter: blur(8px);
+                  box-shadow: 0 10px 30px rgba(0,0,0,.45); }
     </style>
   </head>
   <body>
