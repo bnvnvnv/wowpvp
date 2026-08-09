@@ -8,7 +8,6 @@
 import { describe, expect, it } from 'vitest';
 import { GEOMETRY, MOVE } from '../../constants/combat.js';
 import { distance2D, vec3 } from '../../math/vec3.js';
-import { GameMode } from '../../types/enums.js';
 import { TEAM_BLUE, TEAM_RED } from '../../types/ids.js';
 import { ARENA_MAPS, ARENA_SPECS } from './arena.js';
 import { ctfMap } from './ctf.js';
@@ -190,6 +189,81 @@ describe('W15 环境预设', () => {
   it('每张图都配了 envPreset', () => {
     for (const m of ALL_MAPS) {
       expect(m.envPreset, `${m.id as string} 没配 envPreset`).toBeDefined();
+    }
+  });
+});
+
+/**
+ * X10 试点地形（用户拍板：「竞技场要有复杂的地形 —— 视线遮挡、楼梯和小桥」）。
+ * 11.3 的结构保证逐件断言 —— 这些不是「地形存在」的冒烟测试，每一条都对应
+ * 一个会坏掉的具体方式：镜像破了是阵营不公平，级高超了是位移职业专属高台，
+ * 净空矮了是桥下卡头，走廊被占是 bot（无寻路）直线流被断。
+ */
+describe('arena_3v3 试点地形（高台楼梯 + 跨桥 + 视线矮墙）', () => {
+  const map = ARENA_MAPS.find((m) => (m.id as string) === 'arena_3v3')!;
+  const vol = (id: string) => {
+    const v = map.geometry.find((g) => g.id === id);
+    if (!v) throw new Error(`试点件 ${id} 不存在`);
+    return v;
+  };
+  const cx = (v: { min: { x: number }; max: { x: number } }): number => (v.min.x + v.max.x) / 2;
+  const cz = (v: { min: { z: number }; max: { z: number } }): number => (v.min.z + v.max.z) / 2;
+  const PILOT_IDS = [
+    'plat_n', 'plat_s', 'plat_bridge', 'sight_wall_n', 'sight_wall_s',
+    ...(['n', 's'] as const).flatMap((s) => [0, 1, 2, 3].map((i) => `plat_${s}_stair_${i}`)),
+  ];
+
+  it('★ 全部件 z→-z 镜像（±Z 两队公平的结构保证）', () => {
+    const pairs: [string, string][] = [
+      ['plat_n', 'plat_s'],
+      ['sight_wall_n', 'sight_wall_s'],
+      ...[0, 1, 2, 3].map((i): [string, string] => [`plat_n_stair_${i}`, `plat_s_stair_${i}`]),
+    ];
+    for (const [n, s] of pairs) {
+      const a = vol(n);
+      const b = vol(s);
+      expect(cz(a), `${n}/${s} 的 z 不镜像`).toBeCloseTo(-cz(b), 5);
+      expect(cx(a), `${n}/${s} 的 x 不一致`).toBeCloseTo(cx(b), 5);
+      expect(a.max.y, `${n}/${s} 的高度不一致`).toBeCloseTo(b.max.y, 5);
+    }
+    // 桥自身跨中线
+    expect(cz(vol('plat_bridge'))).toBeCloseTo(0, 5);
+  });
+
+  it('★ 从地面到桥顶每级升程 ≤ STEP_HEIGHT —— 谁都走得上去，高台不是位移职业专属（11.3）', () => {
+    for (const side of ['n', 's'] as const) {
+      // 由外向内的登顶阶梯：地面 → 四级楼梯 → 台顶 → 桥面
+      const ladder = [
+        0,
+        ...[3, 2, 1, 0].map((i) => vol(`plat_${side}_stair_${i}`).max.y),
+        vol(`plat_${side}`).max.y,
+        vol('plat_bridge').max.y,
+      ];
+      for (let i = 1; i < ladder.length; i++) {
+        expect(ladder[i]! - ladder[i - 1]!, `${side} 侧第 ${i} 级升程超过可跨高度`)
+          .toBeLessThanOrEqual(GEOMETRY.STEP_HEIGHT + 1e-9);
+      }
+    }
+  });
+
+  it('★ 桥下净空 ≥ 角色高度（桥下是通道，不是卡头的房梁）', () => {
+    expect(vol('plat_bridge').min.y).toBeGreaterThanOrEqual(GEOMETRY.HITBOX_HEIGHT);
+  });
+
+  it('★ 出生走廊（|x| ≤ 准备区半宽）无任何新增几何 —— bot 无寻路，主通道保持直走可达', () => {
+    const prepHalfW = 10; // 3v3 teamSize=3 → max(10, …) = 10，与 buildArena 同式
+    for (const id of PILOT_IDS) {
+      const v = vol(id);
+      const overlaps = v.max.x >= -prepHalfW && v.min.x <= prepHalfW;
+      expect(overlaps, `${id} 侵入出生走廊（x ∈ [${v.min.x.toFixed(1)}, ${v.max.x.toFixed(1)}]）`).toBe(false);
+    }
+  });
+
+  it('试点只在 3v3：其余图不得混入试点件', () => {
+    for (const m of ARENA_MAPS) {
+      if ((m.id as string) === 'arena_3v3') continue;
+      const leaked = m.geometry.some((v) => v.id.startsWith('plat_') || v.id.startsWith('sight_wall_'));
+      expect(leaked, `${m.id as string} 混入了试点件`).toBe(false);
     }
   });
 });

@@ -77,8 +77,11 @@ try {
     small.includes('8 实体同屏'),
     `?stress=7 → ${small.replace(/\s+/g, ' ').trim().slice(0, 30)}`);
 
-  // ── 3：红线 —— 默认路径一个字节没动 ─────────────────────────
-  await page.goto(`${BASE}/?art=off`);
+  // ── 3：红线 —— 验收载体路径一个字节没动 ─────────────────────
+  // ★ P6 起无参默认页是主菜单（没有 #stats），141 项验收的载体搬到了
+  //   `?testbed` 前缀（m1–m4 同轮已改）。本脚本写于 P2，这里是漏改的一处 ——
+  //   X10 真机轮补上。检查的**意图**不变：压测台没把验收载体带坏。
+  await page.goto(`${BASE}/?testbed&art=off`);
   await sleep(2500);
   const testbed = await page.evaluate(`(() => {
     const t = document.getElementById('stats').textContent;

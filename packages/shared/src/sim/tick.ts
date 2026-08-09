@@ -64,7 +64,8 @@ import type { DrStore } from './dr.js';
 import { tickBoss, type BossState, type BossTickResult } from './boss.js';
 import { settleDeaths, type DeathSettlement } from './death.js';
 import { resolveEffects, useTrinket, type CombatEvent } from './effects/index.js';
-import { tickGround, type GroundStore } from './groundArea.js';
+import { expireGroundAreasFor, tickGround, type GroundStore } from './groundArea.js';
+import { CastKind } from '../types/enums.js';
 import {
   tickArsenal, tickPartyDrops, tickPickups,
   type ArsenalStore, type GroundDrop, type PickupStore, type PickupTickEvent,
@@ -74,7 +75,8 @@ import { tickArena, type ArenaEvents, type ArenaState } from './match/arena.js';
 import { tickFlags, type CtfDeps, type CtfState, type FlagEvent } from './match/flag.js';
 import { enqueueRespawn, tickRespawn, type RespawnEvent, type RespawnState } from './match/respawn.js';
 import {
-  separationVelocity, stepMovement, teleportTo, type MovementInput, type MovementState,
+  movementLockOf, separationVelocity, stepMovement, teleportTo,
+  type MovementInput, type MovementState,
 } from './movement.js';
 import { pruneInvalidTargets } from './targeting.js';
 import { tickSwings, type SwingResult, type SwingStore } from './autoAttack.js';
@@ -399,6 +401,18 @@ export const tickWorld = (
       onCastCompleted(c, s, st);
       sinks.cast?.onCompleted?.(c, s, st);
     },
+    /**
+     * 7.1「打断/移动/控制停止**剩余引导**」的兑现：引导已经开始结算的
+     * （暴风雪已在下雪），把它生成的地面区域当场掐掉 —— 不掐的话打断了
+     * 引导雪照下 4 秒，「打断反制封路技能」整条博弈是空谈。
+     * 读条期被打断（channelResolved 未置位）无区域可掐，原样透传。
+     */
+    onInterrupted: (c, st, source) => {
+      if (st.kind === CastKind.Channel && st.channelResolved) {
+        expireGroundAreasFor(deps.ground, c.id, String(st.skillId), deps.world.time);
+      }
+      sinks.cast?.onInterrupted?.(c, st, source);
+    },
   };
 
   // ── 0. 弃权判死（11.5：主动退出立即按淘汰处理）──────────────
@@ -562,6 +576,11 @@ export const tickWorld = (
       radius: e.radius,
       height: e.height,
       speedMultiplier: moveSpeedMultiplierOf(deps.auras, e, deps.world.time),
+      /**
+       * ★ 定身/昏迷的移动锁。与 speedMultiplier 同理读的是**上一 tick 末**
+       *   的 flags（deriveStatusFlags 在第 7 步），差一个 tick，确定性。
+       */
+      lock: movementLockOf(e.flags),
       separation: separationVelocity(state.position, separationOthers, e.radius),
     });
     deps.movement.set(id, r.state);

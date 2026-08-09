@@ -31,7 +31,7 @@ import { getArmor, getClass, getWeapon } from '../data/index.js';
 import type { FlagState } from '../types/enums.js';
 import type { CtfState } from '../sim/match/flag.js';
 import { secondsToNextWave, type RespawnState } from '../sim/match/respawn.js';
-import type { MovementState } from '../sim/movement.js';
+import { movementLockOf, type MovementState } from '../sim/movement.js';
 import type { GroundStore } from '../sim/groundArea.js';
 import type { ProjectileStore } from '../sim/projectile.js';
 import { dropViewFor, type ArsenalStore, type DropKind } from '../sim/arsenal.js';
@@ -212,6 +212,12 @@ export interface SelfMovementSnapshot {
    * ★ 只发给自己（`isSelf` 分支），不新增任何可见性面。
    */
   speedMultiplier: number;
+  /**
+   * 定身/昏迷的移动锁（`movementLockOf(flags)`）。与 speedMultiplier 同理：
+   * 参与积分就必须同源下发，否则被定身的瞬间预测照走、快照往回拽 ——
+   * 同一种橡皮筋。可选字段：老服务器不发时客户端按 'none' 处理。
+   */
+  lock?: 'none' | 'move' | 'full';
 }
 
 /**
@@ -855,6 +861,8 @@ export const buildSelfState = (deps: SnapshotDeps, viewer: CombatEntity): SelfSt
       fallStartY: m.fallStartY,
       // ★ 与 tickWorld 第 2 步**同一个函数** —— 两边同源才谈得上预测收敛
       speedMultiplier: moveSpeedMultiplierOf(deps.auras, viewer, deps.world.time),
+      // ★ 同上：定身/昏迷的移动锁也是积分输入，同一个 movementLockOf
+      lock: movementLockOf(viewer.flags),
     };
   }
 

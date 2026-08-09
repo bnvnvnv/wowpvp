@@ -33,7 +33,7 @@ import {
   type MinimapBlip,
 } from './ModeHud.js';
 import { MAX_PARTY_MEMBERS, type PartyMemberView } from './PartyFrame.js';
-import { POP_IN, POP_PEAK, POP_SETTLE, popScale } from './FloatingNumbers.js';
+import { CRIT_POP, POP_IN, POP_PEAK, POP_SETTLE, isCritKind, popScale } from './FloatingNumbers.js';
 import { SWAP_INTERRUPT_TEXT, compareArmors, compareWeapons } from './LoadoutPanel.js';
 import { CONTROL_VISUALS } from '../vfx/status.js';
 import {
@@ -631,9 +631,30 @@ describe('浮动数字弹跳（打击感改造）', () => {
     expect(POP_PEAK.crit).toBeGreaterThan(POP_PEAK.damage * 1.4);
   });
 
-  it('★ 全部类型的曲线都收敛回 1.0 —— 数字不能永远比 CSS 字号大', () => {
+  it('★ 默认曲线收敛回 1.0 —— 普通数字不能永远比 CSS 字号大（暴击是唯一例外，见下）', () => {
     for (const peak of Object.values(POP_PEAK)) {
       expect(popScale(POP_IN + POP_SETTLE + 0.01, peak)).toBeCloseTo(1, 6);
     }
+  });
+
+  /**
+   * X10 追加轮用户两轮拍板：暴击是**从小炸大的爆炸字**（「字从小变大，
+   * 效果像个爆炸，字的大小跟人差不多大」），且颜色分敌我（打人橙黄/挨打红）。
+   */
+  it('★★ 暴击弹道：从小炸到 5 倍峰值（≈角色身高量级），回落仍保持 1.5 倍大字', () => {
+    expect(popScale(0, POP_PEAK.crit, CRIT_POP), '爆炸要从小开始').toBeLessThan(1);
+    expect(popScale(POP_IN, POP_PEAK.crit, CRIT_POP), 'POP_IN 时刻应在峰值')
+      .toBeCloseTo(POP_PEAK.crit, 5);
+    expect(POP_PEAK.crit, '峰值要够「跟人差不多大」（26px × 5 ≈ 130px）')
+      .toBeGreaterThanOrEqual(5);
+    expect(popScale(POP_IN + POP_SETTLE + 0.01, POP_PEAK.crit, CRIT_POP))
+      .toBeCloseTo(CRIT_POP.settleTo, 6);
+    expect(CRIT_POP.settleTo, '回落尺寸必须仍大于普通数字的 1.0').toBeGreaterThan(1);
+  });
+
+  it('★ 挨打的暴击（critTaken）与打人的暴击同弹道 —— 只有颜色分敌我', () => {
+    expect(POP_PEAK.critTaken).toBe(POP_PEAK.crit);
+    expect(isCritKind('crit') && isCritKind('critTaken')).toBe(true);
+    expect(isCritKind('damage')).toBe(false);
   });
 });

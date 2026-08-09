@@ -145,6 +145,11 @@ export interface MatchLoopDeps {
    */
   onPreTick?: () => void;
   /**
+   * 每 tick 结束后把本 tick 的事件流递出去。BotDriver 的仇恨表靠它记账 ——
+   * 与战后统计同一种消费方式（事件流的只读折叠），不碰 world。
+   */
+  onPostTick?: (events: readonly CombatEvent[]) => void;
+  /**
    * 一只大 BOSS 进场了 / 离场了。
    *
    * ★★ **循环自己不会让 BOSS 动起来。** 它的行为与人机走同一条路：
@@ -444,6 +449,9 @@ export class MatchLoop {
     this.pendingForfeits.clear();
     this.pendingTrinkets.clear();
     this.pendingItemGrants.clear();
+
+    // ★ AI 层的观察窗口（BotDriver 仇恨表）：事件流原样递出，只读折叠
+    this.deps.onPostTick?.(result.events);
 
     for (const ev of result.flags) {
       const flag = this.match.ctf?.state.flags[ev.flagTeam as number];
@@ -804,8 +812,9 @@ export class MatchLoop {
    * ★ beginSwing 幂等 —— 换目标**不刷新**挥击计时（7.6：计时不被重置），
    *   所以每 tick 同步是安全的；stopSwing 后再交战则从整个间隔重新起算。
    * ★ 放在 applyCommands 之后：本 tick 的 SetTarget 立即参与判定。
-   * ★ 试验场没有这条路径（CombatDirector 不建 SwingStore）—— 141 项验收
-   *   的假人不会突然开始白打玩家。
+   * ★ 试验场的实战模式有一份同判据的镜像（`CombatDirector.syncBotSwings`，
+   *   X10 真机轮补上 —— 此前只建了 store 没人登记，白字整条是死的）；
+   *   站桩模式（141 项验收的载体）不传 swings store，假人不会白打玩家。
    */
   private syncSwings(): void {
     const now = this.match.world.time;

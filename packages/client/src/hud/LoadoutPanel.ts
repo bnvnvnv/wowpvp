@@ -163,12 +163,20 @@ export class LoadoutPanel {
   /** 最近一次中断原因，显示几秒后淡出 */
   private interruptText: string | null = null;
   private interruptUntil = 0;
+  /** X10 追加轮（用户：「右边的…装备…很占屏幕」）：可收起成一枚小签 */
+  private collapsed = false;
 
   constructor(container: HTMLElement) {
     this.el = document.createElement('div');
     this.el.id = 'loadout-panel';
     this.el.style.display = 'none';
     container.appendChild(this.el);
+    // 委托到容器上 —— render 每帧重建 innerHTML，按钮上的监听会跟着丢
+    this.el.addEventListener('click', (ev) => {
+      if ((ev.target as HTMLElement).closest('[data-lp-toggle]')) {
+        this.collapsed = !this.collapsed;
+      }
+    });
   }
 
   /** 10.7 换装被中断时调用，15.3 要求"明确提示原因" */
@@ -217,8 +225,18 @@ export class LoadoutPanel {
     // ★ 用 `allWeapons` / `allArmors` 而不是 `[current, ...spares]` ——
     //   换到备用武器后 spares 里仍含着它，拼起来会把当前武器列两遍，
     //   同时默认武器凭空消失（而 10.6 要求默认装备永远在列表里）。
+    // 收起态：一枚小签。换装进行中/被打断时强制展开 —— 15.3 的进度与
+    // 原因提示不能藏（藏了就是「换装没反应」）
+    if (this.collapsed && !swap && !interrupt) {
+      this.el.innerHTML = `
+        <button class="lp-toggle" data-lp-toggle title="展开装备栏">🎒 装备 ◂</button>`;
+      return;
+    }
+
     this.el.innerHTML = `
-      <div class="lp-title">战场装备栏</div>
+      <div class="lp-title">战场装备栏
+        <button class="lp-toggle lp-fold" data-lp-toggle title="收起装备栏">▸</button>
+      </div>
       ${renderSection('武器', view.allWeapons, view.currentWeapon?.id, (w) => weaponSummary(w))}
       ${renderSection('护甲', view.allArmors, view.currentArmor?.id, (a) => armorSummary(a))}
       ${swapHtml}

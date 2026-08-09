@@ -319,7 +319,16 @@ export class CharacterView {
     if (!clip) return;
     const bones: THREE.Object3D[] = [];
     m.root.traverse((o) => { if ((o as THREE.Bone).isBone) bones.push(o); });
-    const additive = buildUpperBodyAdditive(clip, bones);
+    /**
+     * ★★ 参考姿势必须传 Idle：Spellcasting 是循环片段，第 0 帧就是施法
+     *   姿态，以自己为参考的叠加增量 ≈ 0 —— 层在播但看不见（X10 实测）。
+     *   Idle 缺失时宁可不建叠加层走全身兜底，也不建一个隐形层。
+     */
+    const idle = THREE.AnimationClip.findByName(
+      m.clips as THREE.AnimationClip[], CLIP[AnimState.Idle].name,
+    );
+    if (!idle) return;
+    const additive = buildUpperBodyAdditive(clip, bones, idle);
     if (!additive) return;
     const a = this.mixer.clipAction(additive, undefined, THREE.AdditiveAnimationBlendMode);
     a.setLoop(THREE.LoopRepeat, Infinity);

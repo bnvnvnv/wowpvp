@@ -114,17 +114,39 @@ const WEATHER: Record<AttributeVisual['particle'], {
 const MAX_FILL_PARTICLES = 32;
 
 /**
+ * 技能级天气覆盖（X10 追加轮用户拍板：「暴风雪应该是一堆很大很大的大雪球
+ * 往下砸，不是那种小雪花」）。
+ *
+ * ★ 按 skillId 而不是属性覆盖 —— frost 的通用雪花档还服务着凛冬领域等
+ *   别的冰霜区域，暴风雪要的「大块头砸落」是**这一个技能**的性格。
+ * ★ countScale 把每簇粒子数打下来：雪球要读作「一颗一颗砸」，靠的是
+ *   **个头大、数量少、下落快**；数量不减的话 20 颗大球挤在一起还是一团云。
+ * ★ 池预算不升反降：life 1.15 / cadence 0.6 → ceil = 2 簇位（雪花档是 3），
+ *   `vfxPlans.test` 的预算断言照跑。
+ */
+const SKILL_WEATHER: Record<string, {
+  spawnHeight: number; gravity: number; drag: number; life: number; size: number;
+  countScale: number;
+}> = {
+  // 6 米高出生、-9 重力近自由落体、1.35 尺寸（雪花的 2.3 倍）、数量减半再减
+  'mage.blizzard': { spawnHeight: 6, gravity: -9, drag: 0.15, life: 1.15, size: 1.35, countScale: 0.45 },
+};
+
+/**
  * 地面区域的填充计划。
  *
  * @param radius 区域半径（米）—— 越大撒得越多，否则大区域看着比小区域还空
  * @param density `decorativeDensity(quality)`
+ * @param skillId 传了且命中 `SKILL_WEATHER` 时套技能级覆盖（暴风雪的大雪球）
  */
 export const groundFillPlanFor = (
   particle: AttributeVisual['particle'],
   radius: number,
   density: number,
+  skillId?: string,
 ): GroundFillPlan => {
-  const w = WEATHER[particle];
+  const ov = skillId !== undefined ? SKILL_WEATHER[skillId] : undefined;
+  const w = ov ? { ...WEATHER[particle], ...ov } : WEATHER[particle];
   const d = Math.max(0, density);
   if (d <= 0) {
     return {
@@ -141,7 +163,10 @@ export const groundFillPlanFor = (
      *   6 米的暴风雪：2 簇 × 21 粒 = 42 粒/次，稳态约 126 粒在飘。
      */
     clusters: radius >= 3 ? 2 : 1,
-    count: Math.max(3, Math.min(MAX_FILL_PARTICLES, Math.round((8 + radius * 2.2) * d))),
+    count: Math.max(3, Math.min(
+      MAX_FILL_PARTICLES,
+      Math.round((8 + radius * 2.2) * d * (ov?.countScale ?? 1)),
+    )),
     /**
      * ★ 0.6 秒是**池预算**：`ceil(life/cadence) × clusters` 就是一片区域的
      *   并发槽数，最长的雪（life 1.8）= 3 × 2 = 6 格，

@@ -10,8 +10,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ArenaPreset, GameMode, Slot,
   addEntity, allocEntityId, arena2v2, asClassId, createEntity, createMatch, createRoom,
-  createWorld, isHealSkill, getSkill, joinRoom,
-  mage, rogue, warrior, vec3, TEAM_BLUE, TEAM_RED,
+  createThreatStore, createWorld, isHealSkill, getSkill, joinRoom,
+  mage, recordThreat, rogue, warrior, vec3, TEAM_BLUE, TEAM_RED,
   type ClassId, type EntityId, type MapId, type Match,
 } from '@wowpvp/shared';
 import { BotDriver, callFocusTarget, nearestFoe, pickFoe } from './BotDriver.js';
@@ -488,5 +488,62 @@ describe('B1 接线：驱动器把协同真的发了出去', () => {
     // easy 走「最近敌人」：redA 离 X 近（12 vs 18）、redB 离 Y 近（12 vs 18）
     expect(targetOf(r, 'redA')).toBe(x);
     expect(targetOf(r, 'redB')).toBe(y);
+  });
+});
+
+/**
+ * 仇恨选敌（X10 真机轮用户拍板：「谁的仇恨值高就打谁」）。
+ * 表本身在 shared/ai/threat.test.ts 全测；这里钉的是 pickFoe 的接线与红线。
+ */
+describe('仇恨选敌（threat 表 → pickFoe）', () => {
+  const dmg = (source: EntityId, target: EntityId, amount: number) => ({
+    t: 'damage' as const, sourceId: source, targetId: target, amount,
+    school: 0 as never, absorbed: 0, overkill: 0, immune: false,
+    skillId: 's', preventedByEquipment: 0,
+  });
+
+  it('★★ normal：挨打后转火攻击者（仇恨覆盖「最近敌人」）；表空逐位走老路径', () => {
+    const { world, bot, m } = setup();
+    const near = foeAt(world, 5, 1);
+    const far = foeAt(world, 30, 1);
+    const threat = createThreatStore();
+    recordThreat(threat, [dmg(far.id, bot.id, 300)]);
+    expect(pickFoe(m, bot, 'normal', undefined, undefined, threat)?.id).toBe(far.id);
+    // 表空（开局没挨过打）→ 最近敌人，既有回归网一寸不动
+    expect(pickFoe(m, bot, 'normal', undefined, undefined, createThreatStore())?.id).toBe(near.id);
+    expect(near.id).not.toBe(far.id);
+  });
+
+  it('★★ A4 红线在仇恨上同样成立：隐身的仇人不进候选', () => {
+    const { world, bot, m } = setup();
+    const near = foeAt(world, 5, 1);
+    const sneak = foeAt(world, 10, 1);
+    const threat = createThreatStore();
+    recordThreat(threat, [dmg(sneak.id, bot.id, 500)]);
+    sneak.flags.stealthed = true;
+    expect(pickFoe(m, bot, 'normal', undefined, undefined, threat)?.id).toBe(near.id);
+  });
+
+  it('★ easy 不记仇（木桩纪律）：挨打了也还是打最近的', () => {
+    const { world, bot, m } = setup();
+    const near = foeAt(world, 5, 1);
+    const far = foeAt(world, 30, 1);
+    const threat = createThreatStore();
+    recordThreat(threat, [dmg(far.id, bot.id, 9999)]);
+    expect(pickFoe(m, bot, 'easy', undefined, undefined, threat)?.id).toBe(near.id);
+  });
+
+  it('hard：仇恨折分进评分 —— 同血同距时挨打的优先，但压不过真正的残血', () => {
+    const { world, bot, m } = setup();
+    const a = foeAt(world, 10, 1);
+    const b = addEntity(world, createEntity(allocEntityId(world), warrior, TEAM_BLUE, vec3(0, 0, -10)));
+    const threat = createThreatStore();
+    // b 打了 bot 400 血 → 折 20 分：同分局面下 b 胜出
+    recordThreat(threat, [dmg(b.id, bot.id, 400)]);
+    expect(pickFoe(m, bot, 'hard', undefined, undefined, threat)?.id).toBe(b.id);
+    // 但 a 真残血（30%）时，70 分的血量差压过封顶 30 分的仇恨
+    a.health = a.maxHealth * 0.3;
+    recordThreat(threat, [dmg(b.id, bot.id, 100000)]);
+    expect(pickFoe(m, bot, 'hard', undefined, undefined, threat)?.id).toBe(a.id);
   });
 });

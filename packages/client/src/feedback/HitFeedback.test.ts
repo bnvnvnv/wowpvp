@@ -105,10 +105,14 @@ describe('分档驱动的表现', () => {
     expect(view.playHitReact).toHaveBeenCalledTimes(2);
   });
 
-  it('★ 暴击浮字带「!」后缀（字形是第三通道）且走 crit 类型', () => {
+  it('★ 暴击浮字带「!」后缀（字形是第三通道）且颜色分敌我：自己挨的走 critTaken', () => {
     const { deps, feedback } = makeDeps();
+    // 默认夹具打的是**自己**（targetId = SELF）→ 红色的 critTaken
     feedback.onHit(hit({ crit: true, amount: 123 }));
-    expect(deps.floaters.push).toHaveBeenCalledWith('123!', 'crit', expect.anything());
+    expect(deps.floaters.push).toHaveBeenCalledWith('123!', 'critTaken', expect.anything());
+    // 打**别人**的暴击 → 橙黄的 crit（X10 追加轮拍板：谁在爆谁一眼分清）
+    feedback.onHit(hit({ crit: true, amount: 88, targetId: OTHER, sourceId: SELF }));
+    expect(deps.floaters.push).toHaveBeenCalledWith('88!', 'crit', expect.anything());
   });
 
   it('★ overkill>0 且自己击杀 → 击杀确认音', () => {

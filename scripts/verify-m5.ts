@@ -71,8 +71,14 @@ console.log('\n── 规格书 11.2 / 验收 #24：地图尺寸与掩体 ──
 {
   const rows = [];
   let allOk = true;
-  for (const [i, map] of [arena2v2, arena3v3, arena5v5].entries()) {
-    const spec = ARENA_SPECS[i];
+  for (const map of [arena2v2, arena3v3, arena5v5]) {
+    /**
+     * ★ 按 id 查找，不能按下标 —— P12 在 SPECS 头部插入 arena_1v1 之后，
+     *   `ARENA_SPECS[0]` 是 1v1 的规格，拿它对 2v2 的图必红（#24 曾因此
+     *   连红三张：地图与各自规格其实一直自洽，歪的是这里的索引对齐。
+     *   X10 真机轮归因修复，2026-08-09）。
+     */
+    const spec = ARENA_SPECS.find((s) => s.id === (map.id as string))!;
     const spawn = map.prepRooms[0].spawns[0].position;
     const seconds = distance2D(spawn, vec3(0, 0, 0)) / MOVE.BASE_SPEED;
     const pillars = map.geometry.filter((v) => v.tag === 'pillar').length;

@@ -34,6 +34,8 @@
  */
 
 import {
+  createThreatStore,
+  decayThreat,
   decideBotAction,
   distance2D,
   encodeClientMessage,
@@ -42,12 +44,18 @@ import {
   isVisibleTo,
   listEntities,
   needsGroundPlacement,
+  pickByThreat,
+  recordThreat,
+  threatScoreBonus,
   usesNoTarget,
+  SIM,
   type BotDifficulty,
   type CombatEntity,
+  type CombatEvent,
   type EntityId,
   type Match,
   type TeamId,
+  type ThreatStore,
   type VisibilityContext,
 } from '@wowpvp/shared';
 import type { SessionSocket } from './room/Session.js';
@@ -140,6 +148,22 @@ export class BotDriver {
    */
   private readonly lastCalls = new Map<TeamId, EntityId>();
 
+  /**
+   * 仇恨表（X10 用户拍板）。与 `lastCalls` 同一条纪律：驱动器局部记忆，
+   * world 里没有第二份事实；表里的 id 每次用都重新过 `isFoeCandidate`。
+   * 数据从 `observe()` 喂进来（MatchLoop 每 tick 的事件流，与统计同源）。
+   */
+  private readonly threat: ThreatStore = createThreatStore();
+
+  /**
+   * 每 tick 由 MatchLoop（经 RoomServer 的 onPostTick）喂入本 tick 的事件流。
+   * ★ 只读折叠 —— 不碰 world；顺带做半衰（调用节奏 = tick 节奏，dt 恒定）。
+   */
+  observe(events: readonly CombatEvent[]): void {
+    decayThreat(this.threat, SIM.TICK_DT);
+    recordThreat(this.threat, events);
+  }
+
   /** 每 tick 调用一次。★ 它只发消息，不碰 world —— 红线在这里是结构性的 */
   tick(): void {
     const m = this.match();
@@ -171,6 +195,7 @@ export class BotDriver {
        */
       const foe = pickFoe(
         m, self, seat.difficulty ?? 'normal', self.targets.hard, calls.get(self.team),
+        this.threat,
       );
       if (!foe) continue;
 
@@ -416,21 +441,35 @@ export const pickFoe = (
   currentTargetId?: EntityId,
   /** 本队这一 tick 的集火呼叫（`callFocusTarget` 的产出）。不传 = 没有呼叫 */
   focusCallId?: EntityId,
+  /**
+   * 仇恨表（X10 用户拍板「谁的仇恨值高就打谁」）。不传 = 没有仇恨这回事，
+   * 三档全走老路径 —— balance harness（1v1、不建表）因此逐位不变。
+   */
+  threat?: ThreatStore,
 ): CombatEntity | undefined => {
   /**
-   * ★ easy 不参与协作 —— 与它不打断/不躲圈/不开保命同一条难度门：
-   *   木桩手感卖的就是「他不会配合」。
-   * ★ normal 保留「最近敌人」的骨架，只多一件事：**呼叫在我的候选集里就跟**。
-   *   没有呼叫时逐位走老路径（既有回归网一寸不动）。
-   *   ⚠️ 取舍如实记：normal 没有评分也没有粘性，跟呼叫等于**无条件转火** ——
-   *   贴脸打我的人会被放着不管。防抖由呼叫自己的粘性兜（见 callFocusTarget），
-   *   给 normal 也补一套个体粘性是 hard 的活，那正是两档的分界。
+   * ★ easy 不参与协作、也**不记仇** —— 与它不打断/不躲圈/不开保命同一条
+   *   难度门：木桩手感卖的就是「他不会配合」。
+   * ★ normal 的选敌阶梯：**仇恨最高者 > 集火呼叫 > 最近敌人**。
+   *   「谁打我打谁」是人最直觉的行为，放 normal 正合适；仇恨自带
+   *   SWITCH_RATIO 迟滞（pickByThreat），normal 从此有了个体防抖。
+   *   开局没挨过打（表空）时逐位走老路径 —— 既有回归网一寸不动。
+   * ★ hard 不走仇恨短路 —— 它有评分体系，仇恨折成分数进评分（见下）：
+   *   集火纪律（呼叫）与「切残血」的判断不该被个人恩怨整个顶掉。
    */
   if (difficulty !== 'hard') {
+    const ctx0 = m.ctf ? { ctf: m.ctf.state } : undefined;
+    if (difficulty === 'normal' && threat) {
+      const picked = pickByThreat(threat, self.id, currentTargetId, (id) => {
+        const e = m.world.entities.get(id);
+        // A4 红线：仇恨不扩大候选集 —— 隐身的仇人对我等于不存在
+        return e !== undefined && isFoeCandidate(e, self, ctx0);
+      });
+      if (picked !== undefined) return m.world.entities.get(picked);
+    }
     if (difficulty === 'easy' || focusCallId === undefined) return nearestFoe(m, self);
-    const ctx = m.ctf ? { ctf: m.ctf.state } : undefined;
     for (const e of listEntities(m.world)) {
-      if (e.id === focusCallId && isFoeCandidate(e, self, ctx)) return e;
+      if (e.id === focusCallId && isFoeCandidate(e, self, ctx0)) return e;
     }
     return nearestFoe(m, self);
   }
@@ -443,8 +482,12 @@ export const pickFoe = (
 
   for (const e of listEntities(m.world)) {
     if (!isFoeCandidate(e, self, ctx)) continue;
-    // ★ 呼叫只在这一行生效：减分，不是短路 —— 候选集与可见性都没被碰过
-    const score = foeScore(self, e) - (e.id === focusCallId ? FOCUS_CALL_BONUS : 0);
+    // ★ 呼叫与仇恨都只在这一行生效：减分，不是短路 —— 候选集与可见性没被碰过。
+    //   仇恨折分有界（THREAT.SCORE_CAP=30）：打了我 600 血的人自带 ≈30% 血的
+    //   优先度，压得过粘性(20)、压不过一个真正残血的目标
+    const score = foeScore(self, e)
+      - (e.id === focusCallId ? FOCUS_CALL_BONUS : 0)
+      - (threat ? threatScoreBonus(threat, self.id, e.id) : 0);
     if (score < bestScore) { bestScore = score; best = e; }
     // ★ 当前目标的分数**在同一次遍历里**算 —— 它必须同样过候选集：
     //   目标死了/隐身了/被治满了都该正常脱粘，而不是粘在一个非法目标上

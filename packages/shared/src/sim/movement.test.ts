@@ -13,6 +13,7 @@ import {
   cylinderOverlapsAabb,
   findGroundY,
   isInWater,
+  movementLockOf,
   separationVelocity,
   stepMovement,
   teleportTo,
@@ -480,5 +481,81 @@ describe('障碍物空间索引 —— movement 侧逐位等价（P11 性能改�
         if (overlaps) expect(got.has(b)).toBe(true);
       }
     }
+  });
+});
+
+/**
+ * 控制效果的移动锁（X10 真机轮实测发现的缺口：`flags.rooted` 此前在移动
+ * 积分链上零消费方 —— 定身的光环只置标志，减速链不认它，「定身的战士
+ * 照样追人」。修法见 `MovementLock` 的注释）。
+ */
+describe('控制移动锁（定身/昏迷）', () => {
+  const rooted = { lock: 'move' as const };
+  const stunned = { lock: 'full' as const };
+
+  it("movementLockOf：stunned → 'full'，rooted → 'move'，否则 'none'（stunned 优先）", () => {
+    expect(movementLockOf({ stunned: false, rooted: false })).toBe('none');
+    expect(movementLockOf({ stunned: false, rooted: true })).toBe('move');
+    expect(movementLockOf({ stunned: true, rooted: false })).toBe('full');
+    expect(movementLockOf({ stunned: true, rooted: true })).toBe('full');
+  });
+
+  it("★ 'move'（定身）：不能走、不能跳，但可以转身", () => {
+    let s = run(settle(), fwd(), [ground], 60); // 先跑起来（满速）
+    const from = { ...s.position };
+    // 定身后继续按 W + 跳：位置应收敛停住，不产生新位移
+    for (let i = 0; i < 60; i++) {
+      s = stepMovement(s, { ...fwd(Math.PI / 2), jump: true }, DT, [ground], rooted).state;
+    }
+    // 转身生效（yaw 采信输入）……
+    expect(s.yaw).toBeCloseTo(Math.PI / 2, 5);
+    // ……但速度衰减到零、没有起跳
+    expect(Math.hypot(s.velocity.x, s.velocity.z)).toBeLessThan(0.01);
+    expect(s.grounded).toBe(true);
+    // 惯性滑行距离有限（GROUND_ACCEL 把速度拉回 0 的那零点几米）
+    const drift = Math.hypot(s.position.x - from.x, s.position.z - from.z);
+    expect(drift).toBeLessThan(1);
+  });
+
+  it("★ 'full'（昏迷）：连转身一起锁", () => {
+    let s = settle();
+    for (let i = 0; i < 30; i++) {
+      s = stepMovement(s, { ...fwd(Math.PI / 2), jump: true }, DT, [ground], stunned).state;
+    }
+    expect(s.yaw).toBe(0); // 输入的 yaw 被忽略，保持 settle 时的 0
+    expect(Math.hypot(s.velocity.x, s.velocity.z)).toBeLessThan(0.01);
+    expect(s.grounded).toBe(true);
+  });
+
+  it('★ 锁的是意图不是物理：定身在空中照样吃重力落地', () => {
+    // 从空中开始（3 米高），全程定身 —— 必须正常落到地面
+    let s = createMovementState(vec3(0, 3, 0));
+    for (let i = 0; i < 120; i++) {
+      s = stepMovement(s, fwd(), DT, [ground], rooted).state;
+    }
+    expect(s.grounded).toBe(true);
+    expect(s.position.y).toBeCloseTo(0, 1);
+  });
+
+  it('锁下软推开照常：定身的角色仍会被挤开让位（A2 口径）', () => {
+    let s = settle();
+    const before = s.position.x;
+    for (let i = 0; i < 30; i++) {
+      s = stepMovement(s, idle, DT, [ground], {
+        ...rooted,
+        separation: separationVelocity(s.position, [vec3(s.position.x - 0.3, 0, s.position.z)], GEOMETRY.HITBOX_RADIUS),
+      }).state;
+    }
+    expect(s.position.x).toBeGreaterThan(before + 0.05); // 被从 -X 方向推开
+  });
+
+  it("lock 缺省 = 'none'：不带锁的一切行为不变（回归哨兵）", () => {
+    const a = run(settle(), fwd(), [ground], 60);
+    let b = settle();
+    for (let i = 0; i < 60; i++) {
+      b = stepMovement(b, fwd(), DT, [ground], { lock: 'none' }).state;
+    }
+    expect(b.position).toEqual(a.position);
+    expect(b.velocity).toEqual(a.velocity);
   });
 });

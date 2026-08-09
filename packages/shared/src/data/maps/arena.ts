@@ -21,7 +21,7 @@
  *   · 玩家不能重新进入准备区
  */
 
-import { MOVE } from '../../constants/combat.js';
+import { GEOMETRY, MOVE } from '../../constants/combat.js';
 import { GameMode } from '../../types/enums.js';
 import { asMapId, TEAM_BLUE, TEAM_RED, type TeamId } from '../../types/ids.js';
 import {
@@ -42,6 +42,12 @@ interface ArenaSpec {
   pillarCount: number;
   /** W15：环境预设（纯表现，客户端 ENV_PRESETS 的键）。三张图三个时辰，一眼可辨 */
   envPreset: string;
+  /**
+   * X10 真机轮用户拍板（2026-08-09）：「竞技场要有复杂的地形 —— 视线遮挡、
+   * 楼梯和小桥」。先在 3v3 一张图试点（`makePilotTerrain`），实测手感后再
+   * 决定铺开 —— P5 的**地形**半边由此开工，贴图/天空盒那半仍待美术方向拍板。
+   */
+  terrain?: 'pilot';
 }
 
 /**
@@ -57,7 +63,7 @@ interface ArenaSpec {
 const SPECS: readonly ArenaSpec[] = [
   { id: 'arena_1v1', name: '试炼环·单挑', mode: GameMode.Arena1v1, spawnToCenterSeconds: 5, teamSize: 1, pillarCount: 2, envPreset: 'dusk' },
   { id: 'arena_2v2', name: '试炼环·小型', mode: GameMode.Arena2v2, spawnToCenterSeconds: 6, teamSize: 2, pillarCount: 3, envPreset: 'dusk' },
-  { id: 'arena_3v3', name: '试炼环·标准', mode: GameMode.Arena3v3, spawnToCenterSeconds: 8, teamSize: 3, pillarCount: 4, envPreset: 'day' },
+  { id: 'arena_3v3', name: '试炼环·标准', mode: GameMode.Arena3v3, spawnToCenterSeconds: 8, teamSize: 3, pillarCount: 4, envPreset: 'day', terrain: 'pilot' },
   { id: 'arena_4v4', name: '试炼环·进阶', mode: GameMode.Arena4v4, spawnToCenterSeconds: 9, teamSize: 4, pillarCount: 5, envPreset: 'day' },
   { id: 'arena_5v5', name: '试炼环·大型', mode: GameMode.Arena5v5, spawnToCenterSeconds: 10, teamSize: 5, pillarCount: 6, envPreset: 'overcast' },
   { id: 'arena_6v6', name: '试炼环·团战', mode: GameMode.Arena6v6, spawnToCenterSeconds: 11, teamSize: 6, pillarCount: 7, envPreset: 'dusk' },
@@ -150,6 +156,77 @@ const makeDecor = (spec: ArenaSpec, half: number, arenaHalf: number, prepHalfW: 
   return out;
 };
 
+/**
+ * 3v3 试点地形（X10 用户拍板：视线遮挡/楼梯/小桥）。
+ *
+ * 结构一句话：**东翼一对高台由小桥相连（桥下可穿行），西翼两段视线矮墙**。
+ * 中路（出生走廊 |x| ≤ prepHalfW）刻意一件不放 —— bot 没有寻路（B1），
+ * 主通道必须保持直走可达；侧翼才是地形博弈的地方。
+ *
+ * 11.3 的三条在结构上成立（maps.test 逐件断言）：
+ *   · **高台不是永久安全点**：每台各有一部宽楼梯（级高 = STEP_HEIGHT，
+ *     谁都走得上去，不是位移职业专属 → fairness.mobilityOnlyPlatforms 仍空），
+ *     两台又被桥连通 —— 台上的人可被两个方向包抄，且整个暴露在远程射程里
+ *   · **桥下净空 = 台高 2.25m > 角色 2.0m**：桥下是一条带顶盖的视线走廊
+ *   · **全部件 z→-z 镜像**：±Z 两队公平（fairness.spawnToCenterDelta 恒 0 不变）
+ */
+const PILOT = {
+  /** 级高顶着可跨上限（tryStepUp）—— 楼梯在移动物理上就是坡道 */
+  RISE: GEOMETRY.STEP_HEIGHT,
+  STEPS: 5,
+  TREAD: 1.1,
+  PLAT_SIZE: 7,
+  /** 台心离中线的 z 距离。两台内沿间距 = 2×(PLAT_Z − PLAT_SIZE/2) = 8 米 */
+  PLAT_Z: 7.5,
+  BRIDGE_W: 4,
+  DECK_H: 0.35,
+} as const;
+/** 台高 = 整部楼梯的总升程，同时是桥下净空（2.25 > HITBOX_HEIGHT 2.0） */
+const PILOT_PLAT_H = PILOT.RISE * PILOT.STEPS;
+
+const makePilotTerrain = (half: number): MapVolume[] => {
+  const px = half * 0.4; // 东翼台心（3v3 半径 56m 下 ≈ 22.4，柱环 30.8 之内）
+  const out: MapVolume[] = [];
+
+  for (const sign of [1, -1] as const) {
+    const side = sign === 1 ? 's' : 'n';
+    const pz = sign * PILOT.PLAT_Z;
+    // 台体：顶面站得上（standable 默认真）、整块挡视线
+    out.push(box(`plat_${side}`, 'wall',
+      { x: px, y: 0, z: pz },
+      { w: PILOT.PLAT_SIZE, h: PILOT_PLAT_H, d: PILOT.PLAT_SIZE }));
+    // 东侧宽楼梯：台沿向外逐级下行（4 个中间级 + 台顶 = 5 段升程）
+    for (let i = 0; i < PILOT.STEPS - 1; i++) {
+      out.push(box(`plat_${side}_stair_${i}`, 'floor',
+        {
+          x: px + PILOT.PLAT_SIZE / 2 + i * PILOT.TREAD + PILOT.TREAD / 2,
+          y: 0,
+          z: pz,
+        },
+        { w: PILOT.TREAD, h: PILOT_PLAT_H - (i + 1) * PILOT.RISE, d: 4 },
+        { blocksSight: false }));
+    }
+  }
+
+  // 小桥：连接两台顶面（各搭 0.5 米），桥下可穿行
+  out.push(box('plat_bridge', 'roof',
+    { x: px, y: PILOT_PLAT_H, z: 0 },
+    {
+      w: PILOT.BRIDGE_W,
+      h: PILOT.DECK_H,
+      d: (PILOT.PLAT_Z - PILOT.PLAT_SIZE / 2) * 2 + 1,
+    }));
+
+  // 西翼：两段视线矮墙（2.8m 高于视线、7m 短于外墙 —— 绕两端即破，
+  // 与柱子的区别是「挡一条线而不是一个点」，读条/治疗有了可靠的躲身位）
+  for (const sign of [1, -1] as const) {
+    out.push(box(`sight_wall_${sign === 1 ? 's' : 'n'}`, 'wall',
+      { x: -half * 0.36, y: 0, z: sign * 11 },
+      { w: 1, h: 2.8, d: 7 }));
+  }
+  return out;
+};
+
 const buildArena = (spec: ArenaSpec): MapDef => {
   const half = secondsToMeters(spec.spawnToCenterSeconds); // 中央到出生点
   const arenaHalf = half + 6; // 出生点后面再留一点空间
@@ -177,6 +254,9 @@ const buildArena = (spec: ArenaSpec): MapDef => {
     // 中央的一段矮墙：提供正面视线阻挡，但只有半高，
     // 6.4 意义上仍然挡视线（它高于胸口 1.35 米）
     box('center_wall', 'wall', { x: 0, y: 0, z: 0 }, { w: half * 0.5, h: 3, d: 1.2 }),
+
+    // X10 试点地形（现只有 3v3）。★ 尺寸/柱数原值一字不动 —— 加的是侧翼件
+    ...(spec.terrain === 'pilot' ? makePilotTerrain(half) : []),
   ];
 
   // 11.1 准备区。11.3：玩家不能重新进入准备区躲避

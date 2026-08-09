@@ -8,3 +8,4 @@ export * from './data/maps/index.js';
 export * from './sim/index.js';
 export * from './net/index.js';
 export * from './ai/botController.js';
+export * from './ai/threat.js';

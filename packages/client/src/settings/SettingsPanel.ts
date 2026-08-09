@@ -62,6 +62,13 @@ export interface SettingsPanelHooks {
     /** 恢复默认技能栏 */
     reset: () => void;
   };
+  /**
+   * X10 追加轮（用户：「进入教学或房间后怎么回去/退出」）：面板底部的
+   * 离场按钮。语义由调用方定 —— 联网场景是「离开对局（按弃权淘汰结算，
+   * 11.5）」，练习场是「返回主菜单」。不传则不显示（验收载体的默认路径
+   * 不带它，DOM 逐字节不变）。
+   */
+  leaveMatch?: { label: string; hint?: string; run: () => void };
 }
 
 const COLORBLIND_TEXT: Record<ColorblindMode, string> = {
@@ -202,8 +209,11 @@ export class SettingsPanel {
     this.el.addEventListener('change', (e) => this.onControl(e));
     this.el.addEventListener('click', (e) => {
       const el = (e.target as HTMLElement).closest<HTMLElement>(
-        '[data-close],[data-rebind],[data-reset-keys],[data-bar-slot],[data-pool-skill],[data-reset-bar]');
+        '[data-close],[data-rebind],[data-reset-keys],[data-bar-slot],[data-pool-skill],[data-reset-bar],[data-leave-match]');
       if (el?.dataset['close'] !== undefined) this.close();
+      else if (el?.dataset['leaveMatch'] !== undefined && this.hooks.leaveMatch) {
+        this.hooks.leaveMatch.run();
+      }
       else if (el?.dataset['rebind'] !== undefined && this.hooks.rebind) {
         // 点一行键位 → 进入捕获态，等下一个按键。focus() 让后续 keydown 落到本面板
         this.capturing = el.dataset['rebind'] as Action;
@@ -404,6 +414,10 @@ export class SettingsPanel {
       ${keyHintHtml}
       ${keyRows}
       ${resetBtn}
+      ${this.hooks.leaveMatch ? `
+        ${head('离开')}
+        ${this.hooks.leaveMatch.hint ? `<div style="opacity:.6;font-size:12px;margin:2px 0">${esc(this.hooks.leaveMatch.hint)}</div>` : ''}
+        <button data-leave-match style="margin-top:4px;background:#3a1c1c;border:1px solid #6a3a3a;color:#f0c9c9;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:13px;width:100%">${esc(this.hooks.leaveMatch.label)}</button>` : ''}
     `;
   }
 

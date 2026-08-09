@@ -121,6 +121,13 @@ const blockedReason = (
 
   if (!target) return 'noTarget';
   if (!target.alive || !isSelectableBy(target, attacker)) return 'targetInvalid';
+  /**
+   * 4.x/7.6：普通攻击只对**敌方**目标 —— 友方硬目标（治疗时选中队友）不是
+   * 开火依据。登记侧（服务器 syncSwings / 试验场 syncBotSwings）已经按
+   * `target.team !== e.team` 挡了一道，这里是结算侧的第二道门：登记与结算
+   * 之间目标可以换（玩家把硬目标切到队友身上），信任调用方就是队友挨打。
+   */
+  if (target.team === attacker.team) return 'targetInvalid';
 
   const weapon = getWeapon(attacker.weaponId);
   const reach = weapon?.reach ?? 0;

@@ -267,3 +267,44 @@ describe('P10-4 现有公开 API 与「按住」语义没有被改动', () => {
     expect(el.listenerCount('wheel')).toBe(0);
   });
 });
+
+/**
+ * X10 追加轮：双键跑的拖动路由（用户实测「左右按键只能跑，不能跟随鼠标
+ * 方向跑」）。双键时同一段位移此前左右两个通道都吃 —— 镜头 2 倍速、
+ * 角色 1 倍速，越拖越脱节。修后双键 = 右键语义（镜头带角色一起转）。
+ */
+describe('双键跑的拖动路由', () => {
+  const mouse = (type: string, e: Record<string, unknown>): void => {
+    // mousedown 挂在 element、mousemove/mouseup 挂在 window（与 attach 一致）
+    (type === 'mousedown' ? el : win).emit(type, { preventDefault: () => {}, ...e });
+  };
+
+  it('★ 双键按住拖动：只进右键通道（角色跟着鼠标转），左键通道必须为空', () => {
+    mouse('mousedown', { button: 0 });
+    mouse('mousedown', { button: 2 });
+    mouse('mousemove', { movementX: 40, movementY: 6 });
+    const f = im.sample(1 / 60);
+    expect(f.rightDrag).toEqual({ dx: 40, dy: 6 });
+    expect(f.leftDrag, '双键位移漏进了左键通道 —— 镜头会转两遍').toBeNull();
+  });
+
+  it('单按左键拖动语义不变（4.2：只环绕观察）', () => {
+    mouse('mousedown', { button: 0 });
+    mouse('mousemove', { movementX: 25, movementY: -4 });
+    const f = im.sample(1 / 60);
+    expect(f.leftDrag).toEqual({ dx: 25, dy: -4 });
+    expect(f.rightDrag).toBeNull();
+  });
+
+  it('松开左键回到单右键：拖动继续走右键通道', () => {
+    mouse('mousedown', { button: 0 });
+    mouse('mousedown', { button: 2 });
+    mouse('mousemove', { movementX: 10, movementY: 0 });
+    im.sample(1 / 60);
+    mouse('mouseup', { button: 0 });
+    mouse('mousemove', { movementX: 7, movementY: 2 });
+    const f = im.sample(1 / 60);
+    expect(f.rightDrag).toEqual({ dx: 7, dy: 2 });
+    expect(f.leftDrag).toBeNull();
+  });
+});

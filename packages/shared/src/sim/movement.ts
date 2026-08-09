@@ -55,6 +55,28 @@ export interface MovementInput {
   yaw: number;
 }
 
+/**
+ * 控制效果对移动的锁定档位（8.x 控制语义的移动侧）：
+ *   · 'move' —— 定身：不能位移、不能起跳，但可以转身（entity.ts：「定身：
+ *     无法移动，但可以施法和攻击」—— 攻击要求朝向，禁转身等于附赠缴械）。
+ *   · 'full' —— 昏迷/恐惧（7.3 都置 stunned，「无法行动」）：连转身一起锁。
+ *
+ * ★ 只锁**意图**不锁物理：重力、摩擦、软推开照常积分 —— 定身在空中照样
+ *   落地，被人挤照样让位（A2 的教训：控制不是免除物理的理由）。
+ * ★ 它与 `speedMultiplier` 同族，是积分的**输入**不是 `MovementState` 的
+ *   一部分 —— 三条积分路径（tickWorld / Predictor / TestbedScene）必须同源，
+ *   联网侧随 `selfMovement` 下发（visibility.ts）。
+ * ★ 此前 `flags.rooted` 在移动积分链上是**零消费方**：定身的光环只置标志，
+ *   减速链（moveSpeedMultiplierOf）不认它 —— 「定身的战士照样追人」
+ *   （2026-08-09 X10 真机轮实测发现）。
+ */
+export type MovementLock = 'none' | 'move' | 'full';
+
+/** 从状态标志派生移动锁。feared 在 deriveStatusFlags 里已并入 stunned */
+export const movementLockOf = (
+  flags: { stunned: boolean; rooted: boolean },
+): MovementLock => (flags.stunned ? 'full' : flags.rooted ? 'move' : 'none');
+
 export interface MovementState {
   position: Vec3;
   velocity: Vec3;
@@ -257,6 +279,8 @@ export const stepMovement = (
   obstacles: readonly Aabb[],
   opts: {
     radius?: number; height?: number; speedMultiplier?: number;
+    /** 控制效果的移动锁（定身/昏迷）。见 `MovementLock` 的注释 */
+    lock?: MovementLock;
     /**
      * 13.5 / 验收 #43：来自其他角色的**软推开**分离速度（`separationVelocity()`）。
      * ★ 只参与本步的位移积分，**不写进 `velocity`** —— 推开是外力位移不是动量，
@@ -271,23 +295,27 @@ export const stepMovement = (
   const height = opts.height ?? GEOMETRY.HITBOX_HEIGHT;
   const speedMul = opts.speedMultiplier ?? 1;
   const sep = opts.separation ?? { x: 0, y: 0, z: 0 };
+  const lock = opts.lock ?? 'none';
+  // 锁移动 = 意图归零（重力/摩擦/软推开在下面照常走）；'full' 连转身一起锁
+  const wishForward = lock === 'none' ? input.forward : 0;
+  const wishStrafe = lock === 'none' ? input.strafe : 0;
 
   const s: MovementState = {
     ...prev,
     position: vec3(prev.position.x, prev.position.y, prev.position.z),
     velocity: vec3(prev.velocity.x, prev.velocity.y, prev.velocity.z),
-    yaw: input.yaw,
+    yaw: lock === 'full' ? prev.yaw : input.yaw,
     teleported: false,
   };
 
   // ── 1. 期望的水平速度 ──────────────────────────────────────
   // 8.1：后退约为前进的 65%，侧移与前进相同
-  const fwdScale = input.forward >= 0 ? 1 : MOVE.BACKWARD_FACTOR;
+  const fwdScale = wishForward >= 0 ? 1 : MOVE.BACKWARD_FACTOR;
   const forward = yawToDir(s.yaw);
   const right = vec3(-forward.z, 0, forward.x);
 
-  let wishX = forward.x * input.forward * fwdScale + right.x * input.strafe * MOVE.STRAFE_FACTOR;
-  let wishZ = forward.z * input.forward * fwdScale + right.z * input.strafe * MOVE.STRAFE_FACTOR;
+  let wishX = forward.x * wishForward * fwdScale + right.x * wishStrafe * MOVE.STRAFE_FACTOR;
+  let wishZ = forward.z * wishForward * fwdScale + right.z * wishStrafe * MOVE.STRAFE_FACTOR;
   const wishLen = Math.hypot(wishX, wishZ);
   if (wishLen > 1) {
     // 斜向输入不应该比直线快
@@ -326,8 +354,9 @@ export const stepMovement = (
   }
 
   // ── 3. 跳跃 ───────────────────────────────────────────────
-  // 4.2「普通跳跃，无连续二段跳」：只有 grounded 时才能起跳
-  if (input.jump && s.grounded) {
+  // 4.2「普通跳跃，无连续二段跳」：只有 grounded 时才能起跳；
+  // 定身/昏迷下起跳也是位移（8.x「无法移动」），一并锁
+  if (input.jump && s.grounded && lock === 'none') {
     s.velocity.y = MOVEMENT.JUMP_SPEED;
     s.grounded = false;
     s.fallStartY = s.position.y;

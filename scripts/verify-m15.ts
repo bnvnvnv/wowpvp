@@ -281,6 +281,15 @@ try {
 
   // ── 7 自保 ──
   {
+    /**
+     * X10 追加轮：暴风雪的结算改到**引导开始**（CastResolved 提前到 0.8s，
+     * 雪边引导边下），过「地面」环那一刻玩家还在 4 秒引导里 —— 直接按 5
+     * 会被「正在施法」拒掉。Esc 主动取消剩余引导（7.5 的合法操作，雪当场
+     * 停）再放新星。此前不用等是因为旧时序把 CastResolved 拖到引导结束，
+     * 过环即空闲 —— 那是错时序的巧合，不是本脚本的功劳。
+     */
+    await page.keyboard.press('Escape');
+    await sleep(400);
     await page.keyboard.press('Digit5'); // 冰霜新星
     const s = await waitCurrent(page, 'interrupt', 6000);
     check('7', '放出冰霜新星 → 过「自保」环', s.done.includes('defense'), `done=${s.done.length} 环`);

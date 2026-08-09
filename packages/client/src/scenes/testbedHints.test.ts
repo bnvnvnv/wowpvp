@@ -33,7 +33,7 @@ describe('C7 底部提示条', () => {
     // ★ 写「Escape」不写「Esc」：键名一律走 prettyKey，与 F10 键位表里
     //   那一行**逐字一致** —— 两处叫法不同，玩家会以为是两颗键
     expect(text(hintBarHtml(bindings()))).toBe(
-      'Tab 选目标 · 1–9 技能 · Escape 取消读条 · 左右键同按 向前跑 · K 实战模式 · F10 设置与键位',
+      'Tab 选目标 · 1–9 技能 · Escape 取消读条 · 左右键同按 向前跑 · K 实战模式 · F10 设置·技能栏·键位',
     );
   });
 
@@ -60,7 +60,7 @@ describe('C7 底部提示条', () => {
     const t = text(hintBarHtml(bindings({
       [Action.OpenSettings]: 'F9', [Action.ToggleCombatMode]: 'KeyJ',
     })));
-    expect(t).toContain('F9 设置与键位');
+    expect(t).toContain('F9 设置·技能栏·键位');
     expect(t).toContain('J 实战模式');
   });
 });

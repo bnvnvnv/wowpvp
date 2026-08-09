@@ -170,7 +170,8 @@ export class HitFeedback {
       } else if (ev.amount > 0) {
         if (ev.crit) {
           // 「!」是第三条通道（字形）：颜色 + 尺寸 + 字形，色盲/小屏下都剩两条
-          d.floaters.push(`${ev.amount}!`, 'crit', at);
+          // X10 追加轮拍板：打别人的暴击橙黄、**自己挨的暴击红色** —— 谁在爆谁一眼分清
+          d.floaters.push(`${ev.amount}!`, onSelf ? 'critTaken' : 'crit', at);
         } else {
           d.floaters.push(
             String(ev.amount), 'damage', at,

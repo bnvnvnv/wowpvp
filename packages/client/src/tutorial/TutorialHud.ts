@@ -11,6 +11,8 @@ import type { TutorialDirector } from './TutorialDirector.js';
 
 export class TutorialHud {
   private readonly root: HTMLElement;
+  /** X10 追加轮（用户：「右边的新手教学…很占屏幕」）：面板可收起成一条进度签 */
+  private collapsed = false;
 
   constructor(container: HTMLElement, private readonly director: TutorialDirector) {
     this.root = document.createElement('div');
@@ -27,6 +29,10 @@ export class TutorialHud {
       if (!btn) return;
       if (btn.dataset['tutorialAction'] === 'skip') this.director.skip();
       if (btn.dataset['tutorialAction'] === 'restart') this.director.restart();
+      if (btn.dataset['tutorialAction'] === 'toggle') {
+        this.collapsed = !this.collapsed;
+        this.render();
+      }
       /**
        * W11（技术债总账）：毕业文案说「去大厅找真人过招」却没有路 ——
        * 玩家得自己改 URL。教学是大厅进来的（?tutorial=on），出口也该回大厅。
@@ -44,9 +50,11 @@ export class TutorialHud {
     const s = this.director.status;
 
     if (s.skipped) {
+      // X10 追加轮：跳过之后此前**没有任何出口**（只能重开教学或改 URL）
       this.root.innerHTML = `
         <div class="tut-collapsed">
           <button class="tut-btn" data-tutorial-action="restart">📖 重新开始教学</button>
+          <button class="tut-btn tut-ghost" data-tutorial-action="lobby">🏟 回大厅</button>
         </div>`;
       return;
     }
@@ -60,6 +68,18 @@ export class TutorialHud {
             <button class="tut-btn" data-tutorial-action="lobby">🏟 去大厅找真人过招</button>
             <button class="tut-btn tut-ghost" data-tutorial-action="restart">重新开始</button>
           </div>
+        </div>`;
+      return;
+    }
+
+    // 收起态：一条进度签 + 当前环标题 —— 不挡画面，课程照常推进
+    if (this.collapsed) {
+      const cur = STEP_BY_ID.get(s.current);
+      this.root.innerHTML = `
+        <div class="tut-collapsed">
+          <button class="tut-btn" data-tutorial-action="toggle">
+            📖 ${s.done.length}/${STEPS.length} · ${cur?.title ?? ''} ◂
+          </button>
         </div>`;
       return;
     }
@@ -84,12 +104,16 @@ export class TutorialHud {
 
     this.root.innerHTML = `
       <div class="tut-panel">
-        <div class="tut-title">新手教学 <i>${s.done.length}/${STEPS.length}</i></div>
+        <div class="tut-title">新手教学 <i>${s.done.length}/${STEPS.length}</i>
+          <button class="tut-btn tut-ghost tut-fold" data-tutorial-action="toggle" title="收起面板">▸</button>
+        </div>
         ${lesson ? `<div class="tut-lesson">💡 ${lesson}</div>` : ''}
         <ul class="tut-steps">${rows}</ul>
         <div class="tut-actions">
           <button class="tut-btn tut-ghost" data-tutorial-action="skip">跳过教学</button>
         </div>
+        <div class="tut-note">🔒 教学固定法师键位（课程按它编排）——
+          自定义技能栏在练习场/大厅：设置 → 技能栏</div>
       </div>`;
   }
 

@@ -14,7 +14,7 @@ import { ctfMap } from '../data/maps/index.js';
 import { box } from '../data/maps/schema.js';
 import { dirToYaw, sub, vec3 } from '../math/vec3.js';
 import { ARENA } from '../constants/combat.js';
-import { ArenaPreset, CastFailure, DispelType, GameMode, School } from '../types/enums.js';
+import { ArenaPreset, CastFailure, CastKind, DispelType, GameMode, Resource, School } from '../types/enums.js';
 import { asSkillId, asWeaponId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
 import { usesNoTarget } from './aiming.js';
 import { applyAura, createAuraStore, type AuraStore } from './aura.js';
@@ -36,7 +36,7 @@ import { createProjectileStore, type ProjectileStore } from './projectile.js';
 import { createStats, registerPlayer } from './stats.js';
 import { TRINKET_COOLDOWN_KEY, tickWorld, type TickDeps } from './tick.js';
 import { addEntity, allocEntityId, createWorld, type World } from './world.js';
-import { dealDamage } from './effects/index.js';
+import { dealDamage, resolveEffects } from './effects/index.js';
 import type { EntityId } from '../types/ids.js';
 import type { SkillDef } from '../data/schema.js';
 
@@ -820,5 +820,136 @@ describe('W12 复活波次接进 tick（enqueue + movement 同步）', () => {
     foe.isPet = true;
     killFoeInTick(respawn);
     expect(isAwaitingRespawn(respawn, foe.id)).toBe(false);
+  });
+});
+
+/**
+ * X10 真机轮实测发现：`flags.rooted` 在移动积分链上是零消费方 ——
+ * 「定身的战士照样追人」。这里钉住整条接线：控制光环（applyControl 真路径）
+ * → 第 7 步 deriveStatusFlags → 下一 tick 第 2 步 movementLockOf 归零意图。
+ */
+describe('控制移动门（定身/昏迷 → 第 2 步移动积分）', () => {
+  const feedInput = (e: CombatEntity, yaw: number): void => {
+    inputs.set(e.id, { forward: 1, strafe: 0, jump: true, yaw });
+  };
+
+  it('★ 定身：W+跳不再产生位移，但技能照常能起手（8.x「无法移动，可施法攻击」）', () => {
+    movement.set(foe.id, createMovementState(foe.position, foe.yaw));
+    resolveEffects(
+      { world, auras, dr, projectiles, ground: groundStore, source: player, skillId: 's' },
+      [{ kind: 'root', duration: 8 }], [foe],
+    );
+    tickWorld(deps(), DT); // 第 7 步派生 flags —— 锁从下一 tick 生效（与减速同口径）
+    const from = { ...foe.position };
+    feedInput(foe, foe.yaw);
+    for (let i = 0; i < 20; i++) tickWorld(deps(), DT);
+    expect(Math.hypot(foe.position.x - from.x, foe.position.z - from.z)).toBeLessThan(0.05);
+    expect(foe.position.y).toBeCloseTo(from.y, 3); // 跳跃也被锁
+    // 定身不锁施法：真门禁下仍能挑出一个可释放的瞬发技能
+    expect(() => pickCastable(foe, player, () => true)).not.toThrow();
+  });
+
+  it('★ 昏迷：连朝向输入一起忽略（7.3「无法行动」）', () => {
+    movement.set(foe.id, createMovementState(foe.position, foe.yaw));
+    resolveEffects(
+      { world, auras, dr, projectiles, ground: groundStore, source: player, skillId: 's' },
+      [{ kind: 'stun', duration: 4 }], [foe],
+    );
+    tickWorld(deps(), DT);
+    const yaw0 = foe.yaw;
+    const from = { ...foe.position };
+    feedInput(foe, yaw0 + 1.5);
+    for (let i = 0; i < 10; i++) tickWorld(deps(), DT);
+    expect(foe.yaw).toBe(yaw0);
+    expect(Math.hypot(foe.position.x - from.x, foe.position.z - from.z)).toBeLessThan(0.05);
+  });
+
+  it('控制到期后移动恢复（锁不是永久的）', () => {
+    movement.set(foe.id, createMovementState(foe.position, foe.yaw));
+    resolveEffects(
+      { world, auras, dr, projectiles, ground: groundStore, source: player, skillId: 's' },
+      [{ kind: 'root', duration: 0.2 }], [foe],
+    );
+    tickWorld(deps(), DT);
+    feedInput(foe, foe.yaw);
+    // 0.2s 定身 + 富余：跑 30 tick（1.5s），到期后应当已经在走
+    const from = { ...foe.position };
+    for (let i = 0; i < 30; i++) tickWorld(deps(), DT);
+    expect(Math.hypot(foe.position.x - from.x, foe.position.z - from.z)).toBeGreaterThan(1);
+  });
+});
+
+/**
+ * X10 追加轮：引导（Channel）的结算时机与费用（用户实测「暴风雪读条读完了
+ * 才下」戳穿的三层错：结算迟到 channelDuration 秒 / 资源从来没扣 / 冷却
+ * 从来没进 —— finishCast 只在非引导路径被调用）。
+ * 全花名册唯一的引导技能是 mage.blizzard（0.8s 读条 + 4s 引导）。
+ */
+describe('引导结算时机（暴风雪边引导边下雪）', () => {
+  const blizzard = () => getSkill(asSkillId('mage.blizzard'))!;
+  const groundPoint = () => ({ x: foe.position.x, y: 0, z: foe.position.z });
+
+  const beginBlizzard = () => {
+    for (const [res, max] of player.maxResources) player.resources.set(res, max);
+    player.yaw = dirToYaw(sub(foe.position, player.position));
+    const r = beginCast(world, casting, player, blizzard(), { groundPoint: groundPoint() });
+    expect(r.ok, '暴风雪没能起手').toBe(true);
+  };
+  const manaOf = (e: CombatEntity): number => e.resources.get(Resource.Mana) ?? 0;
+
+  it('★★ 结算在引导开始：读条一结束地面区域就在（雪边引导边下），资源与冷却同时入账', () => {
+    beginBlizzard();
+    const manaBefore = manaOf(player);
+
+    // 0.8s 读条走完 + 一个 tick 的余量 —— 引导刚开始
+    for (let i = 0; i < 18; i++) tickWorld(deps(), DT);
+    expect(groundStore.areas.filter((a) => a.skillId === 'mage.blizzard').length,
+      '引导开始后地面区域不存在 —— 雪没跟着引导下').toBe(1);
+    expect(casting.get(player.id)?.kind, '引导条提前消失').toBe(CastKind.Channel);
+    expect(manaOf(player), '引导技能又免费了（回归钉）').toBeLessThan(manaBefore);
+    expect(player.cooldowns.get(blizzard().id), '引导技能没进冷却（回归钉）').toBeDefined();
+
+    /**
+     * 跑过引导结束（4.8s）再留出余量到 ~5.2s：初始那片雪（诞生 ≈0.85s、
+     * 寿命 4s）已自然过期被清；**此刻任何还活着的暴风雪区域都只可能来自
+     * 引导结束时的二次结算**（那片会活到 ≈8.8s）—— 比掐着单 tick 数
+     * 「恰好一片」稳得多。
+     */
+    for (let i = 0; i < 85; i++) tickWorld(deps(), DT);
+    expect(casting.get(player.id), '引导结束后施法状态没清').toBeUndefined();
+    expect(groundStore.areas.filter((a) => a.skillId === 'mage.blizzard').length,
+      '引导结束时又结算了一次（双份暴风雪）').toBe(0);
+  });
+
+  it('★★ 引导中被硬控：雪当场停（7.1 停止剩余引导），不再产生后续伤害跳', () => {
+    beginBlizzard();
+    for (let i = 0; i < 25; i++) tickWorld(deps(), DT); // 读条完 + 引导 ~0.4s，区域已在
+    const area = groundStore.areas.find((a) => a.skillId === 'mage.blizzard')!;
+    expect(area.expiresAt).toBeGreaterThan(world.time);
+
+    resolveEffects(
+      { world, auras, dr, projectiles, ground: groundStore, source: foe, skillId: 's' },
+      [{ kind: 'stun', duration: 2 }], [player],
+    );
+    tickWorld(deps(), DT); // 第 7 步派生 flags
+    tickWorld(deps(), DT); // 施法系统看到 stunned → 打断 → 掐区域
+    expect(casting.get(player.id), '硬控没停掉引导').toBeUndefined();
+    expect(area.expiresAt, '引导被打断但雪照下（剩余跳数没停）')
+      .toBeLessThanOrEqual(world.time);
+  });
+
+  it('读条期被打断：不结算、不扣资源、不进冷却（验收 #20 口径）', () => {
+    beginBlizzard();
+    const manaBefore = manaOf(player);
+    for (let i = 0; i < 8; i++) tickWorld(deps(), DT); // 0.4s，还在读条
+    resolveEffects(
+      { world, auras, dr, projectiles, ground: groundStore, source: foe, skillId: 's' },
+      [{ kind: 'stun', duration: 2 }], [player],
+    );
+    tickWorld(deps(), DT);
+    tickWorld(deps(), DT);
+    expect(groundStore.areas.filter((a) => a.skillId === 'mage.blizzard').length).toBe(0);
+    expect(manaOf(player)).toBe(manaBefore);
+    expect(player.cooldowns.get(blizzard().id)).toBeUndefined();
   });
 });

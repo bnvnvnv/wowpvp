@@ -510,6 +510,19 @@ export class NetworkScene {
           this.view.setSkillBar(this.skillBarDefsFor(this.myClassId));
         },
       },
+      /**
+       * X10 追加轮：对局里的退出路径（此前只能关标签页）。
+       * ★ 语义如实：LeaveMatch = 主动弃权，按淘汰结算（11.5）—— 提示里
+       *   写明白，不让人以为是「暂离」。发完消息直接回大厅页。
+       */
+      leaveMatch: {
+        label: '离开对局并返回大厅',
+        hint: '主动退出按弃权淘汰结算（11.5），本局不可重新加入',
+        run: () => {
+          this.conn.send({ t: 'LeaveMatch' });
+          location.href = `${location.pathname}?lobby`;
+        },
+      },
     });
     /**
      * P3c：联网技能栏 = 玩家自定义的 9 格；无存档 → 本职业前 9 个技能，
@@ -988,6 +1001,16 @@ export class NetworkScene {
           ...(msg.avoided ? { avoided: msg.avoided } : {}),
           targetMaxHealth: this.lastEntities.find((e) => e.id === msg.targetId)?.maxHealth,
         });
+        /**
+         * W21：白字挥砍动画 —— 协议没有 Swing 消息，从 autoAttack 伤害事件
+         * **反推**（用户拍板的便宜路，X10 真机轮）。口径如实记：落空的挥击
+         * 没有动作（协议里根本没有那一拍）；来源被抹（S7 不可见）时没有
+         * view，自然不播。表现与试验场 onSwingHit 对称：挥砍 + 破空声。
+         */
+        if (msg.skillId === 'autoAttack' && msg.sourceId !== undefined) {
+          this.viewOfEntity(msg.sourceId)?.playMeleeSwing();
+          audio.playVariant('swing', { volume: 0.45, ...this.audioDistance(msg.sourceId) });
+        }
         // 战斗日志：规避如实写「闪避/招架/格挡」而不是「0 点伤害」
         const line = msg.avoided
           ? `${this.nameOf(msg.targetId)} ${AVOIDED_TEXT[msg.avoided]}了 ${this.nameOf(msg.sourceId)}`
@@ -1085,12 +1108,19 @@ export class NetworkScene {
        */
       case 'CastResolved': {
         /**
-         * ★ 无条件出注册表：引导技能的 `CastResolved` 是在**引导结束**才发的
-         *   （`casting.ts` 的 channel 分支只在 `world.time >= channelEndsAt` 才
-         *   调 onCompleted），所以这里不需要「引导例外」分支。
+         * ★ 引导例外（X10 追加轮起**需要**了）：引导的 `CastResolved` 现在在
+         *   **引导开始**时发（结算提前到位 —— 暴风雪边引导边下雪），此刻
+         *   引导条与施法姿态都还要活到 channelEndsAt：注册表条目保留，
+         *   由 `pruneCasts` 到点回收；打断路径仍走 CastInterrupted 立即清。
+         *   非引导照旧无条件出注册表。
          * ⚠️ `casterId` 可空（施法者不可见），那条路径靠 `pruneCasts` 超时兜底。
          */
-        if (msg.casterId !== undefined) this.view.endCast(msg.casterId);
+        if (msg.casterId !== undefined) {
+          const st = this.view.castOfId(msg.casterId);
+          const channelRunning =
+            st?.channelEndsAt !== undefined && st.channelEndsAt > this.serverTime;
+          if (!channelRunning) this.view.endCast(msg.casterId);
+        }
         const skill = getSkill(msg.skillId);
         if (!skill) break;
         const caster = this.casterLike(msg.casterId);
@@ -2263,6 +2293,13 @@ export class NetworkScene {
       view.setTransform(e.position, e.yaw);
       view.setAnimState(anim.state);
       view.setLocomotionTimeScale(anim.timeScale);
+      /**
+       * W14/X10：远端角色的施法姿态。此前只有自己（draw 里 :2194 一带）接了
+       * `setCasting`，远端读条全程无动作 —— 与试验场 `TestbedScene` 假人循环
+       * 不对称（G4 平行债，X10 真机轮点名）。施法注册表四个出口
+       * （Resolved/Interrupted/Death/prune）都维护，读它就是权威判定。
+       */
+      view.setCasting(this.view.castOfId(e.snapshot.id) !== undefined);
       this.syncWeapon(id, view, e.snapshot.equipment?.currentWeaponId as string | undefined);
       // 8.2「迷惑」= 被变形；14.3 控制标记 —— 都从快照读，与试验场同一套表现
       view.setMorphed(e.snapshot.auras.some((a) => a.auraId === MORPH_AURA_ID));

@@ -35,7 +35,12 @@ export class SceneShell {
   readonly art = artEnabled();
 
   constructor(private readonly canvas: HTMLCanvasElement) {
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    // X10 真机实测：双显卡笔记本上浏览器默认把 WebGL 分给省电核显，
+    // 24 实体同屏 15fps；显式要高性能 GPU 后同机 33fps。不传这个参数
+    // 等于把一半帧率白送掉。
+    this.renderer = new THREE.WebGLRenderer({
+      canvas, antialias: true, powerPreference: 'high-performance',
+    });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     // M12：HDR 环境是线性高动态的，不做色调映射会大面积过曝成白板。

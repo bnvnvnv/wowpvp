@@ -133,3 +133,44 @@ describe('W14 叠加混合：腿跑步、手施法', () => {
     expect(armAngle).toBeLessThan(0.02);
   });
 });
+
+/**
+ * X10 真机轮回归：真实的 Spellcasting 是「循环保持施法姿态」的片段 ——
+ * **第 0 帧就不是站立位**。旧算法以片段自己的第 0 帧为参考做叠加，
+ * 减掉自己 ≈ 全程增量为零：层在播但什么都看不见（「施法没动作」的根因）。
+ * 上面既有用例测不出它，因为合成 clip 恰好从单位四元数起步。
+ */
+describe('W14 叠加参考姿势（X10：施法动作隐形的根因）', () => {
+  /** 全程保持 angle 姿态的循环片段 —— Spellcasting 的真实形态 */
+  const holdPoseClip = (boneName: string, angle: number): THREE.AnimationClip => {
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), angle);
+    const track = new THREE.QuaternionKeyframeTrack(
+      `${boneName}.quaternion`, [0, 1],
+      [q.x, q.y, q.z, q.w, q.x, q.y, q.z, q.w],
+    );
+    return new THREE.AnimationClip('cast_hold', 1, [track]);
+  };
+
+  const armAngleAfterPlay = (additive: THREE.AnimationClip, sk: ReturnType<typeof makeSkeleton>): number => {
+    const rig = new THREE.Object3D(); rig.add(sk.hips);
+    const mixer = new THREE.AnimationMixer(rig);
+    const upper = mixer.clipAction(additive, undefined, THREE.AdditiveAnimationBlendMode);
+    upper.play();
+    mixer.setTime(0.5);
+    return 2 * Math.acos(Math.min(1, Math.abs(sk.armR.quaternion.w)));
+  };
+
+  it('★★ 以 Idle 为参考：保持姿态的循环片段叠加后**看得见**', () => {
+    const sk = makeSkeleton();
+    const idle = quatClip('Idle', 'upperarm.r', 0); // 站立位（单位四元数）
+    const additive = buildUpperBodyAdditive(holdPoseClip('upperarm.r', 1.0), sk.bones, idle);
+    expect(additive).toBeDefined();
+    expect(armAngleAfterPlay(additive!, sk), '以 Idle 为参考的叠加应还原出施法姿态').toBeGreaterThan(0.5);
+  });
+
+  it('★ 钉住 bug 形态：不传参考时同一片段的叠加增量为零（这就是「施法没动作」）', () => {
+    const sk = makeSkeleton();
+    const additive = buildUpperBodyAdditive(holdPoseClip('upperarm.r', 1.0), sk.bones)!;
+    expect(armAngleAfterPlay(additive, sk)).toBeLessThan(0.02);
+  });
+});

@@ -52,7 +52,15 @@ import {
   type World,
   addEntity,
   allocEntityId,
+  beginSwing,
   createSwingStore,
+  createThreatStore,
+  decayThreat,
+  pickByThreat,
+  recordThreat,
+  stopSwing,
+  getWeapon,
+  distance2D,
   asSkillId,
   asTeamId,
   getEntity,
@@ -209,6 +217,11 @@ export class CombatDirector {
    *   「一直在打」的视觉主体。
    */
   readonly swings = createSwingStore();
+  /**
+   * 假人仇恨表（X10 用户拍板）。与服务器 BotDriver.threat 同一个共享模块、
+   * 同一条纪律：AI 层局部记忆，表里的 id 每次用都重新过候选判定。
+   */
+  private readonly threat = createThreatStore();
 
   /**
    * 交给 `tickWorld` 的移动状态与输入。
@@ -564,6 +577,15 @@ export class CombatDirector {
             this.logEvent(ev);
             this.onCombatEvent?.(ev);
           }
+          /**
+           * 仇恨表记账（X10 用户拍板「谁的仇恨值高就打谁」）。只在实战模式：
+           * 站桩假人不选敌，表也就没有读者 —— 不白记账。
+           * 半衰放 tick 手里（本回调每 tick 恰好一次，dt 恒定）。
+           */
+          if (this.combatMode) {
+            decayThreat(this.threat, dt);
+            recordThreat(this.threat, events);
+          }
         },
         onSwap: (ev) => {
           this.onSwapResult?.(ev.result === 'completed');
@@ -821,18 +843,34 @@ export class CombatDirector {
       }
 
       /**
+       * ★★ 选敌：最近的**敌对**存活实体（玩家只是候选之一）。
+       *
+       *   此前这里写死 `foe = this.player`：每个假人 —— 包括与玩家同队的
+       *   「队友」—— 都围着玩家转，X10 真机轮实测被当场戳穿（「为什么我的
+       *   队友们也会攻击我」）。stressDummies 的阵营（spawnDummy 队友=RED）
+       *   摆好了一年，驱动层从来没吃过。
+       *   压测台的「12v12」自此才名副其实：敌人分散打全队，队友打敌人。
+       *
+       * ★ 全灭敌对时假人停手站定（练习场打空靶的边界）。
+       * ★ 任务升级点：仇恨体系（threat 表）就换这一个函数。
+       */
+      const foe = this.pickBotFoe(e);
+      if (!foe) {
+        this.frameInputs.set(e.id, { forward: 0, strafe: 0, jump: false, yaw: e.yaw });
+        continue;
+      }
+      /**
        * ★ 7.6 白字的开火判据是「敌方硬目标存活」（偏差 #9），所以实战模式下
        *   必须给假人设硬目标 —— 服务器那边由 `SetTarget` 消息设，试验场
-       *   没有协议层，这里直接设。**没有这一步就没有白字**，近战会一直
-       *   站着不打（用户实测反馈的另一半根因）。
+       *   没有协议层，这里直接设。
        */
-      if (e.targets.hard !== this.player.id) e.targets.hard = this.player.id;
+      if (e.targets.hard !== foe.id) e.targets.hard = foe.id;
 
       const action = decideBotAction({
         world: this.world,
         casting: this.store,
         self: e,
-        foe: this.player,
+        foe,
         rng: this.botRng,
         // P1b：脚下的敌方区域与待落的陨星 —— 试验场假人也会躲圈了
         ground: this.ground,
@@ -852,6 +890,55 @@ export class CombatDirector {
         // ★ 走同一个入口，不另开后门（见 requestCast 的注释）
         if (s) this.requestCast(e, s, { ...(action.cast.targetId !== undefined
           ? { targetId: action.cast.targetId } : {}) });
+      }
+    }
+    this.syncBotSwings();
+  }
+
+  /**
+   * 假人选敌：**仇恨最高者 > 最近的敌对存活实体**（X10 用户拍板）。
+   *
+   * ★ 与服务器 `pickFoe` 的 normal 档同构：仇恨走共享的 `pickByThreat`
+   *   （自带 SWITCH_RATIO 迟滞防横跳），表空（开局没挨过打）退最近敌对。
+   * ★ easy 不记仇 —— 与服务器同一条难度门（木桩手感卖的就是「他不配合」）。
+   * ★ O(n²) 在 24 实体下是 576 次距离比较/帧，不值得建索引。
+   */
+  private pickBotFoe(e: CombatEntity): CombatEntity | undefined {
+    if (this.botDifficulty !== 'easy') {
+      const picked = pickByThreat(this.threat, e.id, e.targets.hard, (id) => {
+        const o = getEntity(this.world, id);
+        return o !== undefined && o.alive && o.team !== e.team && o.id !== e.id;
+      });
+      if (picked !== undefined) return getEntity(this.world, picked);
+    }
+    let best: CombatEntity | undefined;
+    let bestD = Infinity;
+    for (const o of listEntities(this.world)) {
+      if (o.id === e.id || !o.alive || o.team === e.team) continue;
+      const d = distance2D(e.position, o.position);
+      if (d < bestD) { bestD = d; best = o; }
+    }
+    return best;
+  }
+
+  /**
+   * 7.6 白字的开火同步 —— 与服务器 `MatchLoop.syncSwings()` 同一个判据：
+   * 「敌方硬目标存活」即开火，否则停手。此前试验场只传了 `swings` store
+   * 从来没人登记，实战模式的普攻整条是死的（X10 真机轮实测：假人只放
+   * 技能不抡武器）。玩家也在同步范围内 —— 与联网行为对齐（偏差 #9）。
+   */
+  private syncBotSwings(): void {
+    const now = this.world.time;
+    for (const e of listEntities(this.world)) {
+      const target = e.targets.hard !== undefined
+        ? getEntity(this.world, e.targets.hard)
+        : undefined;
+      const engaged =
+        e.alive && target !== undefined && target.alive && target.team !== e.team;
+      if (engaged) {
+        beginSwing(this.swings, e.id, now, getWeapon(e.weaponId)?.swingInterval ?? 2);
+      } else {
+        stopSwing(this.swings, e.id);
       }
     }
   }

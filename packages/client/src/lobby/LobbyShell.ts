@@ -273,47 +273,61 @@ export class LobbyShell {
     );
     this.root.innerHTML = `
       <section class="lb-page" data-page="title">
-        <div class="lb-panel lb-title">
-          <h1>WOWPVP</h1>
-          <p class="lb-sub">目标制 3D 竞技场 —— 打断、假读条与走位的反制博弈</p>
-          <label>昵称
-            <input id="lb-name" maxlength="12" placeholder="给自己起个名字" value="${escapeHtml(this.name)}"/>
-          </label>
+        <div class="lb-title-wrap">
           <!--
-            ★ P10 视觉层级：主按钮以前是「创建房间」—— 而它是这一页上**唯一
-            需要第二个人**才走得通的路。新玩家被最亮的按钮领到一间空房里等人，
-            两条自己就能玩的路反倒是最弱的 ghost 样式。现在主按钮归练习场，
-            联机保持普通按钮（路还在，只是不再假装它是第一步）。
+            X10 追加轮首页重构（用户拍板）：「上来就填昵称房间号不是成熟游戏
+            该有的样子；大乱斗和 PVP 是两种玩法要分开两边；房间列表归属各自
+            模式；要有仪式感、要够 Q 版」。
+            ★ 结构：英雄标题 → 两大模式卡（左 PVP / 右大乱斗，各带自己的
+              房间列表）→ 底栏（教学/练习/设置/昵称小框）。
+            ★ 昵称首次自动生成（generatedName），改名是可选动作不再挡路；
+              房间码加入收进 PVP 卡（那是「找朋友」的场景）。
+            ★ data-action 钩子一个不改 —— p5/w12/m13 的 e2e 全链路照跑。
+            （本段取代 P10「主按钮归练习场」的层级决定：现在两大模式卡
+              就是主入口，练习场退底栏 —— 用户对首页的新拍板优先。）
           -->
-          <!-- P12：教学入口提到第一排 —— 玩家反馈找不到它（原在练习场下方） -->
-          <div class="lb-row">
+          <div class="lb-hero">
+            <h1 class="lb-logo">WOWPVP</h1>
+            <p class="lb-sub">打断 · 假读条 · 走位 —— 反制的竞技场</p>
+          </div>
+          <div class="lb-modes">
+            <div class="lb-mode lb-mode-pvp">
+              <div class="lb-mode-art">⚔️</div>
+              <h2>团队竞技场</h2>
+              <p class="lb-mode-tag">组队对抗 · 1v1 到 12v12 · 竞技场与夺旗</p>
+              <button class="lb-btn lb-cta" data-action="create">创建房间</button>
+              <div class="lb-row lb-join">
+                <input id="lb-code" maxlength="16" placeholder="朋友给的房间码"
+                       value="${escapeHtml(this.opts.joinCode ?? '')}"/>
+                <button class="lb-btn lb-small" data-action="join">加入</button>
+              </div>
+              <div class="lb-list-head">开着的房间
+                <button class="lb-btn lb-tiny" data-action="browse" title="刷新房间列表">↻</button>
+                <span class="lb-fine" id="lb-roomlist-hint"></span>
+              </div>
+              <div id="lb-roomlist-pvp" class="lb-roomlist"></div>
+            </div>
+            <div class="lb-mode lb-mode-ffa">
+              <div class="lb-mode-art">🔥</div>
+              <h2>大乱斗</h2>
+              <p class="lb-mode-tag">人人为敌 · 先杀满目标获胜 · 人机补满即点即玩</p>
+              <button class="lb-btn lb-cta lb-cta-ffa" data-action="create-ffa"
+                      title="没有队伍，所有玩家互为敌人；先杀满目标数获胜，至多 100 人">快速开始</button>
+              <div class="lb-list-head">开着的房间
+                <button class="lb-btn lb-tiny" data-action="browse" title="刷新房间列表">↻</button>
+              </div>
+              <div id="lb-roomlist-ffa" class="lb-roomlist"></div>
+            </div>
+          </div>
+          <div class="lb-row lb-secondary">
             <button class="lb-btn" data-action="tutorial">${
               tutorialLabel(this.tutorialCompleted())
             }</button>
-          </div>
-          <div class="lb-row">
-            <button class="lb-btn" data-action="create">创建房间</button>
-            <button class="lb-btn" data-action="create-ffa"
-                    title="没有队伍，所有玩家互为敌人；先杀满目标数获胜，至多 100 人">大乱斗（人人为敌）</button>
-          </div>
-          <div class="lb-row lb-join">
-            <input id="lb-code" maxlength="16" placeholder="房间码"
-                   value="${escapeHtml(this.opts.joinCode ?? '')}"/>
-            <button class="lb-btn" data-action="join">加入房间</button>
-          </div>
-          <!--
-            P12 房间浏览（玩家反馈「大厅很薄弱」）：不再只能靠房间码口口相传。
-            点刷新拉一次列表；每行一键加入。进行中的房间只展示不可入
-            （JoinRoom 对已开局房间本来就拒，按钮直接不给）。
-          -->
-          <div class="lb-row">
-            <button class="lb-btn lb-small" data-action="browse">刷新房间列表</button>
-            <span class="lb-fine" id="lb-roomlist-hint"></span>
-          </div>
-          <div id="lb-roomlist"></div>
-          <hr/>
-          <div class="lb-row">
-            <button class="lb-btn lb-primary" data-action="practice">练习场（单机 · 选职业与人机难度）</button>
+            <button class="lb-btn" data-action="practice">🏋 练习场</button>
+            <button class="lb-btn lb-ghost" data-action="settings">⚙ 设置</button>
+            <label class="lb-name-mini">昵称
+              <input id="lb-name" maxlength="12" value="${escapeHtml(this.name)}"/>
+            </label>
           </div>
           <!--
             P6 练习场配置：点「练习场」展开。此前它直接跳裸试验场（固定法师、
@@ -346,17 +360,13 @@ export class LobbyShell {
               <button class="lb-btn lb-primary" data-action="practice-start">开始练习</button>
             </div>
           </div>
-          <div class="lb-row">
-            <button class="lb-btn lb-ghost" data-action="settings">设置（音量 / 无障碍 / 键位）</button>
-          </div>
           ${isLocalDev() ? `
           <!-- P6 本地开发入口：只在 localhost/127.0.0.1 渲染（用户拍板：自测入口按本地判断）-->
-          <div class="lb-row lb-fine">
+          <div class="lb-row lb-fine lb-devrow">
             开发：
             <button class="lb-btn lb-small lb-ghost" data-action="dev-testbed">验收试验场</button>
             <button class="lb-btn lb-small lb-ghost" data-action="dev-stress">压测台</button>
           </div>` : ''}
-          <p class="lb-fine">对局需要另一位玩家：创建房间后把房间码或链接发给朋友，或在房间里开人机补位单人开局。</p>
         </div>
       </section>
 
@@ -911,10 +921,16 @@ export class LobbyShell {
       capacity: number; started: boolean; fillWithBots: boolean;
     }[],
   ): void {
-    const box = this.root.querySelector('#lb-roomlist') as HTMLElement | null;
+    /**
+     * X10 追加轮：列表按模式**分家** —— 大乱斗房挂大乱斗卡下、组队房挂
+     * PVP 卡下（用户拍板「已开的房间列表应该在大乱斗模式之下显示出来」）。
+     * 两个容器任一不在（老布局/单测桩）就整体跳过，行为与此前的判空一致。
+     */
+    const pvpBox = this.root.querySelector('#lb-roomlist-pvp') as HTMLElement | null;
+    const ffaBox = this.root.querySelector('#lb-roomlist-ffa') as HTMLElement | null;
     const hint = this.root.querySelector('#lb-roomlist-hint') as HTMLElement | null;
-    if (!box) return;
-    if (hint) hint.textContent = rooms.length === 0 ? '现在没有开着的房间 —— 创建一个吧' : '';
+    if (!pvpBox && !ffaBox) return;
+    if (hint) hint.textContent = rooms.length === 0 ? '还没有开着的房间 —— 当第一个吧' : '';
     const modeLabel = (m: string): string => {
       if (m === 'ffa') return '大乱斗';
       const a = /^arena(\d+)v\d+$/.exec(m);
@@ -923,8 +939,8 @@ export class LobbyShell {
       if (c) return `夺旗 ${c[1]}v${c[1]}`;
       return m;
     };
-    box.innerHTML = rooms.map((r) => `
-      <div class="lb-row lb-fine" style="gap:8px;align-items:center">
+    const row = (r: (typeof rooms)[number]): string => `
+      <div class="lb-row lb-fine lb-room-row">
         <b class="lb-code" style="font-size:13px">${escapeHtml(r.roomId)}</b>
         <span>${modeLabel(r.mode)}</span>
         <span>${r.players}/${r.capacity} 人${r.fillWithBots ? '（人机补位）' : ''}</span>
@@ -932,7 +948,11 @@ export class LobbyShell {
           ? '<span style="opacity:.6">对局进行中</span>'
           : `<button class="lb-btn lb-small" data-action="join-listed"
                      data-code="${escapeHtml(r.roomId)}">加入</button>`}
-      </div>`).join('');
+      </div>`;
+    const ffa = rooms.filter((r) => r.mode === 'ffa');
+    const pvp = rooms.filter((r) => r.mode !== 'ffa');
+    if (pvpBox) pvpBox.innerHTML = pvp.map(row).join('') || '<div class="lb-fine lb-empty">暂无组队房间</div>';
+    if (ffaBox) ffaBox.innerHTML = ffa.map(row).join('') || '<div class="lb-fine lb-empty">暂无大乱斗房间</div>';
   }
 
   private join(code: string, creating: boolean): void {
@@ -1209,11 +1229,24 @@ export class LobbyShell {
 
     const blocker = readyBlocker(self);
     const readyBtn = this.root.querySelector('#lb-ready-btn') as HTMLButtonElement;
-    readyBtn.textContent = self?.ready ? '取消准备' : '准备';
+    /**
+     * X10 追加轮（用户：「选完职业+人机应该立刻就可以启动」）：
+     * 开着人机补位、且房里没有第二个真人参战者时，「准备」在语义上就是
+     * 「开始」—— 点了它 canStart 立即成立、服务器立刻开局。按钮照实改名，
+     * 不然单人房主不知道点「准备」就等于开局（发的消息还是 SetReady，
+     * 协议一字不动）。有第二个真人时保持「准备」：那才真是在等人。
+     */
+    const soloWithBots = this.fillWithBots
+      && !this.players.some((p) => p.id !== this.playerId && p.connected && p.team !== 'spectator');
+    readyBtn.textContent = self?.ready
+      ? '取消准备'
+      : soloWithBots ? '⚔ 开始对局（人机补位）' : '准备';
     readyBtn.disabled = blocker !== null && !self?.ready;
     readyBtn.classList.toggle('lb-armed', self?.ready === true);
     (this.root.querySelector('#lb-ready-why') as HTMLElement).textContent =
-      self?.ready ? '等待其他玩家…' : blocker ?? '全员准备即开局';
+      self?.ready
+        ? '等待其他玩家…'
+        : blocker ?? (soloWithBots ? '其余席位由人机补满，点开始即刻开局' : '全员准备即开局');
   }
 
   private renderClassSelection(): void {
@@ -1318,12 +1351,24 @@ export class LobbyShell {
   private loadSavedName(): string {
     try {
       const raw = globalThis.localStorage?.getItem(LOBBY_STORAGE_KEY);
-      if (!raw) return '';
+      if (!raw) return this.generatedName();
       const parsed = JSON.parse(raw) as { name?: unknown };
-      return typeof parsed.name === 'string' ? sanitizeName(parsed.name) : '';
+      const saved = typeof parsed.name === 'string' ? sanitizeName(parsed.name) : '';
+      return saved || this.generatedName();
     } catch {
-      return '';
+      return this.generatedName();
     }
+  }
+
+  /**
+   * X10 追加轮（用户：「不要一上来就是输入玩家姓名」）：首次进来直接发一个
+   * 现成的昵称，改名变成**可选**动作（底栏小输入框），填表不再是第一步。
+   * 生成即存 —— 下次进来还是同一个名字，不会每次换人。
+   */
+  private generatedName(): string {
+    const n = `勇者${String(1000 + Math.floor(Math.random() * 9000))}`;
+    this.saveName(n);
+    return n;
   }
 
   private saveName(name: string): void {

@@ -302,7 +302,15 @@ export class InputManager {
       if (e.button === 2) this.rightDown = false;
     };
     const onMouseMove = (e: MouseEvent) => {
-      if (this.leftDown) {
+      /**
+       * X10 追加轮（用户：「左右按键的时候只能跑，但是不能跟随鼠标的方向
+       * 跑」）：双键跑时拖动**只走右键语义**（镜头带着角色一起转，人跟着
+       * 鼠标方向跑）。此前同一段位移左右两个通道都吃 —— 左键通道再把镜头
+       * 转一遍（只转镜头不转人），净效果是镜头 2 倍速、角色 1 倍速，
+       * 越拖越脱节，读感就是「角色不听鼠标的」。4.2 的单按键语义不变。
+       */
+      const both = this.leftDown && this.rightDown;
+      if (this.leftDown && !both) {
         this.leftDragAccum ??= { dx: 0, dy: 0 };
         this.leftDragAccum.dx += e.movementX;
         this.leftDragAccum.dy += e.movementY;

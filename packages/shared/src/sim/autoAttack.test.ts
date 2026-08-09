@@ -87,6 +87,19 @@ describe('★★ 7.6：落空但计时照常推进', () => {
     foe.alive = false;
     expect(tickSwings(deps(), interval())[0]!.miss).toBe('targetInvalid');
   });
+
+  /**
+   * X10 真机轮实测抓出的缺口：`blockedReason` 此前不看阵营，硬目标是谁就
+   * 打谁 —— 压测台把队友的硬目标写到玩家身上后，「队友的普攻真的落在
+   * 玩家身上」。4.x 写明普攻对**敌方**目标；友方硬目标（治疗选中）不开火。
+   */
+  it('★ 友方硬目标不是开火依据（同队 → targetInvalid）', () => {
+    const ally = addEntity(world, createEntity(allocEntityId(world), mage, TEAM_RED, vec3(0, 0, 2)));
+    atk.targets.hard = ally.id;
+    atk.yaw = dirToYaw(sub(ally.position, atk.position));
+    beginSwing(swings, atk.id, 0, interval());
+    expect(tickSwings(deps(), interval())[0]!.miss).toBe('targetInvalid');
+  });
 });
 
 describe('★★ 8.1：只能被控制、缴械、失去目标/距离/视线阻止', () => {

@@ -601,6 +601,8 @@ export class RoomServer {
       onEliminate: (playerId, reason) => this.eliminate(sr, playerId, reason),
       onEnd: (winner) => this.endMatch(sr, winner),
       onPreTick: () => sr.bots?.tick(),
+      // 仇恨表记账（X10 用户拍板）：本 tick 的事件流喂给人机驱动
+      onPostTick: (events) => sr.bots?.observe(events),
       onBossSpawned: (entityId) => this.attachBossSeat(sr, entityId),
       onBossDespawned: (entityId) => this.detachBossSeat(sr, entityId),
     });

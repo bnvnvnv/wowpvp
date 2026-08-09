@@ -15,6 +15,7 @@ import {
   createMovementState,
   distance2D,
   stepMovement,
+  movementLockOf,
   moveSpeedMultiplierOf,
   separationVelocity,
   SPAWN_PROTECTION_AURA,
@@ -121,7 +122,9 @@ export const hintBarHtml = (bindings: Readonly<Record<Action, string>>): string 
     `${b(key(Action.CancelCast))} 取消读条`,
     `${b('左右键同按')} 向前跑`,
     `${b(key(Action.ToggleCombatMode))} 实战模式`,
-    `${b(key(Action.OpenSettings))} 设置与键位`,
+    // X10 追加轮：点明「技能栏」—— 用户实测找不到选技能的入口（P3c 的
+    // 自定义技能栏一直藏在设置面板里，提示条不点名等于不存在）
+    `${b(key(Action.OpenSettings))} 设置·技能栏·键位`,
   ].join(' · ');
 };
 
@@ -572,6 +575,19 @@ export class TestbedScene {
           this.aim.reset();
         },
       },
+      /**
+       * X10 追加轮：练习场/教学的返回路径（此前只能改 URL）。
+       * ★ 只给玩家路径（?combat 练习、?tutorial 教学）——
+       *   验收载体的默认路径不带它，设置面板 DOM 逐字节不变。
+       */
+      ...(/[?&](combat|tutorial)\b/.test(location.search)
+        ? {
+            leaveMatch: {
+              label: '返回主菜单',
+              run: () => { location.href = location.pathname; },
+            },
+          }
+        : {}),
     });
     // W7：技能栏 <kbd> 读实时绑定（换了技能键跟着变）
     this.hud.skillKeyLabel = (i) =>
@@ -1345,6 +1361,8 @@ export class TestbedScene {
         speedMultiplier: moveSpeedMultiplierOf(
           this.combat.auras, this.combat.player, this.combat.now,
         ),
+        // ★ 同上：定身/昏迷的移动锁，与 tickWorld 同一个 movementLockOf
+        lock: movementLockOf(this.combat.player.flags),
         /**
          * ★ 13.5 / 验收 #43 软推开，与 `tickWorld` 第 2 步同源：
          *   走到假人身上不再完全重叠成一个点，而是被轻轻挤开 —— 可以穿过
@@ -1426,8 +1444,22 @@ export class TestbedScene {
     this.view.setFirstPerson(this.cam.isFirstPerson);
 
     for (const e of this.combat.visibleEntities()) {
-      const v = this.dummyViews.get(e.id as number);
-      if (!v) continue;
+      /**
+       * W22：无 view 的实体**惰性创建**，与 NetworkScene 的远端循环同写法。
+       * 此前是 `if (!v) continue;` —— 构造之后新增的实体（召唤物/BOSS 类
+       * 玩法进试验场时）永远没有模型、不播任何动作。现有模式撞不到
+       * （stressDummies 构造时就位），但这是 G4 里「网络侧做对了、
+       * 试验场没跟」的一处，X10 真机轮销账。
+       */
+      let v = this.dummyViews.get(e.id as number);
+      if (!v) {
+        v = new CharacterView(e.classId as string);
+        v.setTransform(e.position, e.yaw);
+        this.dummyViews.set(e.id as number, v);
+        this.dummyAnims.set(e.id as number, new AnimationController());
+        this.scene.add(v.group);
+        this.addStatusMarkers(e.id as number, v);
+      }
       v.setTransform(e.position, e.yaw);
 
       /**

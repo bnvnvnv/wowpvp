@@ -257,10 +257,18 @@
          14.4 不允许把关键信息只留一个通道，而「还有多久能用」是
          15.2 明确要求提示的内容之一。 */
       #skill-bar .sk-head { position: relative; }
+      /* X10 追加轮（用户：「冷却效果不明显，和超距禁用看上去差不多，应该像
+         时钟一样转一圈」）：暗盘加深到 .88（原 .78 是层看不出来的暗膜），
+         扫描沿上加一根 8° 的发亮金色「表针」—— 转到哪一眼可见，转完即好。
+         与超距禁用（红描边 + 红字，无扫层）从此是两种长相。 */
       #skill-bar .sk-cd {
         position: absolute; left: 0; top: 0; width: 26px; height: 26px;
         border-radius: 5px; pointer-events: none;
-        background: conic-gradient(rgba(10,12,18,.78) var(--cd-deg), transparent 0);
+        background: conic-gradient(
+          rgba(8,10,16,.88) calc(var(--cd-deg) - 8deg),
+          rgba(255,214,110,.95) calc(var(--cd-deg) - 8deg),
+          rgba(255,214,110,.95) var(--cd-deg),
+          transparent var(--cd-deg));
       }
       /* ★ 公共冷却扫层（合同 C1）。
          GCD 期间**七个格子一起转**，与自身冷却是两件事：
@@ -324,9 +332,27 @@
         will-change: transform, opacity;
       }
       .fn-damage { color: #ffd9c0; }
-      /* 暴击的主通道是**尺寸与弹跳**（JS 的 POP_PEAK 1.9），颜色只是第三条 ——
-         17.2/915：不能只靠颜色。字重 900 + 字距是字形通道的一部分 */
-      .fn-crit   { color: #ffb057; font-size: 21px; font-weight: 900; letter-spacing: .6px; }
+      /* 暴击 = 从小炸大的爆炸字（X10 追加轮两轮拍板）：
+         · 弹道是主通道（JS 的 POP_PEAK 5.0：0.09 秒从 0.35 炸到 ≈130px ——
+           与角色身高同量级；回落仍保持 1.5 倍大字）
+         · crit-flash 高亮闪是第二通道（色盲模式重映射颜色后仍成立）
+         · 颜色分敌我：橙黄 = 打别人的暴击，红 = 自己挨的暴击 */
+      .fn-crit   {
+        color: #ffb057; font-size: 26px; font-weight: 900; letter-spacing: .6px;
+        animation: crit-flash .28s ease-out;
+      }
+      .fn-crit-taken {
+        color: #ff5a5a; font-size: 26px; font-weight: 900; letter-spacing: .6px;
+        animation: crit-flash-red .28s ease-out;
+      }
+      @keyframes crit-flash {
+        from { filter: brightness(2.4); text-shadow: 0 0 18px rgba(255,200,90,.95), 0 1px 3px #000; }
+        to   { filter: brightness(1);   text-shadow: 0 1px 3px #000, 0 0 8px rgba(0,0,0,.9); }
+      }
+      @keyframes crit-flash-red {
+        from { filter: brightness(2.4); text-shadow: 0 0 18px rgba(255,90,90,.95), 0 1px 3px #000; }
+        to   { filter: brightness(1);   text-shadow: 0 1px 3px #000, 0 0 8px rgba(0,0,0,.9); }
+      }
       .fn-heal   { color: #86e5a2; }
       .fn-absorb { color: #9fd2ff; }
       /* 未命中/免疫是**文字**不是数字 —— 显示 0 会被读成「打中但减到 0」 */
@@ -453,6 +479,11 @@
                        background: rgba(20,23,30,.9); border: 1px solid #2c313d;
                        border-radius: 8px; padding: 8px 10px; font-size: 11px; }
       .lp-title { font-size: 10px; letter-spacing: 1px; color: #6f7a90; margin-bottom: 5px; }
+      /* X10 追加轮：装备栏可收起。小签沿用面板底色，点击热区放大到整枚签 */
+      .lp-toggle { background: rgba(20,23,30,.92); color: #aeb6c6; border: 1px solid rgba(255,255,255,.12);
+        border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; pointer-events: auto; }
+      .lp-toggle:hover { color: #e8e2cf; border-color: rgba(255,255,255,.28); }
+      .lp-fold { float: right; padding: 0 6px; font-size: 11px; line-height: 14px; }
       .lp-section-label { font-size: 10px; color: #7d8698; margin: 5px 0 3px; }
       .lp-item { border: 1px solid #2c313d; border-radius: 5px; padding: 3px 5px; margin-bottom: 3px; }
       .lp-item.current { border-color: #4a6f8f; background: rgba(74,111,143,.14); }
@@ -580,36 +611,88 @@
       .lb-page { display: none; }
       .lb-page.active { display: flex; align-items: center; justify-content: center;
                         position: absolute; inset: 0; pointer-events: auto;
-                        background: radial-gradient(1200px 700px at 50% 30%, #232a3a 0%, #14171f 70%); }
+                        background: radial-gradient(1200px 700px at 50% 30%, #2a3352 0%, #171a28 70%); }
+      /* ── X10 追加轮首页重构：Q 版高饱和标题页（用户拍板「不够 Q、吸引不了
+         玩家」）。糖果色渐层天空 + 飘浮光斑；只作用于标题页，房间/选职业页
+         保持深色作战底（信息密度高的页面糖果底会晃眼）。 ── */
+      .lb-page[data-page="title"].active {
+        background:
+          radial-gradient(560px 340px at 12% 18%, rgba(255,255,255,.20), transparent 60%),
+          radial-gradient(640px 420px at 88% 78%, rgba(255,214,110,.25), transparent 60%),
+          linear-gradient(158deg, #43b7ff 0%, #6f7bff 46%, #b06bff 76%, #ff7ec2 100%);
+      }
+      .lb-title-wrap { width: 860px; max-width: 96vw; text-align: center; }
+      .lb-hero { margin-bottom: 18px; }
+      .lb-logo { margin: 0; font-family: Cinzel, serif; font-size: 64px; letter-spacing: 8px;
+                 background: linear-gradient(180deg, #fff7d6 20%, #ffd23e 55%, #ff9a3d 100%);
+                 -webkit-background-clip: text; background-clip: text; color: transparent;
+                 filter: drop-shadow(0 4px 0 rgba(90,40,120,.55)) drop-shadow(0 10px 24px rgba(40,10,80,.35));
+                 animation: lb-bob 3.2s ease-in-out infinite; }
+      .lb-sub { color: rgba(255,255,255,.92); font-size: 14px; margin: 6px 0 0;
+                text-shadow: 0 1px 6px rgba(50,20,90,.5); }
+      @keyframes lb-bob { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-6px) } }
+      .lb-modes { display: flex; gap: 18px; align-items: stretch; justify-content: center; }
+      .lb-mode { flex: 1; min-width: 0; text-align: center; border-radius: 22px; padding: 18px 20px 16px;
+                 background: rgba(16,18,34,.82); backdrop-filter: blur(4px);
+                 box-shadow: 0 14px 40px rgba(30,10,70,.35), inset 0 1px 0 rgba(255,255,255,.14);
+                 transition: transform .15s ease; }
+      .lb-mode:hover { transform: translateY(-4px); }
+      .lb-mode-pvp { border: 3px solid #ff6a5e; }
+      .lb-mode-ffa { border: 3px solid #ffc23e; }
+      .lb-mode-art { font-size: 44px; line-height: 1; margin: 2px 0 6px;
+                     filter: drop-shadow(0 4px 8px rgba(0,0,0,.4)); }
+      .lb-mode h2 { margin: 0; font-size: 22px; color: #fff; letter-spacing: 2px; }
+      .lb-mode-pvp h2 { color: #ffb0a8; } .lb-mode-ffa h2 { color: #ffe08a; }
+      .lb-mode-tag { font-size: 12px; color: #aab3c8; margin: 4px 0 12px; }
+      .lb-list-head { display: flex; align-items: center; gap: 6px; justify-content: center;
+                      font-size: 12px; color: #8d97ab; margin: 12px 0 4px; }
+      .lb-roomlist { max-height: 150px; overflow-y: auto; text-align: left; }
+      .lb-room-row { gap: 8px; align-items: center; background: rgba(255,255,255,.05);
+                     border-radius: 10px; padding: 4px 10px; margin: 6px 0; }
+      .lb-empty { padding: 8px 0; text-align: center; }
+      .lb-secondary { justify-content: center; margin-top: 16px; }
+      .lb-secondary .lb-btn { width: auto; }
+      .lb-name-mini { display: inline-flex; align-items: center; gap: 6px;
+                      font-size: 12px; color: rgba(255,255,255,.85); }
+      .lb-name-mini input { width: 110px; padding: 6px 10px; background: rgba(12,14,26,.7);
+                            border: 2px solid rgba(255,255,255,.25); border-radius: 999px;
+                            color: #fff; font-size: 13px; outline: none; text-align: center; }
+      .lb-name-mini input:focus { border-color: #ffd23e; }
+      .lb-devrow { justify-content: center; }
       .lb-panel { background: rgba(20,23,30,.92); border: 1px solid #2c313d;
-                  border-radius: 12px; padding: 22px 26px; box-shadow: 0 12px 40px rgba(0,0,0,.45); }
+                  border-radius: 16px; padding: 22px 26px; box-shadow: 0 12px 40px rgba(0,0,0,.45); }
       .lb-title { width: 380px; text-align: center; }
-      .lb-title h1 { font-family: Cinzel, serif; letter-spacing: 6px; margin: 4px 0 2px;
-                     color: #e8d9a0; font-size: 34px; }
-      .lb-sub { color: #8d97ab; font-size: 12px; margin: 0 0 18px; }
-      .lb-title label { display: block; text-align: left; font-size: 12px; color: #8d97ab; margin-bottom: 12px; }
-      .lb-title input, .lb-join input, .lb-share input {
+      .lb-join input, .lb-share input {
         width: 100%; box-sizing: border-box; margin-top: 4px; padding: 8px 10px;
-        background: #171b24; border: 1px solid #333a48; border-radius: 6px;
+        background: #171b24; border: 1px solid #333a48; border-radius: 999px;
         color: #e6ebf4; font-size: 14px; outline: none; }
-      .lb-title input:focus, .lb-join input:focus { border-color: #4a6f8f; }
+      .lb-join input:focus { border-color: #ffd23e; }
       .lb-row { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
       .lb-join { display: flex; gap: 8px; }
-      .lb-join input { margin-top: 0; text-transform: uppercase; letter-spacing: 2px; }
+      .lb-join input { margin-top: 0; text-transform: uppercase; letter-spacing: 2px; text-align: center; }
       #lobby hr { border: none; border-top: 1px solid #2c313d; margin: 16px 0 10px; }
       .lb-fine { font-size: 11px; color: #7d8698; }
-      .lb-btn { pointer-events: auto; cursor: pointer;
-                border: 1px solid #3a4252; background: #222836; color: #dfe6f2;
-                border-radius: 7px; padding: 9px 16px; font-size: 14px; width: 100%; }
-      .lb-btn:hover { background: #2a3245; border-color: #4a6f8f; }
+      /* Q 版按钮：圆角胶囊 + 厚底边（软糖立体感）+ 悬停放大 */
+      .lb-btn { pointer-events: auto; cursor: pointer; font-weight: 600;
+                border: 0; border-bottom: 4px solid #2b3350; background: #3d476e; color: #f2f5ff;
+                border-radius: 999px; padding: 9px 18px; font-size: 14px; width: 100%;
+                transition: transform .1s ease, filter .1s ease; }
+      .lb-btn:hover { filter: brightness(1.18); transform: translateY(-1px); }
+      .lb-btn:active { transform: translateY(2px); border-bottom-width: 2px; }
       .lb-btn:disabled { opacity: .45; cursor: not-allowed; }
-      .lb-btn.lb-primary { background: #2c4a6e; border-color: #4a6f8f; font-weight: 700; }
-      .lb-btn.lb-primary:hover { background: #35597f; }
-      .lb-btn.lb-armed { background: #274a33; border-color: #30a46c; }
-      .lb-btn.lb-ghost { background: transparent; }
-      .lb-btn.lb-small { width: auto; padding: 5px 12px; font-size: 12px; white-space: nowrap; }
-      .lb-btn.lb-red { border-color: #7a3a41; } .lb-btn.lb-red:hover { background: #4a262b; }
-      .lb-btn.lb-blue { border-color: #3a4f7a; } .lb-btn.lb-blue:hover { background: #26314a; }
+      .lb-btn.lb-primary { background: linear-gradient(180deg,#4f9cff,#3866e8); border-bottom-color: #24449c; font-weight: 800; }
+      .lb-btn.lb-armed { background: linear-gradient(180deg,#3ecf7c,#22a45c); border-bottom-color: #157a41; }
+      .lb-btn.lb-ghost { background: transparent; border-bottom-color: transparent; box-shadow: inset 0 0 0 2px rgba(255,255,255,.22); }
+      .lb-btn.lb-small { width: auto; padding: 5px 14px; font-size: 12px; white-space: nowrap; }
+      .lb-btn.lb-tiny { width: auto; padding: 2px 10px; font-size: 12px; }
+      .lb-btn.lb-red { background: linear-gradient(180deg,#ff7a6e,#e84a44); border-bottom-color: #a32c28; }
+      .lb-btn.lb-blue { background: linear-gradient(180deg,#5f9cff,#3f6ce8); border-bottom-color: #2a49a8; }
+      /* 两大模式卡的 CTA：糖果大按钮 */
+      .lb-btn.lb-cta { font-size: 17px; font-weight: 900; padding: 12px 18px; letter-spacing: 2px;
+                       background: linear-gradient(180deg,#ff8a63,#ff5d5d); border-bottom-color: #b93838;
+                       text-shadow: 0 1px 2px rgba(120,20,20,.5); }
+      .lb-btn.lb-cta-ffa { background: linear-gradient(180deg,#ffd23e,#ff9a1f); border-bottom-color: #b96a10;
+                           color: #4a2c00; text-shadow: none; }
 
       /* 房间页 */
       .lb-room { width: 620px; }
@@ -669,6 +752,10 @@
       .tut-panel { border-color: #4a6f8f; }
       .tut-title { font-weight: 700; font-size: 15px; color: #e8d9a0; margin-bottom: 6px; }
       .tut-title i { font-style: normal; color: #6f7a90; font-size: 12px; }
+      /* X10 追加轮：面板可收起（右上角小折叠钮）+ 技能栏去处提示 */
+      .tut-fold { float: right; padding: 0 6px; font-size: 12px; line-height: 18px; }
+      .tut-note { font-size: 11px; color: #8a93a6; margin-top: 8px; line-height: 1.5;
+        border-top: 1px solid rgba(255,255,255,.07); padding-top: 6px; }
       .tut-lesson { font-size: 12px; color: #9ad48f; background: rgba(48,164,108,.08);
                     border-left: 2px solid #30a46c; padding: 5px 8px; margin: 4px 0 8px;
                     border-radius: 0 6px 6px 0; }

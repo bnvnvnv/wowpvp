@@ -40,16 +40,21 @@ const LIFETIME = 1.15;
 /** 上浮高度（米）。★ 用世界坐标而不是像素 —— 远处的数字该飘得更少 */
 const RISE = 1.4;
 
-export type FloaterKind = 'damage' | 'heal' | 'crit' | 'miss' | 'immune' | 'absorb';
+export type FloaterKind = 'damage' | 'heal' | 'crit' | 'critTaken' | 'miss' | 'immune' | 'absorb';
 
 const CLASS_OF: Record<FloaterKind, string> = {
   damage: 'fn-damage',
   heal: 'fn-heal',
   crit: 'fn-crit',
+  // X10 追加轮拍板：自己挨的暴击红色（打别人的橙黄）—— 弹道同款、只换色
+  critTaken: 'fn-crit-taken',
   miss: 'fn-miss',
   immune: 'fn-immune',
   absorb: 'fn-absorb',
 };
+
+/** 两种暴击共用同一套「爆炸弹道」（见 CRIT_POP） */
+export const isCritKind = (k: FloaterKind): boolean => k === 'crit' || k === 'critTaken';
 
 // ── 弹出曲线：先胀后消（Q 版基调，偏差 #6 的「先胀后消的 Q 弹粒子」同款）──
 /** 冲上峰值用时 */
@@ -61,24 +66,43 @@ export const POP_SETTLE = 0.16;
  * 各类型的峰值缩放。
  *
  * ★★ 17.2 / 规格书 915 行：暴击**不能只靠颜色**区分 —— 这里的尺寸与运动
- *   才是主通道，`.fn-crit` 的橙色是第三条（色盲模式下橙色本身就被重映射）。
- *   暴击 21px × 1.9 峰值 ≈ 40px，与普通 15px × 1.25 ≈ 19px 相差一倍以上。
+ *   才是主通道，`.fn-crit` 的橙色与高亮闪是第三条（色盲模式下颜色被重映射，
+ *   闪光仍成立）。暴击 26px × 2.3 峰值 ≈ 60px 一闪而出、回落仍有
+ *   26px × 1.25 ≈ 33px；普通 15px × 1.25 ≈ 19px 回落 15px —— 全程差一倍。
  */
 export const POP_PEAK: Record<FloaterKind, number> = {
   damage: 1.25,
-  crit: 1.9,
+  crit: 5,
+  critTaken: 5,
   heal: 1.15,
   absorb: 1.1,
   miss: 1.05,
   immune: 1.05,
 };
 
-/** 弹出缩放：0.35 起步冲到 peak（POP_IN），easeOutCubic 落回 1.0（POP_SETTLE）*/
-export const popScale = (age: number, peak: number): number => {
-  if (age <= 0) return 0.35;
-  if (age < POP_IN) return 0.35 + (peak - 0.35) * (age / POP_IN);
+/**
+ * 暴击的「爆炸弹道」（X10 追加轮用户两轮拍板：「一闪而出的大字」→
+ * 「字从小变大，效果像个爆炸，字的大小跟人差不多大」）：
+ *   · 从 0.35 起步在 0.09 秒内**炸**到 5.0 倍峰值（26px × 5 ≈ 130px ——
+ *     屏幕上与角色身高同量级），从小变大的过程就是爆炸感的来源
+ *   · `settleTo 1.5` —— 回落后**仍保持大字**（≈39px）：峰值只有一瞬，
+ *     混战里肉眼读到的是回落尺寸
+ *   · 颜色分敌我（橙黄=打别人 / 红=自己挨的），CSS crit-flash 高亮闪是
+ *     第三通道（色盲模式下也成立）
+ */
+export const CRIT_POP = { settleTo: 1.5 } as const;
+
+/** 弹出缩放：0.35 起步冲到 peak（POP_IN），easeOutCubic 落回 settleTo（默认 1.0）*/
+export const popScale = (
+  age: number,
+  peak: number,
+  opts: { instant?: boolean; settleTo?: number } = {},
+): number => {
+  const settle = opts.settleTo ?? 1;
+  if (age <= 0) return opts.instant ? peak : 0.35;
+  if (age < POP_IN) return opts.instant ? peak : 0.35 + (peak - 0.35) * (age / POP_IN);
   const k = Math.min(1, (age - POP_IN) / POP_SETTLE);
-  return peak + (1 - peak) * (1 - (1 - k) ** 3);
+  return peak + (settle - peak) * (1 - (1 - k) ** 3);
 };
 
 export class FloatingNumbers {
@@ -119,7 +143,7 @@ export class FloatingNumbers {
        * 文件顶那句「丢新的会让刚打出的暴击看不见」现在有真暴击了，
        * 反过来也一样：一片 DoT 跳字不该把 0.5 秒前的暴击挤掉。
        */
-      const i = this.active.findIndex((f) => f.kind !== 'crit');
+      const i = this.active.findIndex((f) => !isCritKind(f.kind));
       const evicted = i >= 0 ? this.active.splice(i, 1)[0] : this.active.shift();
       evicted?.el.remove();
     }
@@ -164,7 +188,7 @@ export class FloatingNumbers {
       f.el.style.display = '';
       const x = (v.x * 0.5 + 0.5) * w + f.drift * t;
       const y = (-v.y * 0.5 + 0.5) * h;
-      const s = popScale(f.age, f.peak);
+      const s = popScale(f.age, f.peak, isCritKind(f.kind) ? CRIT_POP : {});
       f.el.style.transform =
         `translate(-50%,-50%) translate(${x}px,${y}px) scale(${s.toFixed(3)})`;
       // 后 40% 淡出；前段保持不透明，否则最该看清的瞬间反而最淡

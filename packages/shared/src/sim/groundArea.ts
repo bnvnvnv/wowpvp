@@ -61,6 +61,25 @@ export interface GroundStore {
 
 export const createGroundStore = (): GroundStore => ({ areas: [], traps: [] });
 
+/**
+ * 掐掉某施法者某技能的全部存活区域 —— 7.1「打断/移动/控制停止**剩余引导**」
+ * 的兑现（暴风雪引导被打断时雪要停，X10 追加轮）。
+ * ★ 按 (sourceId, skillId) 定位：引导技能有冷却，同一施法者不存在两片
+ *   并行的同名区域；已过期的不碰（幂等）。
+ */
+export const expireGroundAreasFor = (
+  store: GroundStore,
+  sourceId: EntityId,
+  skillId: string,
+  now: number,
+): void => {
+  for (const a of store.areas) {
+    if (a.sourceId === sourceId && a.skillId === skillId && a.expiresAt > now) {
+      a.expiresAt = now;
+    }
+  }
+};
+
 export interface GroundTickEvent {
   kind: 'areaTick' | 'trapTrigger';
   sourceId: EntityId;

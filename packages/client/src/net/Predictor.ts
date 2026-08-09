@@ -97,6 +97,12 @@ export class Predictor {
    *   平滑档，于是**持续**被往回拽（橡皮筋），而且不会让任何断言变红。
    */
   private speedMultiplier = 1;
+  /**
+   * 定身/昏迷的移动锁，随 `selfMovement.lock` 下发。与 speedMultiplier
+   * 同一个道理：它是积分输入，预测漏算就是被定身瞬间的橡皮筋。
+   * 老服务器不发时按 'none'（可选字段的回落）。
+   */
+  private lock: 'none' | 'move' | 'full' = 'none';
   /** 预测出来的权威态（不含平滑偏移）*/
   private predicted: MovementState;
   /**
@@ -122,6 +128,7 @@ export class Predictor {
       ...(this.opts.radius !== undefined ? { radius: this.opts.radius } : {}),
       ...(this.opts.height !== undefined ? { height: this.opts.height } : {}),
       speedMultiplier: this.speedMultiplier,
+      lock: this.lock,
       // 13.5 软推开（近似输入，见 opts.others 注释）。没提供回调 = 不算
       ...(this.opts.others
         ? {
@@ -197,7 +204,10 @@ export class Predictor {
      *   所以单独存一份，供 `sample()` 与下面的重放共用。
      *   服务器没给时沿用上一次 —— 与速度沿用同理，比突然跳回 1 好。
      */
-    if (auth.movement) this.speedMultiplier = auth.movement.speedMultiplier;
+    if (auth.movement) {
+      this.speedMultiplier = auth.movement.speedMultiplier;
+      this.lock = auth.movement.lock ?? 'none';
+    }
 
     let s: MovementState = {
       ...this.predicted,

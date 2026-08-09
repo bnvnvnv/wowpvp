@@ -1742,7 +1742,8 @@ export class SpellVfx {
       const skill = getSkill(asSkillId(a.skillId));
       const av = skill ? this.visualFor(skill) : ATTRIBUTE_VISUALS.frost;
       const entry = this.ensureRing(key, a.center, a.radius, av.primary);
-      const plan = groundFillPlanFor(av.particle, a.radius, density);
+      // skillId 传进去：暴风雪等技能有自己的天气档（大雪球，不是通用小雪花）
+      const plan = groundFillPlanFor(av.particle, a.radius, density, a.skillId);
 
       /**
        * 地面风暴盘：让区域读作「这里有一片天气」，而不只是一圈线。

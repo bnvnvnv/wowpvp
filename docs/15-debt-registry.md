@@ -88,13 +88,17 @@
 | W11 | **教学↔联网断链**：毕业文案「去大厅找真人过招」但无回大厅按钮；大厅从不读 `wowpvp.tutorial.v1` | 毕业页「去大厅」按钮；大厅标题页按存档（done 含 graduate）区分「推荐先玩·尚未完成 / 已完成✓可重温」；存储键挪 steps.ts（轻模块）防大厅 chunk 拖重 | 转化漏斗断口 | ✅ 批次二 2.12（2026-08-05，m15 23/23 回归） |
 | W12 | **夺旗联网线未通**：大厅无模式选择（预设仅经典/武装竞技场）→ 联网夺旗**无入口**；即便进入，`NetworkScene` 无 `FlagMarkers` import、无旗手 blip、无 CTF 面板 —— M7 整套规则 + M9 35 条验收只活在 sim 与试验场演示里 | 协议 `SetRoomMode` + sim `setMode()`（换图/换档/超编拒绝）+ 大厅模式行 + `NetworkScene` 接 FlagMarkers/renderCtf/旗帜 blip/死亡遮罩倒计时/FlagEvent 日志 + 快照补 `scoreToWin/focusStacks/respawnIn`。消费侧前夜抓出三真 bug（ctfWinner 零调用、enqueueRespawn 零调用、复活不写 movement）+ 墓地 yaw 反向，详见 PROGRESS 3.5 章 | 一整个游戏模式联网不可玩 | ✅ 批次三 3.5（2026-08-05，`verify:w12` 11/11 + 13 条新单测；时限/加时缺口另立 A17） |
 | W13 | **音频接线欠账**：BGM 战斗切换未做（`lastCombatAt` 数据在、audio 层零引用；19 首曲子只播 `combat_1`）；10 个 `amb_*` 环境音零使用；脚步只有 `foot_stone` 单材质；联网无脚步/跳跃/落地/驱散/位移音 | **BGM 半已清**（批次二 2.9）：`MusicDirector`（试验场读 sim 权威 `lastCombatAt`、联网按可见 Damage/Heal，脱战 8 秒滞后）+ 每图氛围曲表 + `playMusic` 交叉淡化。**余账**：`amb_*` 环境音（需 AudioManager 加环境循环通道）、脚步材质、联网脚步/跳落/驱散/位移音 | 氛围与反馈缺层（速赢清单项已销） | 🔧 BGM 清（2026-08-05，+4 单测）；余账在册 |
-| W14 | **8 个动画片段零调用**（`Spellcast_Raise`/`Spellcast_Shoot`/`2H_Ranged_Shoot`/`Block`/`Dualwield_Melee_Attack_Chop`/`Lie_Idle`/`Sit×2`）；**跑动中施法无上半身表现**（`applyClip` 单片段全身淡化，只有 Idle 才播施法姿态，无骨骼分层/additive） | **上半身叠加分层已交付**（`entity/animLayer.ts`：脊柱子树遮罩 + `makeClipAdditive`；`CharacterView.buildCastLayer`/`setCasting` 叠加权重淡入淡出，腿照跑手施法；骨架无脊柱时安全回落旧行为）。核心算法 6 单测（用**真骨架名** hips/spine/chest/upperarm.r/upperleg.l，从 GLB 逐一核对）；art=on 无运行时错误（m12 #12d）。**真机观感截图待确认**（additive 参考帧若不自然，可换 Idle[0]）。**余账**：8 个零调用片段里除 `Spellcasting` 外仍未接（需要施法分阶段/格挡/远程等触发信号）| 每分钟都发生的表现缺失；工作量大 | 🔧 批次三 3.8（2026-08-05，分层机制清；standalone 片段待接） |
+| W14 | **8 个动画片段零调用**（`Spellcast_Raise`/`Spellcast_Shoot`/`2H_Ranged_Shoot`/`Block`/`Dualwield_Melee_Attack_Chop`/`Lie_Idle`/`Sit×2`）；**跑动中施法无上半身表现**（`applyClip` 单片段全身淡化，只有 Idle 才播施法姿态，无骨骼分层/additive） | **上半身叠加分层已交付**（`entity/animLayer.ts`：脊柱子树遮罩 + `makeClipAdditive`；`CharacterView.buildCastLayer`/`setCasting` 叠加权重淡入淡出，腿照跑手施法；骨架无脊柱时安全回落旧行为）。核心算法 6+2 单测（用**真骨架名** hips/spine/chest/upperarm.r/upperleg.l，从 GLB 逐一核对）；art=on 无运行时错误（m12 #12d）。**X10 真机轮（2026-08-09）抓出叠加层参考帧 bug 并已修**：`makeClipAdditive` 不传参考 clip 时以片段自己的第 0 帧为参考，而 Spellcasting 是循环片段、第 0 帧就是施法姿态 —— 增量 ≈ 0，层在播但**什么都看不见**（用户实测「施法没动作」的根因；旧单测的合成 clip 恰好第 0 帧是单位四元数，测不出）。现以遮罩后的 Idle 为参考，补「第 0 帧非静止」回归用例 ×2。`Block` 已在 P6 接进招架/格挡（本行此前漏记）。**余账**：`Spellcast_Raise`/`Spellcast_Shoot`/`2H_Ranged_Shoot`/`Dualwield_Melee_Attack_Chop`/`Lie_Idle`/`Sit×2` 六个片段仍零调用（需要施法分阶段/远程等触发信号）；真机观感截图仍待 | 每分钟都发生的表现缺失；工作量大 | 🔧 批次三 3.8 + X10 真机轮修参考帧（2026-08-09）；standalone 片段待接 |
 | W15 | **昼夜 preset 全闲置**：5 个 HDR preset 只用 `day`，`MapDef` 无 preset 字段（速赢清单「每张图配一个」连数据入口都没开）；`EnvironmentOptions.sky` 从未被传 false | `MapDef.envPreset`（纯表现字段）+ 每图配档（试验场 day 红线不动 / 教学 dawn / 竞技场 dusk·day·overcast / 夺旗 dawn）+ `presetOf` 校验回落 + 双端消费；防拼错测试钉住每图的值。`sky:false` 仍无消费者（无室内图，如实留） | 四张图长得一样 | ✅ 批次二 2.10（2026-08-05，速赢清单销账） |
 | W16 | **复活保护无渲染器**：`spawnProtection` 是 14.4 essential 八项里唯一「保证不被隐藏、但从来没被画过」的角色 | `StatusMarkers` 金色地环+柔光柱（纯程序化，`?art=off` 同构造）；双端按光环 id `system.spawnProtection` 检测（快照 auras 全公开，与化形同通道）。organically 要等 W12 的夺旗复活波次，白盒断言先钉住 | 保护期不可见 → 玩家误判 | ✅ 批次二 2.11（2026-08-05，单测 ×2 + m13 #19 白盒变异验证） |
 | W17 | **协议缺 `Damage.avoided`**：联网侧闪避/招架/格挡无区分 → 规避三态特效与音全缺（M12 已知不足迁入，「如实地少一层」） | `Damage` 加 `avoided?`（sim 早有，只差下发）；`pushEvent` 转发；`NetworkScene` 传给 `HitFeedback.onHit`（闪避/招架/格挡浮字 + 音，其消费早有单测）。规避是被攻击者信息，无泄露争议 | 一笔协议债，照 M10 规矩还 | ✅ 批次四（2026-08-05，codec 往返 + HitFeedback avoided 单测） |
 | W18 | **待复核**：他人姓名板施法条在联网侧是否有数据源（M10 已知不足记「快照无他人施法状态」；特效二期接了 `CastStarted` 事件流后 HUD 侧是否跟上未核实） | **复核结论：数据源已在，销账。** `CastStarted` → `SnapshotCombatView.beginCast()` 注册表 → `castOf(e)`，被 `renderUnitFrame`（目标/焦点框）**与** `renderNameplates`（`.np-cast`）双双消费。M10 缺口早由特效二期事件流补上 | 复核后要么销账要么转正 | ✅ 批次四复核销账（2026-08-05，m13 #23：B 通过事件流看到 A 施法） |
 | W19 | **鼠标指向（mouseover）施法整条链路是死的**（P10 审计）：`targets.mouseover` 全仓声明三处、**零赋值**；`allowMouseover` 生产代码零调用 —— 5.6 写明的「治疗/驱散/保护支持鼠标指向施法」在游戏里不存在，悬停只换光标图案 | `sim/entity.ts:93` 声明；`targeting.ts:275` 读；两场景 mousemove 均不写。修法：hover 命中写 `targets.mouseover` + 治疗/驱散/保护类技能标 `allowMouseover` | 治疗手感（队伍框可点后优先级降低） | ⛔ |
 | W20 | **联网硬目标不从快照回读**：服务器拒绝 `SetTarget`（不可选/超距）后本地仍显示选中态 —— P10 给超距补了 `Rejected` 回话，但目标框的乐观显示没有回滚。focusId 已走「快照回读」口径（P10），hardTargetId 没跟 | `net/SnapshotCombatView.ts`；修法与 `EntitySnapshot.focusId` 同手法加 `hardTargetId` | 拒绝后 UI 与服务器不一致（低频：姓名板 45m 剔除后常规路径撞不到） | ⛔ |
+| W21 | **协议无 Swing 消息 → 联网白字没有挥砍动画**：服务器 `tickSwings` 的结果只进伤害结算，无 Swing 广播 | 用户拍板走**便宜路**（2026-08-09）：客户端从 `skillId === 'autoAttack'` 的 Damage 消息反推播挥砍 + 破空声（NetworkScene Damage 分支），零协议改动。**口径如实记**：落空的挥击没有动作（协议里没有那一拍）—— 命中率高时几乎无感；将来若要完全忠实再立正式 Swing 广播（须过 S7 抹除口径 + P11 带宽评估） | 联网白字打得响看不见 | ✅ X10 真机轮（2026-08-09，便宜路） |
+| W22 | **TestbedScene 实体渲染循环无惰性 view 创建**：假人 view 只在构造函数里建一次，中途新增的实体永远没有模型 | 渲染循环改为与 NetworkScene 同写法的惰性创建（CharacterView + AnimationController + StatusMarkers 一次补齐） | 现有模式撞不到，埋雷 | ✅ X10 真机轮（2026-08-09） |
+| W23 | **直接目标法术的伤害在读条结束瞬间落账，弹道只是表现**：霜矢等全部 Direct 法术走即时 `damage`，客户端的弹道飞行是纯装饰 —— 用户实测点名「法术还没到，伤害就出来了，应该命中后才出伤害」。sim 的**锁定投射物**模块（`projectile.ts`：创建即确认命中资格、到达才结算、走位躲不掉 —— 恰是 6.6 的语义）一直存在但**没有 effect kind 能表达它**（schema 只有碰撞型 `spawnProjectile`，全仓唯一用户是猎人一个技能）。改法 = schema 加 `lockedProjectile { speed, onHit }` + 注册处理器 + 霜矢族逐个迁移 + 客户端弹道改跟 sim 弹道 | ⚠️ **伤害延迟 = 击杀窗口移位，balance 必动**，要按单独批 + 归因走；**待拍板**：弹道速度取值、迁移哪些技能（法系全迁还是只迁有明显弹道感的） | 施法反馈的真实感 | ⛔ **待拍板**（X10 追加轮登记，2026-08-09） |
+| W24 | **运行中的房间不可观战、不可中途加入**：对局开始后房间从列表可见但进不去，观战席玩家也收不到 MatchStart（既有账）。用户拍板方向：「这种房间在运行的过程中可以观战也可以加入」。观战半边 = 给无实体会话发 MatchStart + 客户端观战流（M9 规则已有，缺联网接线）；**中途加入**半边动的面大：Session 阶段机、JoinRoom 对 started 房间的语义（顶替人机席位是最自然的口径 —— 断线接管的反向操作）、快照首发、FFA/组队两种模式的入场规则 | `RoomServer` 阶段门控；docs/08 §6 | 单机房永远只有开局那批人 | ⛔ **需设计一轮**（X10 追加轮登记，2026-08-09） |
 
 ## X. 表现与内容打磨
 
@@ -109,7 +113,7 @@
 | X7 | 盾自然过期无收束动作（过期不是破裂，是对的；但壳直接消失没有淡出） | 自然过期 0.3s 收束淡出（破裂仍是破裂动作，语义分开） | 小 | ✅ P3（2026-08-07） |
 | X8 | 音效无技能级分化：91 技能共用 7 组学派音；盘里 `cast_chain_heal`/`cast_lightning_bolt` 等专用音零使用 | P3 签名系统：`av/skillSignature.ts` 双层（推导散列 + 八职业手写表 100% 覆盖），playCastFor/playImpactFor 换文件/变速/叠层；磁盘断链逐键测试 + 全局唯一性零例外门禁 + main.ts 入口源码锁。⚠️ 数值全是占位判断，听感校准归 **X23** | 大招没有专属声音签名 | ✅ P3（2026-08-07，11 agent） |
 | X9 | 粒子次级动作（同爆发内各层错开 40-80ms）未做；池饱和度断言未补（三期已知不足） | `vfx/ParticleBurst.ts`；`SpellVfx.ts`（≈:464）注释 | 观感上限 | ⛔ |
-| X10 | **真 GPU 上从未验证观感与帧率**：全部验收跑在 swiftshader 软渲染（空闲 4 FPS）下，「够不够炫」「掉不掉帧」都没有真机数据 | **压测台已就绪**（P2）：`?stress[=n]` 24 实体同屏 + 帧时间分布面板（平均/p95/最差 + drawcall/三角面/画质档），`verify:stress` 6/6 自检。**余下的是人跑一轮** —— 步骤见 docs/17 末「P2 真机压测：怎么跑」 | 12v12 帧率是未知数 | 🔧 台子✅（P2，2026-08-05）／真机数据仍缺 |
+| X10 | **真 GPU 上从未验证观感与帧率**：全部验收跑在 swiftshader 软渲染（空闲 4 FPS）下，「够不够炫」「掉不掉帧」都没有真机数据 | **首轮真机数据已入册**（2026-08-09，用户机器 Intel UHD 核显 + MX250 双显卡本，Chrome）：24 实体满编、镜头 18m 拉满 —— 核显高画质 **15fps / p95 94ms**（Chrome 默认挑它）、低画质也只 23fps/p95 75ms；强制 MX250 高画质 **33fps / p95 42.5ms**、低画质 26fps/p95 72ms。三个结论：① `powerPreference: 'high-performance'` 缺失一行值一倍帧率（已修，SceneShell）；② **低画质绘制调用砍 60%（651→265）帧率反而更差 ⇒ 瓶颈偏每实体 CPU 开销**（骨骼/粒子/姓名板），P9 自动降档在此类机器上救不动，P4 的钱该花在 CPU 剖析；③ 二分（17/11/5 实体）无明显拐点，5 实体 avg 就有 17.6ms，地板偏高。**观感（够不够炫）的肉眼判定仍缺** | 12v12 帧率已知：入门独显≈30fps 可玩、核显不可玩 | 🔧 帧率数据✅（2026-08-09 首轮）／观感肉眼轮 + 更强 GPU 数据点仍缺 |
 | X11 | 多语言未做（HUD/大厅/教学全中文硬编码，无 i18n 层） | M13/M15 已知不足 | 发布范围决定 | ⛔ |
 | X12 | 武器无背后收纳（`ui_weapon_sheathe` 音效已备好） | M12 已知不足 | 小 | ⛔ |
 | X13 | **法师没有任何群体减速/脱身手段**（用户实测：「被一堆近战追着打很快就嘎了」）：只有霜矢的单体减速 + 5 米霜爆新星（18s）+ 瞬闪（15s）。WoW 的冰锥术（锥形群体减速）在规格 9.x 的法师技能表里**本来就没有** —— 是**设计缺口不是 bug**，加不加需要拍板（同类问题可能也存在于其他远程职业） | `data/classes/mage.ts` 技能表；docs/00 §9.x | 远程职业面对多近战时无解 | ⛔ **待拍板** |
@@ -131,7 +135,7 @@
 |---|---|---|---|---|
 | P1 | **`listEntities()` 每次 spread 新数组且被放进嵌套循环**：tick 软推开对每个移动实体再 spread 全体（O(n²) + 24 人 48 数组/tick）；groundArea 三层嵌套；projectile 每子步 3 次数组分配。`tick.ts` 内层调用是**循环不变量，提出去一行即消** | 三处循环内调用已 hoist（各步顶层的现取**保留** —— 第 3–5 步的效果可能生成实体） | 20Hz × 所有房间的基础成本 | ✅ 批次一 1.8（2026-08-04，balance 逐位不变） |
 | P2 | **人机会话拿完整快照 + 裁剪 + `JSON.stringify` 后在 socket 层丢弃** → 满人机房开销 = 满人房。`BotDriver` 注释自认欠账但低估了成本（stringify 也跑了） | `BotSocket.isBot` 标记 + `broadcastSnapshots` 跳过（跳的是浪费不是裁剪语义，M16b 红线原样） | 补位与接管都走这条路 | ✅ 批次一 1.8（2026-08-04，m16 29/29） |
-| P3 | **快照中与视角无关的部分逐接收者重建**：projectiles/grounds/flags/score/armories/suddenDeathBlips 每人重算；每实体 `Object.fromEntries(resources)`×2 → 24 人 ≈ 2.3 万对象/秒 | `shared/src/net/visibility.ts`（≈:489-547、:566-573） | GC 压力主源 | ⛔ |
+| P3 | **快照中与视角无关的部分逐接收者重建**：projectiles/grounds/flags/score/armories/suddenDeathBlips 每人重算；每实体 `Object.fromEntries(resources)`×2 → 24 人 ≈ 2.3 万对象/秒 | **大头已被 P11 波3 冲销**（2026-08-09 核对时销账）：共享段按队构建 + JSON 序列化每队一次全队复用（`MatchLoop` sharedByTeam），24 次/tick 降到 2 次；`Object.fromEntries`×2 已被 q1Record + 位掩码取代。**残余**：每队仍各构建一次（可见性是队伍级的，属正确成本）；`buildSelfState` 里剩一处 fromEntries | GC 压力主源→已大幅缓解 | 🔧 P11 波3 基本清；残余低优 |
 | P4 | `assertNoHiddenEntities` 在生产环境把 O(sessions×entities) 可见性再跑一遍（成本 ×2）。🔵 「宁可掉线不能透视」的决定**保留**，但成本应可度量，可改采样/轮转校验 | `MatchLoop.ts`（≈:697-700） | 有意但未度量 | 🔵/⛔ |
 | P5 | **广播对同一消息 stringify N 次**（RoomState/MatchEnd/统计等全量广播）。修法零风险：stringify 一次 + `sendRaw(string)` | `Session.sendRaw()` + `broadcast()`/`broadcastStats()` 共享编码 | 白算 | ✅ 批次一 1.8（2026-08-04） |
 | P6 | **全员掉线的对局照跑 20Hz 到终局**：started 分支不调 `dropIfEmpty`，且人机会话占着 `sessions` 让判空恒 false → 无人房间跑完整局（夺旗半小时量级），叠加 P2 | `disconnect()` 判**零真人 session**（`humanSessionCount`，人机 `isBot` 不算）→ `scheduleAbandon` 排 30s 宽限计时器 → 窗口过完仍零人则 `abandonMatch`（停循环+遣散人机+回收房间）。★ 宽限而非立刻拆：集体闪断（verify:m13 §4b 一次掐断双方）要留重连的路，`onReconnect` 里 `cancelAbandon` 撤销 | 可被外部触发的资源占用 | ✅ 批次三 3.7（2026-08-05，RoomServer 单测 ×3：回收/单人不误杀/宽限内重连救回；m13 19/19 不掉） |
@@ -153,7 +157,7 @@
 | G5 | **债务不可 grep**：~150 处欠账以中文散文注释存在，无机器标记 → 无法统计、无法收敛。**本表即解法**；新债照登记规矩挂 `// DEBT(ID):` | 全仓 0 处 TODO/FIXME/HACK | 判断不了「还欠多少」 | 🔧 本表建立即开始清偿 |
 | G6 | verify 脚本靠硬编码 sleep：14 支脚本静态累计 126.8 秒固定等待（m15 一支 27.4s/38 处）。**实测数据点**（P3 收口，2026-08-07）：m4 的控制递减段在 17 支连跑的高负载下偶发失败（递减窗口 15s 与固定 sleep 序列 ~14.8s 只差 0.2s 余量），单独跑 5/6 绿 —— 修的时候从这支下手 | `scripts/verify-*.{mjs,ts}`；`verify-m4.mjs` 递减段 | 手跑成本高、偶发脆弱 | ⛔ |
 | G7 | `vite build` 无 `manualChunks`（three ~600KB 进首 chunk）；动态 import 只有 2 处（NetworkScene/LobbyShell），TestbedScene 静态打包 | `packages/client/vite.config.ts` 无 build 配置 | 首屏体积 | ⛔ |
-| G8 | 小项：`exactOptionalPropertyTypes` 关闭（代码里大量 `...(x!==undefined?{x}:{})` 说明本可以开）；`ws` 版本两处不一致（^8.21.1 / ^8.18.1） | `tsconfig.base.json`；两处 package.json | 低 | ⛔ |
+| G8 | 小项：`exactOptionalPropertyTypes` 关闭（代码里大量 `...(x!==undefined?{x}:{})` 说明本可以开）。~~`ws` 版本两处不一致~~（已统一 ^8.21.1，本行 2026-08-09 核对时发现已修未销） | `tsconfig.base.json` | 低 | ⛔（只剩 exactOptionalPropertyTypes） |
 
 ## F. 发布阻塞（对外发布的门禁，`docs/09` §7.2 同源）
 
@@ -162,9 +166,9 @@
 | F1 | **SkillId 与技能名原创化**：91 技能 85 个可辨识借用 WoW；**id 是承重的**（光环 id、vfx key、武器 grants/removes 全引用）→ 跨数据层重命名 + 创作决定（起名评审），规格书 18.3。「不要拖到发布前」 | PROGRESS 技术债 §7；`docs/09` §3 | ⛔ |
 | F2 | **素材投递方案**：`vite build` 产物不含 assets（dev 靠中间件流式读），发布怎么带 573MB 未定（打包/CDN/按需加载） | `packages/client/vite.config.ts` 文件头注释；`docs/09` §7.2 | ⛔ |
 | F3 | **公网硬化包全绿**（= S1–S6 + TLS 终结 + 客户端 URL 协议自适应） | 见 S 组 | ⛔ |
-| F4 | **默认页翻成大厅**：现默认试验场（141 项验收载体的红线保持——发布用构建开关或独立入口，不动无参路径） | `main.ts` 路由；M13 已知不足 | ⛔ |
+| F4 | **默认页翻成大厅**：面向玩家那半 P6 已翻（无参 = 主菜单/大厅入口页，验收载体退到 `?testbed` 前缀 —— 本行「现默认试验场」的旧描述 2026-08-09 核对时更正）。**剩发布形态那半**：构建开关/独立入口未落地，`vite.config.ts` 无 build 配置 | `main.ts` 路由（P6）；vite.config.ts | 🔧 玩家侧✅（P6）／发布构建开关⛔ |
 | F5 | **真人平衡实测**：`pnpm balance` 是回归工具不是平衡真相（bot 不会假读条/绕柱/风筝；种子间波动 ±6pp）——发布前需要真人对局轮 | `scripts/balance-report.ts` 自述；M14b 章节 | ⛔ |
-| F6 | **真 GPU 帧率/观感验证轮**（= X10，发布门禁重列） | — | ⛔ |
+| F6 | **真 GPU 帧率/观感验证轮**（= X10，发布门禁重列）。首轮帧率数据已入册（见 X10 行，2026-08-09）；发布门禁还差观感肉眼轮 + 至少一台中端独显机器的数据点 | X10 行 | 🔧 |
 
 ## B. 平衡与 AI
 

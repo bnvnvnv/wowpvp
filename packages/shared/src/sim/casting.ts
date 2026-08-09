@@ -47,8 +47,12 @@ export interface CastState {
   endsAt: number;
   /** 引导结束时间。仅 channel */
   channelEndsAt?: number;
-  /** 下一跳时间。仅 channel */
-  nextTickAt?: number;
+  /**
+   * 引导的结算是否已在**引导开始**时发生（见 tickCasting 引导分支的 ★）。
+   * 打断路径靠它区分「读条期被打断（无事发生）」与「引导期被打断
+   * （要掐掉已经生成的地面区域）」。仅 channel
+   */
+  channelResolved?: boolean;
   targetId?: EntityId;
   groundPoint?: Vec3;
   /** 释放时锁定的角色朝向，方向技能用 */
@@ -422,8 +426,8 @@ export const beginCast = (
   if (skill.cast.kind === CastKind.Channel) {
     const dur = skill.cast.channelDuration ?? 0;
     state.channelEndsAt = state.endsAt + dur;
-    const ticks = skill.cast.ticks ?? 1;
-    state.nextTickAt = state.endsAt + dur / ticks;
+    // ★ 此前这里还给 nextTickAt 赋值 —— 全仓零消费方（引导的逐跳由技能
+    //   自己的 spawnGroundArea.tickInterval 承担），死字段已删（X10 追加轮）
   }
 
   store.set(caster.id, state);
@@ -564,13 +568,39 @@ export const tickCasting = (world: World, store: CastingStore, opts: TickOptions
       }
     }
 
-    // 引导：到时间就跳一次
+    /**
+     * 引导（7.1）：结算发生在**引导开始**（读条结束那一刻），不是引导结束 ——
+     * 暴风雪要在引导期间下雪，「读条读完了才下」是 X10 追加轮用户实测
+     * 戳穿的错时序。
+     *
+     * ★★ 此前结算挂在 channelEndsAt、且不走 finishCast：效果整整迟到
+     *   channelDuration 秒不说，资源与冷却**从来没扣过**（spendResource /
+     *   cooldowns.set 只存在于 finishCast，而引导路径不经过它）——
+     *   引导技能一直是免费、无冷却的。「写了没人调」家族又一员。
+     * ★ 与 finishCast 同一条纪律（验收 #20）：开始引导前再次校验，
+     *   失败不扣资源、不进冷却；成功才消耗并结算。
+     */
     if (state.kind === CastKind.Channel && state.channelEndsAt !== undefined) {
-      if (world.time >= state.channelEndsAt) {
-        store.delete(id);
+      if (!state.channelResolved && world.time >= state.endsAt) {
+        const reason = validateCast({
+          world, caster, skill,
+          target: getEntity(world, state.targetId),
+          groundPoint: state.groundPoint,
+          phase: 'complete',
+        });
+        if (reason !== CastFailure.Ok) {
+          store.delete(id);
+          opts.events?.onFailed?.(caster, skill, reason);
+          continue;
+        }
+        if (skill.cost) spendResource(caster, skill.cost.resource, skill.cost.amount);
+        if (skill.cooldown > 0) caster.cooldowns.set(skill.id, world.time + skill.cooldown);
+        state.channelResolved = true;
         opts.events?.onCompleted?.(caster, skill, state);
-        continue;
       }
+      // 引导走完：清场即可 —— 结算早已发生，这里绝不能再 onCompleted 一次
+      // （那是双份暴风雪）。打断/移动/控制路径在上面，自带 onInterrupted。
+      if (world.time >= state.channelEndsAt) store.delete(id);
       continue;
     }
 

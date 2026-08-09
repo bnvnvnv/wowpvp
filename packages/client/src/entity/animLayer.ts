@@ -74,19 +74,36 @@ export const maskClipToBones = (
 /**
  * 从一个全身 clip 造「上半身叠加」clip：遮罩到上半身 → 克隆 → 转叠加。
  *
+ * @param referenceClip 叠加的**参考姿势**来源（通常是 Idle）。
+ *
+ *   ★★ 不传的话 `makeClipAdditive` 以 clip **自己的第 0 帧**为参考 ——
+ *     对 Spellcasting 这类循环片段，第 0 帧本身就是施法姿态，
+ *     减掉自己 ≈ 全程增量为零：叠加层「在播」但**什么都看不见**。
+ *     X10 真机轮实测抓出（「近战远程有攻击没动作」的施法侧根因）；
+ *     此前单测没抓到是因为合成 clip 恰好第 0 帧是单位四元数。
+ *     叠加量应该是「施法姿态相对**站立姿态**的偏移」—— 参考必须是 Idle。
+ *
  * @returns 叠加 clip；上半身根找不到、或遮罩后一条轨道都不剩时返回 undefined
  *   （调用方回落旧行为）。
  */
 export const buildUpperBodyAdditive = (
   clip: THREE.AnimationClip,
   bones: readonly THREE.Object3D[],
+  referenceClip?: THREE.AnimationClip,
 ): THREE.AnimationClip | undefined => {
   const root = findUpperBodyRoot(bones);
   if (!root) return undefined;
-  const masked = maskClipToBones(clip, subtreeBoneNames(root));
+  const names = subtreeBoneNames(root);
+  const masked = maskClipToBones(clip, names);
   if (masked.tracks.length === 0) return undefined;
   // ★ 克隆再转叠加：makeClipAdditive 就地改轨道值，共享模板 clip 不能被它污染
   const additive = masked.clone();
-  THREE.AnimationUtils.makeClipAdditive(additive);
+  if (referenceClip) {
+    // 参考 clip 同样先遮罩（轨道名要对得上）再克隆（不污染共享模板）
+    const ref = maskClipToBones(referenceClip, names).clone();
+    THREE.AnimationUtils.makeClipAdditive(additive, 0, ref);
+  } else {
+    THREE.AnimationUtils.makeClipAdditive(additive);
+  }
   return additive;
 };

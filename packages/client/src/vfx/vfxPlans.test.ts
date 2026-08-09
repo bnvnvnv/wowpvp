@@ -398,3 +398,34 @@ describe('windupStyleOf —— 蓄力形态按属性/职业分化', () => {
     }
   });
 });
+
+/**
+ * X10 追加轮用户拍板：「暴风雪应该是一堆很大很大的大雪球往下砸，不是那种
+ * 小雪花」。技能级天气覆盖（SKILL_WEATHER）—— 只动暴风雪，通用雪花档
+ * （凛冬领域等）原样。
+ */
+describe('暴风雪的大雪球档（技能级天气覆盖）', () => {
+  const generic = groundFillPlanFor('snowflake', 6, 1);
+  const ball = groundFillPlanFor('snowflake', 6, 1, 'mage.blizzard');
+
+  it('★★ 大：尺寸至少是通用雪花的 2 倍；快：重力至少 3 倍；少：数量打下来', () => {
+    expect(ball.size).toBeGreaterThanOrEqual(generic.size * 2);
+    expect(Math.abs(ball.gravity)).toBeGreaterThanOrEqual(Math.abs(generic.gravity) * 3);
+    expect(ball.count).toBeLessThan(generic.count);
+  });
+
+  it('★ 真的砸到地：寿命内竖直位移 ≥ 生成高度的八成（不许半空消失）', () => {
+    const travel = Math.abs(verticalTravel(ball.gravity, ball.drag, ball.life));
+    expect(travel).toBeGreaterThanOrEqual(ball.spawnHeight * 0.8);
+  });
+
+  it('★ 池预算不升：并发槽数不高于通用雪花档', () => {
+    const slots = (p: { life: number; cadence: number; clusters: number }): number =>
+      Math.ceil(p.life / p.cadence) * p.clusters;
+    expect(slots(ball)).toBeLessThanOrEqual(slots(generic));
+  });
+
+  it('不带 skillId / 未登记的技能：逐字节走通用档（凛冬领域不被带坏）', () => {
+    expect(groundFillPlanFor('snowflake', 6, 1, 'deathknight.winter_domain')).toEqual(generic);
+  });
+});
