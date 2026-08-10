@@ -69,6 +69,9 @@ import { playCastActivity, playCombatEvent, type CombatAudioDeps } from '../audi
 import { StatusMarkers } from '../vfx/StatusMarkers.js';
 import { SpellVfx, type CastView } from '../vfx/SpellVfx.js';
 import { TargetRing } from '../vfx/TargetRing.js';
+import { FactionRings } from '../vfx/FactionRing.js';
+import { LocalCombatView } from './LocalCombatView.js';
+import { factionRingViewsOf, queueExpiredFlash } from './sceneViews.js';
 import { CtfDemo } from '../combat/CtfDemo.js';
 import type { MinimapBlip } from '../hud/ModeHud.js';
 import { FlagMarkers } from '../vfx/FlagMarkers.js';
@@ -215,6 +218,12 @@ export class TestbedScene {
   private readonly obstacles: readonly Aabb[];
   /** M2：战斗模拟与 HUD */
   private readonly combat: CombatDirector;
+  /**
+   * X17：喂给 HUD 的那一面。★ `CombatDirector` 本身已经满足 `CombatView`，
+   *   这一层只补光环行需要的 `HudUnit.auras`（为什么不直接改 director，
+   *   见 `LocalCombatView` 的文件头）。
+   */
+  private readonly hudView: LocalCombatView;
   private readonly hud: CombatHud;
   /** W9：设置面板（F10）*/
   private readonly settings: SettingsPanel;
@@ -261,6 +270,11 @@ export class TestbedScene {
   /** M12：目标 / 焦点的脚下指示环（5.2 / 14.4 关键元素）*/
   private readonly targetRing = new TargetRing();
   private readonly focusRing = new TargetRing();
+  /**
+   * X14 §777 第三/四通道：**全体**脚下阵营标记 + 便宜路轮廓。
+   * ★ 与 `targetRing` 分层（「他是哪一边」vs「我选的是他」），见 FactionRing 文件头。
+   */
+  private readonly factionRings = new FactionRings();
   /** M3：瞄准 */
   private readonly aim = new AimingController();
   private readonly groundIndicator = new GroundIndicator();
@@ -352,6 +366,8 @@ export class TestbedScene {
       this.playerClass,
       botDifficulty,
     );
+    // X17：HUD 那一面（只比 director 多一个光环行投影）
+    this.hudView = new LocalCombatView(this.combat);
     // ★ 必须用玩家的**真实实体 id**。这里曾经写死 0，而实体 id 从 1 开始分配 ——
     //   结果玩家身上的控制标记永远不会更新（一直是构造时的 visible=false）。
     //   编译通过、测试全绿，只有截图比对才看得出来
@@ -487,7 +503,28 @@ export class TestbedScene {
             ? { distance: distance2D(at, this.move.position) }
             : {}),
         });
+      } else if (kind === 'resolved' && skill) {
+        /**
+         * W14：**法术甩出去的那一下**（`Spellcast_Shoot` 推掌）。
+         *
+         * ★★ **必须是 else**：挥砍与释放共用同一条一次性覆盖通道，
+         *   后调的会把先调的取消掉 —— 近战已经挥过了，再补一记推掌就是抽搐。
+         * ★ 瞬发技能不走 `setCasting`，这一下是它们**唯一**的施法表现。
+         */
+        this.viewFor(caster.id)?.playCastRelease();
       }
+    };
+    /**
+     * X21：排队窗过期 → 技能栏上那一格短促红闪。
+     *
+     * ★★ 只闪**玩家自己**的：技能栏画的是玩家的九格，假人的排队（实战模式下
+     *   也不会有 —— 假人的请求永远不带 queue）闪到玩家栏上就是纯误导。
+     * ★ 与联网侧走**同一个** `queueExpiredFlash`：两条路对「闪哪一格、
+     *   等了多久」的口径不会分叉。
+     */
+    this.combat.onQueueExpired = (caster, skill, waited) => {
+      if (caster.id !== this.combat.player.id) return;
+      queueExpiredFlash({ skillId: skill.id, waited }, this.hud);
     };
     this.combat.onSwapResult = (ok) =>
       audio.play(ok ? 'ui_weapon_unsheathe' : 'ui_error', { group: 'ui' });
@@ -505,6 +542,11 @@ export class TestbedScene {
     this.scene.add(this.flagMarkers.group);
     this.scene.add(this.groundIndicator.group, this.directionIndicator.group);
     this.scene.add(this.targetRing.group, this.focusRing.group);
+    /**
+     * X14 阵营标记。★ 与目标环同一条理由**不受 `art` 门禁**：
+     * 「谁是敌人」是可读性信息不是美术层（14.4 essential），纯程序化零贴图。
+     */
+    this.scene.add(this.factionRings.group);
     /**
      * ★★ P10：NDC 挂在 **window** 上更新，不再挂 canvas。
      *   真机实测：光标一压到姓名板或 `#help`（两者 `pointer-events:auto`），
@@ -693,6 +735,12 @@ export class TestbedScene {
     /** 14.3 护盾四态自检：当前几个人有壳、分别处于哪一态 */
     shields: { visible: number; states: string[] };
     /**
+     * X14 脚下阵营标记自检：场上几个、轮廓开没开。
+     * ★ `FactionRings` 刻意**不读画质**（与 TargetRing/StatusMarkers 同一把锁），
+     *   而「低画质下它没被裁掉」只有端到端验得出来 —— `count` 就是那条读数。
+     */
+    factionRings: { count: number; rim: boolean };
+    /**
      * 最近 0.5 秒的平均帧率。
      *
      * ★ **零新增计算** —— `GameLoop` 每帧本来就在算它（只是此前只喂给
@@ -731,6 +779,7 @@ export class TestbedScene {
           .map((m) => m.shieldState)
           .filter((s): s is NonNullable<typeof s> => s !== null),
       },
+      factionRings: { count: this.factionRings.count, rim: this.factionRings.rim },
       fps: this.loop.fps,
     };
   }
@@ -750,6 +799,7 @@ export class TestbedScene {
     window.removeEventListener('mousemove', this.onPointerMove);
     this.deathOverlay?.remove();
     this.spellVfx?.dispose();
+    this.factionRings.dispose();
     this.shell.dispose();
   }
 
@@ -1526,10 +1576,11 @@ export class TestbedScene {
     this.flagMarkers.cameraDistance = this.cam.distance;
     // 没有夺旗演示时喂空列表 —— 场上一面旗也没有，标记自然全收
     this.flagMarkers.update(this.ctf?.views() ?? [], this.elapsed);
-    this.updateTargetRings();
+    this.updateTargetRings(rendered);
     this.updateHudPanels();
     this.renderer.render(this.scene, this.cam.camera);
-    this.hud.update(this.combat, this.cam.camera, this.canvas, dt);
+    // ★ 喂的是 `hudView` 而不是 director 本身 —— 差别只有 X17 的光环行
+    this.hud.update(this.hudView, this.cam.camera, this.canvas, dt);
 
     this.onDebug({
       fps: this.loop.fps,
@@ -1557,8 +1608,10 @@ export class TestbedScene {
    * ★ 颜色取自 `paletteFor()` 的语义色 —— 色盲模式切换时它跟着变，
    *   与 HUD 的目标框用同一份色板（17.2：玩家不必学两套颜色）。
    * ★ 这是 `ESSENTIAL_ROLES.target`，**不经过画质档位**（14.4 / #48）。
+   * ★ X14 的**全体**阵营标记也在这里更新 —— 它与目标环画在同一批脚下，
+   *   分开两处更新迟早会出现「两个环用了不同帧的位置」。
    */
-  private updateTargetRings(): void {
+  private updateTargetRings(selfRendered: { x: number; y: number; z: number }): void {
     const p = paletteFor(this.access.colorblind);
     const me = this.combat.player;
 
@@ -1572,6 +1625,33 @@ export class TestbedScene {
 
     const f = this.combat.focus;
     this.focusRing.update(f?.position, 'focus', this.elapsed, p.neutral);
+
+    /**
+     * X14：**全体**脚下阵营标记 + 轮廓（§777 第三、四通道）。
+     * ★ 名单含玩家自己（第一人称下由投影收掉）。位置直接用实体位置 ——
+     *   试验场的假人不走插值，`e.position` 就是画在屏幕上的那一份。
+     * ★ 潜行/不可选中的不在 `visibleEntities()` 里，投影不必再判一次。
+     */
+    this.factionRings.cameraDistance = this.cam.distance;
+    this.factionRings.update(
+      factionRingViewsOf(
+        [me, ...this.combat.visibleEntities()].map((e) => ({
+          id: e.id as number,
+          team: e.team as number,
+          alive: e.alive,
+          position: e.position,
+        })),
+        {
+          selfId: me.id as number,
+          selfTeam: me.team as number,
+          firstPerson: this.cam.isFirstPerson,
+          // ★ 自己走**渲染插值后**的位置：sim 是固定步长的，用 sim 位置
+          //   会让脚下那圈以 20Hz 跳，而人是 60fps 平滑的
+          positionOf: (id) => (id === (me.id as number) ? selfRendered : undefined),
+        },
+      ),
+      { friendly: p.friendly, hostile: p.hostile },
+    );
   }
 
   /**

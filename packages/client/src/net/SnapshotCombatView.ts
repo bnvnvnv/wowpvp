@@ -25,6 +25,7 @@ import {
   CastKind,
   GCD,
   GEOMETRY,
+  HIDDEN_AURA_ID,
   TargetFilter,
   distance,
   getClass,
@@ -37,6 +38,7 @@ import {
   usesNoTarget,
   type CastState,
   type EntityId,
+  type AuraSnapshot,
   type HydratedEntitySnapshot as EntitySnapshot,
   type School,
   type SkillDef,
@@ -46,7 +48,7 @@ import {
 } from '@wowpvp/shared';
 
 import type {
-  CombatView, HudLogEntry, HudSkillSlot, HudUnit,
+  CombatView, HudAura, HudAuraKind, HudLogEntry, HudSkillSlot, HudUnit,
 } from '../hud/CombatView.js';
 
 /**
@@ -62,6 +64,47 @@ const GCD_TOTAL = Math.max(GCD.MIN, GCD.BASE);
 
 const toMap = (r: Readonly<Record<string, number>>): ReadonlyMap<string, number> =>
   new Map(Object.entries(r));
+
+/**
+ * X17：`AuraSnapshot` → `HudAura`。
+ *
+ * ★★ **`kind` 是这条投影唯一需要动脑子的字段** —— 快照里没有它。
+ *   仓库里也没有 `auraId → AuraDef` 的注册表（`net/visibility.ts` 写明了），
+ *   所以绝大多数光环这里如实报 `'unknown'`，光环行退到中性灰 + `·` 角标。
+ *
+ * ★ 唯一的例外是 `control.*`：那个 id **是 sim 自己拼出来的**
+ *   （`sim/effects/combat.ts` 的 ``id: `control.${kind}` ``，同处写死
+ *   `kind: 'debuff'`）—— 它是一条结构事实，不是从数据表里猜的推论。
+ *   所以只认这一条前缀，别的一律 unknown。
+ *
+ * ⚠️ 同理**不填 `name`**：查得到的只有「施加它的技能」的名字
+ *   （光环 id 去掉最后一段），那不是光环名。消费方退回 id 是诚实的，
+ *   编一个中文名会让玩家以为自己看到的是权威名称。
+ *
+ * ★ `HIDDEN_AURA_ID`（S7 掩码）不需要在这里特判：消费方 `auraRow.ts` 对它
+ *   强制转 unknown + 中性色。这里仍然主动把 kind 打成 unknown ——
+ *   一个被掩掉的光环连「是增益还是减益」都不该从旁边漏出去。
+ *
+ * DEBT(X26): 快照不带 buff/debuff 向也不带名字 —— 联网侧除 control.* 外
+ *   一律 unknown + name 退回 id。两条出路（协议 1 bit / 客户端建
+ *   auraId→AuraDef 注册表）待拍板，见总账 X26。
+ */
+export const toHudAura = (a: AuraSnapshot): HudAura => {
+  const kind: HudAuraKind = a.auraId === HIDDEN_AURA_ID
+    ? 'unknown'
+    : a.auraId.startsWith('control.') ? 'debuff' : 'unknown';
+  return {
+    id: a.auraId,
+    kind,
+    // ★ 省略的字段一个都不补默认值：`expiresAt` 缺席 = persistent（P11 的口径），
+    //   `stacks` 缺席 = 1，消费方两处都已经按这个口径写了
+    ...(a.expiresAt !== undefined ? { expiresAt: a.expiresAt } : {}),
+    ...(a.stacks !== undefined ? { stacks: a.stacks } : {}),
+    ...(a.school !== undefined ? { school: a.school } : {}),
+    ...(a.absorbRemaining !== undefined ? { absorbRemaining: a.absorbRemaining } : {}),
+    ...(a.absorbInitial !== undefined ? { absorbInitial: a.absorbInitial } : {}),
+  };
+};
 
 /** `EntitySnapshot` → `HudUnit`。★ 只做形状转换，不补充任何快照里没有的信息 */
 export const toHudUnit = (e: EntitySnapshot): HudUnit => ({
@@ -79,6 +122,14 @@ export const toHudUnit = (e: EntitySnapshot): HudUnit => ({
   maxResources: toMap(e.maxResources),
   weaponId: e.equipment?.currentWeaponId,
   flags: e.flags,
+  /**
+   * X17 光环行。★ 服务器已经按可见性裁剪过（`net/visibility.ts`），
+   *   HUD 不做第二次判断 —— 快照里有的就是这个客户端该看见的。
+   * ★ 空数组照常给：`auraRowModel` 对空行返回空串，与不填等效，
+   *   而给一个数组让「这个实体身上确实没有光环」和「生产方没接线」
+   *   在下游是两件可分的事。
+   */
+  auras: e.auras.map(toHudAura),
 });
 
 /** `CastStarted` 消息里客户端真正拿得到的那几样 */

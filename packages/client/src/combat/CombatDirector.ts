@@ -553,6 +553,11 @@ export class CombatDirector {
             }
             this.push(`${c.name} 的 ${skillName} 被${by}中断${lockText}`, 'interrupt');
           },
+          /**
+           * X21：排队窗过期。★ 这里**只转发**，一个字都不往日志里写 ——
+           *   理由见 `onQueueExpired` 的声明处。
+           */
+          onQueueExpired: (c, sk, info) => this.onQueueExpired?.(c, sk, info.waited),
         },
         // ★ 12.3 / 验收 #40：带旗使用无敌/潜行技能时**先掉旗**，再播技能表现
         onBeforeSkillEffects: (caster, skill) => this.onBeforeSkillEffects?.(caster, skill),
@@ -691,6 +696,19 @@ export class CombatDirector {
     skill: SkillDef | undefined,
     targets?: readonly CombatEntity[],
   ) => void;
+  /**
+   * X21：**0.4 秒排队窗过期**（合同 C5 的排队位到点还没轮到它）。
+   *
+   * ★★ 刻意与 `onCastActivity('failed')` **分开一路**：那一路会走
+   *   `selfFail()` 写一条「无法释放：公共冷却中」的日志 —— 而 0.4 秒之后
+   *   再弹那句话，说的是一个当下已经不成立的理由（X21 拍板的正是这一点，
+   *   sim 侧因此专门不发 `onFailed`）。从这里请回失败提示等于把板拆掉。
+   * ★ 所以本钩子**不写日志、不发中部提示**：它只是给表现层一个信号，
+   *   由表现层决定要不要说、说成什么（试验场接的是技能栏上的短促红闪）。
+   * ⚠️ `caster` 可能是**假人** —— 假人的请求永远不带 queue（三道保险钉着），
+   *   所以实战里它只会是玩家；调用方仍然按 id 判一次，别闪错人的技能栏。
+   */
+  onQueueExpired?: (caster: CombatEntity, skill: SkillDef, waited: number) => void;
   /** 换装结束（true=完成，false=中断）*/
   onSwapResult?: (completed: boolean) => void;
   /** 7.6 白字命中 → 表现层播挥砍动画与破空声（实战模式才会触发）*/

@@ -72,11 +72,15 @@ import { CameraController } from '../camera/CameraController.js';
 import { AnimationController } from '../entity/AnimationController.js';
 import { CharacterView } from '../entity/CharacterView.js';
 import { Action, InputManager, type FrameInput } from '../input/InputManager.js';
+import { gateInputWhenDead } from '../input/deathGate.js';
 import { DecorRenderer } from '../render/DecorRenderer.js';
 import { GameLoop } from '../render/GameLoop.js';
 import { MapRenderer } from '../render/MapRenderer.js';
 import { QualityController } from '../render/QualityController.js';
 import { SceneShell } from './SceneShell.js';
+import {
+  ctfHudViewFromMatch, factionRingViewsOf, queueExpiredFlash,
+} from './sceneViews.js';
 import { Environment } from '../render/Environment.js';
 import { Connection, type NetLink } from '../net/Connection.js';
 import { Interpolator } from '../net/Interpolator.js';
@@ -104,6 +108,7 @@ import { SpellVfx, type CastView, type SpellVfxStatus } from '../vfx/SpellVfx.js
 import { FlagMarkers } from '../vfx/FlagMarkers.js';
 import { StatusMarkers } from '../vfx/StatusMarkers.js';
 import { TargetRing } from '../vfx/TargetRing.js';
+import { FactionRings } from '../vfx/FactionRing.js';
 import { strongestShield, type ControlKind } from '../vfx/status.js';
 import { visualForAuraId, visualForSchool } from '../vfx/schools.js';
 import {
@@ -187,6 +192,13 @@ export interface NetStatus {
   /** W16：场上可见的复活保护标记数 */
   spawnProtections: number;
   /**
+   * X14：脚下阵营标记数与轮廓开关。
+   * ★★ 存在的理由与 `casting` 那条一模一样：`FactionRings` 刻意**不读画质**
+   *   （与 TargetRing/StatusMarkers 同一把锁），而「低画质下它没被裁掉」
+   *   这件事只有端到端才验得出来 —— `count` 就是那条断言的读数。
+   */
+  factionRings: { count: number; rim: boolean };
+  /**
    * W12：夺旗自检（verify:w12 的判据入口）。竞技场对局恒为 null ——
    * 顺手也是 15.4 否定式的可执行断言（竞技场里读到非 null 就是接错了）。
    */
@@ -261,6 +273,12 @@ export class NetworkScene {
   private readonly targetRing = new TargetRing();
   /** 5.1 焦点目标的脚下指示环。★ 与试验场同一个类、同一套语义色 */
   private readonly focusRing = new TargetRing();
+  /**
+   * X14 §777 第三/四通道：**全体**脚下阵营标记 + 便宜路轮廓。
+   * ★ 与 `targetRing` 是分层的两件事（「他是哪一边」vs「我选的是他」），
+   *   两个环半径不重叠，叠在同一个人脚下也读得开（见 FactionRing 文件头）。
+   */
+  private readonly factionRings = new FactionRings();
   /** 远端角色的可视化与动作状态机，按实体 id */
   private readonly views = new Map<number, CharacterView>();
   private readonly anims = new Map<number, AnimationController>();
@@ -363,6 +381,12 @@ export class NetworkScene {
 
     this.scene.add(this.selfView.group);
     this.scene.add(this.targetRing.group, this.focusRing.group);
+    /**
+     * X14 阵营标记。★ **不受 `art` 门禁** —— 与目标环同一条理由：
+     * 「谁是敌人」是可读性信息不是美术层（14.4 essential），
+     * 纯程序化零贴图，`?art=off` 的回归路径照常构造。
+     */
+    this.scene.add(this.factionRings.group);
     // 5.5 瞄准指示器（关键 UI，不受 art 门禁）
     this.scene.add(this.groundIndicator.group, this.directionIndicator.group);
     /**
@@ -658,6 +682,7 @@ export class NetworkScene {
     this.canvas.removeEventListener('mousedown', this.onCanvasMouseDown);
     this.spellVfx?.dispose();
     this.flagMarkers.dispose();
+    this.factionRings.dispose();
     this.shell.dispose();
   }
 
@@ -773,6 +798,8 @@ export class NetworkScene {
       // W16：场上可见的复活保护标记数（verify 断言读它）
       spawnProtections: [...this.statusMarkers.values()]
         .filter((m) => m.spawnProtectionVisible).length,
+      // X14：脚下阵营标记（低画质不裁的端到端读数）
+      factionRings: { count: this.factionRings.count, rim: this.factionRings.rim },
       ctf: this.ctfStatus(),
       // W5：死亡遮罩与观战状态（verify:m13 的判据入口）
       deathOverlay: this.deathOverlay.style.display !== 'none',
@@ -1082,6 +1109,19 @@ export class NetworkScene {
         this.hud.showCenterNotice(text);
         break;
       }
+      /**
+       * X21：0.4 秒排队窗过期 —— 「刚才那一下没赶上」。
+       *
+       * ★★ 刻意**不进战斗日志、不发中部提示、不响 ui_error**：它是一张回执，
+       *   不是一个要求玩家改变操作的提示。X21 拍板时把「迟到的失败提示比
+       *   沉默更误导」写进了 sim（那里专门不发 `onFailed`），在表现层把它
+       *   请回一条 fail 日志，等于把刚拍完的板再拆掉。
+       * ★ 与 `CastFailed` 的分工因此非常清楚：那条说「不能放」，这条说
+       *   「按早了」，两者可以同时为真，长相也刻意不同（见 CombatHud 的 `.sk-late`）。
+       */
+      case 'CastQueueExpired':
+        queueExpiredFlash(msg, this.hud);
+        break;
       case 'CastStarted': {
         /**
          * ★ P3 技能签名：`playCast(school)` → `playCastFor({id, school})`。
@@ -1138,6 +1178,16 @@ export class NetworkScene {
             this.viewOfEntity(msg.casterId)?.playMeleeSwing();
             // 挥砍破空声（与试验场同款）
             audio.playVariant('swing', { volume: 0.55, ...this.audioDistance(msg.casterId) });
+          } else if (msg.casterId !== undefined) {
+            /**
+             * W14：**法术甩出去的那一下**（`Spellcast_Shoot` 推掌）。
+             *
+             * ★★ **必须是 else**：挥砍与释放共用同一条一次性覆盖通道，
+             *   后调的会把先调的取消掉 —— 近战技能已经有挥砍了，再补一记
+             *   推掌就是抽搐（`CharacterView.playCastRelease` 的纪律）。
+             * ★ 瞬发技能不走 `setCasting`，所以这一下是它们**唯一**的施法表现。
+             */
+            this.viewOfEntity(msg.casterId)?.playCastRelease();
           }
         }
         break;
@@ -1330,7 +1380,19 @@ export class NetworkScene {
   // ── 每帧 ──────────────────────────────────────────────────────
 
   private readInput(dt: number): void {
-    const input = this.input.sample(dt);
+    const raw = this.input.sample(dt);
+    /**
+     * A11：**死后只留观察类按键**。
+     *
+     * ★★ 判据是**快照里的自己**（`selfAlive()`），不是任何本地记账 ——
+     *   复活这件事只有服务器说了算，客户端记一份状态就一定会有「服务器
+     *   已经让我活了、客户端还锁着」的窗口。以快照为准的另一半好处是
+     *   **不需要任何解除逻辑**：下一份快照说活了，闸门自己就开了。
+     * ★ 与 W5 的死亡遮罩/观战**不打架**：那边管「屏幕上显示什么」，
+     *   这边管「往服务器发什么」。V 键在允许清单里，观战照常。
+     */
+    const alive = this.selfAlive();
+    const input = gateInputWhenDead(raw, alive);
     this.pendingInput = input;
     this.characterYaw += input.turn;
 
@@ -1392,9 +1454,14 @@ export class NetworkScene {
      */
     if (input.pressed.has(Action.ToggleShop)) this.ffaShopHud.toggle();
 
+    /**
+     * ★ 数字键读的是**未过闸**的原始输入：它们在商店展开时兼任「买货」，
+     *   而等复活的这几秒正是花分的时候（P13）。死后不能施法这条约束在
+     *   下面那一行统一收口 —— 放在这里会连商店一起挡掉。
+     */
     let pressedSlot: number | null = null;
     for (let i = 0; i < SKILL_BAR_SLOTS; i++) {
-      if (input.pressed.has(`skill${i + 1}` as Action)) pressedSlot = i;
+      if (raw.pressed.has(`skill${i + 1}` as Action)) pressedSlot = i;
     }
     /**
      * ★★ 商店展开时数字键**改为买货并吃掉这一下**（`buySlot` 返回 true）。
@@ -1408,6 +1475,25 @@ export class NetworkScene {
     if (this.clickedSlot !== null) {
       pressedSlot = this.clickedSlot;
       this.clickedSlot = null;
+    }
+    /**
+     * A11：死后技能键与技能格点击都不再进瞄准/施法流程，已经举起来的
+     * 落点预览也一并收掉（`aim.reset()` 的注释里写的就是「例如角色死亡」）。
+     * ★ 技能栏本身已经是灰的 —— `SnapshotCombatView.gateBlocker` 对 `!alive`
+     *   返回 `CastFailure.Dead`，那条早就通了；缺的只是「按下去不发」。
+     */
+    if (!alive) {
+      pressedSlot = null;
+      this.aim.reset();
+      /**
+       * 10.5 / 17.3：死亡打断拾取（权威判定在服务器）。这里收掉**本地**那根
+       * 进度条 —— 移动打断有 `applyArsenalInput` 里那条自发的取消，而移动量
+       * 死后恒为 0，那条路径够不到；不收的话进度条会停在半路等一个不会来的结果。
+       */
+      if (this.pickingUp) {
+        this.arsenalHud.endPickup(false, '死亡中断了拾取', this.serverTime);
+        this.pickingUp = false;
+      }
     }
     if (pressedSlot !== null) {
       this.hud.pulseSlot(pressedSlot);
@@ -1426,8 +1512,12 @@ export class NetworkScene {
     const ev = this.aim.update(aimInput, (slot) => this.view.skills[slot]);
     if (ev.type === 'confirm') this.sendCast(ev.skill);
 
-    // 7.5 假读条：Esc 在没有瞄准时用于取消读条（服务器结算取消）
-    if (input.pressed.has(Action.CancelCast) && ev.type !== 'cancel') {
+    /**
+     * 7.5 假读条：Esc 在没有瞄准时用于取消读条（服务器结算取消）。
+     * ★ A11：死后 Esc 仍然过闸（它还要关面板），但**不再发**这条消息 ——
+     *   尸体没有读条可取消，发出去只是又一条被静默拒绝的指令。
+     */
+    if (alive && input.pressed.has(Action.CancelCast) && ev.type !== 'cancel') {
       this.conn.send({ t: 'CancelCast' });
     }
 
@@ -1785,6 +1875,18 @@ export class NetworkScene {
   }
 
   /**
+   * A11：**快照里的自己还活着吗。**
+   *
+   * ★ 还没收到自己那一份快照时按「活着」—— 默认路径（开局前几帧、
+   *   `?net=` 的离线回归路径）必须与改造前逐字节相同，而那几帧里
+   *   `lastEntities` 是空的。宁可多发几帧也不能把活人锁住。
+   */
+  private selfAlive(): boolean {
+    const me = this.lastEntities.find((e) => e.id === this.selfId);
+    return me === undefined || me.alive;
+  }
+
+  /**
    * 一个**指令帧**（50ms）：采样 → 本地预测 → 发出去。
    *
    * ★ 这里**不推进世界** —— 世界由服务器推进，客户端只推进「自己的位置」。
@@ -1793,6 +1895,20 @@ export class NetworkScene {
   private simulate(_dt: number): void {
     const input = this.pendingInput;
     if (!input || !this.predictor || !this.started) return;
+    /**
+     * A11：**死后不再发指令帧**。
+     *
+     * ★★ 此前这里只判 `started`：死亡期间客户端照常 20Hz 发移动指令，
+     *   服务器每一条都静默拒绝 —— 一整段死亡时间的上行全是白发的。
+     * ★ 停发是安全的：`Predictor` 的对账不依赖「本帧发过指令」——
+     *   pending 队列被 ackSeq 清空之后，每份快照都直接把预测态重置成
+     *   权威态；复活那一下位置跳变超过 `CORRECTION.SNAP_ABOVE`，
+     *   走的正是 13.4 的瞬移分支（不平滑、动画不判成冲刺）。
+     * ⚠️ 代价如实记在这里：`seqSentAt` 期间没有新条目，死亡期间的
+     *   延迟读数会停在最后一次测量值上（W6 的 rttMs）。为了让它继续跳动
+     *   而每帧发一条空指令，就等于没修这条债。
+     */
+    if (!this.selfAlive()) return;
 
     const move: MovementInput = {
       forward: input.forward,
@@ -1826,6 +1942,8 @@ export class NetworkScene {
     this.drawSelf(dt, realDt);
     this.drawRemotes(dt, realDt);
     this.updateTargetRing();
+    // X14：紧挨目标环 —— 两者同源同帧（见 updateFactionRings 的注释）
+    this.updateFactionRings();
     this.updateIndicators();
 
     // 施法注册表兜底清理（超时 / 施法者离场），必须在读它之前
@@ -2037,20 +2155,22 @@ export class NetworkScene {
     const m = this.lastMatch;
     if (!m) return;
     if (m.flags !== undefined) {
-      const score = m.score ?? {};
-      this.hud.modeHud.renderCtf({
-        scoreRed: score[String(TEAM_RED as number)] ?? 0,
-        scoreBlue: score[String(TEAM_BLUE as number)] ?? 0,
-        scoreToWin: m.scoreToWin ?? 0,
-        flags: this.flagViewsFromSnapshot(),
-        focusStacks: m.focusStacks ?? 0,
-        /**
-         * ⚠️ 刻意**不传 timeRemaining**：sim 里没有夺旗时限（`CTF.DURATION`
-         * 零消费方，时限/加时是总账里的一笔账）。显示一个数到零也不会
-         * 发生任何事的倒计时，比不显示更糟 —— 附录A#7 的占位禁令。
-         */
-        ...(m.respawnIn !== undefined ? { respawnIn: m.respawnIn } : {}),
-      });
+      /**
+       * A17：**比赛时钟接上了**。
+       *
+       * ⚠️ 这里原本有一段「刻意不传 timeRemaining（sim 里没有夺旗时限）」的
+       *   注释 —— 它在 Wave1-D 之后就不成立了（sim + 服务器 + 快照三层都通，
+       *   数据现在就在 `m.timeRemaining` / `m.overtime` 上），连同判断一起删。
+       *   ★ 留着一条过期的「刻意不做」注释比留一个 TODO 更糟：它会劝阻
+       *     下一个来接线的人，而且看不出它已经过期。
+       * ★ 不限时的一局服务器仍然不发这两个字段 → 整行不画（W12 口径没变）。
+       */
+      this.hud.modeHud.renderCtf(
+        ctfHudViewFromMatch(m, this.flagViewsFromSnapshot(), {
+          red: TEAM_RED as number,
+          blue: TEAM_BLUE as number,
+        }),
+      );
       return;
     }
     const alive = (team: number): number =>
@@ -2396,6 +2516,40 @@ export class NetworkScene {
     this.focusRing.update(
       fid === undefined ? undefined : (this.renderedPositionOf(fid) ?? fSnap?.position),
       'focus', this.serverTime, p.neutral,
+    );
+  }
+
+  /**
+   * X14：**全体**脚下阵营标记 + 轮廓（§777 第三、四通道）。
+   *
+   * ★ 名单与位置口径**与目标环完全同源**（`lastEntities` + `renderedPositionOf`）——
+   *   两者会同时出现在同一个人脚下，位置各算一份的话，插值期间会看出错位。
+   * ★ 可见性不在这里判：不可见的实体压根不进快照（验收 #5）。
+   *   这里只判「这一帧画不画」的两件本地事：死了、以及第一人称下的自己。
+   */
+  private updateFactionRings(): void {
+    const p = paletteFor(this.hud.accessibility.colorblind);
+    this.factionRings.cameraDistance = this.cam.distance;
+    this.factionRings.update(
+      factionRingViewsOf(
+        this.lastEntities.map((e) => ({
+          id: e.id as number,
+          team: e.team as number,
+          alive: e.alive,
+          position: e.position,
+          // 巨化的人得有一圈更大的轮廓，否则壳会缩在身体里（P13 大乱斗道具）
+          ...(e.auras.some((a) => a.auraId === GIANT_AURA_ID)
+            ? { height: GEOMETRY.HITBOX_HEIGHT * GIANT_BODY_SCALE }
+            : {}),
+        })),
+        {
+          ...(this.selfId !== null ? { selfId: this.selfId as number } : {}),
+          ...(this.selfTeam !== null ? { selfTeam: this.selfTeam as number } : {}),
+          firstPerson: this.cam.isFirstPerson,
+          positionOf: (id) => this.renderedPositionOf(id as EntityId),
+        },
+      ),
+      { friendly: p.friendly, hostile: p.hostile },
     );
   }
 
