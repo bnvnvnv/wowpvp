@@ -113,11 +113,21 @@ console.log('\n── §1 素材许可与登记（附录A#5 / 验收 #51）─�
  */
 console.log('\n── §2 技能图标：全职业技能全覆盖，无断链 ──');
 {
+  /**
+   * ★ 期望口径 = **装备得上技能栏**的技能（skillIconMap.test.ts 的
+   *   EQUIPPABLE_SKILLS 镜像）：八个可选职业 + 派对武装授予技（party.ts）。
+   *   boss.ts 刻意排除 —— BOSS 是 AI 专用职业，技能永远不进玩家技能栏，
+   *   不给图标是 data/index.ts 注释里写明的边界，不是漏配。
+   *   （2026-08-10 修正：旧口径把 boss 数进去、把派对漏掉，124 vs 122 的红
+   *   曾被误判成模型加载时序偶发 —— 验收红的第一嫌疑人永远是验收自己。）
+   */
   const CLASS_DIR = join(REPO, 'packages/shared/src/data/classes');
+  const countIds = (path) => [...readFileSync(path, 'utf8')
+    .matchAll(/id:\s*asSkillId\('[a-z]+\.[a-z_0-9]+'\)/g)].length;
   const expected = readdirSync(CLASS_DIR)
-    .filter((f) => f.endsWith('.ts') && !f.includes('.test.'))
-    .reduce((n, f) => n + [...readFileSync(join(CLASS_DIR, f), 'utf8')
-      .matchAll(/id:\s*asSkillId\('[a-z]+\.[a-z_0-9]+'\)/g)].length, 0);
+    .filter((f) => f.endsWith('.ts') && !f.includes('.test.') && f !== 'boss.ts')
+    .reduce((n, f) => n + countIds(join(CLASS_DIR, f)), 0)
+    + countIds(join(REPO, 'packages/shared/src/data/party.ts'));
 
   const mapSrc = readFileSync(join(REPO, 'packages/client/src/hud/skillIconMap.ts'), 'utf8');
   const pairs = [...mapSrc.matchAll(/'([a-z]+\.[a-z_0-9]+)':\s*'([^']+)'/g)];
