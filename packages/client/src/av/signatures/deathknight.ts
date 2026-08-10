@@ -18,6 +18,18 @@
  *   注意变体后缀不统一（`impact_bone_1` 有编号、`mob_undead_aggro` 没有），
  *   同目录的 `deathknight.test.ts` 逐键对磁盘校验，写错就红。
  *
+ * ★★ X23 语义校准轮（2026-08-10，用户拍板「冰系应该是有结冰的声音」）：
+ *   本表是全批**借小怪吼叫最多**的一张，五条被改：缚魂拽 / 扼喉 / 冻念 /
+ *   凛冬领域 / 凛冬号叫。改法只有一条原则 —— **技能是什么学派，就用那个学派的素材**，
+ *   借小怪音的三个代价按严重性排：① 场上真有小怪，玩家分不出是谁在响（误报）；
+ *   ② 同一个 mob 文件被两三个职业借走，跨职业撞脸；③ 原长压速后拖尾。
+ *   冰霜四条（冻念 / 凛冬领域 / 凛冬号叫 + 原有的寒缚链 / 冰封坚韧）现在统一由
+ *   `cast_frost` / `impact_frost` / `proj_frost` / `foot_snow_*` 四种素材构成，
+ *   其中 `foot_snow_*`（踏雪脆响）是本轮才启用的 —— 盘上唯一的「碎冰」质感，
+ *   P3 那一批 117 条签名一次都没用过它。
+ * ⚠️ 仍是**没有人耳听过**的判断，只是这次的判断有实测支撑（时长用 ffprobe 逐条量过）。
+ *   真机终验仍挂在 X23。
+ *
  * ⚠️ 本表**只描述表现层**：不碰 shared 数据、不碰 sim 行为，
  *   normal bot 平衡基线与本文件无关。
  *
@@ -64,16 +76,23 @@ export const signatures: Record<string, SkillSignature> = {
   // ── 职业身份技 ──────────────────────────────────────────────────
   /**
    * 缚魂拽 —— 死骑的**身份技**（WoW 玩家的肌肉记忆里，死骑 = 这一下）。
-   * 为什么是这个声音：起手用 mob_undead_aggro 压到 0.75x，
-   *   把亡灵的嚎叫拖成一句「抓过来」的低吼（原速太像小怪，压慢才是术法）；
+   * 为什么是这个声音：起手是 proj_shadow 压到 0.8x —— 一条暗影触手**射出去**，
+   *   这正是缚魂拽在做的事（Shadow 学派，指向单体，把人拽回来）；
    *   命中是 impact_bone_1（骨手扣住脖子）叠 move_land_2（人被摔到脚下的落地闷响）——
    *   拉拽的信息量全在「落地」那一下，没有它玩家不知道拽成功了没有。
    * 为什么是 ring：目标砸到我脚前时地面荡开的那圈震荡波。
    * scale 1.45：仅次于凛冬领域，身份技必须比核心键明显大一圈。
+   *
+   * ★ X23 语义校准（2026-08-10）：原起手是 `mob_undead_aggro` 压到 0.75x。
+   *   两个问题，一个实测一个语义。实测：那条素材原长 1.23 秒，压到 0.75 是
+   *   **1.64 秒**，是全批 mob_* 借用里最长的一条尾巴（X23 点名的三条之首）。
+   *   语义：场上真的有小怪在叫，玩家的耳朵分不出「对面死骑起手了」和
+   *   「旁边刷了个亡灵」—— 借小怪音的代价不是难听，是**误报**。
+   *   换成同为 Shadow 的 proj_shadow（1.04 秒，压到 0.8 是 1.31 秒）两头都解决。
    */
   'deathknight.death_grip': {
-    castSound: 'mob_undead_aggro',
-    castRate: 0.75,
+    castSound: 'proj_shadow',
+    castRate: 0.8,
     impactSound: 'impact_bone_1',
     impactRate: 1.15,
     impactLayer: 'move_land_2',
@@ -101,12 +120,18 @@ export const signatures: Record<string, SkillSignature> = {
 
   /**
    * 扼喉 —— 隔空掐住咽喉的 2 秒昏迷（cd 30）。
-   * mob_demon_aggro_2 压到 0.82x 是那声「暗影尖啸」；命中走暗影闷响并压到
-   * 0.78x（本表最低的命中速率）—— 窒息的听感就是**声音被掐断、坠下去**。
+   * wand_shadow_3 压到 0.85x 是那记**收拢的暗影短音**（0.68 秒的素材，压后 0.80 秒，
+   * 短到像一只手突然合上）；命中走暗影闷响并压到 0.78x（本表最低的命中速率）——
+   * 窒息的听感就是**声音被掐断、坠下去**，起手越短这个「掐」字越立得住。
+   *
+   * ★ X23 语义校准（2026-08-10）：原起手是 `mob_demon_aggro_2`（恶魔嘶吼）。
+   *   扼喉是**无声地掐住别人**，配一声自己发出的怪物尖啸方向就反了 ——
+   *   而且它与破胆怒吼、惊惧尖啸同取 mob_demon_aggro_* 家族，三个不同职业的
+   *   控制键开口是同一种嗓子。换成暗影法杖音后学派不变、语义归位、家族也散开。
    */
   'deathknight.strangulate': {
-    castSound: 'mob_demon_aggro_2',
-    castRate: 0.82,
+    castSound: 'wand_shadow_3',
+    castRate: 0.85,
     impactSound: 'impact_shadow',
     impactRate: 0.78,
     impactLayer: 'debuff_apply',
@@ -117,11 +142,21 @@ export const signatures: Record<string, SkillSignature> = {
   /**
    * 冻念 —— 专用打断（不触发 GCD，cd 15）。
    * 打断键的唯一诉求是**快**：玩家要在 0.2 秒内确认「断到了」。
-   * 所以用最短的冰击 impact_frost 提速到 1.35x，规模压到 0.8 ——
-   * 打断本来就该是一记轻脆的响指，喧宾夺主反而盖住被打断者的读条音。
+   * 起手用 foot_snow_1 提速到 1.35x —— 0.31 秒的踏雪脆响压成 **0.23 秒**，
+   * 是全批最短的一记「咔」，字面意义上的结冰碎裂声；命中回落学派的
+   * impact_frost。规模压到 0.8：打断本来就该是一记轻脆的响指，
+   * 喧宾夺主反而盖住被打断者的读条音。
+   *
+   * ★★ X23 校准抓到的**静默 bug**（2026-08-10，不是听感问题是真没响）：
+   *   原起手写的是 `impact_frost`，而本条没写 impactSound，命中回落的
+   *   学派音**也是** `impact_frost`。冻念是瞬发，施法与命中同帧发出 ——
+   *   `AudioManager.play` 的 40ms 同名去重（那边 :217）把第二声整个吃掉，
+   *   于是这个技能从 P3 起就只响过一声，而且没有任何测试会红
+   *   （既有的三条同名门禁只管 impactLayer↔impactSound，不管 cast↔impact）。
+   *   本轮在 `integrity.test.ts` 补了第 ⑥ 条断言把这一类堵死。
    */
   'deathknight.mind_freeze': {
-    castSound: 'impact_frost',
+    castSound: 'foot_snow_1',
     castRate: 1.35,
     impactRate: 1.3,
     tintShift: 0.03,
@@ -167,17 +202,25 @@ export const signatures: Record<string, SkillSignature> = {
   // ── 大招（冷却 ≥ 45s）────────────────────────────────────────────
   /**
    * 凛冬领域 —— 死骑唯一的大招（cd 60，6 秒半径 6 米的持续领域）。
-   * 为什么是这个声音：起手不是「一发法术」而是**一场天气**，所以借
-   *   mob_elemental_aggro_3（元素的低吼）压到 0.72x —— 本表最慢的起手，
-   *   慢到听起来像大地在呻吟，60 秒冷却的分量必须在按下去的第一帧就到位。
+   * 为什么是这个声音：起手不是「一发法术」而是**一场天气**，所以用
+   *   proj_frost（冰霜投射物的呼啸，1.65 秒）压到 0.72x —— 拉成 2.29 秒的
+   *   低频寒流，本表最慢的起手，慢到听起来像风雪正在压过来，
+   *   60 秒冷却的分量必须在按下去的第一帧就到位。
    *   命中叠 spell_nova 是领域铺开时那一圈推开的震荡，之后才是 impact_frost
    *   的持续封冻。
+   *
+   * ★ X23 语义校准（2026-08-10）：原起手是 `mob_elemental_aggro_3`（元素低吼）。
+   *   用户口径「冰系应该是有结冰的声音」—— 一个冰霜领域开场先来一声怪物吼，
+   *   听感上先建立的是「有东西活过来了」而不是「这块地要冻上了」。
+   *   proj_frost 压慢之后既是寒流也是冰，学派与语义对齐。
+   *   （实测顺带澄清 X23 的拖尾担心：原方案 0.705÷0.72 = 0.98 秒，
+   *   本来就没拖 —— 这条要改是因为**语义**，不是因为长度。）
    * 为什么是 rain：地基注释里 rain = 持续区域，这是本职业唯一的地面领域技，
    *   形态语义和 spawnGroundArea 一一对应。
    * scale 1.7：全表最大（上限 1.8），大招就该在画面上压过其他一切。
    */
   'deathknight.winter_domain': {
-    castSound: 'mob_elemental_aggro_3',
+    castSound: 'proj_frost',
     castRate: 0.72,
     impactSound: 'impact_frost',
     impactRate: 0.75,
@@ -254,17 +297,25 @@ export const signatures: Record<string, SkillSignature> = {
 
   /**
    * 凛冬号叫 —— 以自身为中心的冰霜群体减速（cd 8）。
-   * 名字里是「号叫」，那就真的给一声嚎：mob_beast_wolf_aggro_1 压到 0.8x，
-   * 狼嚎拖慢之后听起来正是刮过来的刺骨寒风。命中给 spell_nova（新星 / 震荡）
-   * 并配 ring —— 它是死骑唯一的自我中心 AoE，环形扩散同时告诉玩家
-   * 「10 米圈到这里为止」，圈外的人为什么没吃到一目了然。
+   * 三层全是冰：起手 impact_frost 压到 0.78x 是一记厚重的冰爆（1.44 秒），
+   * 命中给 spell_nova（新星 / 震荡）并配 ring —— 它是死骑唯一的自我中心 AoE，
+   * 环形扩散同时告诉玩家「10 米圈到这里为止」，圈外的人为什么没吃到一目了然；
+   * 叠层换成 foot_snow_5，是冰碴子扫过地面的那记碎响，把「号叫」落回**冰**上。
+   *
+   * ★ X23 语义校准（2026-08-10）：原起手是 `mob_beast_wolf_aggro_1`（狼嚎）。
+   *   「号叫」两个字确实诱人，但玩家按的是冰霜技能，听到的是一头狼 ——
+   *   而德鲁伊的疾奔怒吼用的是**同一个文件**（0.75x，本条 0.8x），
+   *   两个职业的键在耳朵里几乎是同一声。用户口径「冰系应该是有结冰的声音」
+   *   在这条上最直白：换掉狼，换成冰爆 + 碎冰。
+   * ⚠️ 叠层原本也是 impact_frost，与新起手同名会被 40ms 去重吃掉 ——
+   *   换 foot_snow_5 同时解决语义与同名两件事。
    */
   'deathknight.howling_blast': {
-    castSound: 'mob_beast_wolf_aggro_1',
-    castRate: 0.8,
+    castSound: 'impact_frost',
+    castRate: 0.78,
     impactSound: 'spell_nova',
     impactRate: 0.85,
-    impactLayer: 'impact_frost',
+    impactLayer: 'foot_snow_5',
     tintShift: 0.06,
     scale: 1.25,
     form: SignatureForm.Ring,

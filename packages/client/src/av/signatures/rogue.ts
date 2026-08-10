@@ -68,21 +68,29 @@ export const signatures: Record<string, SkillSignature> = {
 
   /**
    * 致盲 —— CD 45，盗贼最贵的一个键。
-   * ★ 为什么借羊系的 `ui_sheep`：shared 数据里写死了「与变形术、寒霜陷阱
-   *   **共用一条迷惑递减链**」（8.2）。同一条 DR 链的技能在听感上做成同族，
-   *   玩家学会的是**规则**而不是单个技能 —— 这是这张表最想要的那种记忆。
-   *   降到 0.8 让羊音失去滑稽感，变成失神的踉跄。
-   * ★ 起手 `ui_craft_alchemy`：致盲粉是炼金物品，起手就该是撒粉/拔塞的声音，
-   *   不是刀声（致盲是全表**唯一不出刀**的进攻键）。
+   * ★ 起手 `melee_swing_light_7` 提到 1.25：0.42 秒的**甩手破风** ——
+   *   致盲是全表唯一不出刀的进攻键，但它仍然是一记挥臂（把粉撒出去），
+   *   轻挥音去掉刀刃联想之后剩下的正是那道手风。
+   * ★ 命中 `foot_dirt_1` 压到 0.9：0.35 秒的**沙土窸窣**，粉末扑在脸上。
+   *   本条的色相偏移（+0.06 暖黄）本来写的就是「致盲粉的沙土色」——
+   *   现在声音和颜色说的是同一件事。
    * ★ 形态 ring：粉末以目标为心水平炸开一圈。
+   *
+   * ★★ X23 语义校准（2026-08-10，X23 点名的 `ui_craft_*` 两条之一）：
+   *   原起手 `ui_craft_alchemy`（炼金台）、原命中 `ui_sheep`（羊叫）。两条都换：
+   *   · 炼金台音实测是全批**最闷的一条**（mean −34.1 dB，比命中音族低近 10 dB，
+   *     还是 1.31 秒的连续冒泡）—— 一个 45 秒冷却的键在混音里几乎浮不上来。
+   *     「致盲粉是炼金物品」是道具的出处，不是**动作**的声音；玩家按下去
+   *     发生的事是甩手撒粉，不是在工作台前配药。
+   *   · 羊叫按本轮新口径退场（只留给法师变形术，理由见猎人寒霜陷阱那条）。
    */
   'rogue.blind': {
-    castSound: 'ui_craft_alchemy',
-    castRate: 1.15,
-    impactSound: 'ui_sheep',
-    impactRate: 0.8,
+    castSound: 'melee_swing_light_7',
+    castRate: 1.25,
+    impactSound: 'foot_dirt_1',
+    impactRate: 0.9,
     impactLayer: 'debuff_apply',
-    tintShift: 0.06, // 占位值：往暖/黄偏 —— 致盲粉的沙土色
+    tintShift: 0.06, // 往暖/黄偏 —— 致盲粉的沙土色，与 foot_dirt 的材质对齐
     scale: 1.4,
     form: SignatureForm.Ring,
   },
@@ -171,11 +179,22 @@ export const signatures: Record<string, SkillSignature> = {
     tintShift: 0.07,
   },
 
-  // 烟雾弹：Shadow 学派的地面区域（5 秒）。
-  // 起手用 `ui_craft_engineering` —— 烟雾弹是**投掷装置**，机括声比法术音诚实；
-  // form rain（地基注释：rain = 持续区域类），scale 1.5 撑起 5 米半径。
+  /**
+   * 烟雾弹：Shadow 学派的地面区域（5 秒）。
+   * ★ 起手 `proj_shadow` 提到 1.1（1.04 → 0.95 秒）：**抛出去的那一下**。
+   *   烟雾弹在数据上是 Shadow 学派的投射，暗影投射物音正是它飞出手的轨迹；
+   *   命中的 `impact_shadow` 压到 0.75 接着把烟铺开，一抛一散两段说完整件事。
+   * ★ form rain（地基注释：rain = 持续区域类），scale 1.5 撑起 5 米半径。
+   *
+   * ★ X23 语义校准（2026-08-10，X23 点名的 `ui_craft_*` 两条之二）：
+   *   原起手是 `ui_craft_engineering`（工程学工作台，1.45 秒的敲打拧螺丝）。
+   *   注释当时的理由是「烟雾弹是投掷装置，机括声比法术音诚实」——
+   *   但机括声说的是**造这个装置**，不是**扔这个装置**；1.45 秒的叮当作响
+   *   压在一个瞬发脱手动作上，听起来像盗贼蹲下来现场组装。
+   *   换成同学派的暗影投射音之后，学派、动作、时长三样一起对上。
+   */
   'rogue.smoke_bomb': {
-    castSound: 'ui_craft_engineering',
+    castSound: 'proj_shadow',
     castRate: 1.1,
     impactSound: 'impact_shadow',
     impactRate: 0.75,

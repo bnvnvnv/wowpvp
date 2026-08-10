@@ -82,13 +82,27 @@ export const signatures: Record<string, SkillSignature> = {
 
   /**
    * 穿透重弩箭：重弩方案专属，1 秒装填。
-   * ★ 装填音刻意不用弓 —— `ui_weapon_unsheathe` 降到 0.75 是金属绞盘的棘轮声，
-   *   重弩上弦本来就是机械动作，跟拉弓不是一回事。命中沿用骨感闷响并叠钢制弩头
-   *   的 `impact_metal_2`，与瞄准射击的「骨 + 脆裂」区分开。
+   * ★ 装填音刻意不用弓 —— 重弩上弦是**机括**动作，跟拉弓不是一回事。
+   *   `lockpick_advanced_1` 降到 0.8 是 0.42 秒的棘轮咬合声，正是绞盘一格一格
+   *   收紧弓弦的那个动静。命中沿用骨感闷响并叠钢制弩头的 `impact_metal_2`，
+   *   与瞄准射击的「骨 + 脆裂」区分开。
+   *
+   * ★ X23 语义校准（2026-08-10，X23 点名的四条 ui_* 出戏之一）：
+   *   原来写的是 `ui_weapon_unsheathe` 并在注释里称它为「金属绞盘的棘轮声」——
+   *   但那个文件是**拔刀出鞘**（0.24 秒的刀刃刮擦鞘口），重弩上没有鞘也没有刀。
+   *   注释把它说成绞盘，不等于它是绞盘：这是 P3 那批「按文件名语义推」最典型的
+   *   一次自我说服。换成锁具机构音之后至少门类对了 —— 机械咬合对机械咬合。
+   * ★ 这轮才发现的第二个理由（比出戏更硬）：`ui_weapon_unsheathe` 在
+   *   `scenes/TestbedScene.ts:493` 已经是**切换武器方案成功**的 UI 提示音。
+   *   同一个文件在一个地方意思是「换武器了」、在另一个地方意思是「重弩上弦」——
+   *   这不是难听，是**歧义**：玩家听到它，第一反应会是自己刚切了方案。
+   * ⚠️ 仍未经人耳：`lockpick_*` 是否偏 UI 提示音（而非实体机构音）只有听了才知道。
+   *   若真机听下来偏 UI，退路是 `melee_bow_4` 压到 0.75（弓弦吱嘎，但会与
+   *   震慑箭同素材）—— 这条退路写在这里，省得下一轮重新推一遍。
    */
   'hunter.piercing_bolt': {
-    castSound: 'ui_weapon_unsheathe',
-    castRate: 0.75,
+    castSound: 'lockpick_advanced_1',
+    castRate: 0.8,
     impactSound: 'impact_bone_4',
     impactRate: 0.85,
     impactLayer: 'impact_metal_2',
@@ -97,15 +111,24 @@ export const signatures: Record<string, SkillSignature> = {
   },
 
   /**
-   * 寒霜陷阱：迷惑 3 秒 —— 在本仓库里与变形/羊同属 incapacitate 族，
-   * 触发音取 `ui_sheep` 并压到 0.8，卡通感被压掉、剩下「冰口合拢」的味道，
-   * 再叠 `impact_frost` 补冰。form 用 ring 对应 1.5 米触发圈：
-   * 布置完成时地上应该有一圈可见的边界，对手才能绕。
+   * 寒霜陷阱：迷惑 3 秒。布置走 `cast_frost` 压到 0.88（寒气在地上铺开），
+   * 触发音换成 `foot_snow_4` 压到 0.8 —— 0.39 秒的碎冰咬合，就是冰口合拢
+   * 咬住脚踝的那一下；再叠 `impact_frost` 把封冻的低频补上。
+   * form 用 ring 对应 1.5 米触发圈：布置完成时地上应该有一圈可见的边界，
+   * 对手才能绕。
+   *
+   * ★ X23 语义校准（2026-08-10）：触发音原本是 `ui_sheep` 压到 0.8，
+   *   理由是「与变形术同属 incapacitate 递减链，同族技能做成同族听感」。
+   *   这个理由本身站得住，但它服务的是**规则教学**，代价是玩家踩进一个
+   *   寒霜陷阱时听到一声羊叫 —— 用户口径「声音要贴合技能」在这里优先。
+   *   本轮定的新口径：**羊叫只留给真的有羊的地方**（法师变形术），
+   *   其余 incapacitate 同族键各自回到自己的材质（本条回冰、盗贼致盲回沙土）。
+   *   DR 链的教学交给 HUD 的递减图标，那本来就是它的活。
    */
   'hunter.freezing_trap': {
     castSound: 'cast_frost',
     castRate: 0.88,
-    impactSound: 'ui_sheep',
+    impactSound: 'foot_snow_4',
     impactRate: 0.8,
     impactLayer: 'impact_frost',
     tintShift: 0.05,

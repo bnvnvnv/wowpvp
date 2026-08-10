@@ -170,6 +170,47 @@ describe('★★ ④ 全局唯一性：任意两个技能都不许完全同声�
   });
 });
 
+/**
+ * ★★ ⑥ 瞬发技能的施法音与命中音不许同名（X23 语义校准轮补，2026-08-10）。
+ *
+ * ★ 为什么原有的 ③ 挡不住：③ 比的是 `impactLayer ↔ impactSound`，
+ *   而这里出事的是 `castSound ↔ impactSound` —— 同一个 40ms 去重窗口
+ *   （`AudioManager.play` :217），另一对字段，谁都没看着。
+ *
+ * ★ 为什么只管瞬发：读条/引导技能的施法音在**开始读条**时响、命中音在
+ *   读条结束后才响，中间隔着 0.8~1.6 秒，同名毫无问题（法师霜矢就是这样：
+ *   cast_frost 起手、impact_frost 落点，两个名字不同纯属巧合，
+ *   就算同名也不会互相吃）。`cast.time === 0` 的技能才是两声同帧发出。
+ *
+ * ★ 抓到过的真事：`deathknight.mind_freeze`（冻念，瞬发打断）从 P3 起
+ *   castSound 与回落的命中音都是 `impact_frost` —— 命中那一声被静默吃掉，
+ *   一个打断键实际上只响了一半，而全部既有断言、类型、lint 都是绿的。
+ */
+describe('★★ ⑥ 瞬发技能的施法音 ≠ 命中音（40ms 同名去重会吃掉第二声）', () => {
+  it('★ 前置：确实存在瞬发技能，否则本组是空转', () => {
+    expect(AUDIBLE_SKILLS.filter((s) => s.cast.time === 0).length).toBeGreaterThan(0);
+  });
+
+  it('★★ 瞬发技能实际会响的那两个文件名不许相同', () => {
+    const bad = AUDIBLE_SKILLS.filter((s) => s.cast.time === 0)
+      .map((s) => {
+        const sig = resolveSignature(s.id as string);
+        return {
+          id: s.id as string,
+          cast: sig.castSound ?? CAST_SOUND[s.school],
+          impact: sig.impactSound ?? IMPACT_SOUND[s.school],
+        };
+      })
+      .filter((r) => r.cast === r.impact)
+      .map((r) => `${r.id}: 施法与命中同为 ${r.cast}`);
+    expect(
+      bad,
+      '瞬发技能的施法音与命中音同帧发出，同名的第二声会被 40ms 去重整个吃掉'
+      + '（表现是「这个技能声音很单薄」，而不是任何一处报错）',
+    ).toEqual([]);
+  });
+});
+
 describe('★★ ⑤ 注册真的发生：main.ts 必须 import 签名注册口', () => {
   it('★★ 入口源码锁 —— 漏掉 import 不报错，只会全部静默退回推导层', () => {
     // 注册是副作用：没有任何类型系统或运行时错误能抓住「忘了 import」。
