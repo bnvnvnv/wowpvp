@@ -50,13 +50,18 @@ const MOVE_KINDS = new Set([
  *   刺骨的在 `spendComboPoints.base` 里 —— 只看顶层的话它们全都落进
  *   `buff` 分支，于是三个纯输出技能显示成**盾牌图标**。
  *   ★ 这是截图比对抓到的：spec 值全对，语义全错。
+ *
+ * ★ W23 把 `onHit` 也加了进来：法术弹道迁移后霜矢/惩击/月火/化形术等
+ *   21 个技能的载荷全在 `lockedProjectile.onHit` 里，不下探就是同一个
+ *   「纯输出技能显示成盾牌」的坑再踩一次（碰撞型 `spawnProjectile.onHit`
+ *   顺带一起修好 —— 它此前也没被摊平）。
  */
 const flattenEffects = (effects: readonly { kind: string }[]): { kind: string }[] => {
   const out: { kind: string }[] = [];
   for (const e of effects) {
     out.push(e);
     const nested = e as Record<string, unknown>;
-    for (const key of ['onTick', 'onImpact', 'onTrigger']) {
+    for (const key of ['onTick', 'onImpact', 'onTrigger', 'onHit']) {
       const list = nested[key];
       if (Array.isArray(list)) out.push(...flattenEffects(list as { kind: string }[]));
     }

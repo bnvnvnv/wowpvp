@@ -35,6 +35,7 @@
 import * as THREE from 'three';
 import {
   GEOMETRY,
+  SPELL_PROJECTILE,
   School,
   Targeting,
   asSkillId,
@@ -143,14 +144,17 @@ const NEUTRAL: AttributeVisual = {
 
 /**
  * 表现用弹体的飞行速度（米/秒）。
- * ★ 取得快（55）是有意的：命中**早已结算**（6.6），弹体越慢，
- *   「数字已经跳出来但弹体还在半路」的割裂就越明显。
- *   55 m/s 下 30 米最远射程也只飞 0.55 秒，读作「嗖」的一下。
+ *
+ * ★★ **W23 起这个数不再住在客户端** —— 它与 sim 的锁定投射物速度
+ *   （`SPELL_PROJECTILE.SPEED`）必须**逐位相同**：迁移后的法术在
+ *   `距离 / 速度` 秒后落账，客户端弹体也在同一时刻抵达。
+ *   两边各写一个 55 就是「同一个数字有两处定义」，而本仓库这类漂移
+ *   已经付过四次学费。这里保留本地别名只为可读性。
  */
-const BOLT_SPEED = 55;
+const BOLT_SPEED = SPELL_PROJECTILE.SPEED;
 
 /** 近战技能不该有弹体。6.1 的近战档最长 3.8 米，取 8 米作为「这是远程」的判据 */
-const BOLT_MIN_RANGE = 8;
+const BOLT_MIN_RANGE = SPELL_PROJECTILE.MIN_RANGE;
 
 export interface SpellVfxStatus {
   texturesLoaded: number;
@@ -230,6 +234,22 @@ export interface CastView {
   /** 引导结束时刻。仅引导技能有 —— 没有它，暴风雪的法阵会在第 0.8 秒就消失 */
   channelEndsAt?: number;
 }
+
+/**
+ * 这一组效果里有没有**伤害** —— 必须下探 `lockedProjectile.onHit`。
+ *
+ * ★★ W23 把 21 个技能的伤害从技能顶层挪进了 `onHit`。本文件有两处
+ *   「带伤害的就不补到位爆发」的顶层扫描，不下探的话它们对霜矢/裁决/月火
+ *   （damage + applyAura 同时在 onHit 里）**恒为假**：命中瞬间 damage 事件
+ *   画一次、auraApplied 再画一次，粒子量与二级形态在同一帧翻倍 ——
+ *   W23 要消灭的双重渲染换个地方复活了，而且没有任何测试会因此变红。
+ * ★ 与 `schools.ts` 的 `hasPoisonAura`、`phases.ts` 的 `appliesAuraIn`、
+ *   `hud/skillIcon.ts` 的 `flattenEffects` 是同一族处理，改一处就该改一族。
+ */
+const dealsDamage = (effects: readonly SkillDef['effects'][number][]): boolean =>
+  effects.some(
+    (e) => e.kind === 'damage' || (e.kind === 'lockedProjectile' && dealsDamage(e.onHit)),
+  );
 
 /**
  * 表现层消费的战斗事件 —— `CombatEvent` 的子集，字段收窄到真的会读的。
@@ -569,8 +589,42 @@ interface VisualBolt {
    */
   groundY: number;
   track?: (() => Vec3Like | undefined) | undefined;
-  /** 已飞行秒数。超过上限强制抵达 —— 别让弹体追一个反复闪现的人追到天荒地老 */
-  age: number;
+  /** 这一发对应的技能 id —— 快照兜底渲染靠它认「这发已经有人画了」 */
+  skillId: string;
+  /**
+   * 起飞时刻（**绝对**时钟：联网 = serverTime，试验场 = world.time），
+   * 在第一次 `updateBolts` 时落定。
+   *
+   * ★★ 此前这里是「累计 dt」（`age += dt`），而 `frame()` 收到的 dt 是
+   *   **渲染** dt —— 顿帧（HitStop）只缩放渲染 dt（见 render/HitStop.ts：
+   *   模拟步、输入采样、插值时钟一律走真实 dt）。于是同一次 frame 里两个钟
+   *   并存：伤害落在真实钟的 impactAt 上，弹体却按缩放钟计时，一次暴击顿帧
+   *   就让它迟到 88ms ≈ 1.8 个 tick。改成绝对时刻之后，顿帧只影响弹体
+   *   **在空中走得多快**（观感），不影响它**什么时候到**（对齐）。
+   * ★ 为什么懒到第一帧才落定：`onCast` 是在两次 frame **之间**到达的，
+   *   那一刻本类手里没有当前时钟。第一帧落定与老实现的 `age` 从 0 起算
+   *   逐帧等价，误差上限仍是一帧。
+   */
+  bornAt?: number;
+  /**
+   * 这一发的**寿命**，秒：到点强制抵达并爆开。
+   *
+   * ★★ **必须与 sim 的 `HomingProjectile.impactAt` 是同一条公式**
+   *   （`max(0.05, 释放瞬间的水平距离 / SPELL_PROJECTILE.SPEED)`）——
+   *   W23 之后伤害就落在那一刻。此前这里只有一个「age < 2」的兜底上限，
+   *   弹体靠**追**目标当前位置来决定何时抵达：目标狂奔时弹体越追越久，
+   *   于是视觉抵达晚于伤害落账，玩家看到的是「血条先掉、特效后到」——
+   *   正是用户抱怨的那个错拍，只是方向反过来。
+   * ★ 追踪本身**保留**（`track`）：终点仍每帧刷新，弹体不会打在目标两秒前
+   *   站过的空地上。改的只是「什么时候算到」，不是「往哪飞」。
+   * ★★ 抵达判据**只看这一个数**，不再看「几何上追上了没有」。两者取先的
+   *   写法只钳住了迟到：目标被冲锋/暗影步/死亡之握拉近时弹体提前追上，
+   *   视觉早于结算最多 8 个 tick（「冰矛已经炸了，血条半秒后才掉」）。
+   *   飞行段改按剩余时间配速（见 `updateBolts`），到点**恰好**落在终点，
+   *   顺带消掉了老实现「按 BOLT_SPEED 沿三维斜线硬推、到点还差半米就
+   *   强制抵达」的那次位置跳变。
+   */
+  life: number;
   /** 拖尾节拍计时器。★ 此前拖尾是**每帧**发的，把池刷空了（见 boltVfx.ts 文件头）*/
   trailTimer: number;
 }
@@ -749,6 +803,17 @@ export class SpellVfx {
   private readonly projBodies = new Map<number, ProjBody>();
   /** 表现用弹体（sim 里不存在，见文件头）*/
   private readonly bolts: VisualBolt[] = [];
+  /**
+   * 已经认定「由装饰弹道承担」的锁定投射物 id（见 `syncProjectiles`）。
+   * ★ 认领粘住不放，直到该弹体从快照里消失 —— 装饰弹道抵达回收之后
+   *   不能翻脸补画一颗球，那是双份命中反馈。
+   */
+  private readonly boltCovered = new Set<number>();
+  /**
+   * 兜底画出来的锁定投射物 id：它们**消失时不补命中爆发**（见 `syncProjectiles`）。
+   * 命中反馈由 damage / auraApplied 事件在目标身上给，这里只负责飞行段。
+   */
+  private readonly burstlessBodies = new Set<number>();
   /** 延迟落点 / 地面区域的持续边界环。key = 'p'+id / 'g'+id */
   private readonly rings = new Map<string, RingEntry>();
   /** 正在施法的单位的蓄力表现。key = 实体 id */
@@ -1012,7 +1077,16 @@ export class SpellVfx {
         };
         const d = Math.hypot(to.x - hand.x, to.y - hand.y, to.z - hand.z);
         if (d < 1.5) continue; // 自身/贴脸：没有可看的飞行段
-        this.spawnBolt(hand, to, av, sig, t.position.y, skill.id as string, t.track);
+        /**
+         * ★★ 寿命用**施法者到目标的水平距离**算，不是手到躯干的那条斜线 ——
+         *   sim 的 `spawnHoming` 用的正是 `distance2D(source.position,
+         *   target.position)`，两边必须是同一条公式（见 VisualBolt.life）。
+         */
+        const flat = Math.hypot(
+          t.position.x - caster.position.x, t.position.z - caster.position.z,
+        );
+        const life = Math.max(0.05, flat / BOLT_SPEED);
+        this.spawnBolt(hand, to, av, sig, t.position.y, skill.id as string, life, t.track);
       }
       return;
     }
@@ -1023,7 +1097,7 @@ export class SpellVfx {
      *   CC 光环的 id 又是 `control.*`（查不回技能拿颜色），
      *   不在这里补的话「被定住的人」身上什么都不会亮。
      */
-    if (skill.effects.some((e) => e.kind === 'damage')) return;
+    if (dealsDamage(skill.effects)) return;
     for (const t of targets) {
       const at: Vec3Like = {
         x: t.position.x,
@@ -1044,8 +1118,19 @@ export class SpellVfx {
    * 判据全部来自已有数据，不新增配置：
    *   · 单体形状 + 直接/投射物瞄准 —— 排除地面技能与自身中心 AOE
    *   · 射程 ≥ 8 米 —— 排除近战（6.1 近战档最长 3.8 米）
-   *   · 没有 `spawnProjectile` —— 那种由 sim 真的产生弹体，走 `syncProjectiles`，
+   *   · 没有 `spawnProjectile` —— **碰撞型**由 sim 真的产生弹体，走
+   *     `syncProjectiles`（那条路要画真实轨迹，因为它能被墙挡、能躲开），
    *     在这里再来一发就成了双份
+   *
+   * ★ W23：带 `lockedProjectile` 的技能**照旧走这条路**（不排除）——
+   *   锁定投射物的快照渲染在 `syncProjectiles` 里让位给它，双份的那一半
+   *   在那边收口。判据本身一个字没改：这批技能本来就全部满足上面三条
+   *   （迁移口径与 `flies()` 同源：Direct + 单体 + ≥8 米）。
+   * ⚠️ 但这条同源关系**是数据巧合、不是不变式**：真有人把一条 6 米的
+   *   或 cone 形状的技能迁进 `lockedProjectile`，`flies()` 就不认它。
+   *   兜底在 `syncProjectiles`（没有装饰弹道就退回快照渲染），所以它
+   *   最坏只是掉成一颗通用色球，不会整个隐形。用例见
+   *   `lockedProjectileVfx.test.ts`。
    */
   private flies(skill: SkillDef): boolean {
     if (skill.shape.kind !== 'single') return false;
@@ -1195,7 +1280,7 @@ export class SpellVfx {
         const at = posOf(ev.targetId);
         if (!at) return;
         const skill = getSkill(asSkillId(ev.auraId.split('.').slice(0, 2).join('.')));
-        if (!skill || skill.effects.some((e) => e.kind === 'damage')) return;
+        if (!skill || dealsDamage(skill.effects)) return;
         // ★ 这条路**查回了技能**，所以签名生效（与 damage 分支的区别就在这一行）
         const av = this.visualFor(skill);
         const sig = signatureOf(skill);
@@ -1284,7 +1369,8 @@ export class SpellVfx {
     this.syncCasts(ctx.casts ?? [], ctx.quality, dt, ctx.now, ctx.cameraPosition);
     this.syncProjectiles(ctx.projectiles, ctx.quality, dt, ctx.now);
     this.syncGround(ctx.grounds, ctx.quality, dt, ctx.cameraPosition);
-    this.updateBolts(dt, ctx.quality, ctx.cameraPosition);
+    // ★ 抵达时刻走 ctx.now（真实/权威钟），不走可能被顿帧缩放的 dt
+    this.updateBolts(dt, ctx.now, ctx.quality, ctx.cameraPosition);
     this.updateImpacts(dt);
     this.updateWaves(dt);
     this.pool.update(dt);
@@ -1728,10 +1814,20 @@ export class SpellVfx {
   }
 
   /**
-   * 表现用弹体的推进：**追踪**目标当前位置（每帧刷新终点），追上即爆并回收。
-   * ★ 追不上的极端情况（目标反复闪现）由 age 上限兜底强制抵达。
+   * 表现用弹体的推进：**追踪**目标当前位置（每帧刷新终点），到点即爆并回收。
+   *
+   * ★★ **抵达时刻唯一由 `life` 决定，而且走绝对时钟 `now`**
+   *   （= 释放瞬间水平距离 / 速度，与 sim 的 `impactAt` 同公式）：
+   *     · 不看「几何上追上了没有」—— 否则目标迎面冲过来就提前爆（早到）
+   *     · 不累计渲染 dt —— 否则一次顿帧就整体迟到（晚到）
+   *   见 `VisualBolt.bornAt` / `life`：这一刻必须与伤害落账是同一个数。
+   * ★ 飞行段按**剩余时间**配速（`k = dt / remaining`）而不是按固定速度硬推：
+   *   目标怎么动都在 `life` 那一刻恰好落到它身上，不会到点还差半米。
+   *   渲染 dt 被顿帧缩放时，弹体只是那几帧走得慢，随后自动补回来。
    */
-  private updateBolts(dt: number, quality: QualityTier, cameraPosition?: Vec3Like): void {
+  private updateBolts(
+    dt: number, now: number, quality: QualityTier, cameraPosition?: Vec3Like,
+  ): void {
     const showTrail = isVisible('projectileTrail', quality);
     const density = decorativeDensity(quality);
     // 只有离相机最近的几发冒拖尾粒子；彗尾条（零池占用）每发都有
@@ -1740,7 +1836,8 @@ export class SpellVfx {
 
     for (let i = this.bolts.length - 1; i >= 0; i--) {
       const b = this.bolts[i]!;
-      b.age += dt;
+      // 起飞时刻在第一帧落定（onCast 在两次 frame 之间到达，那时没有时钟）
+      b.bornAt ??= now;
       // 终点每帧刷新；目标不可见（潜行/离场）时保持最后已知位置
       const tracked = b.track?.();
       if (tracked) b.to = tracked;
@@ -1749,13 +1846,18 @@ export class SpellVfx {
       const dx = b.to.x - g.x;
       const dy = b.to.y - g.y;
       const dz = b.to.z - g.z;
-      const d = Math.hypot(dx, dy, dz);
-      const step = BOLT_SPEED * dt;
+      /** 距抵达还剩多少秒（真实钟）—— 抵达判据就是它 ≤ 0 */
+      const remaining = b.bornAt + b.life - now;
 
-      if (d > step && b.age < 2) {
-        const k = step / d;
+      if (remaining > 0) {
+        // 按剩余时间配速：这一帧走「剩余路程 × 本帧占剩余时间的比例」
+        const k = Math.min(1, Math.max(0, dt) / remaining);
         g.set(g.x + dx * k, g.y + dy * k, g.z + dz * k);
-        this.orientBolt(b.group, { x: dx, y: dy, z: dz }, b.visual, dt, showTrail, b.form);
+        // ★ 目标瞬移到弹体身上时朝向没有意义 —— 保持上一帧，别把它甩成陀螺
+        //   （与真投射物那条路的 `> 1e-4` 门槛同一个理由）
+        if (Math.hypot(dx, dy, dz) > 1e-4) {
+          this.orientBolt(b.group, { x: dx, y: dy, z: dz }, b.visual, dt, showTrail, b.form);
+        }
 
         const plan = trailPlanFor(b.visual.particle, density);
         if (!showTrail || plan.count <= 0 || !emitters.has(i)) continue;
@@ -1821,6 +1923,8 @@ export class SpellVfx {
     groundY: number,
     /** 形态查表用（霜矢是冰矛）。未登记的技能走通用档 */
     skillId: string,
+    /** 强制抵达时刻，秒。与 sim 的 impactAt 同公式（见 VisualBolt.life）*/
+    life: number,
     track?: () => Vec3Like | undefined,
   ): void {
     // 同时在飞的弹体设个上限：12v12 混战里这是唯一会无界增长的东西
@@ -1833,7 +1937,8 @@ export class SpellVfx {
     group.position.set(from.x, from.y, from.z);
     this.group.add(group);
     this.bolts.push({
-      group, visual: av, sig, form, to: { ...to }, groundY, track, age: 0, trailTimer: 0,
+      group, visual: av, sig, form, to: { ...to }, groundY, track,
+      skillId, life, trailTimer: 0,
     });
   }
 
@@ -1841,8 +1946,9 @@ export class SpellVfx {
 
   /**
    * 把投射物视图画成看得见的飞行体。
-   *   homing / colliding → 属性色球（essential）+ 拖尾（decorative）
-   *   delayedImpact      → 持续落点边界环（essential，14.3 要求全程可见）
+   *   colliding     → 属性色球（essential）+ 拖尾（decorative）
+   *   delayedImpact → 持续落点边界环（essential，14.3 要求全程可见）
+   *   homing        → **有装饰弹道在飞就不画，没有才兜底**，见下方 ★★
    * 消失的投射物在末位置补一发命中爆发。
    */
   private syncProjectiles(
@@ -1854,8 +1960,61 @@ export class SpellVfx {
 
     const present = new Set<number>();
     const delayedPresent = new Set<string>();
+    /** 本帧出现过的锁定投射物 id —— 用来回收 `boltCovered` 的认领记录 */
+    const homingSeen = new Set<number>();
 
     for (const p of items) {
+      /**
+       * ★★ **锁定投射物（homing）：有装饰弹道在飞就跳过，没有就自己画。**
+       *
+       *   W23 之后 sim 真的会生成 homing 弹体（21 个迁移技能），而客户端
+       *   本来就在 `onCastResolved` 里给同一批技能画了一发追踪弹道
+       *   （`flies()` → `spawnBolt`）。两条路都画 = **一发法术两颗球**。
+       *
+       *   两者都在时留装饰路径，理由是它带着表现层的全部身份信息：
+       *   技能级弹体**形态**（霜矢是冰矛，Wave1 刚做）、P3 技能签名
+       *   （尾迹密度 / 抵达爆发规模 / 二级形态）、以及目标追踪。
+       *   快照路径只有 `skillId + position`，画出来是一颗通用色球。
+       *   而 W23 已经把两者的**抵达时刻**对齐（`VisualBolt.life` 与
+       *   `HomingProjectile.impactAt` 同公式），所以装饰路径不再有
+       *   「视觉与结算错拍」这个原本唯一的短板。
+       *
+       * ★★ 但**无条件**跳过是错的（初版就是无条件）：装饰弹道要有一条
+       *   带 `casterId` 的 CastResolved 才画得出来，而
+       *     · 施法者对本机不可见时服务器会把 casterId 抹掉（MatchLoop redact）
+       *     · 重连 / 中途加入 / 观战的客户端压根收不到那条消息，
+       *       它们拿到的只有飞行中的快照
+       *     · CastResolved 丢包
+       *   这些情形下场上一个像素都没有、0.5 秒后伤害凭空落账 ——
+       *   而 `ProjectileSnapshot` 存在的**全部理由**就是 14.4 的
+       *   「不能隐藏投射物主体」（见 net/visibility.ts 那段注释）。
+       *   所以这里退回快照渲染：一颗通用色球，总比什么都没有强。
+       *
+       * ★ 认领是**按 id 粘住**的：某发一旦被判给装饰弹道，后续帧不再翻脸
+       *   补画 —— 否则装饰弹道抵达回收（它的寿命可能比快照短一两帧）之后
+       *   会突然冒出一颗球，末位置还要补一发爆发，那就是双份命中反馈。
+       */
+      if (p.kind === 'homing') {
+        homingSeen.add(p.id);
+        if (this.bolts.some((b) => b.skillId === p.skillId)) this.boltCovered.add(p.id);
+        if (this.boltCovered.has(p.id)) {
+          // 认领之前可能已经兜底画过一两帧（快照先到、CastResolved 后到）：
+          // 静默拆掉，别走「消失 → 补爆发」那条路
+          this.burstlessBodies.delete(p.id);
+          if (this.projBodies.has(p.id)) this.removeProjBody(p.id);
+          continue;
+        }
+        /**
+         * ★★ 兜底渲染**只负责飞行段，不负责命中表现**：消失时不补爆发。
+         *   ① 抵达那一刻的反馈已经由 `damage` / `auraApplied` 事件在目标身上
+         *      给了（这两条事件与 casterId 无关，重连的客户端照样收得到），
+         *      这里再补一发就是双份；
+         *   ② 贴脸施放（<1.5 米，装饰弹道故意不画「没有可看的飞行段」）时
+         *      sim 仍有一发 0.05 秒的弹体，兜底会画出来 —— 那一发要是也补爆发，
+         *      每个贴脸法术都会多一朵花。
+         */
+        this.burstlessBodies.add(p.id);
+      }
       if (p.kind === 'delayedImpact') {
         const key = `p${p.id}`;
         delayedPresent.add(key);
@@ -1921,11 +2080,22 @@ export class SpellVfx {
     //   不会因为「第一发清了零」让后面几发这一帧发不出来
     if (this.trailTimer >= trailPlanFor('spark', density).cadence) this.trailTimer = 0;
 
+    // 认领记录随弹体消失一起回收 —— 12v12 打满一局也不会无界增长
+    for (const id of this.boltCovered) {
+      if (!homingSeen.has(id)) this.boltCovered.delete(id);
+    }
+
     // 消失的飞行体 → 命中爆发 + 回收
     for (const id of this.seenProjectiles) {
       if (present.has(id)) continue;
       const body = this.projBodies.get(id);
       if (!body) continue;
+      // 兜底画的锁定投射物只管飞行段，命中反馈归事件（见上面那条 ★★）
+      if (this.burstlessBodies.has(id)) {
+        this.burstlessBodies.delete(id);
+        this.removeProjBody(id);
+        continue;
+      }
       this.emitBurst(body.lastPos, body.visual, {
         count: scaledCount(14, body.sig.scale), speed: 3.8,
         size: 0.55 * body.sig.scale, life: 0.5,
@@ -2668,6 +2838,9 @@ export class SpellVfx {
     for (const id of [...this.projBodies.keys()]) this.removeProjBody(id);
     for (const b of this.bolts) this.disposeNode(b.group);
     this.bolts.length = 0;
+    // 锁定投射物的两张认领表没有 GPU 资源，但留着会让复用的实例记错账
+    this.boltCovered.clear();
+    this.burstlessBodies.clear();
     for (const key of [...this.rings.keys()]) this.removeRing(key);
     for (const id of [...this.windups.keys()]) this.removeWindup(id);
     for (const w of this.waves) this.disposeGroundMesh(w.mesh, w.mat);

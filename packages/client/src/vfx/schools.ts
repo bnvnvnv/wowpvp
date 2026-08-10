@@ -142,9 +142,18 @@ export const visualAttributeOf = (skill: SkillDef): VisualAttribute =>
  * 「能被解毒术移除」正是玩家理解的「这是毒」，两者天然同源，
  * 不会出现「看起来是毒但解毒解不掉」的割裂。
  */
-export const isPoisonSkill = (skill: SkillDef): boolean =>
-  skill.effects.some(
-    (e) => e.kind === 'applyAura' && e.aura.dispelType === 'poison',
+export const isPoisonSkill = (skill: SkillDef): boolean => hasPoisonAura(skill.effects);
+
+/**
+ * ★ W23：毒蛇钉刺的毒光环搬进了 `lockedProjectile.onHit`（法术要飞到才结算，
+ *   6.6）。不下探的话它会当场从「毒」退回自然属性 —— 颜色变了、
+ *   而且没有任何测试会因此变红，正是最难查的那类表现回归。
+ */
+const hasPoisonAura = (effects: readonly SkillDef['effects'][number][]): boolean =>
+  effects.some(
+    (e) =>
+      (e.kind === 'applyAura' && e.aura.dispelType === 'poison') ||
+      (e.kind === 'lockedProjectile' && hasPoisonAura(e.onHit)),
   );
 
 export const visualOf = (skill: SkillDef): AttributeVisual =>

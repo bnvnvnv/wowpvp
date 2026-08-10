@@ -161,12 +161,16 @@ export const phasesFor = (skill: SkillDef): PhaseSpec[] => {
 /**
  * 是否有「飞行」阶段。
  *
- * 判据是**效果里有没有 `spawnProjectile`**，而不是 `targeting === Projectile`。
+ * 判据是**效果里有没有投射物**，而不是 `targeting === Projectile`。
  * 两者不等价：猎人的瞄准射击瞄准类型是 Direct，但它确实有一支箭飞过去。
  * 玩家看到的是箭，所以按效果判定才对。
+ *
+ * ★ W23：`lockedProjectile`（6.6 锁定投射物）同样是一次真实的飞行 ——
+ *   而且它比碰撞型更需要这个阶段：结算就发生在抵达那一刻。
  */
 const isProjectile = (s: SkillDef): boolean =>
-  s.effects.some((e) => e.kind === 'spawnProjectile') || s.targeting === Targeting.Projectile;
+  s.effects.some((e) => e.kind === 'spawnProjectile' || e.kind === 'lockedProjectile') ||
+  s.targeting === Targeting.Projectile;
 
 const hasGroundArea = (s: SkillDef): boolean =>
   s.effects.some((e) => e.kind === 'spawnGroundArea');
@@ -175,8 +179,19 @@ const hasGroundArea = (s: SkillDef): boolean =>
 const hasDelayedImpact = (s: SkillDef): boolean =>
   s.effects.some((e) => e.kind === 'delayedGroundImpact');
 
-const appliesAura = (s: SkillDef): boolean =>
-  s.effects.some((e) => e.kind === 'applyAura');
+/**
+ * ★ W23：光环载荷会住在 `lockedProjectile.onHit` 里（霜矢的减速、月火的
+ *   DoT、气旋囚笼…）。不下探的话这些技能的「控制状态附着」阶段会整个消失，
+ *   而 14.4 把控制状态列为关键信息 —— 与 skillIcon 的 `flattenEffects` 同族。
+ */
+const appliesAura = (s: SkillDef): boolean => appliesAuraIn(s.effects);
+
+const appliesAuraIn = (effects: readonly SkillDef['effects'][number][]): boolean =>
+  effects.some(
+    (e) =>
+      e.kind === 'applyAura' ||
+      (e.kind === 'lockedProjectile' && appliesAuraIn(e.onHit)),
+  );
 
 /** 某个技能的完整表现描述，供调试面板与文档生成使用 */
 export interface SkillVfxPlan {
