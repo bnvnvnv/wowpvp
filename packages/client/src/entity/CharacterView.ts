@@ -16,6 +16,7 @@ import { BOSS_CLASS_ID, GEOMETRY } from '@wowpvp/shared';
 import { AnimState } from './AnimationController.js';
 import { ModelLibrary, type CharacterModel } from './ModelLibrary.js';
 import { buildUpperBodyAdditive } from './animLayer.js';
+import { swingClipsFor, swingStyleFor, swingTimeScaleFor } from './weaponAnim.js';
 
 /** 各动作状态的调试配色。模型加载前（或加载失败时）的兜底表现 */
 const STATE_COLOR: Record<AnimState, number> = {
@@ -55,22 +56,24 @@ const CLIP: Record<AnimState, { name: string; loop?: 'once'; speed?: number; loc
   [AnimState.Death]: { name: 'Death_A', loop: 'once' },
 };
 
-/** 施法覆盖动画：只在站立不动时覆盖 Idle（移动时腿部优先，7.3 原地读条也多为站桩） */
+/** 施法的**持续**姿态：站立读条时全身播它，移动读条时由上半身叠加层播（见 `syncCastLayer`） */
 const CASTING_CLIP = 'Spellcasting';
-
 /**
- * 近战挥砍的候选片段，找到第一个存在的就用（上游同一骨架，片段名一致）。
- * 一个都没有时安静跳过 —— 挥砍是氛围，刀光/伤害反馈不依赖它（13.4「缺失
- * 专属动作时使用最接近的武器动作」，全缺就保持当前动作，绝不 T-pose）。
+ * 施法的**分阶段**片段（W14 余账，此前零调用）。
+ * · `Spellcast_Raise` 起手举臂（2.1 秒，加速播成利落的一记抬手）
+ * · `Spellcast_Shoot` 释放推掌（0.93 秒）—— 也是魔杖/法杖平砍的出手动作
+ *
+ * ★ 用户实测「法系职业施法也是没有任何动作」：X10 修好叠加层的参考帧之后
+ *   持续姿态在技术上是生效的，但 `Spellcasting` 相对 `Idle` 的增量本就细微，
+ *   一段没有起手、没有释放、只有微幅前倾的读条，在真机上确实读不出「在施法」。
+ *   起手与释放这两拍才是让人看见的那两下。
  */
-const SWING_CLIPS = [
-  '1H_Melee_Attack_Slice_Diagonal',
-  '1H_Melee_Attack_Chop',
-  '2H_Melee_Attack_Chop',
-  // ★ A14：原第 4 项 'Unarmed_Melee_Attack_Punch_A' 在**任何**模型里都不存在
-  //   （八个职业共用同一组 22 片段，逐一核对过）—— 死条目已删，
-  //   按武器类型选片段（双持/远程）是 W14 动画分层批的事，别在这里预埋假名字
-];
+const CAST_RAISE_CLIP = 'Spellcast_Raise';
+const CAST_RELEASE_CLIP = 'Spellcast_Shoot';
+
+/** 起手/释放的倍速：素材偏长（2.1 / 0.93 秒），压到一拍之内才读作「起手」而不是慢动作 */
+const CAST_RAISE_SPEED = 2.2;
+const CAST_RELEASE_SPEED = 1.25;
 
 /**
  * 受击踉跄的最短间隔（秒）。12v12 里挨打频率能到每秒 3–4 次，
@@ -132,6 +135,14 @@ export class CharacterView {
   private weaponSeq = 0;
   private pendingWeaponId: string | undefined;
   private weaponNodes: THREE.Object3D[] = [];
+  /**
+   * 当前武器 id —— 挥砍片段按它选（见 `playMeleeSwing`）。
+   * ★ 与 `pendingWeaponId` 分开记：那个只在「模型还没挂上」时活着，
+   *   而挥砍要在模型挂上之后仍然知道手里拿的是什么。
+   */
+  private weaponId: string | undefined;
+  /** 挥砍序号：单手片段按奇偶交替，见 `swingClipsFor` */
+  private swingAlt = 0;
 
   constructor(classId?: string) {
     /**
@@ -339,21 +350,53 @@ export class CharacterView {
   private castUpper: THREE.AnimationAction | undefined;
 
   /**
-   * W14：施法的上半身表现。
-   * ★ 有叠加层（`castUpper`）时：腿照跑，上半身**叠加**施法姿态淡入淡出 ——
-   *   「跑动中施法无上半身表现」由此消除（总账 W14 的核心）。
-   * ★ 没有叠加层时：回落旧行为（`applyClip` 里「Idle 才播 Spellcasting」）。
+   * 施法的持续表现（读条开始 / 结束）。分两条路，由「人在不在动」决定：
+   *
+   * · **站着读条** → 基础层整个换成 `Spellcasting`，再补一记 `Spellcast_Raise`
+   *   起手。★★ 这一条是 W14 之后回收的：W14 把站立读条也改成了「Idle +
+   *   上半身叠加」，而 `Spellcasting` 相对 `Idle` 的增量本就细微，叠出来只是
+   *   微微前倾 —— 用户实测「法系职业施法也是没有任何动作」说的就是它。
+   *   站着不动时腿没有别的事要做，全身播才看得见。
+   * · **移动中读条** → 基础层照播 locomotion，上半身叠加层淡入施法姿态
+   *   （W14 的核心成果：腿照跑、手施法）。
+   *
+   * ★ 两条路互斥由 `syncCastLayer` 统一裁决 —— 基础层已经是 `Spellcasting`
+   *   时叠加层必须收掉，否则同一段姿态叠两遍，手会拧到背后去。
    */
   setCasting(on: boolean): void {
     if (this.casting === on) return;
     this.casting = on;
-    if (this.castUpper) {
-      this.castUpper.enabled = true;
-      if (on) this.castUpper.fadeIn(0.15);
-      else this.castUpper.fadeOut(0.15);
-    }
     this.applyClip();
+    if (on) {
+      this.playCastRaise();
+    } else if (this.overrideKind === 'castRaise') {
+      /**
+       * 读条结束（或被打断）时起手还没播完 —— 立刻收掉。不收的话手臂会
+       * 在读条条已经消失之后继续往上举，读作「法术还在走」。
+       * ★★ 只收**起手**，不碰释放：场景在同一帧里往往先 `playCastRelease()`
+       *   再让读条状态归位（`setCasting(this.playerCast !== undefined)` 是
+       *   每帧无条件跑的），把 kind 合并成一个 `'cast'` 的话，推掌会在起手的
+       *   那一帧被自己掐掉 —— 释放动作又变回看不见。
+       */
+      this.endOverride(true);
+    }
   }
+
+  /**
+   * 上半身叠加层的开关：**施法中、且基础层不是全身施法片段**时才叠。
+   * 死亡时一律收掉（尸体不该保持施法姿势）。
+   * @param baseName `applyClip` 即将采用的基础层片段名
+   */
+  private syncCastLayer(baseName: string): void {
+    if (!this.castUpper) return;
+    const want = this.casting && baseName !== CASTING_CLIP && this.state !== AnimState.Death;
+    if (want === this.castLayerOn) return;
+    this.castLayerOn = want;
+    this.castUpper.enabled = true;
+    if (want) this.castUpper.fadeIn(0.15);
+    else this.castUpper.fadeOut(0.15);
+  }
+  private castLayerOn = false;
 
   /**
    * 受击反馈：闪光。14.1 命中反馈的模型侧通道。
@@ -405,41 +448,10 @@ export class CharacterView {
     );
     if (!clip) return;
     this.hitReactCooldown = HIT_REACT_COOLDOWN;
-
-    // 上一次的 finished 监听器还挂着（快速连续重击）→ 先清掉，防泄漏
-    this.hitReactOff?.();
-
-    const react = this.mixer.clipAction(clip);
-    const current = this.actions.get(this.currentClip);
-    react.reset();
-    react.setLoop(THREE.LoopOnce, 1);
-    react.clampWhenFinished = false;
-    react.timeScale = 1.5; // 踉跄要「短促」—— 全速播读作被击倒
-    if (current && current !== react) current.fadeOut(0.06);
-    react.fadeIn(0.06);
-    react.play();
-
-    const onFinished = (e: { action: THREE.AnimationAction }): void => {
-      if (e.action !== react) return;
-      this.hitReactOff?.();
-      react.fadeOut(0.1);
-      // 与 playMeleeSwing 同一手法：不走 applyClip 去重、不 reset（见那边注释）
-      const back = this.actions.get(this.currentClip);
-      if (back) {
-        back.enabled = true;
-        back.paused = false;
-        back.play();
-        back.fadeIn(0.1);
-      }
-    };
-    this.hitReactOff = () => {
-      this.mixer?.removeEventListener('finished', onFinished as never);
-      this.hitReactOff = undefined;
-    };
-    this.mixer.addEventListener('finished', onFinished as never);
+    // 踉跄要「短促」—— 全速播读作被击倒
+    this.playOverride('react', clip, 1.5, 0.06);
   }
   private hitReactCooldown = 0;
-  private hitReactOff: (() => void) | undefined;
 
   /**
    * P6：规避反应 —— 此前闪避/招架/格挡只有浮字 + 音效，模型纹丝不动
@@ -482,37 +494,9 @@ export class CharacterView {
       this.model.clips as THREE.AnimationClip[], 'Block',
     );
     if (!clip) return;
-    this.avoidOff?.();
-
-    const react = this.mixer.clipAction(clip);
-    const current = this.actions.get(this.currentClip);
-    react.reset();
-    react.setLoop(THREE.LoopOnce, 1);
-    react.clampWhenFinished = false;
-    react.timeScale = 1.7; // 格挡要「弹」—— 抬手即回，拖长了像摆姿势
-    if (current && current !== react) current.fadeOut(0.05);
-    react.fadeIn(0.05);
-    react.play();
-
-    const onFinished = (e: { action: THREE.AnimationAction }): void => {
-      if (e.action !== react) return;
-      this.avoidOff?.();
-      react.fadeOut(0.08);
-      const back = this.actions.get(this.currentClip);
-      if (back) {
-        back.enabled = true;
-        back.paused = false;
-        back.play();
-        back.fadeIn(0.08);
-      }
-    };
-    this.avoidOff = () => {
-      this.mixer?.removeEventListener('finished', onFinished as never);
-      this.avoidOff = undefined;
-    };
-    this.mixer.addEventListener('finished', onFinished as never);
+    // 格挡要「弹」—— 抬手即回，拖长了像摆姿势
+    this.playOverride('react', clip, 1.7, 0.05);
   }
-  private avoidOff: (() => void) | undefined;
   /** 程序化侧闪的进度（undefined = 不在闪）。基准值开闪时记录、闪完恢复 */
   private dodgeElapsed: number | undefined;
   private dodgeDir = 1;
@@ -521,55 +505,145 @@ export class CharacterView {
   private dodgeBaseTilt = 0;
 
   /**
-   * 近战挥砍：一次性覆盖动作，播完自动回到状态机当前片段。
+   * 武器出手：一次性覆盖动作，播完自动回到状态机当前片段。
+   *
+   * ★★ **片段按当前武器选**（W14 余账）。此前是一张「找到第一个存在的就用」
+   *   的候选表，而八个模型片段齐全 —— 于是大剑、双持匕首、猎人的弓全都在播
+   *   同一个单手斜劈（用户实测「没有看到有拿武器攻击」的根因）。
+   *   选择规则与倍速归一都在 `weaponAnim.ts` 里逐类单测，这里只负责播。
+   * ★ 名字保留 `playMeleeSwing`：白字与近战技能两处调用点都叫它，而弓与
+   *   魔杖的「平砍」在协议里同样是 autoAttack —— 现在它们各自有了自己的出手动作。
    * ★ 素材缺片段时安静跳过 —— 刀光与伤害反馈不依赖它（M12 逐层兜底）。
    */
   playMeleeSwing(): void {
-    if (!this.mixer || !this.model) return;
-    const clips = this.model.clips as THREE.AnimationClip[];
-    const clip = SWING_CLIPS
+    if (!this.canOverride) return;
+    const clips = this.model!.clips as THREE.AnimationClip[];
+    const names = swingClipsFor(swingStyleFor(this.weaponId), this.swingAlt);
+    const clip = names
       .map((n) => THREE.AnimationClip.findByName(clips, n))
       .find((c): c is THREE.AnimationClip => c !== null && c !== undefined);
     if (!clip) return;
+    this.swingAlt++;
+    this.playOverride('swing', clip, swingTimeScaleFor(clip.duration, this.weaponId), 0.07);
+  }
 
-    const swing = this.mixer.clipAction(clip);
+  /**
+   * 施法**释放**的一拍：推掌把法术送出去（`Spellcast_Shoot`）。
+   *
+   * ★ 场景在「施法结算」时调用（读条结束的那一帧、以及瞬发技能的释放帧）——
+   *   `setCasting(false)` 只是把持续姿态收掉，收掉不等于「甩出去了」，
+   *   而释放正是玩家在找的那个动作。瞬发技能根本不经过 `setCasting`，
+   *   没有这个入口就永远没有施法表现。
+   * ★ 与挥砍共用一条覆盖通道：同一时刻只会有一个一次性动作在播。
+   */
+  playCastRelease(): void {
+    if (!this.canOverride) return;
+    const clip = THREE.AnimationClip.findByName(
+      this.model!.clips as THREE.AnimationClip[], CAST_RELEASE_CLIP,
+    );
+    if (!clip) return;
+    this.playOverride('castRelease', clip, CAST_RELEASE_SPEED, 0.07);
+  }
+
+  /**
+   * 施法**起手**的一拍（`Spellcast_Raise`），由 `setCasting(true)` 内部调用。
+   *
+   * ★★ **只在站着不动时播**：它是全身覆盖，跑动中播会把腿钉住 0.95 秒 ——
+   *   而「腿照跑、手施法」正是 W14 上半身叠加层挣来的东西，不能在这里还回去。
+   *   移动读条的起手交给叠加层的淡入（0.15 秒把上半身推到施法姿态），
+   *   观感上也确实是一次抬手。
+   */
+  private playCastRaise(): void {
+    if (!this.canOverride || this.state !== AnimState.Idle) return;
+    const clip = THREE.AnimationClip.findByName(
+      this.model!.clips as THREE.AnimationClip[], CAST_RAISE_CLIP,
+    );
+    if (!clip) return;
+    this.playOverride('castRaise', clip, CAST_RAISE_SPEED, 0.1);
+  }
+
+  // ── 一次性覆盖动作的公共骨架 ──────────────────────────────────
+
+  /**
+   * 能不能播一次性覆盖动作。★ 死亡/变形/庆祝三态下模型另有归属：
+   * 尸体不该挥刀、小鸡没有人形骨架、庆祝会一直播到场景销毁（见 `playCheer`）。
+   */
+  private get canOverride(): boolean {
+    return (
+      this.mixer !== undefined && this.model !== undefined &&
+      !this.celebrating && !this.morphed && this.state !== AnimState.Death
+    );
+  }
+
+  /**
+   * 播一遍就走的覆盖动作：淡出当前片段 → 单次播放 → 播完淡回状态机片段。
+   *
+   * ★★ 受击踉跄 / 招架格挡 / 武器出手 / 施法起手 / 施法释放**共用这一份**。
+   *   它们此前是四份逐字相同的拷贝（含各自一份 finished 监听器的清理逻辑），
+   *   第五份出现的时候就该合并了 —— 改一处忘四处只是时间问题。
+   * ★ 覆盖通道只有一条：开新的先把旧的监听器摘掉。原因很具体 ——
+   *   0.6 秒内连挥两刀时第一刀被 `reset()` 打断，**永远不会** finished，
+   *   监听器就留在 mixer 上（每挥一刀泄漏一个）。
+   */
+  private playOverride(
+    kind: 'swing' | 'react' | 'castRaise' | 'castRelease',
+    clip: THREE.AnimationClip,
+    timeScale: number,
+    fade: number,
+  ): void {
+    if (!this.mixer) return;
+    this.endOverride(false);
+
+    const action = this.mixer.clipAction(clip);
     const current = this.actions.get(this.currentClip);
-    swing.reset();
-    swing.setLoop(THREE.LoopOnce, 1);
-    swing.clampWhenFinished = false;
-    swing.timeScale = 1.3; // 稍快：出拳/挥砍要「脆」
-    if (current && current !== swing) current.fadeOut(0.07);
-    swing.fadeIn(0.07);
-    swing.play();
+    action.reset();
+    action.setLoop(THREE.LoopOnce, 1);
+    action.clampWhenFinished = false;
+    action.timeScale = timeScale;
+    if (current && current !== action) current.fadeOut(fade);
+    action.fadeIn(fade);
+    action.play();
 
-    // ★ 上一次挥砍的 finished 监听器可能还挂着（0.6 秒内连挥两刀 ——
-    //   第一刀被 reset() 打断就永远不会 finished）→ 先清掉，防泄漏
-    this.swingOff?.();
     const onFinished = (e: { action: THREE.AnimationAction }): void => {
-      if (e.action !== swing) return;
-      this.swingOff?.();
-      swing.fadeOut(0.1);
-      /**
-       * 回到状态机当前片段。★ 不能走 `applyClip()` 的去重路径：那边
-       * `prev === action` 时不做 fadeIn，而这个动作刚被 fadeOut 到权重 0 ——
-       * 会定格成绑定姿势。也刻意不 `reset()`：动作在权重 0 期间时间照走，
-       * 切回奔跑时步伐不跳帧。
-       */
-      const back = this.actions.get(this.currentClip);
-      if (back) {
-        back.enabled = true;
-        back.paused = false;
-        back.play();
-        back.fadeIn(0.1);
-      }
+      if (e.action !== action) return;
+      this.endOverride(true);
     };
-    this.swingOff = () => {
+    this.overrideKind = kind;
+    this.overrideAction = action;
+    this.overrideOff = () => {
       this.mixer?.removeEventListener('finished', onFinished as never);
-      this.swingOff = undefined;
+      this.overrideOff = undefined;
+      this.overrideAction = undefined;
+      this.overrideKind = undefined;
     };
     this.mixer.addEventListener('finished', onFinished as never);
   }
-  private swingOff: (() => void) | undefined;
+
+  /**
+   * 收尾覆盖动作：摘掉监听器；`restore` 时把它淡出、把状态机片段淡回。
+   *
+   * ★ 回到状态机当前片段**不能**走 `applyClip()` 的去重路径：那边
+   *   `prev === action` 时不做 fadeIn，而这个动作刚被 fadeOut 到权重 0 ——
+   *   会定格成绑定姿势。也刻意不 `reset()`：动作在权重 0 期间时间照走，
+   *   切回奔跑时步伐不跳帧。
+   * @param restore false = 只摘监听器（马上要播下一个覆盖动作，交给它去淡）
+   */
+  private endOverride(restore: boolean): void {
+    const action = this.overrideAction;
+    this.overrideOff?.();
+    if (!restore || !action) return;
+    action.fadeOut(0.1);
+    const back = this.actions.get(this.currentClip);
+    if (back) {
+      back.enabled = true;
+      back.paused = false;
+      back.play();
+      back.fadeIn(0.1);
+    }
+  }
+  private overrideOff: (() => void) | undefined;
+  private overrideAction: THREE.AnimationAction | undefined;
+  private overrideKind: 'swing' | 'react' | 'castRaise' | 'castRelease' | undefined;
 
   // ── 化形术（8.2 迷惑）────────────────────────────────────────
 
@@ -671,6 +745,9 @@ export class CharacterView {
 
   /** 15.2：目标框显示当前武器 —— 模型手上也拿着它（10.6 敌人可见当前武器） */
   setWeapon(weaponId: string | undefined): void {
+    // ★ 先记下来再谈模型：挥砍片段的选择只认这个字段，而换装消息常常
+    //   比模型的异步加载先到（联网场景进场即发装备）
+    this.weaponId = weaponId;
     if (!this.model) {
       this.pendingWeaponId = weaponId;
       return;
@@ -724,8 +801,13 @@ export class CharacterView {
     if (!clip) return;
 
     this.celebrating = true;
-    // 受击/挥砍的一次性覆盖此刻可能还挂着监听器 —— 先清掉，免得它把庆祝切走
-    this.hitReactOff?.();
+    // 受击/挥砍/施法的一次性覆盖此刻可能还挂着监听器 —— 先清掉，免得它把庆祝切走
+    this.endOverride(false);
+    // 施法叠加层同理：对局已经结束，没有谁还在读条
+    if (this.castUpper && this.castLayerOn) {
+      this.castUpper.fadeOut(0.2);
+      this.castLayerOn = false;
+    }
 
     const cheer = this.mixer.clipAction(clip);
     const prev = this.actions.get(this.currentClip);
@@ -743,11 +825,15 @@ export class CharacterView {
     // ★ 庆祝期间不再跟随状态机（见 playCheer 的注释）
     if (this.celebrating) return;
     const spec = CLIP[this.state];
-    // ★ W14：有叠加层时基础层永远是 locomotion/idle（施法姿态走叠加，见
-    //   setCasting）；没有叠加层才回落到旧的「Idle 全身播 Spellcasting」
-    const name =
-      this.casting && this.state === AnimState.Idle && !this.castUpper
-        ? CASTING_CLIP : spec.name;
+    /**
+     * ★ 站着读条 → 全身 `Spellcasting`（看得见）；移动中读条 → 照播
+     *   locomotion，施法姿态走上半身叠加层（腿照跑，W14 的核心）。
+     *   见 `setCasting` 的注释：站立那条曾被 W14 一并改成叠加，
+     *   而叠出来的幅度太小，真机上读不出「在施法」。
+     */
+    const name = this.casting && this.state === AnimState.Idle ? CASTING_CLIP : spec.name;
+    // 叠加层跟着基础层走 —— 放在去重之前，因为 casting 变了而片段没变也要重算
+    this.syncCastLayer(name);
 
     /**
      * ★ 去重的键是「片段名 **+ 播放配置**」，不只是片段名。

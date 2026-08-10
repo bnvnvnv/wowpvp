@@ -81,6 +81,17 @@ export const WEAPON_MODEL: Readonly<Record<string, WeaponAttachment>> = {
   'druid.mace_totem': { right: 'tempered_flanged_mace' },
 
   /**
+   * 大 BOSS 的熔岩巨锤。★ 此前**唯一漏配**的一件：全覆盖断言只扫
+   *   `ALL_WEAPONS`（八个**可选**职业），而 BOSS 在 `SPECIAL_CLASSES` 里 ——
+   *   于是它从注册表里查得到武器、却查不到模型，静默走程序化替身。
+   *   断言已改成扫 `WEAPON_BY_ID`（见 partyAssets.test.ts）。
+   * ★ 现阶段 BOSS 还没有人形模型（`CLASS_MODEL` 里没有它），`setWeapon`
+   *   会一直卡在 `pendingWeaponId` —— 这一行是给「BOSS 模型到位那天」备的，
+   *   不是今天就能看见的东西。
+   */
+  'boss.molten_maul': { right: 'iron_field_hammer' },
+
+  /**
    * 大乱斗的派对武装（`shared/data/party.ts`）。上游素材里恰好有几件
    * 名字与它们一一对上的（`starfall_judgment_of_the_heavens` 之于星火倾泻）。
    * ★ 「和玩家一样大」由 `WeaponDef.renderScale` 表达，不在这里写死尺寸 ——

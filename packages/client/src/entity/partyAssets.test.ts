@@ -16,9 +16,17 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { ALL_WEAPONS, PARTY_WEAPONS } from '@wowpvp/shared';
+import { PARTY_WEAPONS, WEAPON_BY_ID } from '@wowpvp/shared';
 
 import { WEAPON_MODEL } from './ModelLibrary.js';
+
+/**
+ * ★★ 扫的是 `WEAPON_BY_ID`（注册表**全集**）而不是 `ALL_WEAPONS`。
+ *   后者只含八个**可选**职业，BOSS 在 `SPECIAL_CLASSES` 里 —— 于是
+ *   `boss.molten_maul` 从第一天起就漏在门禁之外，查得到武器查不到模型。
+ *   门禁的意义是「加一件武器忘配模型 = 红灯」，那就得扫全集。
+ */
+const REGISTERED_WEAPONS = [...WEAPON_BY_ID.values()];
 
 const MODEL_ROOT = resolve(
   fileURLToPath(new URL('.', import.meta.url)),
@@ -26,15 +34,15 @@ const MODEL_ROOT = resolve(
 );
 
 describe('★★ 派对武装的模型与缩放', () => {
-  it('★★ 全覆盖：每件武器（含派对武装）都有模型映射', () => {
-    const missing = [...ALL_WEAPONS, ...PARTY_WEAPONS]
+  it('★★ 全覆盖：每件武器（含 BOSS 与派对武装）都有模型映射', () => {
+    const missing = REGISTERED_WEAPONS
       .filter((w) => !WEAPON_MODEL[w.id as string])
       .map((w) => `${w.id}（${w.name}）`);
     expect(missing, '新武器必须在 ModelLibrary 的 WEAPON_MODEL 里配模型').toEqual([]);
   });
 
   it('★ 没有多余映射（防改名后留下孤儿行）', () => {
-    const known = new Set([...ALL_WEAPONS, ...PARTY_WEAPONS].map((w) => w.id as string));
+    const known = new Set(REGISTERED_WEAPONS.map((w) => w.id as string));
     expect(Object.keys(WEAPON_MODEL).filter((id) => !known.has(id))).toEqual([]);
   });
 
