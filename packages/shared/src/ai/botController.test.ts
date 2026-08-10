@@ -445,6 +445,32 @@ describe('P4 控制：会用控制，且带递减/免疫判断', () => {
   });
 });
 
+describe('W23b 反向测试：迟到的控制仍会出手（飞行时间门实测恶化后回滚）', () => {
+  /**
+   * ★★ 这是一条**反向测试**（P1b 风筝同款）：钉住的是「不拦」这个结论。
+   *
+   * W23 归因时校验者指认：变形术 25m 要飞 0.45s，替补打断判据只看
+   * `remaining > 0.1`，余量不够时 CC 落地条已读完 →「白丢 GCD 白吃 DR」。
+   * 按此实现了飞行时间门（remaining > flight + 0.1 才出手），实测（种子 1）：
+   * **法师 16.7→9.5pp、极差 78.6→83.3，死骑（原嫌疑对象）分毫未动** ——
+   * 假设错在「迟到的控制不是白丢」：晚半秒落地的变形照样吃满持续时间，
+   * 拦掉它 bot 只会改放伤害填充，净减控制覆盖率。已回滚。
+   * 想重新拦：先给这条测试一个更好的变红理由（比如 bot 学会了把省下的
+   * GCD 花在更值的地方），并重新归因。
+   */
+  it('★★ 余量 0.4s < 变形术飞行 0.45s —— 迟到的变形术照样出手（拦过、恶化、回滚）', () => {
+    const s = duel(mage, warrior, 25);
+    s.self.cooldowns.set(COUNTERSPELL, 999); // 踢在冷却 → 走替补打断路
+    s.casting.set(s.foe.id, castOf({ endsAt: 1.0 }));
+    s.world.time = 0.6; // remaining = 0.4
+    const a = decideBotAction(perceive(s, {
+      difficulty: 'normal', auras: new Map(), dr: createDrStore(),
+    }));
+    const picked = mage.skills.find((sk) => sk.id === a.cast?.skillId);
+    expect(picked && ccCategoryOf(picked) !== undefined, `实际选了 ${a.cast?.skillId}`).toBe(true);
+  });
+});
+
 describe('P4 驱散：按下去能清掉东西才按', () => {
   it('★★ 自己身上有可驱散的魔法减益 → 对自己净化', () => {
     const s = duel(priest, warrior, 20);

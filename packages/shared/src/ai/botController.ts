@@ -276,6 +276,7 @@ const ccCategoryIn = (effects: readonly EffectDef[]): DrCategory | undefined => 
   return undefined;
 };
 
+
 /**
  * 逃脱位移：向后跃出（后撤跃）。
  * ⚠️ **刻意不含 `blinkForward`（瞬闪）**：bot 的 yaw 永远面向对手，向前闪
@@ -1004,6 +1005,17 @@ export const decideBotAction = (p: BotPerception): BotAction => {
     !foe.flags.feared &&
     !foe.flags.immuneAll
   ) {
+    /**
+     * ★★ W23 后试过「替补打断要算飞行时间」——**实现后回滚**（P1b 风筝同款结局）。
+     *   假设：变形术 25m 要飞 0.45s，`remaining` 不够时 CC 落地条已读完，
+     *   「白丢 GCD 白吃 DR」→ 应拦。实测（种子 1）：法师 16.7→9.5pp、
+     *   极差 78.6→83.3，死骑（原嫌疑对象）分毫未动 —— 假设错在
+     *   **迟到的控制不是白丢**：晚半秒落地的变形照样吃满持续时间，拦掉它
+     *   bot 只会改放伤害填充，净减控制覆盖率。死骑的 W23 下行另有根因
+     *   （待诊断，见总账 W23 行）。`botController.test.ts` 的
+     *   「W23b 迟到的控制仍会出手」反向测试钉着这条结论 —— 想再拦，先去
+     *   让那条测试有更好的理由变红。
+     */
     const wantCc =
       foeCastingUnkicked ||
       (d <= TACTICS.PEEL_RANGE && reach >= TACTICS.RANGED_REACH_MIN) ||
