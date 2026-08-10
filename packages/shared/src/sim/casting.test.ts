@@ -182,6 +182,22 @@ describe('验收 #19 — 开始和完成都检查目标、距离、视线、朝�
     const r = beginCast(world, store, w, skill('warrior.charge'), { target });
     expect((r as { reason: CastFailure }).reason).toBe(CastFailure.TooClose);
   });
+
+  /**
+   * ★★ A10 的**消费侧**：几何层修好了，施法校验这条真实链路也要跟着对。
+   *   本仓库四次栽在「规则写对了没人调用」上，所以负边距这件事在
+   *   `geometry.test.ts` 钉一遍还不够 —— 玩家按的是技能键，不是 inRange。
+   */
+  it('★★ A10：站进模型里（碰撞体重叠）的近战照样能放，不是 OutOfRange', () => {
+    const w = spawn(warrior, RED, 0, 0);
+    // 中心相距 0.5 米：两个 0.45 半径的碰撞体重叠，边缘距离为负
+    const target = spawn(mage, BLUE, 0, -0.5);
+    w.yaw = 0;                        // 面向 -Z，目标就在正前方（避开朝向判据）
+    expect(
+      validateCast({ world, caster: w, skill: skill('warrior.mortal_strike'), target, phase: 'start' }),
+      '贴脸到重叠反而打不着',
+    ).toBe(CastFailure.Ok);
+  });
 });
 
 describe('验收 #18 / 7.5 — 假读条：主动取消不消耗资源和冷却', () => {

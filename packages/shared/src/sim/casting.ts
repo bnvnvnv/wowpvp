@@ -368,6 +368,23 @@ export interface CastEvents {
     source: InterruptSource,
     schoolLock?: { school: School; until: number },
   ) => void;
+  /**
+   * ★★ X21：**排队窗过期**（0.4 秒到了还没轮到它，这次按键就此作废）。
+   *
+   *   刻意不是 `onFailed(..., OnGlobalCooldown)`：那条理由在按下的**那一刻**
+   *   是真的，但 0.4 秒后原样弹出来会让玩家以为「现在还在公共冷却」——
+   *   迟到的失败提示比沉默更误导，这正是 X21 拍板前卡住的点。分成独立的
+   *   一路，表现层才能说出「刚才那一下没赶上」这句**当下为真**的话，
+   *   也才能自己决定要不要说（弱提示/只闪一下图标/什么都不做）。
+   *
+   * ★ `waited` 是从按下到作废的实际秒数（≈ `CAST_QUEUE_WINDOW`），
+   *   给表现层判断「差一点点」还是「早就凉了」用。
+   */
+  onQueueExpired?: (
+    caster: CombatEntity,
+    skill: SkillDef,
+    info: { queued: QueuedCast; waited: number },
+  ) => void;
 }
 
 /**
@@ -764,12 +781,21 @@ export const tickCastQueue = (
     }
 
     /**
-     * 过期。★ **静默丢弃，不补一条失败提示** —— 按键过去 0.4 秒之后才弹出
-     * 「公共冷却中」，玩家早就在做下一件事了，那条迟到的提示只会让人以为
-     * 是刚才那一下出的问题。合同 C5 只要求「二次失败」上报，不含过期。
+     * 过期。
+     *
+     * ★★ X21（拍板 2026-08-10）：**不再静默丢弃，但也不走 `onFailed`。**
+     *
+     *   原来这里什么都不发，理由写着「0.4 秒之后才弹『公共冷却中』只会让
+     *   人以为是刚才那一下出的问题」—— 那句话对的是**理由**，不是**沉默**：
+     *   按键彻底消失同样让人怀疑是不是没按上。所以走一路独立的
+     *   `onQueueExpired`：说的是「刚才那一下没赶上」这件当下为真的事，
+     *   要不要显示、显示成什么由表现层自己拿主意。
+     *   合同 C5 的「二次失败走 onFailed」原样不动（见下面）。
      */
-    if (world.time - q.pressedAt > CAST_QUEUE_WINDOW) {
+    const waited = world.time - q.pressedAt;
+    if (waited > CAST_QUEUE_WINDOW) {
       queue.delete(id);
+      opts.events?.onQueueExpired?.(caster, skill, { queued: q, waited });
       continue;
     }
 

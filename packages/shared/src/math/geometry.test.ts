@@ -63,6 +63,46 @@ describe('6.2 距离计算 — 近战按碰撞体边缘', () => {
   });
 });
 
+/**
+ * ★★ A10：**碰撞体重叠时近战不能反而超距。**
+ *
+ *   `edgeDistance` 会返回负值（它的注释写着「返回值可能为负，调用方按
+ *   <= max 判断即可」），但 `inRange` 的下界是无条件的 `d >= minRange`，
+ *   而近战技能的 `minRange` 是 0 —— 于是**站进模型里挥拳永远 OutOfRange**：
+ *   越贴脸越打不着，正是玩家最直觉「这一下肯定中」的姿势。
+ *
+ *   修法只有一条：下界检查只对**真的有最小距离**的技能生效。冲锋那类
+ *   「太近不能用」的语义靠 `minRange > 0` 表达，一个字都不动。
+ */
+describe('★★ A10 近战负边距（碰撞体重叠时可施放）', () => {
+  /** 中心相距 0.5 米：两个 0.45 半径的碰撞体重叠，边缘距离 = -0.4 */
+  const overlapping = (): [HitCircle, HitCircle] => [at(0, 0, 0), at(0.5, 0, 0)];
+
+  it('★ 前提：这个姿势的边缘距离确实是负的', () => {
+    const [a, b] = overlapping();
+    expect(edgeDistance(a, b)).toBeLessThan(0);
+  });
+
+  it('★★ min=0 的近战技能：重叠时判**在射程内**', () => {
+    const [a, b] = overlapping();
+    expect(inRange(a, b, RANGE.MELEE), '站进模型里反而打不着').toBe(true);
+    expect(inRange(a, b, RANGE.MELEE, 0)).toBe(true);
+  });
+
+  it('★★ 冲锋的「太近不能用」不受影响：minRange > 0 时重叠仍判超出', () => {
+    const [a, b] = overlapping();
+    // 8~25 米的冲锋：贴脸（含重叠）必须为 false，否则冲锋能原地放
+    expect(inRange(a, b, 25, 8)).toBe(false);
+    // 近战量级的最小距离同样成立（下界不是被整条取消，只是不再误伤 min=0）
+    expect(inRange(a, b, RANGE.MELEE, 1)).toBe(false);
+  });
+
+  it('★ inMeleeRange 一直是对的 —— 它没有下界，本条是对照组', () => {
+    const [a, b] = overlapping();
+    expect(inMeleeRange(a, b, RANGE.MELEE)).toBe(true);
+  });
+});
+
 describe('6.5 朝向', () => {
   it('正面 180 度内算面向', () => {
     // yaw = 0 面向 -Z

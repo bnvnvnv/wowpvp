@@ -161,6 +161,14 @@ export const CTF = {
   MIN_SCORE_TO_WIN: 1,
   MAX_SCORE_TO_WIN: 5,
   DURATION: { ctf6v6: 720, ctf8v8: 900, ctf12v12: 900 } as Record<string, number>,
+  /**
+   * A17：突然死亡加时的硬上限（秒）。到点仍是平分 → 判平局。
+   *
+   * ★ 理由与 `arena.ts` 的 `SUDDEN_DEATH_HARD_CAP` 逐字相同：加时靠「有人
+   *   得分」结束，而「双方都龟着不碰旗」恰恰是 A17 要消灭的那种局面 ——
+   *   不设上限等于把「没有终点」原样搬进加时。取 180 秒与竞技场同数量级。
+   */
+  OVERTIME_HARD_CAP: 180,
   /** 12.1 拔旗持续 1.2 秒 */
   PICKUP_SECONDS: 1.2,
   /** 12.1 交旗持续 0.8 秒 */

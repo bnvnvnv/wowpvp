@@ -29,7 +29,7 @@ import {
 } from '../sim/loadout.js';
 import { getArmor, getClass, getWeapon } from '../data/index.js';
 import type { FlagState } from '../types/enums.js';
-import type { CtfState } from '../sim/match/flag.js';
+import { ctfInOvertime, ctfTimeRemaining, type CtfState } from '../sim/match/flag.js';
 import { secondsToNextWave, type RespawnState } from '../sim/match/respawn.js';
 import { movementLockOf, type MovementState } from '../sim/movement.js';
 import type { GroundStore } from '../sim/groundArea.js';
@@ -589,6 +589,24 @@ export interface MatchSnapshot {
   focusStacks?: number;
   /** 距下一次复活波次的秒数（12.6）。夺旗对局才有 */
   respawnIn?: number;
+  /**
+   * A17：**比赛剩余时间**（秒），15.4 右列「比赛时间」那一栏的数据源。
+   *
+   * ★ 只在**限时**的夺旗局里有值（`CTF.DURATION` 配了时长）——
+   *   不限时的一局不带这个字段，HUD 因此不会画一个永远不动、
+   *   数到零也不发生任何事的倒计时（附录A#7 的占位禁令）。
+   * ★ 进入加时后它换成「距加时硬上限还剩多久」，含义由 `overtime` 区分。
+   * ★ 零泄露面：赛程时钟是全场公开事实，与 `scoreToWin` 同一档。
+   */
+  timeRemaining?: number;
+  /**
+   * A17：夺旗已进入突然死亡加时（先得分者胜）。
+   *
+   * ★ 刻意**不复用** `suddenDeath` —— 那个字段一开就会带出
+   *   `suddenDeathBlips`（竞技场的位置揭示），把它挂到夺旗上等于给
+   *   潜行旗手点名。两件事同名不同物，各占一个字段。
+   */
+  overtime?: boolean;
 }
 
 /**
@@ -744,6 +762,10 @@ export const buildSnapshot = (deps: SnapshotDeps, viewer: CombatEntity): Snapsho
     match.score = { ...deps.ctf.score };
     match.scoreToWin = deps.ctf.scoreToWin;
     match.focusStacks = deps.ctf.focusStacks;
+    // A17：限时局才有剩余时间；加时另有一面旗子（见字段注释）
+    const remaining = ctfTimeRemaining(deps.ctf, deps.world.time);
+    if (remaining !== undefined) match.timeRemaining = remaining;
+    if (ctfInOvertime(deps.ctf)) match.overtime = true;
   }
   if (deps.respawn) {
     match.respawnIn = secondsToNextWave(deps.respawn, deps.world.time);

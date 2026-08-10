@@ -20,6 +20,8 @@ import {
   beginFlagInteract,
   clampCarrierSpeedBonus,
   createCtf,
+  ctfInOvertime,
+  ctfTimeRemaining,
   ctfWinner,
   dropFlag,
   dropFlagBeforeSkill,
@@ -650,6 +652,126 @@ describe('比赛重置', () => {
     expect(isAwaitingRespawn(s, e.id)).toBe(false);
     expect(e.flags.spawnProtection).toBe(false);
     expect(secondsToNextWave(s, 100)).toBe(CTF.RESPAWN_WAVE_SECONDS);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+//  A17：时限与突然死亡加时（规格 6.x）
+// ════════════════════════════════════════════════════════════════
+
+describe('★★ A17 夺旗时限与加时（时间到比分高者胜／同分突然死亡）', () => {
+  const DURATION = 60;
+  /** 限时局的夹具：60 秒常规时长，开赛时刻 0 */
+  const timed = (): CtfState =>
+    createCtf(RED_BASE, BLUE_BASE, 3, { duration: DURATION, startedAt: 0 });
+
+  const setScore = (s: CtfState, red: number, blue: number): void => {
+    s.score[String(TEAM_RED as number)] = red;
+    s.score[String(TEAM_BLUE as number)] = blue;
+  };
+
+  it('★ 常规时间内不判胜负，剩余时间照实往下走', () => {
+    ctf = timed();
+    setScore(ctf, 1, 0);
+    tickFlags(ctf, deps(), 30);
+    expect(ctf.outcome).toBeNull();
+    expect(ctfTimeRemaining(ctf, 30)).toBe(30);
+    expect(ctfInOvertime(ctf)).toBe(false);
+  });
+
+  it('★★ 时间到，比分高者获胜（不进加时）', () => {
+    ctf = timed();
+    setScore(ctf, 2, 1);
+    tickFlags(ctf, deps(), DURATION);
+    expect(ctf.outcome).toEqual({ winner: TEAM_RED });
+    expect(ctfInOvertime(ctf), '有人领先还进加时了').toBe(false);
+    expect(ctfTimeRemaining(ctf, DURATION)).toBe(0);
+  });
+
+  it('★★ 时间到平分 → 进突然死亡加时，比赛不结束', () => {
+    ctf = timed();
+    setScore(ctf, 1, 1);
+    tickFlags(ctf, deps(), DURATION);
+    expect(ctf.outcome, '平分就把比赛判掉了 —— 加时没生效').toBeNull();
+    expect(ctfInOvertime(ctf)).toBe(true);
+    // 加时的倒计时换成「距硬上限」，那个零是真的会发生事情的零（判平局）
+    expect(ctfTimeRemaining(ctf, DURATION)).toBe(CTF.OVERTIME_HARD_CAP);
+  });
+
+  it('★★ 加时内先得分者胜（一次夺旗即终局，不必到目标分）', () => {
+    ctf = timed();
+    setScore(ctf, 1, 1);
+    tickFlags(ctf, deps(), DURATION);          // 进加时
+    expect(ctf.outcome).toBeNull();
+
+    // 蓝方在加时里完成一次交旗 —— 走真实状态机，不是直接改比分
+    const blue = spawn(TEAM_BLUE, BLUE_BASE);
+    giveFlag(blue);
+    const carried = flagOf(ctf, TEAM_RED);
+    expect(beginFlagInteract(ctf, blue, carried, DURATION + 1, inZone(TEAM_BLUE)))
+      .toMatchObject({ ok: true, action: 'capture' });
+    tickFlags(ctf, deps(), DURATION + 1 + CTF.CAPTURE_SECONDS);
+
+    expect(ctf.score[String(TEAM_BLUE as number)]).toBe(2);
+    expect(ctf.outcome, '加时里得了分却没有当场终局').toEqual({ winner: TEAM_BLUE });
+  });
+
+  it('★ 加时也不能无限拖：硬上限到点判平局', () => {
+    ctf = timed();
+    setScore(ctf, 1, 1);
+    tickFlags(ctf, deps(), DURATION);
+    tickFlags(ctf, deps(), DURATION + CTF.OVERTIME_HARD_CAP);
+    expect(ctf.outcome).toEqual({ winner: 'draw' });
+  });
+
+  it('★ 12.1 先到目标分优先于时钟：常规时间内拿满就赢', () => {
+    ctf = timed();
+    setScore(ctf, ctf.scoreToWin, 1);
+    tickFlags(ctf, deps(), 5);
+    expect(ctf.outcome).toEqual({ winner: TEAM_RED });
+  });
+
+  it('★★ 不限时的一局（duration=0）行为一字不变：只有目标分一个出口', () => {
+    // 试验场 CtfDemo 与一大票纯规则测试走的就是这条路
+    setScore(ctf, 1, 0);
+    tickFlags(ctf, deps(), 100_000);
+    expect(ctf.outcome, '不限时的局被时钟判掉了').toBeNull();
+    expect(ctfTimeRemaining(ctf, 100_000), '不限时却给出了倒计时').toBeUndefined();
+  });
+
+  it('★ 判过的胜负会冻住，不被后续 tick 改写', () => {
+    ctf = timed();
+    setScore(ctf, 2, 1);
+    tickFlags(ctf, deps(), DURATION);
+    setScore(ctf, 2, 9);                      // 事后有人往比分里塞了个数
+    tickFlags(ctf, deps(), DURATION + 10);
+    expect(ctf.outcome).toEqual({ winner: TEAM_RED });
+  });
+
+  it('★ resetCtf 把时钟与胜负一起归零（否则「再来一局」带着上局的终局开赛）', () => {
+    ctf = timed();
+    setScore(ctf, 2, 1);
+    tickFlags(ctf, deps(), DURATION);
+    expect(ctf.outcome).not.toBeNull();
+
+    resetCtf(ctf, world, 500);
+    expect(ctf.outcome).toBeNull();
+    expect(ctf.overtimeSince).toBeNull();
+    expect(ctfTimeRemaining(ctf, 500)).toBe(DURATION);
+  });
+
+  it('★★ 加时把复活波次切到 16 秒（12.6）—— setOvertime 的语义在这里钉住', () => {
+    const s = createRespawn({ [TEAM_RED as number]: [RED_BASE] }, 0);
+    expect(s.waveInterval).toBe(CTF.RESPAWN_WAVE_SECONDS);
+    ctf = timed();
+    setScore(ctf, 1, 1);
+    tickFlags(ctf, deps(), DURATION);
+    setOvertime(s, ctfInOvertime(ctf), DURATION);
+    expect(s.waveInterval).toBe(CTF.RESPAWN_WAVE_SECONDS_OVERTIME);
+    // 幂等：进加时之后每 tick 再调都不该重排波次（会白送复活）
+    const at = s.nextWaveAt;
+    setOvertime(s, ctfInOvertime(ctf), DURATION + 5);
+    expect(s.nextWaveAt).toBe(at);
   });
 });
 

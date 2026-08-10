@@ -39,6 +39,8 @@ const FROSTBOLT = asSkillId('mage.frostbolt'); // 1.4 秒读条 —— 测 Alrea
 
 interface CastLog { time: number; skillId: string }
 interface FailLog extends CastLog { reason: CastFailure }
+/** X21：排队窗过期通知（与 onFailed 分开的一路，见 CastEvents.onQueueExpired） */
+interface ExpiredLog extends CastLog { waited: number }
 
 interface Rig {
   world: World;
@@ -48,6 +50,7 @@ interface Rig {
   foe: CombatEntity;
   completed: CastLog[];
   failed: FailLog[];
+  expired: ExpiredLog[];
   /** 把一次按键排进**下一个** tick 的请求集（与 MatchLoop/CombatDirector 同语义） */
   press: (skillId: typeof ICE_LANCE, queue?: boolean) => void;
   step: (ticks?: number) => void;
@@ -66,6 +69,7 @@ const makeRig = (withQueueStore = true): Rig => {
   const requests = new Map<EntityId, CastIntent>();
   const completed: CastLog[] = [];
   const failed: FailLog[] = [];
+  const expired: ExpiredLog[] = [];
 
   const spawn = (cls: typeof mage, team: typeof TEAM_RED, z: number): CombatEntity => {
     const e = addEntity(world, createEntity(allocEntityId(world), cls, team, vec3(0, 0, z)));
@@ -99,7 +103,7 @@ const makeRig = (withQueueStore = true): Rig => {
   });
 
   return {
-    world, casting, castQueue, player, foe, completed, failed,
+    world, casting, castQueue, player, foe, completed, failed, expired,
     press: (skillId, queue) => {
       requests.set(player.id, {
         skillId,
@@ -115,6 +119,8 @@ const makeRig = (withQueueStore = true): Rig => {
               completed.push({ time: world.time, skillId: skill.id as string }),
             onFailed: (_c, skill, reason) =>
               failed.push({ time: world.time, skillId: skill.id as string, reason }),
+            onQueueExpired: (_c, skill, info) =>
+              expired.push({ time: world.time, skillId: skill.id as string, waited: info.waited }),
           },
         });
         requests.clear();
@@ -180,6 +186,49 @@ describe('合同 C5 —— 排队窗的基本行为', () => {
 
   it('窗口时长是 0.4 秒（占位值，改动前先读注释里的理由）', () => {
     expect(CAST_QUEUE_WINDOW).toBe(0.4);
+  });
+
+  /**
+   * ★★ X21（拍板 2026-08-10）：过期不再**完全**静默 —— 走一路独立的
+   *   `onQueueExpired`，而不是迟到 0.4 秒的 `onFailed(onGlobalCooldown)`。
+   *   上一条测试（「不迟到地弹一句失败」）钉的是 `failed` 仍然为空，
+   *   两条合起来才是完整语义：**换通道，不是加噪音**。
+   */
+  it('★★ X21：窗口过期 → 发一条 onQueueExpired（不是 onFailed）', () => {
+    openGcd(rig);
+    rig.step(7);
+    rig.press(ICE_LANCE, true);
+    rig.step(30);
+
+    expect(rig.expired, '排队窗过期一声不吭 —— X21 的通知没接上').toHaveLength(1);
+    expect(rig.expired[0]!.skillId).toBe(ICE_LANCE as string);
+    // 刚过窗口就发，不是等到天荒地老（waited 略大于窗口，一个 tick 的粒度）
+    expect(rig.expired[0]!.waited).toBeGreaterThan(CAST_QUEUE_WINDOW);
+    expect(rig.expired[0]!.waited).toBeLessThan(CAST_QUEUE_WINDOW + DT * 2);
+    // ★ 换通道不是加噪音：那条会误导人的失败提示仍然不发
+    expect(rig.failed, '过期又把迟到的失败提示补上了').toEqual([]);
+  });
+
+  it('★★ X21：排队被成功消费 → 一条过期通知都不发', () => {
+    openGcd(rig);
+    rig.step(17);              // t≈0.90，还在 GCD 里，离窗口过期很远
+    rig.press(ICE_LANCE, true);
+    rig.step(10);              // 越过 GCD，排队的那一发被放出来
+
+    expect(rig.completed).toHaveLength(2);
+    expect(rig.expired, '技能明明放出来了却报了「没赶上」').toEqual([]);
+  });
+
+  it('★★ X21：二次失败走 onFailed，不重复报一条过期（两路不叠加）', () => {
+    openGcd(rig);
+    rig.step(17);
+    rig.press(ICE_LANCE, true);
+    rig.step();
+    rig.foe.position = vec3(0, 0, -200);   // 这 0.4 秒里目标跑出射程
+    rig.step(10);
+
+    expect(rig.failed.map((f) => f.reason)).toEqual([CastFailure.OutOfRange]);
+    expect(rig.expired, '同一次按键既报失败又报过期').toEqual([]);
   });
 
   it('★ 单槽：后按的覆盖先按的，GCD 结束只放最后那一个', () => {

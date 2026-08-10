@@ -39,7 +39,6 @@ import {
   cancelCast,
   cancelFlagInteract,
   chooseFromArmory,
-  ctfWinner,
   ffaShopFor,
   distance2D,
   equipmentViewFor,
@@ -386,6 +385,19 @@ export class MatchLoop {
            */
           onFailed: (c, skill, reason) => {
             this.sessionOfEntity(c.id)?.send({ t: 'CastFailed', skillId: skill.id, reason });
+          },
+          /**
+           * ★ X21：排队窗过期同样是**私信** —— 「你刚才那一下没赶上」只有
+           *   按键的人需要知道。与 `CastFailed` 分开的理由见协议里那条消息
+           *   的注释（迟到的 `onGlobalCooldown` 比沉默更误导）。
+           * ★ 只有真人会进排队窗（合同 C5 的三道保险：协议无 `queue` 字段、
+           *   服务器只给非 bot 会话补、balance-report 连 store 都不建），
+           *   所以这条私信天然只发给真人 —— 人机的 BotSocket 收不到它。
+           */
+          onQueueExpired: (c, skill, info) => {
+            this.sessionOfEntity(c.id)?.send({
+              t: 'CastQueueExpired', skillId: skill.id, waited: info.waited,
+            });
           },
         },
         /**
@@ -1085,6 +1097,24 @@ export class MatchLoop {
         return msg;
       }
       /**
+       * ★★ A9：`Death` 与 `Damage` 同口径 —— **抹凶手，不丢死讯**。
+       *
+       *   此前走 default 的「有一个看不见就整条丢」：队友被一个未被发现的
+       *   潜行者收掉，全队一条 Death 都收不到，只能等下一帧快照的
+       *   `alive:false` 自己推断出「他没了」—— 14.1 命中/死亡反馈缺失的
+       *   同一个家族。死者本人可见（快照里就躺在那儿），死这件事对他的
+       *   队友是**公共事实**；需要瞒的只有「是谁下的手」。
+       *
+       * ⚠️ 死者不可见才整条丢：那时这条事件与接收者无关，而 `entityId`
+       *   没有可抹的余地（抹掉就没有内容了）—— 与 Damage 的 targetId 同理。
+       */
+      case 'Death': {
+        if (!visible(msg.entityId)) return undefined;
+        if (visible(msg.killerId)) return msg;
+        const { killerId: _k, ...rest } = msg;
+        return rest;
+      }
+      /**
        * ★ 同样是「抹而不丢」：BOSS 死了是**全场公共事实**（战利品就摆在
        *   地上，谁都看得见），但最后一击者可能是一个尚未被发现的潜行者 ——
        *   整条丢弃会让其他人永远不知道 BOSS 没了，带上 killerId 又等于
@@ -1288,8 +1318,12 @@ export class MatchLoop {
      *   服务器侧**零调用** —— 旗照抢、分照记、快照照发，但联网夺旗一局
      *   **永远打不完**（没有 MatchEnd、没有统计、房间回不到「再来一局」）。
      *   试验场没事是因为 CtfDemo 自己调它 —— 规则只有一份，消费方漏了一个。
-     * ★ 夺旗没有平局分支：没有时限就没有「时间到比分相同」这回事
-     *   （12.x 的时限/加时是另一笔已登记的账，见总账 —— 这里不发明规则）。
+     *
+     * ★★ A17 起夺旗读的是 `ctf.state.outcome`（`flag.ts` 的 `resolveCtfOutcome`
+     *   维护），与竞技场读 `arena.outcome` 完全同构 —— 时限、加时、平局
+     *   三件事全部在 sim 里判完，服务器只是把结果转成 `MatchEnd`。
+     *   `ctfWinner()` 仍在（12.1 的目标分判据只有一份实现，`resolveCtfOutcome`
+     *   自己就调它），但服务器不再直接问它：那样会绕过时限与加时。
      */
     /**
      * P12 大乱斗：先到 killTarget 杀获胜。读的是 sim 统计（击杀归因在
@@ -1308,7 +1342,8 @@ export class MatchLoop {
 
     const winner: TeamId | 'draw' | null = this.match.arena
       ? (this.match.arena.outcome ? this.match.arena.outcome.winner ?? 'draw' : null)
-      : this.match.ctf ? ctfWinner(this.match.ctf.state)
+      : this.match.ctf
+        ? (this.match.ctf.state.outcome ? this.match.ctf.state.outcome.winner : null)
       : this.match.ffa ? ffaWinner()
       : null;
     if (winner === null) return;
@@ -1439,6 +1474,12 @@ export const referencedEntities = (msg: ServerMessage): EntityId[] => {
     case 'AuraApplied':
       return msg.sourceId !== undefined ? [msg.targetId, msg.sourceId] : [msg.targetId];
     case 'AuraRemoved': return [msg.targetId];
+    /**
+     * ★ A9 起 `Death` 也有自己的**抹而不丢**分支（见 `redactFor`），正常
+     *   走不到这里。killerId 的登记因此降级为**兜底**，与 AuraApplied /
+     *   BossEvent 同一个理由：万一那个分支被删，最坏是过严（少一条死讯），
+     *   不会漏出一个潜行者的 id —— fail-closed 不放宽。
+     */
     case 'Death': return msg.killerId !== undefined ? [msg.entityId, msg.killerId] : [msg.entityId];
     case 'CastStarted': return [msg.casterId];
     case 'CastInterrupted': return [msg.casterId];
@@ -1461,10 +1502,12 @@ export const referencedEntities = (msg: ServerMessage): EntityId[] => {
     //    赛后/房间广播（RoomState/RoundEnd/MatchEnd/MatchStats/Peer*，
     //    对局结束或房间阶段没有需要瞒的实体）──────────────────
     //    ★ P13 FfaShop 归在私信一列：sendShop 直发 session，形状里也没有实体 id
+    //    ★ X21 CastQueueExpired 同样归私信：直发按键者的 session，
+    //      形状里只有 skillId 与 waited，零实体引用
     case 'Welcome': case 'QueueStatus': case 'RoomState': case 'RoomList':
     case 'MatchStart': case 'Snapshot':
     case 'EntityMeta': case 'FfaShop':
-    case 'CastFailed': case 'ArsenalOffer': case 'PickupResult':
+    case 'CastFailed': case 'CastQueueExpired': case 'ArsenalOffer': case 'PickupResult':
     case 'RoundEnd': case 'MatchEnd': case 'MatchStats': case 'Rejected':
     case 'PeerDisconnected': case 'PeerReconnected': case 'PeerEliminated':
       return [];

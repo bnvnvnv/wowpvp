@@ -21,7 +21,7 @@ import { asMapId, TEAM_NEUTRAL } from '../../types/ids.js';
 import type { Vec3 } from '../../math/vec3.js';
 import { box, type MapDef, type MapVolume, type SpawnPoint } from './schema.js';
 
-/** 场地半径：横穿 ~20 秒的大圆桌（比 5v5 竞技场大一圈，装得下百人混战） */
+/** 场地半径：横穿 ~26 秒的大圆桌（182m÷7m/s；比 5v5 竞技场大一圈，装得下百人混战） */
 const HALF = 13 * MOVE.BASE_SPEED; // 91m —— P13 放大（原 70m,百人档要更大的场）
 const ARENA_HALF = HALF + 6;
 const WALL_H = 8;

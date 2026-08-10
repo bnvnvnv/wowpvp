@@ -68,13 +68,24 @@ export const rangedDistance = (a: HitCircle, b: HitCircle): number =>
 export const inRangedRange = (a: HitCircle, b: HitCircle, maxRange: number): boolean =>
   rangedDistance(a, b) <= maxRange;
 
-/** 统一入口：近战距离（<= 4 米）走边缘判定，其余走胸口判定 */
+/**
+ * 统一入口：近战距离（<= 4 米）走边缘判定，其余走胸口判定。
+ *
+ * ★★ **A10：下界只对真的有最小距离的技能生效。**
+ *
+ *   `edgeDistance` 按设计会返回负值（碰撞体重叠），而近战技能的
+ *   `range.min` 是 0 —— 无条件的 `d >= minRange` 于是把「站进模型里」
+ *   判成超距：越贴脸越打不着，恰好是玩家最直觉「这一下肯定中」的姿势。
+ *
+ *   冲锋那类「太近不能用」的语义**一个字都没动**：它靠 `minRange > 0`
+ *   表达，重叠时 `d`（负）依旧 `< minRange`，照样被拒。
+ */
 export const inRange = (a: HitCircle, b: HitCircle, maxRange: number, minRange = 0): boolean => {
   const d = maxRange <= 4 ? edgeDistance(a, b) : rangedDistance(a, b);
   if (maxRange <= 4 && Math.abs(a.position.y - b.position.y) > GEOMETRY.VERTICAL_TOLERANCE) {
     return false;
   }
-  return d <= maxRange && d >= minRange;
+  return d <= maxRange && (minRange <= 0 || d >= minRange);
 };
 
 // ── 6.5 朝向 ─────────────────────────────────────────────────────

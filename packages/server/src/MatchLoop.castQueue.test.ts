@@ -157,3 +157,49 @@ describe('合同 C6 —— 45 米选中强制只对真人开', () => {
     expect(me.targets.hard).toBe(foe.id);
   });
 });
+
+/**
+ * X21 的**接线**：sim 产出的 `onQueueExpired` 真的变成了一条私信。
+ * ★ 规则本身（何时过期、与 onFailed 不叠加）由 `sim/castQueue.test.ts` 钉；
+ *   这里只问「服务器有没有接上」—— 本仓库最常见的失败模式。
+ */
+describe('X21 —— 排队窗过期的私信', () => {
+  it('★★ 过期 → 按键者收到 CastQueueExpired（带技能与等待时长）', () => {
+    const { match, loop, toHuman } = rig();
+    const me = entityOf(match, 'human');
+    const foe = entityOf(match, 'botty');
+    for (const [r, max] of me.maxResources) me.resources.set(r, max);
+    me.position = { ...foe.position, x: foe.position.x + 5 };
+
+    loop.requestCast('human', { skillId: ICE_LANCE, targetId: foe.id });
+    loop.advance();                       // 起 GCD（1.0 秒）
+    loop.requestCast('human', { skillId: ICE_LANCE, targetId: foe.id });
+    loop.advance();                       // 这一下进排队窗
+    expect(match.castQueue.has(me.id)).toBe(true);
+
+    toHuman.length = 0;
+    for (let i = 0; i < 12; i++) loop.advance();   // 推过 0.4 秒窗口
+
+    const notices = toHuman.filter((m) => m.t === 'CastQueueExpired');
+    expect(notices, '排队窗过期在联网侧仍然静默 —— X21 的接线断了').toHaveLength(1);
+    expect(notices[0]).toMatchObject({ skillId: ICE_LANCE });
+    expect((notices[0] as { waited: number }).waited).toBeGreaterThan(0.4);
+    // ★ 换通道不是加噪音：那条迟到的 CastFailed 依旧不发
+    expect(toHuman.filter((m) => m.t === 'CastFailed')).toEqual([]);
+  });
+
+  it('★★ 人机永不排队 → 一条过期私信都不会有（红线的副作用检查）', () => {
+    const { match, loop } = rig();
+    const bot = entityOf(match, 'botty');
+    const foe = entityOf(match, 'human');
+    for (const [r, max] of bot.maxResources) bot.resources.set(r, max);
+    bot.position = { ...foe.position, x: foe.position.x + 5 };
+
+    loop.requestCast('botty', { skillId: ICE_LANCE, targetId: foe.id });
+    loop.advance();
+    loop.requestCast('botty', { skillId: ICE_LANCE, targetId: foe.id });
+    for (let i = 0; i < 12; i++) loop.advance();
+
+    expect(match.castQueue.size, '人机进了排队窗 —— 合同 C5 的红线破了').toBe(0);
+  });
+});

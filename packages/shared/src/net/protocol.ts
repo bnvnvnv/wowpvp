@@ -377,6 +377,21 @@ export type ServerMessage =
       schoolLock?: { school: School; until: number } }
   | { t: 'CastFailed'; skillId: SkillId; reason: CastFailure }
   /**
+   * X21：**0.4 秒排队窗过期**，那次按键就此作废（P10 的排队窗见
+   * `sim/casting.ts` 的 `CAST_QUEUE_WINDOW`）。
+   *
+   * ★★ 刻意**不复用** `CastFailed` —— 它带的 `reason` 是按下那一刻的理由
+   *   （`onGlobalCooldown`），0.4 秒后原样弹出来会让玩家以为「现在还在
+   *   公共冷却」。迟到的失败提示比沉默更误导，这正是 X21 拍板前卡住的点：
+   *   分成独立一条，表现层才能说「刚才那一下没赶上」这句当下为真的话。
+   * ★ 与 `CastFailed` 同属**私信**：只有按键的人需要知道自己漏了一下。
+   * ★ 零实体引用（`referencedEntities` 归在私信一列）：形状里只有技能 id
+   *   和等待时长，没有任何可被当探针的东西。
+   */
+  | { t: 'CastQueueExpired'; skillId: SkillId
+      /** 从按下到作废的秒数（≈ `CAST_QUEUE_WINDOW`），供表现层区分「差一点」*/
+      waited: number }
+  /**
    * ★★ `sourceId` 可空：**被看不见的人打了一下，仍然要收到伤害数字**。
    *
    *   14.1 要求有命中反馈，而 docs/08 §4 要求未被发现的潜行者「对该客户端
@@ -503,7 +518,8 @@ export type ServerMessageKind = ServerMessage['t'];
 
 export const ALL_SERVER_MESSAGE_KINDS: readonly ServerMessageKind[] = [
   'Welcome', 'QueueStatus', 'RoomState', 'RoomList', 'MatchStart', 'Snapshot', 'EntityMeta',
-  'CastStarted', 'CastResolved', 'CastInterrupted', 'CastFailed', 'Damage', 'Heal',
+  'CastStarted', 'CastResolved', 'CastInterrupted', 'CastFailed', 'CastQueueExpired',
+  'Damage', 'Heal',
   'AuraApplied', 'AuraRemoved', 'Death', 'FfaKill', 'FfaShop', 'ArsenalOffer', 'PickupResult',
   'FlagEvent', 'BossEvent', 'RoundEnd', 'MatchEnd', 'MatchStats',
   'Rejected', 'PeerDisconnected', 'PeerReconnected', 'PeerEliminated',

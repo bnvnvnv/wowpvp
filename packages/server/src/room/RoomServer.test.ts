@@ -222,7 +222,14 @@ describe('P12：大乱斗（FFA）', () => {
 });
 
 describe('P13：大乱斗断线处理（bot 接管 90 秒 → 移除,不能替人夺冠）', () => {
-  it('★★ 掉线即接管;宽限过后淘汰:判死、不复活、广播 PeerEliminated', async () => {
+  /**
+   * ★ G6：显式 20 秒预算。这条测试要白盒推 1830 个同步 tick（外加淘汰后
+   *   再推 300 个），单跑约 1 秒出头，但全量并发时它与另外十几支 suite
+   *   抢同一个事件循环 —— vitest 默认的 5 秒钟摆一到期就把它判超时，
+   *   而它其实**只是慢**，不是挂了。给足预算比缩短工作量诚实：
+   *   要验的语义（90 秒宽限）本身就需要推完那 1830 个 tick。
+   */
+  it('★★ 掉线即接管;宽限过后淘汰:判死、不复活、广播 PeerEliminated', { timeout: 20_000 }, async () => {
     /**
      * ★ 自建服务器并**关掉背压巡检**：本测试要白盒快进 91 秒模拟时间,
      *   同步 tick 风暴会让在线客户端的发送缓冲短暂冲高 —— 共享服务器的
@@ -253,7 +260,13 @@ describe('P13：大乱斗断线处理（bot 接管 90 秒 → 移除,不能替�
 
     // 乙拔线 —— 瞬间由 bot 接管（偏差 #14 前半不变）,实体还活着可被击杀
     b.close();
-    await new Promise((r) => setTimeout(r, 200));
+    /**
+     * ★ G6：等**接管这件事真的发生**,而不是睡 200 毫秒赌它发生了 ——
+     *   `PeerDisconnected` 是服务器走完 registerDisconnect + takeOverByBot
+     *   之后才广播的,收到它就意味着接管已落地。并发负载下 socket 关闭
+     *   事件的投递时延不可预算,定长睡在这里既可能不够也一定浪费。
+     */
+    await a.waitFor('PeerDisconnected', 10_000);
     const eb = match.world.entities.get(sb.you)!;
     expect(eb.alive).toBe(true);
 

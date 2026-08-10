@@ -55,6 +55,13 @@ export interface Flag {
   lastLegalPosition: Vec3;
 }
 
+/**
+ * A17：夺旗的胜负出口。**形状照 `arena.ts` 的 `RoundOutcome` 抄** ——
+ * 两种模式的终局在服务器眼里应该长得一样（`MatchLoop.checkEnd` 那条
+ * 三元链因此只是多认一个字段，不是多一套规则）。
+ */
+export type CtfOutcome = { winner: TeamId } | { winner: 'draw' } | null;
+
 export interface CtfState {
   flags: Record<string, Flag>;
   score: Record<string, number>;
@@ -65,6 +72,20 @@ export interface CtfState {
   /** 12.4「逐步清除」的计时起点。null 表示当前不在衰减 */
   focusDecayingSince: number | null;
   scoreToWin: number;
+  /**
+   * A17：常规时长（秒）。**0 表示不限时。**
+   *
+   * ★ 默认 0 是有意的：试验场的 CtfDemo 与一大票纯规则测试都只想验旗帜
+   *   状态机，不该因为多了个字段就突然被判超时。不限时的一局只有「先到
+   *   目标分」一个出口 —— 与 A17 之前的行为逐字相同。
+   */
+  duration: number;
+  /** 开赛时刻（`world.time`）。剩余时间按 `duration - (now - startedAt)` 算 */
+  startedAt: number;
+  /** 12.x 突然死亡加时的进入时刻；null = 还在常规时间内 */
+  overtimeSince: number | null;
+  /** 胜负出口。null = 还没分出来 */
+  outcome: CtfOutcome;
 }
 
 export const createCtf = (
@@ -76,6 +97,12 @@ export const createCtf = (
   //   下面那行 clamp 在有类型的调用方看来是不可达代码。
   //   （这个 bug 一直没被发现，是因为 shared 的测试文件当时不在类型检查范围内。）
   scoreToWin: number = CTF.DEFAULT_SCORE_TO_WIN,
+  /**
+   * A17 时限。★ 收进一个选项对象而不是继续加位置参数：这两项都是
+   * 「大多数调用方不关心」的，摆成第 4、第 5 个位置参数会逼着每个只想
+   * 改时长的人先把 scoreToWin 抄一遍。
+   */
+  opts: { duration?: number; startedAt?: number } = {},
 ): CtfState => ({
   flags: {
     [TEAM_RED as number]: makeFlag(TEAM_RED, redBase),
@@ -86,6 +113,10 @@ export const createCtf = (
   focusStacks: 0,
   focusDecayingSince: null,
   scoreToWin: Math.min(CTF.MAX_SCORE_TO_WIN, Math.max(CTF.MIN_SCORE_TO_WIN, scoreToWin)),
+  duration: Math.max(0, opts.duration ?? 0),
+  startedAt: opts.startedAt ?? 0,
+  overtimeSince: null,
+  outcome: null,
 });
 
 const makeFlag = (team: TeamId, base: Vec3): Flag => ({
@@ -388,7 +419,87 @@ export const tickFlags = (
   }
 
   updateBattlefieldFocus(ctf, now);
+  // ★ A17：胜负判定放在旗帜状态机**之后** —— 本 tick 完成的那次交旗要先
+  //   记进比分，否则「加时里先得分者胜」会晚一个 tick 才认账。
+  resolveCtfOutcome(ctf, now);
   return events;
+};
+
+// ── A17 时限与加时 ───────────────────────────────────────────────
+
+/**
+ * 规格 6.x：「时间到比分高者胜；同分进入突然死亡加时，先得分者胜。」
+ *
+ * ★★ **在此之前这一整条规则没有任何一层在跑。** `CTF.DURATION`（12/15 分钟）
+ *   与 `setOvertime()`（加时波次 16 秒）都是零消费方，于是双方都不碰旗的
+ *   联网夺旗**没有自然终点** —— 拖延战术可以把一局拖到天荒地老，15.4 的
+ *   「比赛时间」那一栏也只能空着（不画到零也不会发生任何事的倒计时，
+ *   比不画更糟，附录A#7）。这个函数就是那个终点。
+ *
+ * ★ 判定顺序是有讲究的：**先到目标分**（12.1）优先于任何时钟判据 ——
+ *   常规时间最后一秒完成第三次夺旗，赢的是他，不是「时间到比分高者」
+ *   （这两者在那一刻恰好同解，但加时里不同：加时中拿到目标分与
+ *   「先得分」也是同一支队伍，写成两条分支只会多一处能写错的地方）。
+ */
+const resolveCtfOutcome = (ctf: CtfState, now: number): void => {
+  if (ctf.outcome !== null) return;      // 判过就冻住，不会被后续 tick 改写
+
+  // ① 12.1 先到目标分者胜 —— 与时限无关，任何时刻都成立
+  const byScore = ctfWinner(ctf);
+  if (byScore !== null) {
+    ctf.outcome = { winner: byScore };
+    return;
+  }
+  // 不限时的一局到此为止：只有目标分这一个出口（A17 之前的行为）
+  if (ctf.duration <= 0) return;
+
+  // ② 加时（突然死亡）：进来时是平分，所以任何一次夺旗都让某方严格领先
+  if (ctf.overtimeSince !== null) {
+    const lead = leadingTeam(ctf);
+    if (lead !== null) {
+      ctf.outcome = { winner: lead };
+    } else if (now - ctf.overtimeSince >= CTF.OVERTIME_HARD_CAP) {
+      /**
+       * ★ 硬上限兜底，理由与 `arena.ts` 的 `SUDDEN_DEATH_HARD_CAP` 逐字相同：
+       *   突然死亡靠「有人得分」结束，而「双方都龟着不碰旗」恰恰是 A17 要
+       *   消灭的那种局面 —— 不设上限等于把没有终点的问题原样搬进加时。
+       */
+      ctf.outcome = { winner: 'draw' };
+    }
+    return;
+  }
+
+  // ③ 常规时间到：比分高者胜；同分进加时
+  if (now - ctf.startedAt < ctf.duration) return;
+  const lead = leadingTeam(ctf);
+  if (lead !== null) ctf.outcome = { winner: lead };
+  else ctf.overtimeSince = now;
+};
+
+/** 比分严格领先的一方；平分返回 null */
+const leadingTeam = (ctf: CtfState): TeamId | null => {
+  const red = ctf.score[String(TEAM_RED as number)] ?? 0;
+  const blue = ctf.score[String(TEAM_BLUE as number)] ?? 0;
+  if (red === blue) return null;
+  return red > blue ? TEAM_RED : TEAM_BLUE;
+};
+
+/** A17：是否已进入突然死亡加时。复活波次（12.6 的 16 秒）按它切换 */
+export const ctfInOvertime = (ctf: CtfState): boolean => ctf.overtimeSince !== null;
+
+/**
+ * A17：**比赛剩余时间**（秒）。不限时的一局返回 `undefined` ——
+ * 快照因此不会凭空多出一个永远不动的倒计时（附录A#7 的占位禁令）。
+ *
+ * ★ 加时里返回的是「距硬上限还剩多久」：那个零是真的会发生事情的零
+ *   （判平局），所以它可以画出来。
+ */
+export const ctfTimeRemaining = (ctf: CtfState, now: number): number | undefined => {
+  if (ctf.duration <= 0) return undefined;
+  if (ctf.overtimeSince !== null) {
+    return Math.max(0, CTF.OVERTIME_HARD_CAP - (now - ctf.overtimeSince));
+  }
+  return Math.max(0, ctf.duration - (now - ctf.startedAt));
 };
 
 // ── 12.4 战场聚焦 ────────────────────────────────────────────────
@@ -497,11 +608,15 @@ export const flagViews = (ctf: CtfState, world: World): FlagView[] =>
   }));
 
 /** 回合/比赛重置 */
-export const resetCtf = (ctf: CtfState, world: World): void => {
+export const resetCtf = (ctf: CtfState, world: World, now = 0): void => {
   for (const f of Object.values(ctf.flags)) resetFlag(f);
   for (const e of listEntities(world)) e.flags.carryingFlag = false;
   ctf.bothCarryingSince = null;
   ctf.focusStacks = 0;
   ctf.focusDecayingSince = null;
   for (const key of Object.keys(ctf.score)) ctf.score[key] = 0;
+  // ★ A17：时钟与胜负也要归零，否则「再来一局」会带着上一局的终局开赛
+  ctf.startedAt = now;
+  ctf.overtimeSince = null;
+  ctf.outcome = null;
 };

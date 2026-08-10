@@ -72,8 +72,10 @@ import {
 } from './arsenal.js';
 import { takeConsumable, tickSwaps, type LoadoutStore, type SwapStore, type SwapTickEvent } from './loadout.js';
 import { tickArena, type ArenaEvents, type ArenaState } from './match/arena.js';
-import { tickFlags, type CtfDeps, type CtfState, type FlagEvent } from './match/flag.js';
-import { enqueueRespawn, tickRespawn, type RespawnEvent, type RespawnState } from './match/respawn.js';
+import { ctfInOvertime, tickFlags, type CtfDeps, type CtfState, type FlagEvent } from './match/flag.js';
+import {
+  enqueueRespawn, setOvertime, tickRespawn, type RespawnEvent, type RespawnState,
+} from './match/respawn.js';
 import {
   movementLockOf, separationVelocity, stepMovement, teleportTo,
   type MovementInput, type MovementState,
@@ -731,6 +733,17 @@ export const tickWorld = (
       sinks.onFlag?.(ev);
     }
     if (deps.stats) ingestFlagEvents(deps.stats, result.flags);
+    /**
+     * ★★ A17：**`setOvertime()` 的第一个消费方。** 12.6 规定加时把复活波次
+     *   从 12 秒放到 16 秒，这条规则从 M7 起就写好了、一直没有人调用。
+     *
+     * ★ 位置在 `tickRespawn` **之前**：`setOvertime` 会把正在倒计时的那一波
+     *   按新间隔重排（它自己的注释：不让切换瞬间白送一次复活），放到后面
+     *   等于本 tick 先按旧间隔发一波车再改时刻表。
+     * ★ 每 tick 无脑调是安全的 —— 间隔没变时 `setOvertime` 直接早退，
+     *   所以它只在「进/出加时」的那一 tick 真正动状态。
+     */
+    if (deps.respawn) setOvertime(deps.respawn, ctfInOvertime(deps.ctf.state), deps.world.time);
   }
   if (deps.respawn) {
     for (const ev of tickRespawn(deps.respawn, deps.world, deps.auras, deps.world.time)) {

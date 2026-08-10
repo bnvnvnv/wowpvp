@@ -22,7 +22,7 @@
  *   「把状态摆好」，摆完之后 `tickDepsOf()` 把它转成 `tickWorld` 的入参。
  */
 
-import { FFA } from '../../constants/combat.js';
+import { CTF, FFA } from '../../constants/combat.js';
 import { getClass, getSkill } from '../../data/index.js';
 import type { MapDef, SpawnPoint } from '../../data/maps/schema.js';
 import type { Vec3 } from '../../math/vec3.js';
@@ -284,7 +284,16 @@ export const createMatch = (room: Room, map: MapDef): Match => {
       // ★ `roundsToWin` 在夺旗里读作「夺几次旗获胜」（12.1：房主可调 1~5）。
       //   RoomConfig 只有这一个「目标分」字段，两种模式共用它 ——
       //   不为夺旗单开一个字段，否则房间 UI 要判模式才知道该改哪一个。
-      state: createCtf(flagOf(TEAM_RED), flagOf(TEAM_BLUE), room.config.roundsToWin),
+      /**
+       * ★★ A17：`CTF.DURATION` 在这里第一次有了消费方。此前它是一条零调用
+       *   的常量，联网夺旗因此没有自然终点（见 `flag.ts` 的 `resolveCtfOutcome`）。
+       *   查不到的模式（将来加图/加尺寸）落 0 = 不限时 —— 宁可退回旧行为，
+       *   也不给一张没配过时长的图编一个数字出来。
+       */
+      state: createCtf(flagOf(TEAM_RED), flagOf(TEAM_BLUE), room.config.roundsToWin, {
+        duration: CTF.DURATION[room.config.mode] ?? 0,
+        startedAt: world.time,
+      }),
       deps: ctfDepsOf(world, map),
       map,
     };
