@@ -54,6 +54,143 @@ export const boltOrientation = (dir: { x: number; y: number; z: number }): {
   };
 };
 
+// ── 弹体形态（通用档 + 技能级覆盖）──────────────────────────────
+
+/**
+ * 通用弹体各部件的基准尺寸（米）。
+ * ★ 单独抽出来是为了让**形态表与建节点的代码读同一份数字** ——
+ *   否则「冰矛比通用弹体细多少」只能靠人肉换算 0.24 × 0.42，测不了。
+ */
+export const BOLT_BASE = {
+  coreRadius: 0.24,
+  coneLength: 0.95,
+  coneRadius: 0.2,
+  headScale: 1.35,
+  headZ: 0.12,
+  glowScale: 1.25,
+  tailWidth: 0.62,
+  tailLength: 3.2,
+} as const;
+
+/**
+ * 一发弹体的形态参数。
+ *
+ * ★★ 用户实测原话（X10 追加轮，2026-08-10）：「霜矢应该类似一个会飞的
+ *   短冰矛」。核实下来通用弹体就是**一颗球**：核是 12 段球、头是恒面向镜头的
+ *   圆 Sprite、辉光又是一圈圆光斑 —— 三层圆叠在一起，沿速度拉长的只有一个
+ *   半透明尾锥，飞起来还是球。属性只换了颜色和贴图纹样，换不了轮廓。
+ *
+ * ★ 所以差异化做在**轮廓**上：核可以拉成梭形、前面可以长出尖、
+ *   亮核可以挪到尖上、绕轴可以挂偏心的冰晶（偏心才看得出自旋）。
+ *   与 `groundVfx` 的 `SKILL_WEATHER` 同一个套路 —— 按 skillId 覆盖，
+ *   不动属性通用档（火球/暗影箭/秘法箭仍是球，它们本来就该是球）。
+ */
+export interface BoltForm {
+  /**
+   * 实心核的几何：
+   *   ball    低模球 —— 通用弹体，「一颗飞过去的球」
+   *   spindle 八面双锥 —— 低面数、有棱；沿飞行轴拉长就是冰矛的梭形
+   */
+  core: 'ball' | 'spindle';
+  /** 核的三轴缩放（本地 +Z = 飞行方向）。z ≫ x/y 即「拉长成矛」*/
+  coreScale: { x: number; y: number; z: number };
+  /** 前向尖端锥的长度 / 底半径（米）。长度 0 = 不画 —— 通用弹体没有尖 */
+  tipLength: number;
+  tipRadius: number;
+  /** 尖端锥的棱数。4 = 四棱冰锥（自旋时轮廓在变，看得出它在转）*/
+  tipFacets: number;
+  /** 后方尾锥的长度 / 底半径倍率（相对 `BOLT_BASE`）*/
+  coneLength: number;
+  coneRadius: number;
+  /** 属性头 Sprite 的尺寸倍率与前后位置（米）。挪到尖上就是「尖端亮核」*/
+  headScale: number;
+  headZ: number;
+  /** 辉光 Sprite 的尺寸倍率 */
+  glowScale: number;
+  /** 彗尾条的宽 / 长倍率 */
+  tailWidth: number;
+  tailLength: number;
+  /**
+   * 绕飞行轴等分排布的冰晶数（0 = 不画）。
+   * ★★ 它们**偏离轴心**，这是自旋唯一看得见的载体：核与尖端都绕 Z 轴对称，
+   *   材质又是 `MeshBasicMaterial`（无光照、纯色），转与不转一模一样。
+   */
+  crystals: number;
+  /** 冰晶的轴心距与长度（米）*/
+  crystalRadius: number;
+  crystalLength: number;
+  /** 绕飞行轴的额外自旋（弧度/秒），叠在属性固有的 `MOTION.swirl` 之上 */
+  spin: number;
+}
+
+/** 通用档：**逐字段等于改动前的写法**，所以没被覆盖的技能一像素都不变 */
+export const GENERIC_BOLT_FORM: BoltForm = {
+  core: 'ball',
+  coreScale: { x: 1, y: 1, z: 1 },
+  tipLength: 0,
+  tipRadius: 0,
+  tipFacets: 12,
+  coneLength: 1,
+  coneRadius: 1,
+  headScale: 1,
+  headZ: BOLT_BASE.headZ,
+  glowScale: 1,
+  tailWidth: 1,
+  tailLength: 1,
+  crystals: 0,
+  crystalRadius: 0,
+  crystalLength: 0,
+  spin: 0,
+};
+
+/**
+ * 技能级形态覆盖。
+ *
+ * ★ 霜矢 = 短冰矛：核拉成 1 米出头的梭形（横截面只剩四成）、前面长出一根
+ *   四棱冰锥、亮核挪到尖上、绕轴三根冰晶随自旋甩、彗尾条收窄拉长成冰晶尾迹。
+ *   头/辉光两个圆 Sprite 大幅压小 —— 它们正是「怎么看都是个球」的元凶。
+ */
+const SKILL_BOLT_FORM: Record<string, Partial<BoltForm>> = {
+  'mage.frostbolt': {
+    core: 'spindle',
+    coreScale: { x: 0.42, y: 0.42, z: 2.1 },
+    tipLength: 0.72,
+    tipRadius: 0.13,
+    tipFacets: 4,
+    coneLength: 0.7,
+    coneRadius: 0.45,
+    headScale: 0.36,
+    headZ: 0.85,
+    glowScale: 0.34,
+    tailWidth: 0.42,
+    tailLength: 1.25,
+    crystals: 3,
+    crystalRadius: 0.17,
+    crystalLength: 0.7,
+    spin: 6,
+  },
+};
+
+/**
+ * 这一发弹体的形态。未登记的技能（含不传 id）返回**通用档本体**。
+ * ★ 返回同一个对象引用而不是拷贝：形态在弹体创建时读一次就固化进节点，
+ *   没有人会去改它，拷贝纯属白做。
+ */
+export const boltFormFor = (skillId?: string): BoltForm => {
+  const ov = skillId !== undefined ? SKILL_BOLT_FORM[skillId] : undefined;
+  return ov ? { ...GENERIC_BOLT_FORM, ...ov } : GENERIC_BOLT_FORM;
+};
+
+/**
+ * 长径比 = 沿飞行轴的总长 ÷ 横截面直径。
+ * ★ 球恒为 1；「一眼看出这是矛不是球」的判据就钉在这个数上。
+ */
+export const boltAspect = (form: BoltForm): number => {
+  const width = BOLT_BASE.coreRadius * 2 * form.coreScale.x;
+  const length = BOLT_BASE.coreRadius * 2 * form.coreScale.z + form.tipLength;
+  return length / width;
+};
+
 export interface TrailPlan {
   /** 发射节拍（秒）。★ 计时器驱动，不是每帧 —— 每帧发就是本轮修的那个 bug */
   cadence: number;

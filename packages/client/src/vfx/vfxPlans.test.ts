@@ -7,12 +7,15 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { MOTION, boltOrientation, trailPlanFor } from './boltVfx.js';
+import {
+  BOLT_BASE, GENERIC_BOLT_FORM, MOTION, boltAspect, boltFormFor, boltOrientation, trailPlanFor,
+} from './boltVfx.js';
 import {
   PHYSICAL_WINDUP_STYLES, WINDUP_STYLES, fizzlePlanFor, windupPlanFor, windupStyleOf,
 } from './castVfx.js';
 import {
-  MAX_FILL_AREAS, groundFillPlanFor, verticalTravel, waveEase, wavePlanFor,
+  MAX_FILL_AREAS, MAX_IMPACT_STEPS, fallHeightAt, fallPlanFor, groundFillPlanFor,
+  impactPlanFor, verticalTravel, waveEase, wavePlanFor,
 } from './groundVfx.js';
 import { ATTRIBUTE_VISUALS, visualForAuraId } from './schools.js';
 import { strongestShield } from './status.js';
@@ -427,5 +430,144 @@ describe('暴风雪的大雪球档（技能级天气覆盖）', () => {
 
   it('不带 skillId / 未登记的技能：逐字节走通用档（凛冬领域不被带坏）', () => {
     expect(groundFillPlanFor('snowflake', 6, 1, 'deathknight.winter_domain')).toEqual(generic);
+  });
+});
+
+/**
+ * X10 追加轮用户拍板（2026-08-10）：「目前体感上陨星和霜矢区分不大
+ * （霜矢应该类似一个会飞的短冰矛），陨星应该是很大的视觉差别的」。
+ *
+ * ★ 这一组钉的是**轮廓**而不是手感：通用弹体三层圆（球核 + 圆 Sprite 头 +
+ *   圆辉光）叠出来的就是一颗球，属性只换颜色换不了形状。冰矛的判据因此是
+ *   长径比与「圆 Sprite 被压下去」，不是「看起来更冰」。
+ */
+describe('霜矢的短冰矛形态（技能级弹体覆盖）', () => {
+  const generic = boltFormFor();
+  const spear = boltFormFor('mage.frostbolt');
+
+  it('★★ 一眼是矛不是球：长径比 ≥ 6（球恒为 1）', () => {
+    expect(boltAspect(generic)).toBeCloseTo(1, 6);
+    expect(boltAspect(spear)).toBeGreaterThanOrEqual(6);
+  });
+
+  it('★★ 尖端在**前面**：核沿飞行轴拉长，且前方额外长出一根锥', () => {
+    expect(spear.coreScale.z).toBeGreaterThan(spear.coreScale.x * 4);
+    expect(spear.tipLength).toBeGreaterThan(0);
+    // 四棱冰锥：棱数少才在自旋时看得出轮廓在变
+    expect(spear.tipFacets).toBeLessThanOrEqual(6);
+  });
+
+  it('★★ 两个圆 Sprite 被压下去 —— 它们正是「怎么看都是个球」的元凶', () => {
+    const headWidth = BOLT_BASE.headScale * spear.headScale;
+    const coreLength = BOLT_BASE.coreRadius * 2 * spear.coreScale.z + spear.tipLength;
+    // 亮核不能比矛还宽，否则轮廓又被糊回一团光
+    expect(headWidth).toBeLessThan(coreLength * 0.5);
+    expect(spear.headScale).toBeLessThan(0.5);
+    expect(spear.glowScale).toBeLessThan(0.5);
+    // 亮核挪到矛尖（通用档在 0.12，几乎贴着核心）
+    expect(spear.headZ).toBeGreaterThan(BOLT_BASE.coreRadius * spear.coreScale.z * 0.5);
+  });
+
+  it('★ 自旋看得见：有偏心的冰晶 + 非零自旋（无光照纯色下轴对称体转了也白转）', () => {
+    expect(spear.crystals).toBeGreaterThanOrEqual(2);
+    expect(spear.crystalRadius).toBeGreaterThan(0);
+    expect(spear.spin).toBeGreaterThan(0);
+  });
+
+  it('★ 冰晶尾迹更细更长（彗尾条：窄一半、长两成半）', () => {
+    expect(spear.tailWidth).toBeLessThan(0.6);
+    expect(spear.tailLength).toBeGreaterThan(1);
+  });
+
+  it('★★ 未登记的技能拿到的是通用档**本体**：火球/暗影箭一像素不变', () => {
+    expect(boltFormFor('mage.fire_blast')).toBe(GENERIC_BOLT_FORM);
+    expect(boltFormFor()).toBe(GENERIC_BOLT_FORM);
+    // 通用档逐字段是「1 / 不画」—— 改动前的写法就是这些数
+    expect(generic.core).toBe('ball');
+    expect(generic.tipLength).toBe(0);
+    expect(generic.crystals).toBe(0);
+    expect(generic.spin).toBe(0);
+    for (const k of ['coneLength', 'coneRadius', 'headScale', 'glowScale',
+      'tailWidth', 'tailLength'] as const) {
+      expect(generic[k], `通用档 ${k} 不是 1`).toBe(1);
+    }
+  });
+});
+
+/**
+ * 陨星的分量（同一轮拍板的另一半）。
+ * ★ 判据全在**尺度与层次**上：坠落体多大、从多高砸、落地分几步 ——
+ *   而不是「够不够炫」，后者只能靠真机肉眼。
+ */
+describe('陨星的坠落体与落地冲击（技能级延迟落点覆盖）', () => {
+  const fall = fallPlanFor('mage.meteor')!;
+  const impact = impactPlanFor('mage.meteor', 1)!;
+
+  it('★★ 真的有一颗东西在天上：登记了坠落体，且体量远大于通用弹体的核', () => {
+    expect(fall).toBeDefined();
+    // 通用弹体核半径 0.24 —— 陨星要大一个数量级的分量，否则读作「一颗大火球」
+    expect(fall.bodyRadius).toBeGreaterThanOrEqual(BOLT_BASE.coreRadius * 4);
+    expect(fall.height).toBeGreaterThanOrEqual(20);
+    expect(fall.tumble).toBeGreaterThan(0);
+  });
+
+  it('★ 火尾是零池占用的彗尾条：长度远大于岩块直径（细流池 48 格已顶死）', () => {
+    expect(fall.tailLength).toBeGreaterThan(fall.bodyRadius * 4);
+  });
+
+  it('★★ 自由落体：起点在天上、终点在地面，且越接近落地掉得越快', () => {
+    expect(fallHeightAt(1.5, 1.5, fall.height)).toBeCloseTo(fall.height, 6);
+    expect(fallHeightAt(0, 1.5, fall.height)).toBeCloseTo(0, 6);
+    // 前半程掉的比后半程少 —— 匀速会读成「电梯」
+    const firstHalf = fall.height - fallHeightAt(0.75, 1.5, fall.height);
+    const lastHalf = fallHeightAt(0.75, 1.5, fall.height);
+    expect(firstHalf).toBeLessThan(lastHalf);
+  });
+
+  it('越界输入不产生 NaN / 负高度（duration 为 0 = 已落地）', () => {
+    expect(fallHeightAt(-1, 1.5, 26)).toBe(0);
+    expect(fallHeightAt(99, 1.5, 26)).toBeCloseTo(26, 6);
+    expect(fallHeightAt(1, 0, 26)).toBe(0);
+  });
+
+  it('★★ 落地是**错峰**的多层：至少三步，且延迟严格递增（同帧齐发只是更大的球）', () => {
+    expect(impact.steps.length).toBe(MAX_IMPACT_STEPS);
+    for (let i = 1; i < impact.steps.length; i++) {
+      expect(impact.steps[i]!.delay).toBeGreaterThan(impact.steps[i - 1]!.delay);
+    }
+    expect(impact.steps[0]!.delay).toBe(0); // 第一步必须与落地同帧
+  });
+
+  it('★ 层次分明：主爆快而小、烟尘慢而大且活得久', () => {
+    const boom = impact.steps[0]!;
+    const smoke = impact.steps[impact.steps.length - 1]!;
+    expect(smoke.size).toBeGreaterThan(boom.size);
+    expect(smoke.life).toBeGreaterThan(boom.life);
+    expect(smoke.speed).toBeLessThan(boom.speed);
+  });
+
+  it('★ 灼烧残留比通用冲击波的染色盘留得久（一片焦土，不是一闪）', () => {
+    expect(impact.burnLife).toBeGreaterThan(wavePlanFor(5, QualityTier.High).decalLife);
+    expect(impact.burnOpacity).toBeGreaterThan(0);
+  });
+
+  it('★★ 事件池预算：一次落地最多吃 3 格，且每步不超过单格容量 48', () => {
+    expect(impact.steps.length).toBeLessThanOrEqual(MAX_IMPACT_STEPS);
+    for (const s of impact.steps) expect(s.count).toBeLessThanOrEqual(48);
+  });
+
+  it('★ 中密度减量、低密度整段跳过（与二级形态同一口径）', () => {
+    const mid = impactPlanFor('mage.meteor', 0.5)!;
+    expect(mid.steps[0]!.count).toBeLessThan(impact.steps[0]!.count);
+    expect(mid.steps[0]!.count).toBeGreaterThan(0);
+    // 低画质：粒子步清空，但冲击波/焦土的参数还在（它们由 spawnWave 自己的门禁管）
+    const low = impactPlanFor('mage.meteor', 0)!;
+    expect(low.steps).toEqual([]);
+    expect(low.burnLife).toBe(impact.burnLife);
+  });
+
+  it('★★ 未登记的延迟技能返回 undefined —— 别的落点技能照旧只有边界环 + 倒计时', () => {
+    expect(fallPlanFor('mage.blizzard')).toBeUndefined();
+    expect(impactPlanFor('mage.blizzard', 1)).toBeUndefined();
   });
 });

@@ -754,3 +754,186 @@ describe('X7 护盾自然过期：0.3 秒收束淡出（过期不是破裂）', 
     m.dispose();
   });
 });
+
+/**
+ * X10 追加轮用户拍板（2026-08-10）：「陨星应该是很大的视觉差别的」。
+ *
+ * ★★ 白盒集成：`vfxPlans.test` 钉的是参数表，这里钉的是**参数真的被人调用了** ——
+ *   本仓库四次遇到「规则写对了但没人调用」，延迟落点这条路尤其容易漏：
+ *   `syncProjectiles` 的 delayedImpact 分支到 `continue` 为止，
+ *   在此之前天上什么都没有、落地也什么都不补。
+ */
+describe('陨星：坠落体接线 + 落地冲击接线', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  const g = globalThis as { document?: unknown };
+  const realDoc = g.document;
+  beforeAll(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    /**
+     * ★ 落点倒计时（14.3）用 canvas 纹理画数字，而本仓库单测跑在 node 环境里
+     *   没有 `document`。给一个 `getContext` 恒返回 null 的最小替身 ——
+     *   `updateCountdown` 拿不到 2d 上下文会自己早退，数字不画，
+     *   本组要验的坠落体/落地冲击一条不受影响。
+     */
+    g.document = {
+      createElement: () => ({ width: 0, height: 0, getContext: () => null }),
+    };
+  });
+  afterAll(() => {
+    warn.mockRestore();
+    if (realDoc === undefined) delete g.document;
+    else g.document = realDoc;
+  });
+
+  const ctx = (
+    now: number,
+    projectiles: Parameters<SpellVfx['frame']>[1]['projectiles'],
+  ): Parameters<SpellVfx['frame']>[1] => ({
+    quality: QualityTier.High, cameraDistance: 8, pointScale: 520, now,
+    projectiles, grounds: [],
+  });
+
+  const delayed = (skillId: string): Parameters<SpellVfx['frame']>[1]['projectiles'] => [
+    { id: 1, kind: 'delayedImpact', skillId, position: { x: 0, y: 0, z: 0 }, radius: 5, impactAt: 1.5 },
+  ];
+
+  /** 场上那颗正在掉的东西（没有就是 undefined）*/
+  const fallBody = (vfx: SpellVfx): { position: { y: number } } | undefined => {
+    let found: { position: { y: number } } | undefined;
+    vfx.group.traverse((o) => {
+      if (o.name === 'spell-vfx-fall') found = o;
+    });
+    return found;
+  };
+
+  it('★★ 天上真的有一颗在掉：出生高度 20 米以上，而且一路往下', () => {
+    const vfx = new SpellVfx();
+    vfx.frame(0.016, ctx(0, delayed('mage.meteor')));
+    const top = fallBody(vfx)?.position.y;
+    expect(top, '延迟落点没有坠落体（分支到 continue 就结束了）').toBeGreaterThan(20);
+
+    vfx.frame(0.016, ctx(1.2, delayed('mage.meteor')));
+    const low = fallBody(vfx)!.position.y;
+    expect(low).toBeLessThan(top!);
+    expect(low).toBeGreaterThanOrEqual(0);
+    vfx.dispose();
+  });
+
+  it('★★ 坠落体**零细流池占用** —— 48 格是蓄力 12 + 拖尾 18 + 地面 18 的预算和，已顶死', () => {
+    const vfx = new SpellVfx();
+    for (let i = 0; i < 60; i += 1) vfx.frame(0.016, ctx(i * 0.02, delayed('mage.meteor')));
+    // 一路掉下来的全程：火尾走零池占用的彗尾条，一格细流都不该申请
+    expect(vfx.status().streamBursts, '坠落体插了一路粒子拖尾，别人的尾巴要被挤没').toBe(0);
+    vfx.dispose();
+  });
+
+  it('★ 未登记的延迟技能没有坠落体（照旧只有边界环 + 倒计时）', () => {
+    const vfx = new SpellVfx();
+    vfx.frame(0.016, ctx(0, delayed('mage.blizzard')));
+    expect(fallBody(vfx)).toBeUndefined();
+    expect(vfx.status().groundRings).toBe(1); // 边界环一个不少
+    vfx.dispose();
+  });
+
+  it('★★ 落地那一刻补上冲击波 + 粒子（全躲开时也该有一坑烟尘）', () => {
+    const vfx = new SpellVfx();
+    vfx.frame(0.016, ctx(0, delayed('mage.meteor')));
+    const before = vfx.status();
+    // 落点从视图里消失 = 落地
+    vfx.frame(0.016, ctx(1.5, []));
+    const after = vfx.status();
+    expect(after.groundWaves).toBeGreaterThan(before.groundWaves);
+    expect(after.activeBursts).toBeGreaterThan(before.activeBursts);
+    expect(after.groundRings).toBe(0);
+    vfx.dispose();
+  });
+
+  it('★★ 三层是**错峰**的：第一帧只落一层，之后几帧才补齐', () => {
+    const vfx = new SpellVfx();
+    vfx.frame(0.016, ctx(0, delayed('mage.meteor')));
+    const base = vfx.status().activeBursts;
+    vfx.frame(0.016, ctx(1.5, []));
+    const firstFrame = vfx.status().activeBursts - base;
+    // 主爆 + 灼痕点缀 = 2 格；掀尘（0.07s）与腾烟（0.2s）还没到点
+    expect(firstFrame).toBeLessThanOrEqual(2);
+    for (let i = 0; i < 20; i += 1) vfx.frame(0.016, ctx(1.5 + i * 0.016, []));
+    expect(vfx.status().activeBursts - base).toBeGreaterThan(firstFrame);
+    vfx.dispose();
+  });
+
+  it('★ 未登记的延迟技能落地不补任何东西（双份命中反馈的老口径不变）', () => {
+    const vfx = new SpellVfx();
+    vfx.frame(0.016, ctx(0, delayed('mage.blizzard')));
+    const before = vfx.status();
+    vfx.frame(0.016, ctx(1.5, []));
+    const after = vfx.status();
+    expect(after.groundWaves).toBe(before.groundWaves);
+    expect(after.activeBursts).toBe(before.activeBursts);
+    vfx.dispose();
+  });
+
+  it('★★ dispose 之后队列清空 —— 不会在场景销毁后还往池里发', () => {
+    const vfx = new SpellVfx();
+    vfx.frame(0.016, ctx(0, delayed('mage.meteor')));
+    vfx.frame(0.016, ctx(1.5, []));
+    vfx.dispose();
+    // 再推进不抛、不发（池已释放，这里断言的是「不炸」）
+    expect(() => { vfx.frame(0.016, ctx(2, [])); }).not.toThrow();
+  });
+});
+
+/**
+ * 霜矢的短冰矛（同一轮拍板的另一半）。
+ * ★ 形态表本身由 `vfxPlans.test` 逐条钉住，这里只钉**它被 makeBoltNode 消费了** ——
+ *   表写得再对，`makeBoltNode` 不读它就还是一颗球。
+ */
+describe('霜矢：冰矛形态接线', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeAll(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterAll(() => {
+    warn.mockRestore();
+  });
+
+  const caster = { position: { x: 0, y: 0, z: 0 }, height: 2, yaw: 0, id: 1 };
+  const target = [{ position: { x: 0, y: 0, z: -20 }, height: 2 }];
+  const skill = (id: string): SkillDef => mage.skills.find((s) => (s.id as string) === id)!;
+
+  /** 弹体节点下的 Mesh 数（贴图在单测里加载不到，所以 Sprite 层不参与计数）*/
+  const meshCount = (vfx: SpellVfx): number => {
+    let n = 0;
+    vfx.group.traverse((o) => {
+      if ((o as { isMesh?: boolean }).isMesh === true) n += 1;
+    });
+    return n;
+  };
+
+  it('★★ 冰矛比通用弹体多出「尖端 + 三根冰晶」四个部件', () => {
+    const plain = new SpellVfx();
+    plain.onCast('resolved', caster, skill('mage.fire_blast'), target);
+    const bare = meshCount(plain);
+    expect(plain.status().visualBolts).toBe(1);
+    plain.dispose();
+
+    const ice = new SpellVfx();
+    ice.onCast('resolved', caster, skill('mage.frostbolt'), target);
+    expect(ice.status().visualBolts).toBe(1);
+    // 尖端锥 1 + 冰晶 3 —— 表里的 tipLength/crystals 真的进了几何体
+    expect(meshCount(ice) - bare).toBe(4);
+    ice.dispose();
+  });
+
+  it('★ 核被拉长了（球是 1:1:1，矛的 z 明显大于 x）', () => {
+    const vfx = new SpellVfx();
+    vfx.onCast('resolved', caster, skill('mage.frostbolt'), target);
+    let stretched = 0;
+    vfx.group.traverse((o) => {
+      if ((o as { isMesh?: boolean }).isMesh !== true) return;
+      const s = o.scale;
+      if (s.z > s.x * 2) stretched += 1;
+    });
+    expect(stretched, '弹体核没有被形态拉长').toBeGreaterThan(0);
+    vfx.dispose();
+  });
+});

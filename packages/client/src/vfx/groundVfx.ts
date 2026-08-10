@@ -212,6 +212,142 @@ export const verticalTravel = (
   return p;
 };
 
+// ── 延迟落点：坠落体与落地冲击（技能级覆盖）────────────────────
+
+/**
+ * 一颗砸下来的坠落体。
+ *
+ * ★★ 用户实测原话（X10 追加轮，2026-08-10）：「陨星应该是很大的视觉差别的」。
+ *   核实下来延迟落点在表现层**只有一圈边界环 + 一个倒计时数字** ——
+ *   `syncProjectiles` 的 delayedImpact 分支到 `continue` 为止就这两样，
+ *   天上什么都没有。玩家看到的是「地上出现一个圈，然后大家掉血」，
+ *   跟任何一发地面技能长得一样，1.6 倍的设计分量在画面上是零。
+ *
+ * ★ 坠落体**不发粒子拖尾**：细流池 48 格是三类细流的预算和（蓄力 12 +
+ *   拖尾 18 + 地面 18），已经顶死，再插一路会把别人的尾巴挤没。
+ *   「拖着火」交给零池占用的彗尾条 —— 与弹体那条尾巴同一个手法。
+ */
+export interface FallPlan {
+  /** 出生高度（米，相对落点地面）*/
+  height: number;
+  /** 坠落体主体半径（米）。通用弹体的核是 0.24 —— 这里要大一个数量级的分量 */
+  bodyRadius: number;
+  /** 彗尾条的宽 / 长（米）。零池占用，坠落体的火尾全靠它 */
+  tailWidth: number;
+  tailLength: number;
+  /** 翻滚角速度（弧度/秒）。★ 岩块要**翻滚**，绕单轴自转读作「陀螺」*/
+  tumble: number;
+}
+
+/**
+ * 落地冲击的一段编排。★ 与 `SpellVfx.FormStep` 同构，多一个 `delay`：
+ *   **错峰**才有「先炸开、再掀尘、后腾烟」的层次，同帧齐发只是一团更大的球。
+ */
+export interface ImpactStep {
+  /** 相对落地时刻的延迟（秒）*/
+  delay: number;
+  /** 生成高度（米，相对落点地面）*/
+  dy: number;
+  count: number;
+  speed: number;
+  size: number;
+  life: number;
+  gravity: number;
+  drag: number;
+  spread: 'sphere' | 'disc';
+  originRadius: number;
+  /**
+   * 用哪张点缀贴图。省略 = 用属性主粒子（火球）。
+   * ★ 只允许这三张：都是已登记素材，零新增资产。
+   */
+  accent?: 'debris' | 'cloud' | 'scorch';
+}
+
+export interface ImpactPlan {
+  steps: readonly ImpactStep[];
+  /** 灼烧残留（地面染色盘）的寿命与不透明度 */
+  burnLife: number;
+  burnOpacity: number;
+  /** 落地白闪（面向镜头的广告牌环）的尺寸与展开倍数 */
+  flashSize: number;
+  flashGrow: number;
+}
+
+/**
+ * 一次落地冲击最多占用的**事件池格数**。
+ * ★ 与 `MAX_FORM_SLOTS_PER_FRAME` 同一个 3：事件池 40 格里一发 8 目标 AOE
+ *   的主爆发 + 碎屑已占 16 格，落地编排是装饰层，不该拿走同一量级的份额。
+ *   而且这 3 格是**错峰**的，同一帧里最多落一格。
+ */
+export const MAX_IMPACT_STEPS = 3;
+
+const SKILL_FALL: Record<string, FallPlan> = {
+  // 26 米高、1.15 米半径的岩块 —— 通用弹体核（0.24）的近五倍，隔着半张地图就看得见
+  'mage.meteor': { height: 26, bodyRadius: 1.15, tailWidth: 2.1, tailLength: 8.5, tumble: 1.7 },
+};
+
+const SKILL_IMPACT: Record<string, ImpactPlan> = {
+  'mage.meteor': {
+    steps: [
+      // 0.00 主爆：贴地炸开的火球，又大又快
+      { delay: 0, dy: 0.35, count: 30, speed: 9.5, size: 1.5, life: 0.7,
+        gravity: 3, drag: 1.4, spread: 'sphere', originRadius: 0.8 },
+      // 0.07 掀尘：贴地横着冲出去的碎石（disc + 高初速 + 负重力 = 往外扫再落回）
+      { delay: 0.07, dy: 0.15, count: 22, speed: 12, size: 1.15, life: 0.85,
+        gravity: -1.5, drag: 2.2, spread: 'disc', originRadius: 1.2, accent: 'debris' },
+      // 0.20 腾烟：大、慢、久 —— 前两步散完它还在，这是「刚才砸过」的余韵
+      { delay: 0.2, dy: 0.9, count: 18, speed: 2.2, size: 2.4, life: 1.5,
+        gravity: 1.6, drag: 1.9, spread: 'sphere', originRadius: 1.8, accent: 'cloud' },
+    ],
+    // 灼烧残留：通用冲击波的染色盘只活 1.2 秒，陨星要留一片焦土
+    burnLife: 3.2,
+    burnOpacity: 0.3,
+    flashSize: 2.6,
+    flashGrow: 5.2,
+  },
+};
+
+/** 这个技能的延迟落点要不要画坠落体。未登记 = 照旧只有边界环 + 倒计时 */
+export const fallPlanFor = (skillId: string): FallPlan | undefined => SKILL_FALL[skillId];
+
+/**
+ * 落地冲击编排。
+ *
+ * @param density `decorativeDensity(quality)` —— 低画质档粒子步整段跳过
+ *   （与 `formPlanFor` 同一口径：low 已经把拖尾/地面填充/命中碎屑全砍光，
+ *   唯独留下落地编排会让它成为 low 档下唯一还在吃事件池的装饰源）。
+ *   ★ 冲击波环与灼烧盘**不在**这条门禁里：环画的是这次 AOE 的真实半径
+ *   （14.3「边界即判定」），盘由 `spawnWave` 自己的 groundFill 门禁管。
+ */
+export const impactPlanFor = (skillId: string, density: number): ImpactPlan | undefined => {
+  const plan = SKILL_IMPACT[skillId];
+  if (!plan) return undefined;
+  const d = Math.max(0, density);
+  if (d <= 0) return { ...plan, steps: [] };
+  return {
+    ...plan,
+    // ★ 只乘 count：size/life/生成半径是这一层的识别特征，跟着密度缩会变成另一种爆炸
+    steps: plan.steps.slice(0, MAX_IMPACT_STEPS).map((s) => ({
+      ...s,
+      count: Math.max(1, Math.round(s.count * d)),
+    })),
+  };
+};
+
+/**
+ * 坠落体在剩余 `remaining` 秒时离地多高。
+ *
+ * ★★ 自由落体而不是匀速：`h = H·(1-(1-r)²)`，落地那一刻的速度是平均速度的
+ *   两倍。匀速下落读作「电梯」，而陨星的全部分量都在最后那 0.3 秒。
+ * ★ `duration` 由**首次看见这颗落点时的剩余时间**推出来（见 `RingEntry.fall`），
+ *   不写死 1.5 —— sim 那边改了 delay 这边不会错位，中途入场也从半空接着落。
+ */
+export const fallHeightAt = (remaining: number, duration: number, height: number): number => {
+  if (duration <= 0) return 0;
+  const r = Math.min(1, Math.max(0, remaining / duration));
+  return height * (1 - (1 - r) ** 2);
+};
+
 /** 同时冒填充粒子的地面区域上限（按到相机的距离取最近的几片）*/
 export const MAX_FILL_AREAS = 3;
 

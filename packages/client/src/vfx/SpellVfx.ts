@@ -68,10 +68,27 @@ import {
   type ResolvedSignature,
 } from '../av/skillSignature.js';
 import { QualityTier, decorativeDensity, isVisible } from '../render/quality.js';
-import { MOTION, boltOrientation, trailPlanFor } from './boltVfx.js';
+import {
+  BOLT_BASE,
+  GENERIC_BOLT_FORM,
+  MOTION,
+  boltFormFor,
+  boltOrientation,
+  trailPlanFor,
+  type BoltForm,
+} from './boltVfx.js';
 import { fizzlePlanFor, windupPlanFor, windupStyleOf, type WindupStyle } from './castVfx.js';
 import { vfxScaleOf } from './skillWeight.js';
-import { MAX_FILL_AREAS, groundFillPlanFor, wavePlanFor, waveEase } from './groundVfx.js';
+import {
+  MAX_FILL_AREAS,
+  fallHeightAt,
+  fallPlanFor,
+  groundFillPlanFor,
+  impactPlanFor,
+  wavePlanFor,
+  waveEase,
+  type ImpactStep,
+} from './groundVfx.js';
 import type { ImpactTier } from '../feedback/impactTier.js';
 
 /** 水平+垂直平方距离。★ 只用于排序，不开根号 */
@@ -448,6 +465,8 @@ interface ProjBody {
    * 拖尾密度每 0.07 秒就要读它一次，每次重解析是纯白做（技能不会中途变）。
    */
   sig: ResolvedSignature;
+  /** 这一发的弹体形态（技能级覆盖，霜矢是冰矛）。自旋每帧要读它 */
+  form: BoltForm;
   /** ★ 复用同一个对象，不每帧新建（12v12 下这是每秒上千次分配）*/
   lastPos: { x: number; y: number; z: number };
   /** 刚创建、还没有位置：第一帧直接落位，不做平滑 */
@@ -480,7 +499,47 @@ interface RingEntry {
     /** 当前画着的秒数，变了才重绘（canvas 重绘 + 纹理上传不是免费的）*/
     shown: number;
   };
+  /**
+   * 天上那颗正在砸下来的东西（只有登记了 `fallPlanFor` 的技能有，目前只有陨星）。
+   * ★ `from` = **首次看见这颗落点时的剩余秒数**，坠落高度按它归一化 ——
+   *   不写死 1.5 秒，sim 改了 delay 这边不会错位，中途入场也从半空接着落。
+   */
+  fall?: {
+    body: THREE.Group;
+    from: number;
+  };
+  /**
+   * 落地要放的冲击（技能级覆盖）。★ 存在环上而不是查表现算：
+   *   环消失那一刻 `ProjectileView` 已经不在了，skillId / radius 都取不到。
+   */
+  impact?: {
+    skillId: string;
+    radius: number;
+  };
 }
+
+/**
+ * 一次**错峰**的落地冲击。`delay` 到点才发，见 `updateImpacts`。
+ * ★ 队列存在的唯一理由就是错峰：同帧齐发只是一团更大的球，读不出层次。
+ */
+interface PendingImpact {
+  center: Vec3Like;
+  /** 落点地面高度 —— 三步都锚在地上（陨星是砸在地上的，不是炸在半空） */
+  groundY: number;
+  av: AttributeVisual;
+  steps: ImpactStep[];
+  /** 已经过去的秒数 */
+  age: number;
+  /** 下一个还没发的步序号 */
+  next: number;
+}
+
+/**
+ * 同时在排队的落地冲击上限。
+ * ★ 4 而不是无界：12v12 里同时落三四颗陨星是可能的，再多就该丢最旧的 ——
+ *   与弹体 24 发上限同一条理由（这是场上唯一另一处会无界增长的队列）。
+ */
+const MAX_PENDING_IMPACTS = 4;
 
 /**
  * 表现用弹体：从施法者**追着目标**飞，追上即爆。零规则影响。
@@ -496,6 +555,8 @@ interface VisualBolt {
   visual: AttributeVisual;
   /** 这一发的技能签名：尾迹密度按 scale，抵达爆发按 scale + form */
   sig: ResolvedSignature;
+  /** 这一发的弹体形态（技能级覆盖，霜矢是冰矛）*/
+  form: BoltForm;
   /** 当前追踪的终点（有 track 时每帧刷新）*/
   to: Vec3Like;
   /**
@@ -651,6 +712,8 @@ export class SpellVfx {
   private readonly waves: GroundWave[] = [];
   /** 波之后的地面染色（装饰层）*/
   private readonly decals: GroundDecal[] = [];
+  /** 正在错峰放出的落地冲击（陨星），见 `PendingImpact` */
+  private readonly pendingImpacts: PendingImpact[] = [];
   /** 最近一帧真的在冒聚能粒子的施法者数（自检用）*/
   private windupEmitterCount = 0;
   /** 最近一帧真的在冒拖尾粒子的弹体数（自检用）*/
@@ -904,7 +967,7 @@ export class SpellVfx {
         };
         const d = Math.hypot(to.x - hand.x, to.y - hand.y, to.z - hand.z);
         if (d < 1.5) continue; // 自身/贴脸：没有可看的飞行段
-        this.spawnBolt(hand, to, av, sig, t.position.y, t.track);
+        this.spawnBolt(hand, to, av, sig, t.position.y, skill.id as string, t.track);
       }
       return;
     }
@@ -1177,6 +1240,7 @@ export class SpellVfx {
     this.syncProjectiles(ctx.projectiles, ctx.quality, dt, ctx.now);
     this.syncGround(ctx.grounds, ctx.quality, dt, ctx.cameraPosition);
     this.updateBolts(dt, ctx.quality, ctx.cameraPosition);
+    this.updateImpacts(dt);
     this.updateWaves(dt);
     this.pool.update(dt);
     this.streams.update(dt);
@@ -1190,7 +1254,17 @@ export class SpellVfx {
    * ★ 环的终点半径 = 技能的 `shape.radius`，与判定同源 —— 与
    *   `ensureRing`（地面区域边界）遵守同一条「边界即判定」的规矩（14.3）。
    */
-  private spawnWave(center: Vec3Like, radius: number, av: AttributeVisual): void {
+  private spawnWave(
+    center: Vec3Like,
+    radius: number,
+    av: AttributeVisual,
+    /**
+     * 染色盘的寿命/不透明度覆盖（陨星的灼烧残留要留 3 秒焦土，通用波是 1.2 秒）。
+     * ★ **只覆盖这两项**：盘的半径恒等于 `radius`，也就是判定半径 ——
+     *   给它一个别的尺寸就是编造判定信息（14.3）。
+     */
+    burn?: { life: number; opacity: number },
+  ): void {
     const plan = wavePlanFor(radius, this.quality);
 
     if (this.waves.length >= MAX_WAVES) {
@@ -1215,6 +1289,8 @@ export class SpellVfx {
     this.waves.push({ mesh, mat, age: 0, life: plan.life, radius });
 
     if (!plan.decal) return;
+    const decalLife = burn?.life ?? plan.decalLife;
+    const decalOpacity = burn?.opacity ?? plan.decalOpacity;
     if (this.decals.length >= MAX_DECALS) {
       const oldest = this.decals.shift();
       if (oldest) this.disposeGroundMesh(oldest.mesh, oldest.mat);
@@ -1222,7 +1298,7 @@ export class SpellVfx {
     const decalMat = new THREE.MeshBasicMaterial({
       color: av.primary,
       transparent: true,
-      opacity: plan.decalOpacity,
+      opacity: decalOpacity,
       side: THREE.DoubleSide,
       depthWrite: false,
       // ★ 正常混合而不是加法：加法会把本来就亮的地面糊成白斑
@@ -1236,8 +1312,67 @@ export class SpellVfx {
     decal.renderOrder = 2; // 排在边界环之下
     this.group.add(decal);
     this.decals.push({
-      mesh: decal, mat: decalMat, age: 0, life: plan.decalLife, opacity: plan.decalOpacity,
+      mesh: decal, mat: decalMat, age: 0, life: decalLife, opacity: decalOpacity,
     });
+  }
+
+  // ── 陨星：落地冲击的错峰编排 ──────────────────────────────────
+
+  /**
+   * 把一次落地冲击排进队列（真正的 emit 由 `updateImpacts` 按 `delay` 逐步放出）。
+   *
+   * ★★ 为什么中心补这一发**不**与「陨石落地由 damage 事件在每个人身上各放一发」
+   *   冲突：那些是**打在人身上**的命中反馈，这一发是**砸在地上**的落点表现。
+   *   没有人被命中时（全躲开了）落点照样该有一坑烟尘 —— 而按人发的那条路
+   *   在那种情况下一粒都不会有，正是「陨星和霜矢区分不大」的一半成因。
+   * ★ 公平性：全部发生在**结算之后**，且落点边界与倒计时早已全程可见（14.3），
+   *   不提供任何新的预判信息。
+   */
+  private queueImpact(skillId: string, center: Vec3Like, radius: number, av: AttributeVisual): void {
+    const plan = impactPlanFor(skillId, decorativeDensity(this.quality));
+    if (!plan) return;
+    // 贴地冲击波：终点半径 = 落点判定半径，与 14.3「边界即判定」同源
+    this.spawnWave(center, radius, av, { life: plan.burnLife, opacity: plan.burnOpacity });
+    this.flashes.emit({
+      origin: { x: center.x, y: center.y + 0.4, z: center.z },
+      texture: this.accentTex.get('ring') ?? null,
+      color: av.secondary, size: plan.flashSize, life: 0.38, grow: plan.flashGrow,
+    });
+    /**
+     * ★ 灼痕点缀与三步编排一起归**装饰层**：低画质档 `impactPlanFor` 把 steps 清空，
+     *   这里就跟着一并跳过 —— 否则 low 档会剩下一个还在吃事件池的孤零零爆点。
+     *   冲击波环与白闪留下（环画的是判定半径，白闪与既有大招闪同一档）。
+     */
+    if (plan.steps.length === 0) return;
+    this.emitAccent({ x: center.x, y: center.y + 0.1, z: center.z }, 'scorch', av.primary, 2.6);
+    if (this.pendingImpacts.length >= MAX_PENDING_IMPACTS) this.pendingImpacts.shift();
+    this.pendingImpacts.push({
+      center: { ...center }, groundY: center.y, av, steps: [...plan.steps], age: 0, next: 0,
+    });
+  }
+
+  /** 队列推进：到点的步逐个 emit，全部放完就摘掉 */
+  private updateImpacts(dt: number): void {
+    for (let i = this.pendingImpacts.length - 1; i >= 0; i--) {
+      const p = this.pendingImpacts[i]!;
+      p.age += dt;
+      while (p.next < p.steps.length && p.age >= p.steps[p.next]!.delay) {
+        const s = p.steps[p.next]!;
+        p.next += 1;
+        this.emitBurst(
+          { x: p.center.x, y: p.groundY + s.dy, z: p.center.z },
+          p.av,
+          {
+            count: s.count, speed: s.speed, size: s.size, life: s.life,
+            gravity: s.gravity, drag: s.drag, spread: s.spread, originRadius: s.originRadius,
+            ...(s.accent !== undefined
+              ? { texture: this.accentTex.get(s.accent) ?? this.texFor(p.av.particle) }
+              : {}),
+          },
+        );
+      }
+      if (p.next >= p.steps.length) this.pendingImpacts.splice(i, 1);
+    }
   }
 
   /** 波与染色盘的推进。两者都是「自然消亡」的瞬时对象，没有 present 差分 */
@@ -1522,7 +1657,7 @@ export class SpellVfx {
       if (d > step && b.age < 2) {
         const k = step / d;
         g.set(g.x + dx * k, g.y + dy * k, g.z + dz * k);
-        this.orientBolt(b.group, { x: dx, y: dy, z: dz }, b.visual, dt, showTrail);
+        this.orientBolt(b.group, { x: dx, y: dy, z: dz }, b.visual, dt, showTrail, b.form);
 
         const plan = trailPlanFor(b.visual.particle, density);
         if (!showTrail || plan.count <= 0 || !emitters.has(i)) continue;
@@ -1586,6 +1721,8 @@ export class SpellVfx {
     av: AttributeVisual,
     sig: ResolvedSignature,
     groundY: number,
+    /** 形态查表用（霜矢是冰矛）。未登记的技能走通用档 */
+    skillId: string,
     track?: () => Vec3Like | undefined,
   ): void {
     // 同时在飞的弹体设个上限：12v12 混战里这是唯一会无界增长的东西
@@ -1593,11 +1730,12 @@ export class SpellVfx {
       const oldest = this.bolts.shift();
       if (oldest) this.disposeNode(oldest.group);
     }
-    const group = this.makeBoltNode(av);
+    const form = boltFormFor(skillId);
+    const group = this.makeBoltNode(av, form);
     group.position.set(from.x, from.y, from.z);
     this.group.add(group);
     this.bolts.push({
-      group, visual: av, sig, to: { ...to }, groundY, track, age: 0, trailTimer: 0,
+      group, visual: av, sig, form, to: { ...to }, groundY, track, age: 0, trailTimer: 0,
     });
   }
 
@@ -1624,14 +1762,16 @@ export class SpellVfx {
         const key = `p${p.id}`;
         delayedPresent.add(key);
         const skill = getSkill(asSkillId(p.skillId));
-        const entry = this.ensureRing(
-          key, p.position, p.radius ?? 1,
-          (skill ? this.visualFor(skill) : ATTRIBUTE_VISUALS.fire).primary,
-        );
+        const av = skill ? this.visualFor(skill) : ATTRIBUTE_VISUALS.fire;
+        const radius = p.radius ?? 1;
+        const entry = this.ensureRing(key, p.position, radius, av.primary);
+        // 落地要放的冲击，趁 skillId/radius 还在的时候记在环上（见 RingEntry.impact）
+        entry.impact = { skillId: p.skillId, radius };
         // 14.3：落点边界 + **倒计时**。剩余秒数向上取整（「还有 2 秒」比 1.7 可读）
         if (p.impactAt !== undefined) {
           this.updateCountdown(entry, Math.max(0, Math.ceil(p.impactAt - now)));
         }
+        this.syncFallingBody(entry, p, av, now, dt, showTrail);
         continue;
       }
       // homing | colliding
@@ -1660,7 +1800,7 @@ export class SpellVfx {
       //   位移过小说明刚生成/静止，保持上一帧朝向不动（避免抖成陀螺）
       const dir = { x: g.x - body.lastPos.x, y: g.y - body.lastPos.y, z: g.z - body.lastPos.z };
       if (Math.hypot(dir.x, dir.y, dir.z) > 1e-4) {
-        this.orientBolt(body.group, dir, body.visual, dt, showTrail);
+        this.orientBolt(body.group, dir, body.visual, dt, showTrail, body.form);
       }
       body.lastPos.x = g.x;
       body.lastPos.y = g.y;
@@ -1707,14 +1847,155 @@ export class SpellVfx {
     this.seenProjectiles = present;
 
     /**
-     * 落点环随延迟落点消失而回收。
-     * ★ 这里**不补爆发** —— 陨石落地会产生真实的 damage 事件，
-     *   由 `onCombatEvent` 在每个被命中者身上各放一发。在这里再放一发
-     *   会变成「中心一发 + 每人一发」的双份。
+     * 落点环随延迟落点消失而回收 —— 那一刻就是**落地那一刻**。
+     *
+     * ★ 通用延迟技能在这里仍然**不补爆发**：命中反馈由 `onCombatEvent` 在每个
+     *   被命中者身上各放一发，中心再来一发就成了「中心一发 + 每人一发」的双份。
+     * ★★ 但登记了 `impactPlanFor` 的技能（陨星）走 `queueImpact` —— 它放的是
+     *   **砸在地上**那一坑（冲击波 + 掀尘 + 腾烟 + 焦土），与打在人身上的
+     *   命中反馈是两回事，全躲开时也该有。理由见 `queueImpact`。
      */
     for (const key of [...this.rings.keys()]) {
-      if (key.startsWith('p') && !delayedPresent.has(key)) this.removeRing(key);
+      if (!key.startsWith('p') || delayedPresent.has(key)) continue;
+      const entry = this.rings.get(key);
+      const im = entry?.impact;
+      if (im && entry) {
+        const skill = getSkill(asSkillId(im.skillId));
+        this.queueImpact(
+          im.skillId,
+          { x: entry.mesh.position.x, y: entry.mesh.position.y - 0.05, z: entry.mesh.position.z },
+          im.radius,
+          skill ? this.visualFor(skill) : ATTRIBUTE_VISUALS.fire,
+        );
+      }
+      this.removeRing(key);
     }
+  }
+
+  // ── 延迟落点的坠落体（陨星）────────────────────────────────────
+
+  /**
+   * 天上那颗正在砸下来的东西：按剩余时间摆高度、每帧翻滚。
+   * ★ 未登记 `fallPlanFor` 的延迟技能（以及没有 `impactAt` 的）直接跳过 ——
+   *   照旧只有边界环 + 倒计时，一像素不变。
+   */
+  private syncFallingBody(
+    entry: RingEntry,
+    p: ProjectileView,
+    av: AttributeVisual,
+    now: number,
+    dt: number,
+    showTrail: boolean,
+  ): void {
+    const plan = fallPlanFor(p.skillId);
+    if (!plan || p.impactAt === undefined) return;
+    const remaining = Math.max(0, p.impactAt - now);
+    if (!entry.fall) {
+      entry.fall = {
+        body: this.makeFallNode(av, plan.bodyRadius, plan.tailWidth, plan.tailLength),
+        // ★ 首帧的剩余秒数就是全程时长（中途入场时它天然小一些，于是从半空接着落）
+        from: Math.max(0.001, remaining),
+      };
+      this.group.add(entry.fall.body);
+    }
+    const body = entry.fall.body;
+    body.position.set(
+      p.position.x,
+      p.position.y + fallHeightAt(remaining, entry.fall.from, plan.height),
+      p.position.z,
+    );
+    // 翻滚：两轴不同速，避免读成绕单轴的陀螺。★ 只转岩块，火尾恒指向天上
+    const rock = body.children.find((c) => c.name === 'fall-rock');
+    if (rock) {
+      rock.rotation.x += plan.tumble * dt;
+      rock.rotation.y += plan.tumble * 0.62 * dt;
+    }
+    for (const child of body.children) {
+      if (child.name === 'bolt-tail') child.visible = showTrail;
+    }
+  }
+
+  /**
+   * 坠落体节点：一大块自发光岩心 + 一圈外焰 + 两片交叉的火尾。
+   *
+   * ★★ **零细流池占用**：细流池 48 格是三类细流的预算和（蓄力 12 + 拖尾 18 +
+   *   地面 18），已经顶死 —— 给坠落体再插一路粒子拖尾会把别人的尾巴挤没。
+   *   连贯的那条火尾交给彗尾条（Plane），与弹体是同一个手法。
+   * ★ 火尾挂在**组的本地 -Y** 而不是 -Z：坠落体是竖着掉下来的，
+   *   尾巴该在正上方；而弹体的组会被 `orientBolt` 转到速度方向，这里不转。
+   */
+  private makeFallNode(
+    av: AttributeVisual, radius: number, tailWidth: number, tailLength: number,
+  ): THREE.Group {
+    const g = new THREE.Group();
+    g.name = 'spell-vfx-fall'; // 单测按名字找它（场上有没有一颗在掉的东西）
+
+    /**
+     * 翻滚的只有岩块本身，火尾不跟着转 —— 尾巴要恒指向天上。
+     * ★ 所以岩心/外焰装在一个内层组里，`syncFallingBody` 只转它。
+     */
+    const rock = new THREE.Group();
+    rock.name = 'fall-rock';
+    g.add(rock);
+
+    // 岩心：低面数球体，纯色不透明 —— 无贴图也一定看得见（essential 兜底）
+    const core = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(radius, 1),
+      new THREE.MeshBasicMaterial({ color: av.primary }),
+    );
+    core.renderOrder = 5;
+    rock.add(core);
+
+    // 外焰：比岩心大一圈的加法壳，读作「烧着的」
+    const shell = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(radius * 1.45, 1),
+      new THREE.MeshBasicMaterial({
+        color: av.secondary,
+        transparent: true,
+        opacity: 0.42,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+      }),
+    );
+    shell.renderOrder = 5;
+    rock.add(shell);
+
+    const puff = this.accentTex.get('puff');
+    if (puff) {
+      const sprite = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: puff, color: av.primary, transparent: true,
+          depthWrite: false, blending: THREE.AdditiveBlending,
+        }),
+      );
+      sprite.scale.setScalar(radius * 3.4);
+      sprite.renderOrder = 6;
+      g.add(sprite);
+    }
+
+    const trailTex = this.accentTex.get('trail');
+    if (!trailTex) return g;
+    const tailMat = new THREE.MeshBasicMaterial({
+      map: trailTex,
+      color: av.primary,
+      transparent: true,
+      opacity: 0.55,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+    });
+    for (const roll of [0, Math.PI / 2]) {
+      // 贴图长边是 Y，坠落体的尾巴正好在 +Y —— 不用像弹体那样先转到 -Z
+      const geo = new THREE.PlaneGeometry(tailWidth, tailLength);
+      if (roll !== 0) geo.rotateY(roll);
+      const tail = new THREE.Mesh(geo, tailMat);
+      tail.position.y = tailLength / 2 + radius * 0.6;
+      tail.renderOrder = 4;
+      tail.name = 'bolt-tail'; // 画质裁剪按名字找它（projectileTrail 装饰角色）
+      g.add(tail);
+    }
+    return g;
   }
 
   // ── 每帧：地面区域 ─────────────────────────────────────────────
@@ -1954,24 +2235,51 @@ export class SpellVfx {
    *   4. 辉光    —— 一圈软光晕
    *   5. 彗尾条  —— `trace_05` 拉长的一条尾迹（decorative，低画质裁）
    *
+   * ★★ 全部尺寸走 `BOLT_BASE × form`（`boltFormFor` 的技能级覆盖）：
+   *   通用档逐字段是 1，所以没被覆盖的技能一像素不变；霜矢那一行把核拉成
+   *   梭形、长出尖端、压小两个圆 Sprite，于是它才不再是「一颗球」。
    * ★★ **几何体一律逐实例新建，绝不共享**：`disposeNode()` 会 traverse 释放
    *   所有 Mesh 的几何体 —— 共享的话第一发弹体消失就把全场弹体打成空白。
    *   （与文件里那条「Sprite 全体共用一个模块级几何体」是同一个坑的两面。）
    */
-  private makeBoltNode(av: AttributeVisual): THREE.Group {
+  private makeBoltNode(av: AttributeVisual, form: BoltForm = GENERIC_BOLT_FORM): THREE.Group {
     const g = new THREE.Group();
 
-    // 1. 实心核
+    // 1. 实心核。★ spindle = 八面双锥：低面数有棱，沿 +Z 拉长就是冰矛的梭形
+    const coreGeo = form.core === 'spindle'
+      ? new THREE.OctahedronGeometry(BOLT_BASE.coreRadius, 0)
+      : new THREE.SphereGeometry(BOLT_BASE.coreRadius, 12, 12);
     const core = new THREE.Mesh(
-      new THREE.SphereGeometry(0.24, 12, 12),
+      coreGeo,
       new THREE.MeshBasicMaterial({ color: av.primary }),
     );
+    core.scale.set(form.coreScale.x, form.coreScale.y, form.coreScale.z);
     core.renderOrder = 5;
     g.add(core);
 
+    /**
+     * 1b. 前向尖端锥（只有登记了形态的技能有）。
+     * ★ ConeGeometry 默认尖端在 +Y；`rotateX(+90°)` 把 +Y 转到 **+Z**（前方）——
+     *   与下面那个尾锥的 -90° 正好相反，写反了就是「矛尖朝后」。
+     */
+    if (form.tipLength > 0) {
+      const tipGeo = new THREE.ConeGeometry(
+        form.tipRadius, form.tipLength, Math.max(3, form.tipFacets), 1,
+      );
+      tipGeo.rotateX(Math.PI / 2);
+      const tip = new THREE.Mesh(tipGeo, new THREE.MeshBasicMaterial({ color: av.primary }));
+      tip.position.z = BOLT_BASE.coreRadius * form.coreScale.z + form.tipLength / 2 - 0.06;
+      tip.renderOrder = 5;
+      g.add(tip);
+    }
+
     // 2. 拖长锥：底面在前、尖端朝后 —— 读作「拖着走」
     //    ConeGeometry 默认尖端在 +Y；rotateX(-90°) 把 +Y 转到 **-Z**（后方）
-    const coneGeo = new THREE.ConeGeometry(0.2, 0.95, 12, 1, true);
+    const coneGeo = new THREE.ConeGeometry(
+      BOLT_BASE.coneRadius * form.coneRadius,
+      BOLT_BASE.coneLength * form.coneLength,
+      12, 1, true,
+    );
     coneGeo.rotateX(-Math.PI / 2);
     const cone = new THREE.Mesh(
       coneGeo,
@@ -1984,11 +2292,12 @@ export class SpellVfx {
         blending: THREE.AdditiveBlending,
       }),
     );
-    cone.position.z = -0.5;
+    cone.position.z = -0.5 * form.coneLength;
     cone.renderOrder = 5;
     g.add(cone);
 
     // 3. 属性头部：火焰/冰晶/符文…（Sprite 恒面向镜头，任何角度都认得出属性）
+    //    ★ 冰矛把它压到三成半并挪到矛尖 —— 于是它从「球」变成「尖端亮核」
     const head = this.particleTex.get(av.particle);
     if (head) {
       const sprite = new THREE.Sprite(
@@ -2000,8 +2309,8 @@ export class SpellVfx {
           blending: THREE.AdditiveBlending,
         }),
       );
-      sprite.scale.setScalar(1.35);
-      sprite.position.z = 0.12;
+      sprite.scale.setScalar(BOLT_BASE.headScale * form.headScale);
+      sprite.position.z = form.headZ;
       sprite.renderOrder = 6;
       g.add(sprite);
     }
@@ -2018,9 +2327,37 @@ export class SpellVfx {
           blending: THREE.AdditiveBlending,
         }),
       );
-      sprite.scale.setScalar(1.25);
+      sprite.scale.setScalar(BOLT_BASE.glowScale * form.glowScale);
       sprite.renderOrder = 5;
       g.add(sprite);
+    }
+
+    /**
+     * 4b. 绕轴的冰晶（冰矛的尾迹晶体）。
+     * ★★ 它们是**自旋唯一看得见的载体**：核与尖端都绕 Z 轴对称，
+     *   材质又是无光照纯色，转与不转一模一样。偏心挂几根才转得出来。
+     */
+    for (let i = 0; i < form.crystals; i++) {
+      const geo = new THREE.ConeGeometry(0.055, form.crystalLength, 4, 1);
+      geo.rotateX(-Math.PI / 2); // 尖端朝后（-Z），跟着飞行方向拖
+      const shard = new THREE.Mesh(
+        geo,
+        new THREE.MeshBasicMaterial({
+          color: av.secondary,
+          transparent: true,
+          opacity: 0.85,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        }),
+      );
+      const a = (i / form.crystals) * Math.PI * 2;
+      shard.position.set(
+        Math.cos(a) * form.crystalRadius,
+        Math.sin(a) * form.crystalRadius,
+        -form.crystalLength * 0.35,
+      );
+      shard.renderOrder = 5;
+      g.add(shard);
     }
 
     /**
@@ -2043,13 +2380,15 @@ export class SpellVfx {
         side: THREE.DoubleSide,
         blending: THREE.AdditiveBlending,
       });
+      const tailW = BOLT_BASE.tailWidth * form.tailWidth;
+      const tailL = BOLT_BASE.tailLength * form.tailLength;
       for (const roll of [0, Math.PI / 2]) {
         // 贴图长边是 Y：绕 X 转 -90° 让长边躺进 -Z（后方），再绕长轴滚 0/90°
-        const geo = new THREE.PlaneGeometry(0.62, 3.2);
+        const geo = new THREE.PlaneGeometry(tailW, tailL);
         geo.rotateX(-Math.PI / 2);
         if (roll !== 0) geo.rotateZ(roll);
         const tail = new THREE.Mesh(geo, tailMat);
-        tail.position.z = -1.7;
+        tail.position.z = -tailL / 2 - 0.1;
         tail.renderOrder = 4;
         tail.name = 'bolt-tail'; // 画质裁剪按名字找它（projectileTrail 装饰角色）
         g.add(tail);
@@ -2065,12 +2404,14 @@ export class SpellVfx {
    */
   private orientBolt(
     group: THREE.Group, dir: Vec3Like, av: AttributeVisual, dt: number, showTrail: boolean,
+    form: BoltForm = GENERIC_BOLT_FORM,
   ): void {
     const { yaw, pitch } = boltOrientation(dir);
     group.rotation.order = 'YXZ';
     group.rotation.y = yaw;
     group.rotation.x = pitch;
-    const swirl = MOTION[av.particle].swirl;
+    // ★ 属性固有的旋绕倾向 + 技能形态自己的自旋（冰矛拧着飞）
+    const swirl = MOTION[av.particle].swirl + form.spin;
     if (swirl > 0) group.rotation.z += swirl * dt;
     // ★ 两片交叉的尾条都要切（getObjectByName 只返回第一个，会漏掉另一片）
     for (const child of group.children) {
@@ -2086,9 +2427,10 @@ export class SpellVfx {
     // ★ 查不回技能时用推导层兜底：`resolveSignature` 对任何 id 都有结果
     //   （见 skillSignature.ts 的两层结构），所以这里不需要 undefined 分支
     const sig = resolveSignature(skillId);
-    const group = this.makeBoltNode(av);
+    const form = boltFormFor(skillId);
+    const group = this.makeBoltNode(av, form);
     this.group.add(group);
-    body = { group, visual: av, sig, lastPos: { x: 0, y: 0, z: 0 }, fresh: true };
+    body = { group, visual: av, sig, form, lastPos: { x: 0, y: 0, z: 0 }, fresh: true };
     this.projBodies.set(id, body);
     return body;
   }
@@ -2191,6 +2533,8 @@ export class SpellVfx {
     entry.mesh.geometry.dispose();
     (entry.mesh.material as THREE.Material).dispose();
     if (entry.tint) this.disposeGroundMesh(entry.tint.mesh, entry.tint.mat);
+    // 坠落体与弹体同构（Mesh + Sprite 混装），走同一条「只释放 Mesh 几何体」的路
+    if (entry.fall) this.disposeNode(entry.fall.body);
     if (entry.label) {
       this.group.remove(entry.label.sprite);
       entry.label.mat.dispose();
@@ -2232,6 +2576,8 @@ export class SpellVfx {
     this.waves.length = 0;
     for (const d of this.decals) this.disposeGroundMesh(d.mesh, d.mat);
     this.decals.length = 0;
+    // 排队中的落地冲击只是参数，没有 GPU 资源 —— 清空即可，别在 dispose 之后还发
+    this.pendingImpacts.length = 0;
     this.pool.dispose();
     this.streams.dispose();
     this.flashes.dispose();
