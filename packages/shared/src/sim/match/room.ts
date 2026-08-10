@@ -14,7 +14,7 @@ import { ArenaPreset, GameMode } from '../../types/enums.js';
 import { FFA } from '../../constants/combat.js';
 import { TEAM_BLUE, TEAM_RED, type ClassId, type MapId, type TeamId } from '../../types/ids.js';
 import { getClass, isPlayableClass } from '../../data/index.js';
-import { mapsForMode } from '../../data/maps/index.js';
+import { MAP_BY_ID, mapsForMode } from '../../data/maps/index.js';
 import { teamSizeOf } from './arena.js';
 
 export const Slot = {
@@ -179,6 +179,13 @@ export const setPreset = (
  *   （地图注册表按模式声明，`mapsForMode` 是唯一权威 —— 这里不写
  *   `'ctf_twin_bridges'` 这种字面量，DEFAULT_CONFIG 那个「拿模式名当
  *   地图 id」的坑注释里有尸体）。
+ * ★★ **P5 选图之后多一句：当前这张图若仍适配新档位就留着，不适配才回落。**
+ *   四张主题图各覆盖一段人数档区间（密林祭坛吃 3v3–5v5），房主挑好了图
+ *   再拖一格人数滑杆就被打回试炼环的话，「选图」这件事在 UI 上等于没做完
+ *   —— 而回落本身不能省：6v6 用一张只支持到 5v5 的图会让开局直接失败
+ *   （`beginMatch` 先查地图，出生点不够就是一局打不起来的房间）。
+ *   ★ 判据走 `mapsForMode(mode)` 这唯一权威，**按 id 比**不按下标取
+ *     （m5 #24：地图/规格查找一律按 id）。
  * ★ **缩小人数档时若有队伍超编，拒绝而不是悄悄踢人**：把谁挪去观战席
  *   是房主该亲手做的决定，静默降席的表现是「我明明选了红方怎么在观战」。
  * ★ **换模式后全员取消准备**：已按下的「准备」是对上一个模式的同意，
@@ -189,8 +196,9 @@ export const setMode = (room: Room, playerId: string, mode: GameMode): SelectRes
   if (room.started) return { ok: false, reason: '比赛已开始，不能更换模式' };
   if (room.hostId !== playerId) return { ok: false, reason: '只有房主能更改模式' };
 
-  const map = mapsForMode(mode)[0];
-  if (!map) return { ok: false, reason: `模式 ${mode} 没有可用地图` };
+  const options = mapsForMode(mode);
+  const fallback = options[0];
+  if (!fallback) return { ok: false, reason: `模式 ${mode} 没有可用地图` };
 
   const size = teamSizeOf(mode);
   for (const slot of [Slot.Red, Slot.Blue] as const) {
@@ -203,9 +211,43 @@ export const setMode = (room: Room, playerId: string, mode: GameMode): SelectRes
     }
   }
 
+  const keepsCurrent = options.some((m) => m.id === room.config.mapId);
   room.config.mode = mode;
-  room.config.mapId = map.id;
+  room.config.mapId = keepsCurrent ? room.config.mapId : fallback.id;
   for (const p of room.players) p.ready = false;
+  return { ok: true };
+};
+
+/**
+ * P5：在**当前模式适配的地图**之间换一张。房主专属，开赛前 —— 与 `setMode` 同款守卫。
+ *
+ * ★★ **这条路径的存在理由是可达性**（与 `setPreset` / `setMode` / `setBossEnabled`
+ *   逐字同源）：P5 交付的四张主题图在 `ALL_MAPS` 里排在试炼环之后，而
+ *   `setMode` 取的是 `mapsForMode(mode)[0]` —— 没有这条消息，四张图数据全对、
+ *   机检全绿、**玩家一张都进不去**。本仓库栽过五次的那个坑，这是第六次的防线。
+ *
+ * ★ 三道判定的顺序有语义：
+ *     1. **存在** —— 查不到就说「地图不存在」（不受信任输入可以是任意字符串）
+ *     2. **适配当前模式** —— 判据是 `mapsForMode(room.config.mode)` 这唯一权威，
+ *        **按 id 比对**而不是按下标取（★ m5 #24）
+ *     3. 通过才写 `room.config.mapId`
+ *   ⚠️ **不合法一律诚实拒绝，绝不「顺手换成一张能用的」** —— 静默改的表现是
+ *      「我明明选了熔岩裂谷，开局却在试炼环」，而玩家只会以为是随机的。
+ *      降档时该回落的那一次在 `setMode` 里做，那里改的是**模式**，玩家知道自己动了什么。
+ * ★ 不取消准备（与 `setMode` 不同）：换图不改变「打什么、几个人」，
+ *   已经准备的人不必重新同意一次 —— 房主换张地形而已。
+ */
+export const setMap = (room: Room, playerId: string, mapId: MapId): SelectResult => {
+  if (room.started) return { ok: false, reason: '比赛已开始，不能更换地图' };
+  if (room.hostId !== playerId) return { ok: false, reason: '只有房主能更改地图' };
+
+  const map = MAP_BY_ID.get(mapId as string);
+  if (!map) return { ok: false, reason: `地图不存在：${mapId}` };
+  if (!mapsForMode(room.config.mode).some((m) => m.id === map.id)) {
+    return { ok: false, reason: `${map.name} 不适配当前模式（${room.config.mode}）` };
+  }
+
+  room.config.mapId = map.id;
   return { ok: true };
 };
 

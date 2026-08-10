@@ -174,8 +174,22 @@ export interface DispelSelector {
 }
 
 /** 这个光环会减速吗？衰减型减速（冰霜锁链）的 moveSpeed 写的就是初始值，同样命中 */
-const isSlowAura = (def: AuraInstance['def']): boolean =>
+export const isSlowAura = (def: AuraInstance['def']): boolean =>
   (def.modifiers?.moveSpeed ?? 1) < 1;
+
+/**
+ * 这个光环**限制移动**吗？＝ 减速 ∪ 定身。
+ *
+ * ★★ 只有这一份判据：驱散的 `impairs: 'movement'`（自由庇佑「解除减速和定身」）
+ *   与 8.4「3 秒内免疫**新的**减速和定身」（`immuneMovementImpair` /
+ *   `immuneSlowAndRoot`，见 `effects/combat.ts` 的 applyAura 处理器）
+ *   问的是同一个问题。分成两份迟早漂移，而漂移的形态就是
+ *   「解得掉但挡不住」—— X13 的对抗校验抓到的正是这条：免疫旗标当时
+ *   只在 `applyControl` 的 root 分支被读过，减速走的是光环那条路，
+ *   于是「免疫新的减速」对全仓库每一条减速都没生效过。
+ */
+export const impairsMovement = (def: AuraInstance['def']): boolean =>
+  isSlowAura(def) || def.flags?.rooted === true;
 
 /**
  * 驱散**资格**判定（只读）：这个目标身上有哪些光环会被该口径的驱散移除。
@@ -198,8 +212,8 @@ export const dispelEligible = (
     if (a.def.dispelType === DispelType.None) return false;
     if (selector.types && !selector.types.includes(a.def.dispelType)) return false;
     if (selector.impairs) {
-      const impairing = isSlowAura(a.def)
-        || (selector.impairs === 'movement' && a.def.flags?.rooted === true);
+      const impairing =
+        selector.impairs === 'movement' ? impairsMovement(a.def) : isSlowAura(a.def);
       if (!impairing) return false;
     }
     if (a.def.flags?.immuneAll && !canRemoveImmunity) return false;

@@ -100,11 +100,25 @@ describe('★★ 嵌套效果必须被看见', () => {
    *   `spendComboPoints.base` 里。只看顶层效果的话它们会被判成 `buff`，
    *   于是三个纯输出技能显示成**盾牌图标** —— spec 值全对，语义全错。
    */
-  it('★★ 地面区域 / 延迟落点 / 连击点终结技都判为伤害', () => {
-    const cases = ['mage.blizzard', 'mage.meteor', 'rogue.eviscerate'];
-    for (const id of cases) {
+  it('★★ 地面区域 / 延迟落点 / 连击点终结技的嵌套载荷都被看见（绝不是盾）', () => {
+    /**
+     * ★ 断言分两层，因为这条用例真正要钉的是**「不是 buff」**：
+     *   「盾牌图标」才是当年那个 bug 的样子。具体判成哪一种，由
+     *   `CORE_KINDS` 的**顺序即优先级**（控制先于伤害）决定 ——
+     *   ⚠️ X13 给陨星加了落地击晕之后它的核从 `damage` 变成了 `stun`，
+     *      那是**优先级规则在正确工作**（昏击、突进本来就是同一档：
+     *      既伤害又控制的技能读作控制），不是回归。写死 `damage`
+     *      会让下一次「给伤害技能加控制」红在一个与它无关的用例上。
+     */
+    const expected: Record<string, string> = {
+      'mage.blizzard': 'damage',
+      'mage.meteor': 'stun', // X13：落地击晕，控制优先于伤害
+      'rogue.eviscerate': 'damage',
+    };
+    for (const [id, core] of Object.entries(expected)) {
       const sk = ALL_SKILLS.find((s) => (s.id as string) === id)!;
-      expect(skillIconSpec(sk).core, `${sk.name} 应当是伤害图标`).toBe('damage');
+      expect(skillIconSpec(sk).core, `${sk.name} 的嵌套载荷没被看见（判成了盾）`).not.toBe('buff');
+      expect(skillIconSpec(sk).core, `${sk.name} 的图标语义变了`).toBe(core);
     }
   });
 

@@ -21,6 +21,7 @@ import {
   consumeAbsorb,
   dispel as dispelAuras,
   effectiveModifiersOf,
+  impairsMovement,
   removeAuraById,
   type AuraStore,
 } from '../aura.js';
@@ -408,11 +409,15 @@ export const applyControl = (
     ctx.events.push({ t: 'immune', targetId: target.id, why: 'flag' });
     return;
   }
-  if ((kind === 'root') && target.flags.immuneSlowAndRoot) {
-    ctx.events.push({ t: 'immune', targetId: target.id, why: 'flag' });
-    return;
-  }
-  if (kind === 'root' && target.flags.immuneMovementImpair) {
+  /**
+   * 8.4「免疫新的减速与定身」的**定身那一半**（减速那一半在 applyAura 处理器）。
+   *
+   * ★ 只对 `root` 生效**不是遗漏**：`CONTROL_SPECS` 里限制移动的只有定身，
+   *   昏迷/恐惧/迷惑/沉默不属于「移动限制」—— 自由庇佑挡不住裁决之锤，
+   *   这与 8.3 的分工（战斗意志才是通用解控）一致。两个旗标语义相同
+   *   （剑刃风暴 vs 自由庇佑各写了一个），合成一条判断，别再各写各的。
+   */
+  if (kind === 'root' && (target.flags.immuneSlowAndRoot || target.flags.immuneMovementImpair)) {
     ctx.events.push({ t: 'immune', targetId: target.id, why: 'flag' });
     return;
   }
@@ -510,6 +515,30 @@ registerEffect('applyAura', (ctx, e, targets) => {
   for (const t of list) {
     // 8.4：完全免疫挡住新的负面光环
     if (e.aura.kind === 'debuff' && t.flags.immuneAll) {
+      ctx.events.push({ t: 'immune', targetId: t.id, auraId: e.aura.id, why: 'flag' });
+      continue;
+    }
+    /**
+     * ★★ 8.4「免疫新的减速与定身」（自由庇佑 / 剑刃风暴）的**减速那一半**。
+     *
+     *   两个旗标此前只在 `applyControl` 的 `root` 分支被读过，而**减速根本
+     *   不走 applyControl** —— 它是一枚带 `modifiers.moveSpeed` 的普通光环，
+     *   走的就是这个处理器。于是「3 秒内免疫新的减速」对全仓库每一条减速
+     *   （寒冷、断腿斩、毒刃、寒缚链……）一次都没有生效过：数据在、说明在、
+     *   跑起来是空的 —— 与寒缚链 decay、疾行步 moveSpeedFloor 同族的静默失效。
+     *   X13 把寒冷改成「瞬发零冷却每 GCD 刷新」之后这条洞变成决定性的：
+     *   技能说明把自由祝福当作反制手段卖给玩家，实际按下去什么都没挡住。
+     *
+     * ★ 判据复用 `aura.ts` 的 `impairsMovement`（减速 ∪ 定身），与自由庇佑
+     *   自己那半边 `dispel(impairs:'movement')` **同一条谓词** ——
+     *   「解得掉的」与「挡得住的」必须是同一个集合。
+     * ★ 只挡减益：形态类自我减速（buff）与「解除后再上」的自己人光环不受影响。
+     */
+    if (
+      e.aura.kind === 'debuff' &&
+      (t.flags.immuneMovementImpair || t.flags.immuneSlowAndRoot) &&
+      impairsMovement(e.aura)
+    ) {
       ctx.events.push({ t: 'immune', targetId: t.id, auraId: e.aura.id, why: 'flag' });
       continue;
     }

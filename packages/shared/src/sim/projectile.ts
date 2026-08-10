@@ -18,8 +18,9 @@
 import { firstProjectileHit, segmentClipT } from '../math/geometry.js';
 import { addScaled, distance2D, normalize, sub, vec3, type Vec3 } from '../math/vec3.js';
 import type { EffectDef } from '../data/schema.js';
+import { TargetFilter } from '../types/enums.js';
 import type { EntityId, SkillId } from '../types/ids.js';
-import { hitCircleOf, isSelectableBy, type CombatEntity } from './entity.js';
+import { hitCircleOf, isFriendly, isHostile, isSelectableBy, type CombatEntity } from './entity.js';
 import { listEntities, type World } from './world.js';
 
 // ── 锁定投射物 ───────────────────────────────────────────────────
@@ -86,6 +87,19 @@ export interface DelayedImpact {
   radius: number;
   createdAt: number;
   impactAt: number;
+  /**
+   * ★★ 落地那一刻**重新选目标**时的阵营判据（8.1「友军伤害默认关闭」）。
+   *
+   *   这是另外两类投射物没有的问题：锁定弹体在释放瞬间就定死了 `targetId`、
+   *   碰撞弹体每步都过 `isSelectableBy`，只有延迟落点是「1.5 秒后照着圆圈
+   *   现场圈人」—— 施法期 `aiming.ts` 的 `TargetFilter` 到那时早已过去。
+   *   X13 把一条**硬控**（陨星落地击晕）放上了这条路之后，
+   *   「把陨星丢在自己脚下」会把法师自己和队友一起晕 1.5 秒。
+   *
+   * ★ 与施法期同源：由 `delayedGroundImpact` 处理器从 `SkillDef.targetFilter`
+   *   带过来，不在这里另立一套判据。缺省 `Enemy`。
+   */
+  targetFilter: TargetFilter;
   onImpact: readonly EffectDef[];
 }
 
@@ -175,6 +189,8 @@ export const spawnDelayedImpact = (
     center: Vec3;
     radius: number;
     delay: number;
+    /** 不填按 `Enemy`（8.1 友军伤害默认关闭）。治疗型落点将来传 `Ally` */
+    targetFilter?: TargetFilter;
     onImpact: readonly EffectDef[];
   },
 ): DelayedImpact => {
@@ -187,6 +203,7 @@ export const spawnDelayedImpact = (
     radius: o.radius,
     createdAt: world.time,
     impactAt: world.time + o.delay,
+    targetFilter: o.targetFilter ?? TargetFilter.Enemy,
     onImpact: o.onImpact,
   };
   store.items.push(p);
@@ -201,6 +218,28 @@ export interface ProjectileHitEvent {
   targets: CombatEntity[];
   effects: readonly EffectDef[];
 }
+
+/**
+ * 阵营判据。**与施法期同一套语义**（`aiming.ts` 的 `collectShapeTargets`）——
+ * 分支逐条对齐，是为了让「落地时圈到的人」永远是「施法时会圈到的人」的子集。
+ *
+ * ★ 这里刻意**不做** `isSelectableBy`（潜行 / 不可选中）：地面区域 tick
+ *   （`groundArea.ts` 的区域分支）同样只看阵营，范围伤害照到潜行者身上是
+ *   本仓库既有的口径。两处保持一致，不在这里单独发明第三种。
+ */
+const matchesFilter = (
+  filter: TargetFilter,
+  shooter: CombatEntity,
+  e: CombatEntity,
+): boolean => {
+  switch (filter) {
+    case TargetFilter.Enemy: return isHostile(shooter, e);
+    case TargetFilter.Ally: return isFriendly(shooter, e);
+    case TargetFilter.Self: return e.id === shooter.id;
+    case TargetFilter.Any: return true;
+    default: return false;
+  }
+};
 
 /**
  * 推进所有投射物一个 tick，返回本 tick 产生的命中事件。
@@ -286,8 +325,19 @@ export const tickProjectiles = (
 
       case 'delayedImpact': {
         if (world.time >= p.impactAt) {
+          /**
+           * ★★ 8.1「友军伤害默认关闭」：落地是**第二次选目标**，阵营判据
+           *   必须在这里再过一遍 —— 施法期 aiming.ts 的那次已经是 1.5 秒前
+           *   的事了（见 `DelayedImpact.targetFilter` 的注释）。
+           *   施法者查不到（已离场）时按旧行为放行：弹体已经在飞，
+           *   这时候整发吞掉比多打几个人更难解释。
+           */
+          const shooter = world.entities.get(p.sourceId);
           const targets = entities.filter(
-            (e) => e.alive && distance2D(e.position, p.center) <= p.radius + e.radius,
+            (e) =>
+              e.alive &&
+              distance2D(e.position, p.center) <= p.radius + e.radius &&
+              (shooter ? matchesFilter(p.targetFilter, shooter, e) : true),
           );
           events.push({ projectile: p, targets, effects: p.onImpact });
         } else {

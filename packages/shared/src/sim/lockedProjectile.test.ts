@@ -488,9 +488,22 @@ describe('★ 迁移没有改变数值口径', () => {
     expect(swpPayload.length).toBe(1);
     expect(swpPayload[0]!.kind).toBe('applyAura');
 
+    /**
+     * ⚠️ 裁决的载荷从 W23 当时的 `['damage','applyAura']` 变成了三条 ——
+     *   **X13 后加的减速光环**（`paladin.judgement.slow`），不是迁移动了数值。
+     *   这条用例锁的是「W23 只挪了结算时点」，所以断言方式跟着改成
+     *   「**迁移当时那两条原样还在，且都在 onHit 里**」：后来的功能可以往
+     *   载荷里加东西，但不许把当年那两条改掉或挪回顶层。写死一个长度只会
+     *   让下一次正常的功能扩充红在一个与它无关的用例上。
+     */
     const judgement = paladin.skills.find((s) => (s.id as string) === 'paladin.judgement')!;
     const jPayload = lockedOf(judgement)!.onHit;
-    expect(jPayload.map((e) => e.kind)).toEqual(['damage', 'applyAura']);
+    expect(jPayload[0]).toEqual({ kind: 'damage', school: School.Holy, amount: { flat: 58 } });
+    expect(
+      jPayload.some((e) => e.kind === 'applyAura' && e.aura.id === 'paladin.judgement'),
+      '迁移当时那枚易伤光环不在 onHit 里了',
+    ).toBe(true);
+    expect(judgement.effects.every((e) => e.kind === 'lockedProjectile'), '目标向效果漏在顶层').toBe(true);
   });
 
   it('★ 技能 id 一个都没变（图标表 / 签名表 / 教学步骤全按 id 查）', () => {

@@ -66,14 +66,22 @@ const heals = (e: EffectDef): boolean =>
   (e.kind === 'spawnGroundArea' && (e.onTick?.some(heals) ?? false));
 
 /**
- * 一个技能声称的**全部**效果，摊平 `lockedProjectile.onHit` 一层。
+ * 一个技能声称的**全部**效果，摊平 `lockedProjectile.onHit` 与
+ * `delayedGroundImpact.onImpact` 各一层。
  *
  * ★★ W23：迁移后霜矢的减速、月火的 DoT、化形术的迷惑…全在 onHit 里。
  *   逐效果断言那一段如果只看顶层，这 21 个技能会**整体退化成「什么都不断言」**
  *   —— 冒烟还是绿的，但它已经不再证明任何事。这正是本文件存在的理由的反面。
+ *
+ * ★★ X13：陨星的落地击晕住在 `delayedGroundImpact.onImpact` 里，是同一类
+ *   「载荷下沉了一层」。上面 `dealsDamage` 早就单独下探过 onImpact，
+ *   而逐效果断言这一段没有 —— 于是新加的击晕会**一声不响地不被断言**。
+ *   补上这一层的判据与 W23 那次一字不差：**载荷在哪一层，摊平就摊到哪一层**。
  */
 const claimedEffects = (skill: SkillDef): readonly EffectDef[] =>
-  skill.effects.flatMap((e) => (e.kind === 'lockedProjectile' ? e.onHit : [e]));
+  skill.effects.flatMap((e) =>
+    e.kind === 'lockedProjectile' ? e.onHit : e.kind === 'delayedGroundImpact' ? e.onImpact : [e],
+  );
 
 /** 控制效果 → 命中后目标该亮起的旗子 */
 const CONTROL_FLAG: Record<string, keyof CombatEntity['flags']> = {

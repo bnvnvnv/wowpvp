@@ -7,9 +7,9 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ALL_CLASSES, getClass } from '../../data/index.js';
-import { arena3v3 } from '../../data/maps/index.js';
+import { MAP_BY_ID, THEMED_ARENA_SPECS, arena3v3, mapsForMode } from '../../data/maps/index.js';
 import { ArenaPreset, GameMode } from '../../types/enums.js';
-import { asClassId, TEAM_BLUE, TEAM_RED } from '../../types/ids.js';
+import { asClassId, asMapId, TEAM_BLUE, TEAM_RED } from '../../types/ids.js';
 import {
   Slot,
   canStart,
@@ -27,6 +27,7 @@ import {
   setBossEnabled,
   setBotDifficulty,
   setFillWithBots,
+  setMap,
   setMode,
   setPreset,
   setReady,
@@ -537,5 +538,120 @@ describe('W12 房间设置：游戏模式', () => {
     expect(room.players.every((p) => !p.ready)).toBe(true);
     // 职业与阵营保留（与 resetForRematch 同语义：重新同意，不重选人生）
     expect(room.players.find((p) => p.id === 'host')?.classId).toBe(asClassId('mage'));
+  });
+});
+
+describe('P5 房间设置：选图（SetRoomMap 的规则面）', () => {
+  beforeEach(() => {
+    room = createRoom('r-map', 'host', config());
+    joinRoom(room, 'host', '房主');
+    joinRoom(room, 'guest', '客人');
+  });
+
+  it('★ 房主能换成一张适配当前模式的图（密林祭坛吃 3v3）', () => {
+    const r = setMap(room, 'host', asMapId('arena_grove_altar'));
+    expect(r.ok).toBe(true);
+    expect(room.config.mapId as string).toBe('arena_grove_altar');
+  });
+
+  it('★ 非房主换不动 —— 与预设/模式同一条线', () => {
+    expect(setMap(room, 'guest', asMapId('arena_grove_altar')).ok).toBe(false);
+    expect(room.config.mapId as string).toBe('arena_3v3');
+  });
+
+  it('★ 开赛后换不动（阶段白名单是第一道门，这里是第二道）', () => {
+    room.started = true;
+    expect(setMap(room, 'host', asMapId('arena_grove_altar')).ok).toBe(false);
+    expect(room.config.mapId as string).toBe('arena_3v3');
+  });
+
+  it('★ 不存在的地图 id 诚实拒绝（不受信任输入可以是任意字符串）', () => {
+    const r = setMap(room, 'host', asMapId('arena_atlantis'));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain('不存在');
+    expect(room.config.mapId as string).toBe('arena_3v3');
+  });
+
+  /**
+   * ★★ 这一条是本组的主线：**不合法就拒绝，绝不「顺手换成一张能用的」**。
+   *   静默改的表现是「我明明选了熔岩裂谷，开局却在试炼环」——
+   *   而玩家只会以为是随机的。
+   */
+  it('★★ 不适配当前人数档 → 拒绝且一个字段都不动（熔岩裂谷最低 6v6）', () => {
+    const r = setMap(room, 'host', asMapId('arena_lava_rift'));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain('不适配');
+    expect(room.config.mapId as string).toBe('arena_3v3');
+    expect(room.config.mode).toBe(GameMode.Arena3v3);
+  });
+
+  it('★ 换到该图支持的档位之后，同一条消息就通过了', () => {
+    setMode(room, 'host', GameMode.Arena6v6);
+    expect(setMap(room, 'host', asMapId('arena_lava_rift')).ok).toBe(true);
+    expect(room.config.mapId as string).toBe('arena_lava_rift');
+  });
+
+  it('★ 换图不取消准备 —— 换的是地形，不是「打什么、几个人」', () => {
+    selectSlot(room, 'host', Slot.Red);
+    selectClass(room, 'host', asClassId('mage'));
+    setReady(room, 'host', true);
+    expect(setMap(room, 'host', asMapId('arena_grove_altar')).ok).toBe(true);
+    expect(room.players.find((p) => p.id === 'host')?.ready).toBe(true);
+  });
+
+  /** ★ 每一张主题图都要真的能被选上 —— 否则「做了图玩家进不去」原样复发 */
+  it('★★ 四张主题图各自在自己的档位区间里都选得上', () => {
+    for (const spec of THEMED_ARENA_SPECS) {
+      for (const mode of MAP_BY_ID.get(spec.id)!.modes) {
+        const r2 = createRoom('probe', 'host', config({ mode }));
+        joinRoom(r2, 'host', '房主');
+        expect(setMap(r2, 'host', asMapId(spec.id)).ok, `${spec.name} 在 ${mode} 选不上`)
+          .toBe(true);
+      }
+    }
+  });
+});
+
+describe('P5 换人数档时的地图回落（setMode 的后半句）', () => {
+  beforeEach(() => {
+    room = createRoom('r-fall', 'host', config());
+    joinRoom(room, 'host', '房主');
+  });
+
+  /**
+   * ★★ 拖一格滑杆就把房主挑好的图打回试炼环的话，「选图」在 UI 上等于没做完。
+   *   密林祭坛声明的是 3v3/4v4/5v5，三档之间来回换都该留着它。
+   */
+  it('★★ 新档位仍适配 → 保留当前图（不被静默换掉）', () => {
+    setMap(room, 'host', asMapId('arena_grove_altar'));
+    expect(setMode(room, 'host', GameMode.Arena5v5).ok).toBe(true);
+    expect(room.config.mapId as string).toBe('arena_grove_altar');
+  });
+
+  /**
+   * ★★ 回落不能省：6v6 用一张只支持到 5v5 的图，`beginMatch` 查完地图
+   *   会得到一张出生点不够的场地 —— 那是一局打不起来的房间。
+   */
+  it('★★ 新档位不适配 → 回落到该模式的首张图（mapsForMode 的权威首项）', () => {
+    setMap(room, 'host', asMapId('arena_grove_altar'));
+    expect(setMode(room, 'host', GameMode.Arena8v8).ok).toBe(true);
+    expect(room.config.mapId as string).toBe(mapsForMode(GameMode.Arena8v8)[0]!.id as string);
+    expect(room.config.mapId as string).toBe('arena_8v8');
+  });
+
+  /** ★ 无参默认路径一字不变：没主动选过图的房间，换档还是老样子 */
+  it('★ 没选过图的房间换档 = 老行为（试炼环跟着档位走）', () => {
+    expect(setMode(room, 'host', GameMode.Arena5v5).ok).toBe(true);
+    expect(room.config.mapId as string).toBe('arena_5v5');
+    expect(setMode(room, 'host', GameMode.Ctf6v6).ok).toBe(true);
+    expect(room.config.mapId as string).toBe('ctf_twin_bridges');
+  });
+
+  /** ★ 跨族切换（竞技场 → 夺旗）永远回落 —— 主题图不声明 ctf 模式 */
+  it('★ 主题图上切到夺旗 → 回落夺旗图', () => {
+    setMode(room, 'host', GameMode.Arena8v8);
+    setMap(room, 'host', asMapId('arena_ruins_colosseum'));
+    expect(setMode(room, 'host', GameMode.Ctf8v8).ok).toBe(true);
+    expect(room.config.mapId as string).toBe('ctf_twin_bridges');
   });
 });

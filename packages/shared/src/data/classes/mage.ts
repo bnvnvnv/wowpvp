@@ -20,9 +20,55 @@ import {
 } from '../../types/enums.js';
 import { asArmorId, asClassId, asSkillId, asWeaponId } from '../../types/ids.js';
 import { makeArmorSet } from '../armors.js';
-import type { ClassDef, SkillDef, WeaponDef } from '../schema.js';
+import type { AuraDef, ClassDef, SkillDef, WeaponDef } from '../schema.js';
 
 const CLASS_ID = asClassId('mage');
+
+/**
+ * ★★ X13 冰系「寒冷」族减速。用户拍板（2026-08-10）原话：
+ *   「法师的冰系减速技能应该有一些**持续**减速的效果……这些没有」。
+ *
+ *   审计到的真相是**接不上**而不是没有：霜矢的 chill 只有 3 秒 30%，
+ *   而霜矢自己要 1.4 秒读条 + 一段飞行；真正在被追击时一直按的那个键 ——
+ *   冰枪术（瞬发、零冷却，P3b 就是为「被追击时的主要输出」而生）——
+ *   **一点减速都不带**。于是玩家边跑边点冰枪的整段时间里，脚下的减速
+ *   在自然掉光。「不持续」的体感来自这条断口，不是数值不够大。
+ *
+ * ★ 修法是把这两个键接进**同一枚**光环：id 保持 `mage.frostbolt.chill`
+ *   不变，霜矢与冰枪术共同施加/刷新（`aura.ts` 的 applyAura：同 id 同来源
+ *   即刷新时长）。于是「一直点冰枪 = 减速一直在」。
+ *
+ * ⚠️ **必须共用一个 id，不能一人一枚**：
+ *   · 分成两枚时减速取最强（8.4）数值上等价，但**一次驱散只清得掉一枚** ——
+ *     净化过了却还在被减速，反制链就断了（这是 8.4 明写的对称性）；
+ *   · X17 的光环行会排出两格意义完全相同的图标。
+ * ⚠️ **必须是同一个 def 对象**（下面两处直接引用这个常量，不各写一份）：
+ *   `applyAura` 刷新时只改时长，`def` 仍是**第一次**施加的那份
+ *   （aura.ts 的 existing 分支不覆盖 def）—— 两边写不同数值的话，后按的
+ *   那个键会「用自己的时长刷新别人的强度」，是一条没有任何测试看得见的偏差。
+ * ⚠️ id 保持 `<职业>.<技能>.<后缀>` 三段式不是随意的：客户端的
+ *   `visualForAuraId()` 取前两段反查技能定学派色，`auraIconUrl()` 去掉最后
+ *   一段查图标 —— 换成 `mage.chill` 这类两段 id，冰蓝色和图标会一起静默消失。
+ *
+ * ★ WoW 参照：寒冰箭的「Chilled」减速族（寒冰箭 / 暴风雪 / 冰锥术在正式服
+ *   共用一条寒冷状态）。40% / 4 秒取正式服寒冰箭口径。冰枪术在正式服本体
+ *   不减速（它吃的是「碎冰」对冻结目标的加成），本仓库没有碎冰这套机制，
+ *   把它并入寒冷族是**用已有的减速轴兑现同一个职业身份**，而不是再发明一条规则。
+ * ★ 走 `DispelType.Magic` 而不是 Movement：法师的冰系减速统一是魔法效果
+ *   （与死骑统一走 Movement 相对），玩家的心智模型每个职业内部一致。
+ *   普通减速不参与 8.2 递减（`dr.ts` 文件头：定身与普通减速是两条独立的链），
+ *   照冰锥术 / 震荡射击的既有先例办，这里不发明新规则。
+ */
+const FROST_CHILL: AuraDef = {
+  id: 'mage.frostbolt.chill',
+  name: '寒冷',
+  kind: 'debuff',
+  duration: 4,
+  dispelType: DispelType.Magic,
+  clearableByTrinket: false,
+  modifiers: { moveSpeed: 0.6 },
+  description: '移动速度降低 40%。',
+};
 
 // ── 技能 ─────────────────────────────────────────────────────────
 
@@ -58,23 +104,12 @@ const skills: SkillDef[] = [
           // M14：120→205 —— 白字压回「低伤害」后主读条承担输出，读条可打断即其反制面
           // M14b：205→230 —— 位移生效后近战 7~8 秒贴脸击杀，法师输在 100~300 伤害的窄差（基线 28.6%）
           { kind: 'damage', school: School.Frost, amount: { flat: 230 } },
-          {
-            kind: 'applyAura',
-            aura: {
-              id: 'mage.frostbolt.chill',
-              name: '霜矢',
-              kind: 'debuff',
-              duration: 3,
-              dispelType: DispelType.Magic,
-              clearableByTrinket: false,
-              modifiers: { moveSpeed: 0.7 },
-              description: '移动速度降低 30%。',
-            },
-          },
+          // X13：寒冷族减速，与冰枪术共用同一枚（见 FROST_CHILL 的注释）
+          { kind: 'applyAura', aura: FROST_CHILL },
         ],
       },
     ],
-    description: '造成冰霜伤害，并使目标移动速度降低 30%，持续 3 秒。',
+    description: '造成冰霜伤害，并使目标移动速度降低 40%，持续 4 秒（寒冷效果，可被冰枪术刷新）。',
   },
   {
     id: asSkillId('mage.fire_blast'),
@@ -343,17 +378,44 @@ const skills: SkillDef[] = [
     requiresLos: true,
     cost: { resource: Resource.Mana, amount: 120 },
     counters:
-      '落点和倒计时全程显示，可以走出去躲开（14.3）；1 秒读条期间可被打断并锁火焰 4 秒（自己被反制同理）；从读条到落地共 2.5 秒，位移、免疫或寒冰屏障都能规避；一旦读条被打断，冷却照进但无伤害。',
+      '落点和倒计时全程显示，可以走出去躲开（14.3）；1 秒读条期间可被打断并锁火焰 4 秒（自己被反制同理）；从读条到落地共 2.5 秒，位移、免疫或寒冰屏障都能规避；一旦读条被打断，冷却照进但无伤害；落地击晕走「昏迷」递减链（8.2：100%→50%→25%→免疫），接在队友的昏迷后面会被大幅缩短，「战斗意志」可直接解除，抗控型护甲缩短它，完全免疫直接挡下。',
     effects: [
       // 6.6 延迟落点：落点边界与倒计时全程可见
       {
         kind: 'delayedGroundImpact',
         delay: 1.5,
         radius: 5,
-        onImpact: [{ kind: 'damage', school: School.Fire, amount: { flat: 420 } }],
+        onImpact: [
+          { kind: 'damage', school: School.Fire, amount: { flat: 420 } },
+          /**
+           * ★★ X13 火系击晕。用户拍板（2026-08-10）原话：
+           *   「火系应该有一些击晕的效果，这些没有」。
+           *
+           * ★ WoW 参照是火系天赋 **Impact（震荡）**：「你的火焰伤害法术有
+           *   几率使目标昏迷 2 秒」。本仓库把它从「低几率 × 高频率」换算成
+           *   **「必定 × 长冷却」**，理由是确定性：本 sim 的随机流是可复现的，
+           *   但**几率触发的硬控在 PVP 里不可预读** —— 对手无法判断这一发
+           *   烈焰爆会不会把他定住，也就无从反制（附录A#3 要求每个技能都
+           *   写得出反制方式）。落在 60 秒冷却、落点全程可见、还要等 1.5 秒
+           *   才砸下来的陨星上，期望值接近而**博弈是看得见的**。
+           *
+           * ★ 刻意**不放**在烈焰爆（8 秒冷却）上：8 秒一次的硬控意味着
+           *   读条职业永远读不完一条法术，且它会反复吃满自己的昏迷递减窗口，
+           *   把队友的裁决之锤 / 掷锤一起变成半衰 —— 那不是「有一个击晕点」，
+           *   是压制性连控。灼烧（3 秒冷却）更不必谈。
+           * ★ 1.5 秒而不是 WoW 的 2 秒：陨星本体已经是全法师最高的单发伤害
+           *   （420），控制只需要「够接上一轮输出」，不需要够接一整条连招。
+           * ★ 不写 breakDamage：昏迷按 8.2 的口径**不因受伤解除**
+           *   （受伤打破是恐惧/变形/定身那一档）—— 而陨星必然带 420 点范围
+           *   伤害，给它 breakDamage 等于让这个击晕当场自己打断自己。
+           * ★ 走 `applyControl` → `DrCategory.Stun` 全套（递减 / 免疫 /
+           *   抗控系数 / 战斗意志可解），不新增任何规则。
+           */
+          { kind: 'stun', duration: 1.5 },
+        ],
       },
     ],
-    description: '在指定地面召唤陨石，1.5 秒后落地造成高额范围火焰伤害。落点与倒计时全程可见。',
+    description: '在指定地面召唤陨石，1.5 秒后落地造成高额范围火焰伤害，并击晕命中的敌人 1.5 秒。落点与倒计时全程可见。',
   },
   /**
    * ★★ **P3b 技能扩充：瞬发填充键**（技能审计 `pnpm skill-audit` 的头号缺口）。
@@ -384,16 +446,24 @@ const skills: SkillDef[] = [
     requiresLos: true,
     cost: { resource: Resource.Mana, amount: 18 },
     counters:
-      '伤害是法师技能里最低的一档，靠 GCD 节奏叠出来 —— 对手开减伤或吸收护盾就能大幅抵消；仍是冰霜魔法，沉默与冰霜学派锁定期间照样用不出来（7.3）；没有任何控制效果，单靠它无法阻止近战贴身。',
+      '伤害是法师技能里最低的一档，靠 GCD 节奏叠出来 —— 对手开减伤或吸收护盾就能大幅抵消；仍是冰霜魔法，沉默与冰霜系被封锁期间照样用不出来（7.3）；附带的寒冷减速与霜矢是**同一枚**，驱散魔法、自由祝福或任何解除移动限制的手段一次就能清干净，也不与其他减速叠乘（8.4）；它只减速不定身 —— 被减速的近战照样能追、能打、能读条。',
     // W23：冰枪飞到才结算（6.6）
     effects: [
       {
         kind: 'lockedProjectile',
         speed: SPELL_PROJECTILE.SPEED,
-        onHit: [{ kind: 'damage', school: School.Frost, amount: { flat: 95 } }],
+        onHit: [
+          { kind: 'damage', school: School.Frost, amount: { flat: 95 } },
+          /**
+           * ★★ X13：寒冷族减速挂在这里 —— 这一条就是用户说的「持续减速」。
+           *   冰枪零冷却，每个 GCD 都能刷新同一枚光环，被追击的整段时间里
+           *   减速不再自然掉光。数值与霜矢**同一份 def**（见 FROST_CHILL）。
+           */
+          { kind: 'applyAura', aura: FROST_CHILL },
+        ],
       },
     ],
-    description: '瞬发投出一柄冰枪，造成少量冰霜伤害。无冷却、可在移动中使用 —— 被追击时的主要输出手段。',
+    description: '瞬发投出一柄冰枪，造成少量冰霜伤害并使目标移动速度降低 40%，持续 4 秒。与霜矢共用同一枚寒冷效果，可互相刷新 —— 无冷却、可在移动中使用，被追击时的主要输出与减速手段。',
   },
   /**
    * ★★ 群体减速（总账 X13：法师**没有任何群体减速手段**，被多个近战围住时无解）。

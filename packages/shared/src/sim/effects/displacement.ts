@@ -9,6 +9,8 @@
 
 import { clampDisplacement } from '../../math/geometry.js';
 import { addScaled, normalize2D, sub, yawToDir, type Vec3 } from '../../math/vec3.js';
+import { getSkill } from '../../data/index.js';
+import { TargetFilter } from '../../types/enums.js';
 import { teleportTo } from '../movement.js';
 import { spawnColliding, spawnDelayedImpact, spawnHoming } from '../projectile.js';
 import { asSkillId } from '../../types/ids.js';
@@ -159,6 +161,15 @@ registerEffect('delayedGroundImpact', (ctx, e, targets) => {
     center,
     radius: e.radius,
     delay: e.delay,
+    /**
+     * ★★ 8.1「友军伤害默认关闭」：落地要重新圈人（1.5 秒后的事），
+     *   阵营判据从**技能定义**带过去 —— 与施法期 `aiming.ts` 读的是同一个
+     *   字段，不在投射物层另立一套。查不到 `SkillDef` 时（光环周期跳、
+     *   弹体二段效果这类 `ctx.skillId` 反查不到技能的场景，与
+     *   `applyControl` 反查学派时的处境相同）回落到 `Enemy`，
+     *   与 `spawnDelayedImpact` 的缺省一致。
+     */
+    targetFilter: getSkill(asSkillId(ctx.skillId))?.targetFilter ?? TargetFilter.Enemy,
     onImpact: e.onImpact,
   });
 });

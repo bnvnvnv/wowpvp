@@ -90,10 +90,10 @@
 | 技能 | 瞄准 | 目标 | 距离 | 形状 | 施放 | 可移动 | 可打断 | 学派 | 冷却 | 标记 | 效果 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | **圣印打击**<br/>`paladin.crusader_strike` | 直接目标 | 敌方 | 3m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 4.5s | 需朝向/需视线 | damage, gainResource |
-| **裁决**<br/>`paladin.judgement` | 直接目标 | 敌方 | 25m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 神圣 | 10s | 需视线 | damage, applyAura |
+| **裁决**<br/>`paladin.judgement` | 直接目标 | 敌方 | 25m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 神圣 | 10s | 需视线 | lockedProjectile, damage, applyAura |
 | **圣愈术**<br/>`paladin.holy_light` | 直接目标 | 友方 | 30m | 单体 | 读条 1.5s | ✗ | ✓ | 神圣 | 6s | 需视线 | heal |
 | **荣光敕令**<br/>`paladin.word_of_glory` | 直接目标 | 友方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 神圣 | 12s | 需视线 | heal |
-| **裁决之锤**<br/>`paladin.hammer_of_justice` | 直接目标 | 敌方 | 10m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 神圣 | 30s | 需视线 | stun |
+| **裁决之锤**<br/>`paladin.hammer_of_justice` | 直接目标 | 敌方 | 10m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 神圣 | 30s | 需视线 | lockedProjectile, stun |
 | **斥令**<br/>`paladin.rebuke` | 直接目标 | 敌方 | 3m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 15s | 脱离GCD/需朝向/需视线 | interrupt |
 | **自由庇佑**<br/>`paladin.blessing_of_freedom` | 直接目标 | 友方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 神圣 | 20s | 需视线 | dispel, applyAura |
 | **守护庇佑**<br/>`paladin.blessing_of_protection` | 直接目标 | 友方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 神圣 | 45s | 需视线/掉旗 | applyAura, dropFlag |
@@ -101,7 +101,7 @@
 | **义愤**<br/>`paladin.avenging_wrath` | 自身 | 自身 | 自身 | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 神圣 | 60s | — | applyAura |
 | **义盾撞**<br/>`paladin.shield_of_the_righteous` | 直接目标 | 敌方 | 2.8m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 9s | 需朝向/需视线 | damage, applyAura |
 | **圣殿重击**<br/>`paladin.templar_strike` | 直接目标 | 敌方 | 3.4m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 9s | 需朝向/需视线 | damage, gainResource |
-| **圣光弹**<br/>`paladin.holy_bolt` | 直接目标 | 敌方 | 25m | 单体 | 读条 1s | ✗ | ✓ | 神圣 | 4.5s | 需视线 | damage, gainResource |
+| **圣光弹**<br/>`paladin.holy_bolt` | 直接目标 | 敌方 | 25m | 单体 | 读条 1s | ✗ | ✓ | 神圣 | 4.5s | 需视线 | lockedProjectile, damage, gainResource |
 | **奉献**<br/>`paladin.consecration` | 自身中心 | 敌方 | 8m | 圆形 r=8 | 瞬发 | ✓ | ✗（盾牌标记） | 神圣 | 12s | — | spawnGroundArea, damage |
 | **圣疗术**<br/>`paladin.lay_on_hands` | 直接目标 | 友方 | 25m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 神圣 | 300s | 需视线 | healPercentMaxHealth |
 | **虔诚光环**<br/>`paladin.devotion_aura` | 自身中心 | 友方 | 30m | 圆形 r=30 | 瞬发 | ✓ | ✗（盾牌标记） | 神圣 | 90s | — | applyAura |
@@ -109,7 +109,7 @@
 <details><summary>反制方式（附录A#3 第九项）</summary>
 
 - **圣印打击**：纯武器技能：缴械后完全禁用（7.3），但沉默和神圣系封锁拦不住它；要求贴身 3 米并把目标保持在前方 180 度（6.5），被风筝或被定身拉开就断了圣能来源，荣耀圣令随之哑火。
-- **裁决**：神圣系法术：被责难以外的专用打断封锁神圣系、或自己处于沉默期间都用不出来（7.2 / 7.3）；易伤是魔法减益，敌方驱散一次就抹掉 4 秒增伤窗口（8.4）；释放瞬间失去视线或超出 25 米直接失败（7.4），柱子绕视野是最省事的应对。
+- **裁决**：神圣系法术：被责难以外的专用打断封锁神圣系、或自己处于沉默期间都用不出来（7.2 / 7.3）；易伤与减速是**两枚**独立的魔法减益，一次驱散魔法只带得走一枚（先清掉的是易伤），想解掉减速要么再驱散一次，要么用自由庇佑这类专解移动限制的手段 —— 它连解带 3 秒免疫；减速 30% 是全场最弱的一档，不与其他减速叠乘（8.4），也不参与控制递减；释放瞬间失去视线或超出 25 米直接失败（7.4），柱子绕视野是最省事的应对。
 - **圣愈术**：1.5 秒读条是圣骑士最大的破绽：专用打断命中会封锁神圣系 3 秒（7.2），沉默、昏迷、恐惧、击退拉拽以及自己主动移动都会直接中止（7.3）；完成瞬间目标死亡、超出 30 米或失去视线同样失败（7.4）；治疗量还会被致死创伤类降治疗减益和竞技场战斗抑制（8.5）压低。
 - **荣光敕令**：瞬发不可打断，但受制于资源链：必须先贴身打出 3 次十字军打击，把圣骑士风筝开、缴械或控在近战距离外就等于封了这个技能；治疗量同样吃降低治疗减益与战斗抑制（8.5）；沉默期间作为魔法技能不可使用（7.3）。
 - **裁决之锤**：受昏迷递减 100%→50%→25%→免疫（8.2），一轮控制链后基本无效；「战斗意志」可直接解除（8.3）；圣盾术、保护祝福以外的法术免疫和抗控型护甲（控制时间 -25%）都能削弱；魔法技能，沉默或神圣系被封锁期间无法使用（7.3），10 米距离也要求先贴上去。
@@ -140,8 +140,8 @@
 | **碎骨斩**<br/>`deathknight.obliterate` | 直接目标 | 敌方 | 3.3m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 6s | 需朝向/需视线 | damage, gainResource |
 | **汲血斩**<br/>`deathknight.death_strike` | 直接目标 | 敌方 | 3m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 8s | 需朝向/需视线 | damage, healFromRecentDamage, gainResource |
 | **缚魂拽**<br/>`deathknight.death_grip` | 直接目标 | 敌方 | 20m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 暗影 | 25s | 需视线 | pullTarget |
-| **寒缚链**<br/>`deathknight.chains_of_ice` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 寒冰 | 12s | 需视线 | applyAura |
-| **扼喉**<br/>`deathknight.strangulate` | 直接目标 | 敌方 | 20m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 暗影 | 30s | 需视线 | stun |
+| **寒缚链**<br/>`deathknight.chains_of_ice` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 寒冰 | 12s | 需视线 | lockedProjectile, applyAura |
+| **扼喉**<br/>`deathknight.strangulate` | 直接目标 | 敌方 | 20m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 暗影 | 30s | 需视线 | lockedProjectile, stun |
 | **冻念**<br/>`deathknight.mind_freeze` | 直接目标 | 敌方 | 15m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 寒冰 | 15s | 脱离GCD/需视线 | interrupt |
 | **抗咒护罩**<br/>`deathknight.anti_magic_shell` | 自身 | 自身 | 自身 | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 暗影 | 30s | — | applyAura |
 | **疾行步**<br/>`deathknight.deaths_advance` | 自身 | 自身 | 自身 | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 暗影 | 40s | — | applyAura |
@@ -234,7 +234,7 @@
 | 技能 | 瞄准 | 目标 | 距离 | 形状 | 施放 | 可移动 | 可打断 | 学派 | 冷却 | 标记 | 效果 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | **瞄准射击**<br/>`hunter.aimed_shot` | 直接目标 | 敌方 | 35m | 单体 | 瞄准射击 1.6s | ✗ | ✓ | 物理 | 8s | 需朝向/需视线 | damage |
-| **秘法箭**<br/>`hunter.arcane_shot` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 奥术 | 4s | 需朝向/需视线 | damage |
+| **秘法箭**<br/>`hunter.arcane_shot` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 奥术 | 4s | 需朝向/需视线 | lockedProjectile, damage |
 | **震慑箭**<br/>`hunter.concussive_shot` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 10s | 需朝向/需视线 | applyAura |
 | **寒霜陷阱**<br/>`hunter.freezing_trap` | 地面目标 | 敌方 | 20m | 圆形 r=1.5 | 读条 0.4s | ✗ | ✗（盾牌标记） | 寒冰 | 20s | 需视线 | spawnTrap, incapacitate |
 | **照明弹**<br/>`hunter.flare` | 地面目标 | 敌方 | 30m | 圆形 r=6 | 瞬发 | ✓ | ✗（盾牌标记） | 火焰 | 20s | 需视线 | spawnGroundArea |
@@ -245,7 +245,7 @@
 | **穿透重弩箭**<br/>`hunter.piercing_bolt` | 碰撞投射物 | 敌方 | 32m | 直线 32m × 1.2m | 瞄准射击 1s | ✗ | ✓ | 物理 | 12s | 需朝向/需视线 | spawnProjectile, damage |
 | **断筋**<br/>`hunter.wing_clip` | 直接目标 | 敌方 | 2.8m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | — | 需朝向/需视线 | damage, applyAura |
 | **猛禽一击**<br/>`hunter.raptor_strike` | 直接目标 | 敌方 | 2.8m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 6s | 需朝向/需视线 | damage |
-| **毒蛇钉刺**<br/>`hunter.serpent_sting` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 自然 | — | 需视线 | applyAura, damage |
+| **毒蛇钉刺**<br/>`hunter.serpent_sting` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 自然 | — | 需视线 | lockedProjectile, applyAura, damage |
 | **猎豹守护**<br/>`hunter.aspect_of_the_cheetah` | 自身 | 自身 | 自身 | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 自然 | 30s | — | applyAura |
 
 <details><summary>反制方式（附录A#3 第九项）</summary>
@@ -277,19 +277,19 @@
 
 | 技能 | 瞄准 | 目标 | 距离 | 形状 | 施放 | 可移动 | 可打断 | 学派 | 冷却 | 标记 | 效果 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| **霜矢**<br/>`mage.frostbolt` | 直接目标 | 敌方 | 32m | 单体 | 读条 1.4s | ✗ | ✓ | 寒冰 | — | 需视线 | damage, applyAura |
-| **烈焰爆**<br/>`mage.fire_blast` | 直接目标 | 敌方 | 25m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 火焰 | 8s | 需视线 | damage |
-| **化形术**<br/>`mage.polymorph` | 直接目标 | 敌方 | 30m | 单体 | 读条 1.5s | ✗ | ✓ | 奥术 | 15s | 需视线 | incapacitate |
+| **霜矢**<br/>`mage.frostbolt` | 直接目标 | 敌方 | 32m | 单体 | 读条 1.4s | ✗ | ✓ | 寒冰 | — | 需视线 | lockedProjectile, damage, applyAura |
+| **烈焰爆**<br/>`mage.fire_blast` | 直接目标 | 敌方 | 25m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 火焰 | 8s | 需视线 | lockedProjectile, damage |
+| **化形术**<br/>`mage.polymorph` | 直接目标 | 敌方 | 30m | 单体 | 读条 1.5s | ✗ | ✓ | 奥术 | 15s | 需视线 | lockedProjectile, incapacitate |
 | **霜爆新星**<br/>`mage.frost_nova` | 自身中心 | 敌方 | 5m | 圆形 r=5 | 瞬发 | ✓ | ✗（盾牌标记） | 寒冰 | 18s | — | root |
 | **瞬闪**<br/>`mage.blink` | 方向直线 | 自身 | 8m | 直线 8m × 1m | 瞬发 | ✓ | ✗（盾牌标记） | 奥术 | 15s | — | blinkForward |
 | **断法**<br/>`mage.counterspell` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 奥术 | 20s | 脱离GCD/需视线 | interrupt |
 | **霜甲护盾**<br/>`mage.ice_barrier` | 自身 | 自身 | 自身 | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 寒冰 | 25s | — | applyAura |
 | **冰封庇护**<br/>`mage.ice_block` | 自身 | 自身 | 自身 | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 寒冰 | 90s | 掉旗 | applyAura |
 | **冰霜风暴**<br/>`mage.blizzard` | 地面目标 | 敌方 | 30m | 圆形 r=6 | 引导 0.8s+4s | ✗ | ✓ | 寒冰 | 45s | 需视线 | spawnGroundArea, damage, applyAura |
-| **陨星**<br/>`mage.meteor` | 地面目标 | 敌方 | 30m | 圆形 r=5 | 读条 1s | ✗ | ✓ | 火焰 | 60s | 需视线 | delayedGroundImpact, damage |
-| **冰枪术**<br/>`mage.ice_lance` | 直接目标 | 敌方 | 32m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 寒冰 | — | 需视线 | damage |
+| **陨星**<br/>`mage.meteor` | 地面目标 | 敌方 | 30m | 圆形 r=5 | 读条 1s | ✗ | ✓ | 火焰 | 60s | 需视线 | delayedGroundImpact, damage, stun |
+| **冰枪术**<br/>`mage.ice_lance` | 直接目标 | 敌方 | 32m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 寒冰 | — | 需视线 | lockedProjectile, damage, applyAura |
 | **冰锥术**<br/>`mage.cone_of_cold` | 方向锥形 | 敌方 | 10m | 锥形 90° × 10m | 瞬发 | ✓ | ✗（盾牌标记） | 寒冰 | 18s | — | damage, applyAura |
-| **灼烧**<br/>`mage.scorch` | 直接目标 | 敌方 | 25m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 火焰 | 3s | 需视线 | damage |
+| **灼烧**<br/>`mage.scorch` | 直接目标 | 敌方 | 25m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 火焰 | 3s | 需视线 | lockedProjectile, damage |
 | **奥术冲击**<br/>`mage.arcane_explosion` | 自身中心 | 敌方 | 8m | 圆形 r=8 | 瞬发 | ✓ | ✗（盾牌标记） | 奥术 | 6s | — | damage |
 | **近身元素斩**<br/>`mage.elemental_slash` | 直接目标 | 敌方 | 2.8m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 奥术 | 6s | 需朝向/需视线 | damage |
 
@@ -304,8 +304,8 @@
 - **霜甲护盾**：只吸收固定数值，爆发一轮就打穿（破裂表现见 14.3）；不阻止任何控制，被昏迷或变形照样定住；受竞技场战斗抑制影响，后期吸收量明显下降（8.5）。
 - **冰封庇护**：4 秒内完全免疫但自己也完全不能行动，等于主动交出 4 秒输出与救人窗口；属于魔法增益，可被群体驱散提前打掉（8.4 / dispel 的 canRemoveImmunity）；持旗时使用会立刻掉旗；90 秒冷却，交掉之后是法师最脆弱的窗口。
 - **冰霜风暴**：移动、打断或控制会停止剩余引导（7.1 / 7.3），法师必须站定 4.8 秒；区域固定在地面，走出去就完全不吃伤害；减速属于魔法效果，可被驱散或自由祝福清掉；落点全程可见，是最容易预读的封路技能。
-- **陨星**：落点和倒计时全程显示，可以走出去躲开（14.3）；1 秒读条期间可被打断并锁火焰 4 秒（自己被反制同理）；从读条到落地共 2.5 秒，位移、免疫或寒冰屏障都能规避；一旦读条被打断，冷却照进但无伤害。
-- **冰枪术**：伤害是法师技能里最低的一档，靠 GCD 节奏叠出来 —— 对手开减伤或吸收护盾就能大幅抵消；仍是冰霜魔法，沉默与冰霜学派锁定期间照样用不出来（7.3）；没有任何控制效果，单靠它无法阻止近战贴身。
+- **陨星**：落点和倒计时全程显示，可以走出去躲开（14.3）；1 秒读条期间可被打断并锁火焰 4 秒（自己被反制同理）；从读条到落地共 2.5 秒，位移、免疫或寒冰屏障都能规避；一旦读条被打断，冷却照进但无伤害；落地击晕走「昏迷」递减链（8.2：100%→50%→25%→免疫），接在队友的昏迷后面会被大幅缩短，「战斗意志」可直接解除，抗控型护甲缩短它，完全免疫直接挡下。
+- **冰枪术**：伤害是法师技能里最低的一档，靠 GCD 节奏叠出来 —— 对手开减伤或吸收护盾就能大幅抵消；仍是冰霜魔法，沉默与冰霜学派锁定期间照样用不出来（7.3）；附带的寒冷减速与霜矢是**同一枚**，驱散魔法、自由祝福或任何解除移动限制的手段一次就能清干净，也不与其他减速叠乘（8.4）；它只减速不定身 —— 被减速的近战照样能追、能打、能读条。
 - **冰锥术**：只覆盖面前 90 度扇形 10 米：绕到背后或从两侧夹击就只能吃到一半（5.4 锥形技能）；减速属于移动限制，自由庇佑、消失、疾行步都能摆脱，也不与其他减速叠乘（8.4）；不阻止攻击与施法，被减速的近战照样能打你；18 秒冷却，交掉后有明显空窗。
 - **灼烧**：伤害低于烈焰爆，3 秒冷却决定它只能当填充；火焰学派被锁（断法命中火系技能）时不可用，此时要换冰霜键；25 米射程在法师技能里偏短，被拉开就够不到。
 - **奥术冲击**：只有 8 米半径且以自己为中心：站远就完全无效，而法师本来就不该让人靠近；不造成任何控制，打不断近战的连招；奥术学派被锁时不可用；对单个目标的伤害低于烈焰爆，围殴时才划算。
@@ -323,7 +323,7 @@
 
 | 技能 | 瞄准 | 目标 | 距离 | 形状 | 施放 | 可移动 | 可打断 | 学派 | 冷却 | 标记 | 效果 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| **圣光击**<br/>`priest.smite` | 直接目标 | 敌方 | 30m | 单体 | 读条 1.2s | ✗ | ✓ | 神圣 | — | 需视线 | damage |
+| **圣光击**<br/>`priest.smite` | 直接目标 | 敌方 | 30m | 单体 | 读条 1.2s | ✗ | ✓ | 神圣 | — | 需视线 | lockedProjectile, damage |
 | **迅愈术**<br/>`priest.flash_heal` | 直接目标 | 友方 | 30m | 单体 | 读条 1.1s | ✗ | ✓ | 神圣 | 4s | 需视线 | heal |
 | **续愈**<br/>`priest.renew` | 直接目标 | 友方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 神圣 | 8s | 需视线 | applyAura, heal |
 | **护心屏障**<br/>`priest.power_word_shield` | 直接目标 | 友方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 神圣 | 12s | 需视线 | applyAura |
@@ -333,9 +333,9 @@
 | **牵引之手**<br/>`priest.leap_of_faith` | 直接目标 | 友方 | 25m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 神圣 | 30s | 需视线 | custom, pullTarget |
 | **镇痛庇佑**<br/>`priest.pain_suppression` | 直接目标 | 友方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 神圣 | 60s | 需视线 | applyAura |
 | **群体净化**<br/>`priest.mass_dispel` | 地面目标 | 敌方 | 30m | 圆形 r=7 | 读条 1.5s | ✗ | ✓ | 神圣 | 45s | 需视线 | dispel |
-| **精神穿刺**<br/>`priest.mind_spike` | 直接目标 | 敌方 | 28m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 暗影 | 6s | 需视线 | damage |
-| **暗言术·痛**<br/>`priest.shadow_word_pain` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 暗影 | — | 需视线 | applyAura, damage |
-| **心灵爆破**<br/>`priest.mind_blast` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 暗影 | 7s | 需视线 | damage |
+| **精神穿刺**<br/>`priest.mind_spike` | 直接目标 | 敌方 | 28m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 暗影 | 6s | 需视线 | lockedProjectile, damage |
+| **暗言术·痛**<br/>`priest.shadow_word_pain` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 暗影 | — | 需视线 | lockedProjectile, applyAura, damage |
+| **心灵爆破**<br/>`priest.mind_blast` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 暗影 | 7s | 需视线 | lockedProjectile, damage |
 | **治愈之环**<br/>`priest.circle_of_healing` | 自身中心 | 友方 | 12m | 圆形 r=12 | 瞬发 | ✓ | ✗（盾牌标记） | 神圣 | 12s | — | heal |
 
 <details><summary>反制方式（附录A#3 第九项）</summary>
@@ -367,19 +367,19 @@
 
 | 技能 | 瞄准 | 目标 | 距离 | 形状 | 施放 | 可移动 | 可打断 | 学派 | 冷却 | 标记 | 效果 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| **月辉灼击**<br/>`druid.moonfire` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 自然 | 6s | 需视线 | damage, applyAura |
+| **月辉灼击**<br/>`druid.moonfire` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 自然 | 6s | 需视线 | lockedProjectile, damage, applyAura |
 | **愈合**<br/>`druid.healing_touch` | 直接目标 | 友方 | 30m | 单体 | 读条 1.3s | ✗ | ✓ | 自然 | 5s | 需视线 | heal, applyAura |
 | **回春**<br/>`druid.rejuvenation` | 直接目标 | 友方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 自然 | 8s | 需视线 | applyAura, heal |
-| **缠根**<br/>`druid.entangling_roots` | 直接目标 | 敌方 | 30m | 单体 | 读条 1.3s | ✗ | ✓ | 自然 | 15s | 需视线 | root |
-| **气旋囚笼**<br/>`druid.cyclone` | 直接目标 | 敌方 | 25m | 单体 | 读条 1.5s | ✗ | ✓ | 自然 | 25s | 需视线 | applyAura |
+| **缠根**<br/>`druid.entangling_roots` | 直接目标 | 敌方 | 30m | 单体 | 读条 1.3s | ✗ | ✓ | 自然 | 15s | 需视线 | lockedProjectile, root |
+| **气旋囚笼**<br/>`druid.cyclone` | 直接目标 | 敌方 | 25m | 单体 | 读条 1.5s | ✗ | ✓ | 自然 | 25s | 需视线 | lockedProjectile, applyAura |
 | **撞击**<br/>`druid.skull_bash` | 直接目标 | 敌方 | 13m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 15s | 脱离GCD/需视线 | chargeTo, interrupt |
 | **硬化树皮**<br/>`druid.barkskin` | 自身 | 自身 | 自身 | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 自然 | 60s | 昏迷可用 | applyAura |
 | **巨熊形态**<br/>`druid.bear_form` | 自身 | 自身 | 自身 | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 自然 | — | — | shapeshift, applyAura |
 | **迅猫形态**<br/>`druid.cat_form` | 自身 | 自身 | 自身 | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 自然 | — | — | shapeshift, applyAura |
 | **野性突进**<br/>`druid.wild_charge` | 直接目标 | 任意 | 10m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 20s | 需视线 | custom |
 | **疾奔怒吼**<br/>`druid.stampeding_roar` | 自身中心 | 友方 | 10m | 圆形 r=10 | 瞬发 | ✓ | ✗（盾牌标记） | 自然 | 60s | — | applyAura |
-| **愤怒**<br/>`druid.wrath` | 直接目标 | 敌方 | 30m | 单体 | 读条 1.4s | ✗ | ✓ | 自然 | — | 需视线 | damage |
-| **星涌术**<br/>`druid.starsurge` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 奥术 | 10s | 需视线 | damage |
+| **愤怒**<br/>`druid.wrath` | 直接目标 | 敌方 | 30m | 单体 | 读条 1.4s | ✗ | ✓ | 自然 | — | 需视线 | lockedProjectile, damage |
+| **星涌术**<br/>`druid.starsurge` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 奥术 | 10s | 需视线 | lockedProjectile, damage |
 | **荆棘术**<br/>`druid.thorns` | 直接目标 | 友方 | 25m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 自然 | 25s | 需视线 | applyAura |
 
 <details><summary>反制方式（附录A#3 第九项）</summary>
