@@ -54,7 +54,7 @@ beforeEach(() => {
   auras = createAuraStore();
   dr = createDrStore();
   groundStore = createGroundStore();
-  deps = { world, auras, dr, ground: groundStore };
+  deps = { world, auras, dr, ground: groundStore, projectiles: createProjectileStore() };
   arena = createArena({ mode: GameMode.Arena3v3, roundsToWin: 1 });
 });
 

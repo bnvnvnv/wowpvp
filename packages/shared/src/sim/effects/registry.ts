@@ -223,6 +223,7 @@ export const ALL_EFFECT_KINDS: readonly EffectDef['kind'][] = [
   'delayedGroundImpact',
   'spawnTrap',
   'spawnProjectile',
+  'lockedProjectile',
   'gainResource',
   'spendComboPoints',
   'spendResource',

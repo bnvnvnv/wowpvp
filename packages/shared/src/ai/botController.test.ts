@@ -9,8 +9,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { druid, hunter, mage, priest, rogue, warrior } from '../data/index.js';
-import type { AuraDef } from '../data/schema.js';
+import { ALL_CLASSES, druid, hunter, mage, priest, rogue, warrior } from '../data/index.js';
+import { PARTY_SKILLS } from '../data/party.js';
+import type { AuraDef, SkillDef } from '../data/schema.js';
 import { CastKind, DispelType, DrCategory, School } from '../types/enums.js';
 import { asSkillId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
 import { dirToYaw, sub, vec3 } from '../math/vec3.js';
@@ -1017,5 +1018,111 @@ describe('P1a 工具函数', () => {
     s.self.health = s.self.maxHealth * 0.3;
     // 法师没有治疗技能 → 仍然输出；这条只守卫「半血分支不抛错、不回退」
     expect(() => decideBotAction(perceive(s, { difficulty: 'normal' }))).not.toThrow();
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+//  W23：法术弹道迁移前后，bot 对同一技能的判断必须逐位不变
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * ★★ **这组测试守的是一条结构红线，不是一个数值。**
+ *
+ *   W23 把 21 个法术的载荷从技能顶层挪进了 `lockedProjectile.onHit`。
+ *   bot 的三个判据（`hasDamage` / `burstDamageOf` / `ccCategoryOf`）
+ *   全部是**顶层扫描**出身 —— 不跟着下探的话：
+ *     · `hasDamage` 全假 → 法师/牧师/德鲁伊/圣骑士的选招池只剩杂项
+ *     · `burstDamageOf` 归零 → argmax 退化成「随便按一个」
+ *     · `ccCategoryOf` 全空 → 制裁之锤/扼喉/化形术/纠缠根须不再被当控制
+ *   三条任意一条漏掉，`pnpm balance` 的基线都会整体塌穿，而**单测全绿**
+ *   （这正是 `totalDamageOf` 头部记着的旋刃斩/暴风雪/陨星三次老教训）。
+ *
+ * 手法：拿真实数据里的迁移技能，构造一份「迁移前」的等价 SkillDef
+ * （把 `lockedProjectile.onHit` 摊回顶层），逐项比对两者的判断结果。
+ * 这样将来无论谁再动这三个函数，等价性都会被当场钉住。
+ */
+const unmigrate = (sk: SkillDef): SkillDef => ({
+  ...sk,
+  effects: sk.effects.flatMap((e) => (e.kind === 'lockedProjectile' ? e.onHit : [e])),
+});
+
+/**
+ * ★★ 夹具**必须从全花名册里筛**，不能手写职业名。
+ *
+ *   初版写的是 `[druid, hunter, mage, priest, warrior, rogue]` —— 战士与盗贼
+ *   一个迁移技能都没有（纯属凑数），而真正有迁移技能的**圣骑士（3 条）
+ *   与死骑（2 条）不在列表里**：21 个迁移技能只覆盖了 16 个，漏掉的正是
+ *   上面那段注释点名的制裁之锤与扼喉。守门的又只有一条
+ *   `length > 0`，16 的时候照样绿 —— 夹具漏抓职业这件事本身没人看着。
+ *   现在下限钉成「全花名册里带 lockedProjectile 的条数」，漏一个就红。
+ */
+const ALL_SKILLS: readonly SkillDef[] = [
+  ...ALL_CLASSES.flatMap((c) => c.skills),
+  ...PARTY_SKILLS,
+];
+
+const MIGRATED_SKILLS: readonly SkillDef[] = ALL_SKILLS.filter((sk) =>
+  sk.effects.some((e) => e.kind === 'lockedProjectile'),
+);
+
+describe('★★ W23：bot 估值在弹道迁移前后逐位不变', () => {
+  it('★★ 夹具前提：全花名册的迁移技能一个不漏（漏抓职业本身要红）', () => {
+    expect(MIGRATED_SKILLS.length, '一个迁移技能都没抓到 —— 夹具或数据出问题了').
+      toBeGreaterThanOrEqual(21);
+    // 手写职业名的老夹具漏掉的就是这两家 —— 逐条点名，别再靠计数兜
+    const ids = MIGRATED_SKILLS.map((sk) => sk.id as string);
+    for (const id of [
+      'paladin.judgement', 'paladin.hammer_of_justice', 'paladin.holy_bolt',
+      'deathknight.chains_of_ice', 'deathknight.strangulate',
+    ]) {
+      expect(ids, `${id} 没进夹具 —— 它的 bot 判据没有任何断言站在断点上`).toContain(id);
+    }
+  });
+
+  it('★★ hasDamage：迁移前后一致（漏了它法系 bot 直接哑火）', () => {
+    for (const sk of MIGRATED_SKILLS) {
+      expect(hasDamage(sk), `${sk.id as string} 的伤害形状认不出来了`).toBe(
+        hasDamage(unmigrate(sk)),
+      );
+    }
+  });
+
+  it('★★ burstDamageOf：迁移前后逐位相等（argmax 选招的输入）', () => {
+    const s = setup();
+    for (const sk of MIGRATED_SKILLS) {
+      expect(burstDamageOf(sk, s.self), `${sk.id as string} 的单发威力变了`).toBe(
+        burstDamageOf(unmigrate(sk), s.self),
+      );
+    }
+  });
+
+  it('★★ burstDamageOf：onHit 里的 DoT 同样吃「已经在跳就不重挂」的去重', () => {
+    // 暗言术·痛 / 月火 / 毒蛇钉刺三条**零冷却 DoT** 迁移后全在 onHit 里 ——
+    // 那正是 P3b 把牧师基线打到 0.0% 的原案发现场，去重必须跟着下探
+    const s = setup();
+    const swp = priest.skills.find((sk) => (sk.id as string) === 'priest.shadow_word_pain')!;
+    const ticking = new Set(['priest.shadow_word_pain.dot']);
+    expect(burstDamageOf(swp, s.self, ticking)).toBe(
+      burstDamageOf(unmigrate(swp), s.self, ticking),
+    );
+    // 且「已经在跳」时确实降权了（否则这条断言测的是两个零）
+    expect(burstDamageOf(swp, s.self, ticking)).toBeLessThan(burstDamageOf(swp, s.self));
+  });
+
+  it('★★ ccCategoryOf：迁移前后一致（化形术/纠缠根须仍被当控制键）', () => {
+    for (const sk of MIGRATED_SKILLS) {
+      expect(ccCategoryOf(sk), `${sk.id as string} 的控制类别丢了`).toBe(
+        ccCategoryOf(unmigrate(sk)),
+      );
+    }
+    // 正面：法师的化形术必须仍然是一条迷惑链控制
+    const poly = mage.skills.find((sk) => (sk.id as string) === 'mage.polymorph')!;
+    expect(ccCategoryOf(poly)).toBe(DrCategory.Incapacitate);
+  });
+
+  it('★★ 法师手上仍然有能被 bot 认出来的伤害技能（哑火的正面断言）', () => {
+    expect(mage.skills.filter(hasDamage).length).toBeGreaterThan(3);
+    expect(priest.skills.filter(hasDamage).length).toBeGreaterThan(2);
+    expect(druid.skills.filter(hasDamage).length).toBeGreaterThan(2);
   });
 });

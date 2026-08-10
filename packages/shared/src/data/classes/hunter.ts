@@ -10,7 +10,7 @@
  * 被打断时只取消本次射击，不产生魔法学派锁定（7.2 / 验收 #16）。
  */
 
-import { RANGE } from '../../constants/combat.js';
+import { RANGE, SPELL_PROJECTILE } from '../../constants/combat.js';
 import {
   CastKind,
   DispelType,
@@ -84,8 +84,20 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Focus, amount: 25 },
     counters:
       '瞬发，不能被专用打断；但属于奥术学派，沉默、奥术学派锁定和法术免疫都能挡住（7.3 / 8.2）；仍受视线、距离和公共冷却限制。',
+    /**
+     * W23：秘法箭要飞到才结算（6.6）。
+     * ★ 迁移口径按**学派**而不是按「它长得像不像箭」：秘法箭是奥术法术
+     *   （沉默/奥术锁定挡得住它），与霜矢同族。猎人的**物理**远程
+     *   （瞄准射击/震慑箭/反制射击/穿透重弩箭）另立一批 —— 见 docs/15 的 W25。
+     */
     // M14：1.1→1.3 —— 焦点主要出口，机动填充
-    effects: [{ kind: 'damage', school: School.Arcane, amount: { weaponPercent: 1.3 } }],
+    effects: [
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [{ kind: 'damage', school: School.Arcane, amount: { weaponPercent: 1.3 } }],
+      },
+    ],
     description: '射出一发附魔箭，造成 130% 武器伤害的奥术伤害。可移动使用。',
   },
   {
@@ -406,21 +418,28 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Focus, amount: 15 },
     counters:
       '中毒减益，**德鲁伊与圣骑士都能驱掉**；15 秒里分 5 跳给出，对爆发秒杀零贡献，只在长局的消耗里划算；无冷却但每次 15 专注，反复重铸会挤掉瞄准射击。',
+    // W23：淬毒之箭要飞到才中毒（6.6）。自然学派，与秘法箭同批
     effects: [
       {
-        kind: 'applyAura',
-        aura: {
-          id: 'hunter.serpent_sting.poison',
-          name: '毒蛇钉刺',
-          description: '中毒，每 3 秒受到自然伤害。',
-          kind: 'debuff',
-          duration: 15,
-          dispelType: DispelType.Poison,
-          periodic: {
-            interval: 3,
-            effects: [{ kind: 'damage', school: School.Nature, amount: { flat: 36 } }],
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [
+          {
+            kind: 'applyAura',
+            aura: {
+              id: 'hunter.serpent_sting.poison',
+              name: '毒蛇钉刺',
+              description: '中毒，每 3 秒受到自然伤害。',
+              kind: 'debuff',
+              duration: 15,
+              dispelType: DispelType.Poison,
+              periodic: {
+                interval: 3,
+                effects: [{ kind: 'damage', school: School.Nature, amount: { flat: 36 } }],
+              },
+            },
           },
-        },
+        ],
       },
     ],
     description: '射出一支淬毒之箭，15 秒内持续造成自然伤害。可被驱散中毒解除。',

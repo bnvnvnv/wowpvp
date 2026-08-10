@@ -6,7 +6,7 @@
  * counters 写清楚「对手具体怎么破」，不写套话。
  */
 
-import { RANGE } from '../../constants/combat.js';
+import { RANGE, SPELL_PROJECTILE } from '../../constants/combat.js';
 import {
   CastKind,
   DispelType,
@@ -65,29 +65,36 @@ const skills: SkillDef[] = [
     requiresLos: true,
     cost: { resource: Resource.Mana, amount: 40 },
     counters: '神圣系法术：被责难以外的专用打断封锁神圣系、或自己处于沉默期间都用不出来（7.2 / 7.3）；易伤是魔法减益，敌方驱散一次就抹掉 4 秒增伤窗口（8.4）；释放瞬间失去视线或超出 25 米直接失败（7.4），柱子绕视野是最省事的应对。',
+    // W23：审判要飞到才结算（6.6 锁定投射物 —— 规格书举的就是「审判」这个例子）
     effects: [
-      // M14：110→70 —— 审判附带 +10% 易伤（casterScoped），本体压低
-      // M14b：70→58 —— 与圣愈术同批：输出与续航各让一档，而不是把单一件砍穿
-      { kind: 'damage', school: School.Holy, amount: { flat: 58 } },
       {
-        kind: 'applyAura',
-        aura: {
-          id: 'paladin.judgement',
-          name: '裁决',
-          kind: 'debuff',
-          duration: 4,
-          dispelType: DispelType.Magic,
-          clearableByTrinket: false,
-          /**
-           * M11：原本是一条 `custom`（`paladin.judgementVulnerability`），
-           * 而这个光环当时**连 modifiers 都没有** —— 易伤完全没有生效过。
-           * schema v1.1 的 `casterScoped` 已实现（`aura.ts` 在结算时比对伤害来源），
-           * 所以「只对该圣骑士生效的 +10% 承伤」现在是纯数据。
-           */
-          modifiers: { damageTaken: 1.1 },
-          casterScoped: true,
-          description: '受到该圣骑士造成的伤害提高 10%。',
-        },
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [
+          // M14：110→70 —— 审判附带 +10% 易伤（casterScoped），本体压低
+          // M14b：70→58 —— 与圣愈术同批：输出与续航各让一档，而不是把单一件砍穿
+          { kind: 'damage', school: School.Holy, amount: { flat: 58 } },
+          {
+            kind: 'applyAura',
+            aura: {
+              id: 'paladin.judgement',
+              name: '裁决',
+              kind: 'debuff',
+              duration: 4,
+              dispelType: DispelType.Magic,
+              clearableByTrinket: false,
+              /**
+               * M11：原本是一条 `custom`（`paladin.judgementVulnerability`），
+               * 而这个光环当时**连 modifiers 都没有** —— 易伤完全没有生效过。
+               * schema v1.1 的 `casterScoped` 已实现（`aura.ts` 在结算时比对伤害来源），
+               * 所以「只对该圣骑士生效的 +10% 承伤」现在是纯数据。
+               */
+              modifiers: { damageTaken: 1.1 },
+              casterScoped: true,
+              description: '受到该圣骑士造成的伤害提高 10%。',
+            },
+          },
+        ],
       },
     ],
     description: '投出神圣审判造成伤害，并使目标 4 秒内额外承受 10% 来自你的伤害。',
@@ -149,7 +156,14 @@ const skills: SkillDef[] = [
     requiresLos: true,
     cost: { resource: Resource.Mana, amount: 40 },
     counters: '受昏迷递减 100%→50%→25%→免疫（8.2），一轮控制链后基本无效；「战斗意志」可直接解除（8.3）；圣盾术、保护祝福以外的法术免疫和抗控型护甲（控制时间 -25%）都能削弱；魔法技能，沉默或神圣系被封锁期间无法使用（7.3），10 米距离也要求先贴上去。',
-    effects: [{ kind: 'stun', duration: 2.5 }],
+    // W23：制裁之锤要砸到才昏迷（6.6 —— 规格书举的「风暴之锤」同族）
+    effects: [
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [{ kind: 'stun', duration: 2.5 }],
+      },
+    ],
     description: '昏迷目标 2.5 秒，受昏迷递减影响。',
   },
   {
@@ -400,8 +414,18 @@ const skills: SkillDef[] = [
     requiresLos: true,
     cost: { resource: Resource.Mana, amount: 45 },
     counters: '仅权杖+圣典方案可用，取代十字军打击；1 秒读条且必须原地，专用打断会连带封锁神圣系 3 秒，把圣光术一起封掉（7.2）；沉默、硬控、击退和自己移动都会中止（7.3）；该方案物理防御 -12%，被近战贴脸时非常脆。',
+    /**
+     * W23：圣光弹要飞到才结算（6.6）。
+     * ★ **圣能留在弹体外**：`gainResource` 是**施法者自身**的效果，
+     *   射出去的那一刻就该进池子 —— 让它等弹体飞到，等于给圣骑士的
+     *   资源循环凭空加半秒延迟（口径见 schema 的 `lockedProjectile` 注释）。
+     */
     effects: [
-      { kind: 'damage', school: School.Holy, amount: { flat: 100 } },
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [{ kind: 'damage', school: School.Holy, amount: { flat: 100 } }],
+      },
       { kind: 'gainResource', resource: Resource.HolyPower, amount: 1 },
     ],
     description: '射出一枚圣光弹造成神圣伤害并获得 1 点圣能。仅权杖+圣典方案可用。',

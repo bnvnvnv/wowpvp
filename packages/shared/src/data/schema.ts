@@ -321,6 +321,24 @@ export type EffectDef =
   | { kind: 'spawnTrap'; armTime: number; triggerRadius: number; duration: number; onTrigger: EffectDef[]; singleTrigger?: boolean }
   /** 发射碰撞型投射物 */
   | { kind: 'spawnProjectile'; speed: number; radius: number; pierce: boolean; onHit: EffectDef[] }
+  /**
+   * 6.6 **锁定投射物**：释放瞬间就确认命中资格，飞行只是表现，**到达才结算**。
+   *
+   * ★★ 这个 kind 是 W23 补上的一块**语义缺口**：`sim/projectile.ts` 的
+   *   `HomingProjectile` / `spawnHoming()` 从 M4 起就写好并单测通过，
+   *   但**没有任何 EffectDef 能表达它** —— 于是全部 Direct 法术都在读条
+   *   结束的那一瞬间落账，客户端画的弹道纯属装饰。玩家实测的原话是
+   *   「法术还没到，伤害就出来了，应该命中后才出伤害」。
+   *
+   * ★ 与 `spawnProjectile`（碰撞型）的区别是**反制方式**，不是表现：
+   *   碰撞型可以靠走位躲开、被墙挡下；锁定型不行 —— 走位躲不掉，
+   *   要靠免疫、吸收、反射（6.6 原文：「目标释放后移动不会使其自然落空」）。
+   *
+   * ★ `onHit` 里放**目标指向**的效果（伤害、DoT、减速、控制）；
+   *   施法者自身的效果（`gainResource`、`applyAura target:'self'`）
+   *   留在弹体**外面**瞬时结算 —— 圣能不该等弹体飞到才进池子。
+   */
+  | { kind: 'lockedProjectile'; speed: number; onHit: EffectDef[] }
 
   // —— 资源与特殊 ——
   | { kind: 'gainResource'; resource: Resource; amount: number }

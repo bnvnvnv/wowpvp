@@ -57,6 +57,12 @@ const auraOf = (skill: SkillDef, auraId: string): AuraDef => {
         const inner = find([e.base]);
         if (inner) return inner;
       }
+      // ★ W23：寒缚链与审判的光环都搬进了 `lockedProjectile.onHit`（法术要飞到
+      //   才结算，6.6）。这个查找器是**读真实数据**的，所以要跟着下探一层。
+      if (e.kind === 'lockedProjectile') {
+        const inner = find(e.onHit);
+        if (inner) return inner;
+      }
     }
     return undefined;
   };

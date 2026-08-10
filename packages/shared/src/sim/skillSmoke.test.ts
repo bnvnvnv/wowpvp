@@ -36,7 +36,7 @@ import { createEntity, skillsAvailableWith, type CombatEntity } from './entity.j
 import { createGroundStore } from './groundArea.js';
 import { createLoadout, createLoadoutStore, createSwapStore } from './loadout.js';
 import { createMovementState, type MovementInput, type MovementState } from './movement.js';
-import { createProjectileStore } from './projectile.js';
+import { createProjectileStore, type ProjectileStore } from './projectile.js';
 import { tickWorld, type TickDeps } from './tick.js';
 import { addEntity, allocEntityId, createWorld, type World } from './world.js';
 import type { EntityId } from '../types/ids.js';
@@ -51,6 +51,8 @@ const SIM_SECONDS = 6;
 const dealsDamage = (e: EffectDef): boolean =>
   e.kind === 'damage' ||
   (e.kind === 'spawnProjectile' && e.onHit.some(dealsDamage)) ||
+  // W23：法术弹道迁移后 21 个技能的载荷住在 lockedProjectile.onHit 里
+  (e.kind === 'lockedProjectile' && e.onHit.some(dealsDamage)) ||
   (e.kind === 'applyAura' && (e.aura.periodic?.effects.some(dealsDamage) ?? false)) ||
   (e.kind === 'spawnGroundArea' && (e.onTick?.some(dealsDamage) ?? false)) ||
   (e.kind === 'delayedGroundImpact' && e.onImpact.some(dealsDamage)) ||
@@ -62,6 +64,16 @@ const heals = (e: EffectDef): boolean =>
   e.kind === 'heal' || e.kind === 'healPercentMaxHealth' || e.kind === 'healFromRecentDamage' ||
   (e.kind === 'applyAura' && (e.aura.periodic?.effects.some(heals) ?? false)) ||
   (e.kind === 'spawnGroundArea' && (e.onTick?.some(heals) ?? false));
+
+/**
+ * 一个技能声称的**全部**效果，摊平 `lockedProjectile.onHit` 一层。
+ *
+ * ★★ W23：迁移后霜矢的减速、月火的 DoT、化形术的迷惑…全在 onHit 里。
+ *   逐效果断言那一段如果只看顶层，这 21 个技能会**整体退化成「什么都不断言」**
+ *   —— 冒烟还是绿的，但它已经不再证明任何事。这正是本文件存在的理由的反面。
+ */
+const claimedEffects = (skill: SkillDef): readonly EffectDef[] =>
+  skill.effects.flatMap((e) => (e.kind === 'lockedProjectile' ? e.onHit : [e]));
 
 /** 控制效果 → 命中后目标该亮起的旗子 */
 const CONTROL_FLAG: Record<string, keyof CombatEntity['flags']> = {
@@ -80,6 +92,8 @@ const MOVES_TARGET = new Set(['pullTarget', 'knockback']);
 
 interface Rig {
   world: World;
+  /** W23：断言前要把在飞的弹体排空（见 runSmoke 的排空循环）*/
+  projectiles: ProjectileStore;
   deps: (castRequests?: ReadonlyMap<EntityId, { skillId: SkillDef['id']; targetId?: EntityId; groundPoint?: { x: number; y: number; z: number } }>) => TickDeps;
   caster: CombatEntity;
   enemy: CombatEntity;
@@ -203,7 +217,9 @@ const rigFor = (cls: ClassDef, skill: SkillDef): Rig => {
     ...(castRequests ? { castRequests } : {}),
   });
 
-  return { world, deps, caster, enemy, ally, targetsAllyEntity, auras, casting, groundStore };
+  return {
+    world, projectiles, deps, caster, enemy, ally, targetsAllyEntity, auras, casting, groundStore,
+  };
 };
 
 /**
@@ -295,8 +311,8 @@ const runSmoke = (cls: ClassDef, skill: SkillDef): void => {
   let enemyCastGoneAt = Infinity;
   const gained = new Map<Resource, number>();
 
-  for (let t = 0; t * DT < SIM_SECONDS; t++) {
-    tickWorld(deps(t === 0 ? request : undefined), DT);
+  const step = (req?: typeof request): void => {
+    tickWorld(deps(req), DT);
     for (const e of [caster, enemy, ally]) {
       for (const a of aurasOf(auras, e.id)) seenAuraIds.add(a.def.id);
       for (const [flag, on] of Object.entries(e.flags)) if (on === true) seenFlags.add(`${e.id}:${flag}`);
@@ -314,20 +330,40 @@ const runSmoke = (cls: ClassDef, skill: SkillDef): void => {
     for (const [res, v] of caster.resources) {
       gained.set(res, Math.max(gained.get(res) ?? 0, v - (before.resources.get(res) ?? 0)));
     }
+  };
+
+  for (let t = 0; t * DT < SIM_SECONDS; t++) step(t === 0 ? request : undefined);
+
+  /**
+   * ★★ W23：**断言前把在飞的弹体排空。**
+   *
+   *   法术弹道迁移之后，21 个技能的伤害/控制/DoT 不再在读条结束那一瞬间
+   *   落账，而是等锁定投射物飞到（最远 35 米 / 55 m·s⁻¹ ≈ 0.64 秒）。
+   *   6 秒的主循环目前刚好盖得住，但那是**巧合**而不是保证 ——
+   *   将来有人调慢弹速、或加一个射程更远的法术，冒烟会以
+   *   「声称造成伤害，敌人却一滴血没掉」的面目红掉，而真正的原因是
+   *   「你只是没等它飞到」。这条排空循环把那种误报堵死。
+   *
+   * ⚠️ **有界**（`DRAIN_MAX_TICKS`）：投射物仓永远清不空时（真出了 bug）
+   *   要红在下面的效果断言上，而不是把测试挂死在这里。
+   */
+  const DRAIN_MAX_TICKS = 60; // 3 秒，远超任何射程 / 弹速组合
+  for (let guard = 0; rig.projectiles.items.length > 0 && guard < DRAIN_MAX_TICKS; guard++) {
+    step();
   }
 
   // ── 逐效果断言 ────────────────────────────────────────────────
   const label = `${cls.id} ${skill.name}`;
 
-  if (skill.effects.some(dealsDamage)) {
+  if (claimedEffects(skill).some(dealsDamage)) {
     expect(enemy.health, `${label}：声称造成伤害，敌人却一滴血没掉`).toBeLessThan(before.enemyHp);
   }
-  if (skill.effects.some(heals)) {
+  if (claimedEffects(skill).some(heals)) {
     const healed = finalTarget.health > before.targetHp
       || caster.health > before.casterHp || ally.health > before.allyHp;
     expect(healed, `${label}：声称治疗，没有任何人回血`).toBe(true);
   }
-  for (const e of skill.effects) {
+  for (const e of claimedEffects(skill)) {
     if (e.kind === 'applyAura') {
       expect(seenAuraIds.has(e.aura.id),
         `${label}：光环 ${e.aura.id} 从未出现（目标解析或时长为 0？）`).toBe(true);

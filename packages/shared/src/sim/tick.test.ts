@@ -595,8 +595,19 @@ describe('事件回调', () => {
    * 也就没有「打中了谁」可言，所以 `onCastResolved` 不该触发。
    */
   it('锁定目标在读条期间离场 → 不触发 onCastResolved（7.4 步骤 6）', () => {
+    /**
+     * ★ W23：霜矢的伤害搬进了 `lockedProjectile.onHit`，只看顶层 `damage`
+     *   会一个都选不到（法师全部读条伤害技能都迁移了）。这里要的只是
+     *   「一个读条的攻击技能」，所以判据下探一层。
+     */
     const skill = mage.skills.find(
-      (s) => s.cast.time > 0 && s.effects.some((e) => e.kind === 'damage'),
+      (s) =>
+        s.cast.time > 0 &&
+        s.effects.some(
+          (e) =>
+            e.kind === 'damage' ||
+            (e.kind === 'lockedProjectile' && e.onHit.some((h) => h.kind === 'damage')),
+        ),
     );
     expect(skill, '需要一个读条伤害技能').toBeDefined();
     for (const [res, max] of player.maxResources) player.resources.set(res, max);

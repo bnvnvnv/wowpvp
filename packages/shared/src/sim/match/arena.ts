@@ -25,6 +25,7 @@ import { TEAM_BLUE, TEAM_RED, type TeamId } from '../../types/ids.js';
 import { clearAuras, type AuraStore } from '../aura.js';
 import { clearDr, type DrStore } from '../dr.js';
 import { clearGround, type GroundStore } from '../groundArea.js';
+import type { ProjectileStore } from '../projectile.js';
 import { listEntities, type World } from '../world.js';
 import { dampeningAt, type DampeningSnapshot } from './dampening.js';
 
@@ -120,6 +121,12 @@ export interface ArenaDeps {
   auras: AuraStore;
   dr: DrStore;
   ground: GroundStore;
+  /**
+   * ★ 回合重置要清的**第四个**旁挂仓（见 `resetRound`）。
+   *   `tickArena` 本身不读它 —— 放在这里是因为两个函数共用一份 deps，
+   *   而漏掉它的代价写在 `resetRound` 的注释里。
+   */
+  projectiles: ProjectileStore;
 }
 
 /**
@@ -244,6 +251,19 @@ export const resetRound = (state: ArenaState, deps: ArenaDeps): void => {
     clearDr(deps.dr, e.id);
   }
   clearGround(deps.ground);
+  /**
+   * ★★ **飞行中的弹体与地面区域同族**：都是挂在对局上、不属于任何实体的
+   *   旁挂状态，都必须随回合一起作废。漏掉它的表现是「上一回合还在飞的
+   *   那发冰矛，打在新回合满血的人身上」—— 而且只在第二回合出现。
+   *
+   *   W23 之前这里是**潜伏**的（弹体仓只有陨星/箭雨偶尔用），W23 之后
+   *   21 个技能每个 GCD 都在往里塞，所以补上。
+   * ★ `nextId` **不**归零：它在一局之内保持单调，客户端按 id 认弹体
+   *   （ProjBody / 快照兜底渲染都是按 id 记的），复用 id 会让新回合的
+   *   第一发弹体继承上一回合那发的表现状态。归零与不归零同样确定，
+   *   这里取对表现层无歧义的那一种。
+   */
+  deps.projectiles.items.length = 0;
 
   state.phase = RoundPhase.Prep;
   state.phaseElapsed = 0;

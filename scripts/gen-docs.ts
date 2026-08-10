@@ -96,6 +96,8 @@ const effectKinds = (effects: readonly EffectDef[]): string => {
       if (e.kind === 'delayedGroundImpact') walk(e.onImpact);
       if (e.kind === 'spawnTrap') walk(e.onTrigger);
       if (e.kind === 'spawnProjectile') walk(e.onHit);
+      // W23：锁定投射物的载荷在 onHit 里（法术要飞到才结算，6.6）
+      if (e.kind === 'lockedProjectile') walk(e.onHit);
       if (e.kind === 'onNthHit') walk(e.effects);
     }
   };

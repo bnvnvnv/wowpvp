@@ -9,7 +9,7 @@
  * 「完全免疫 + 主动位移 + 地面封锁」的远程职业，所以生命和贴身抗压最低。
  */
 
-import { RANGE } from '../../constants/combat.js';
+import { RANGE, SPELL_PROJECTILE } from '../../constants/combat.js';
 import {
   CastKind,
   DispelType,
@@ -45,22 +45,33 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 30 },
     counters:
       '原地读条：任何主动移动都会自行终止（7.3）；可被专用打断并锁定冰霜学派 3 秒、被沉默、硬控制或击退终止；减速属于魔法效果，可被驱散魔法或自由祝福解除，且不与其他减速叠乘。',
+    /**
+     * ★★ W23：**冰矛飞到才结算**（6.6 锁定投射物）。此前伤害在读条结束的
+     *   那一瞬间就落账，客户端的冰矛纯属装饰 —— 玩家实测「法术还没到，
+     *   伤害就出来了」。伤害与减速都是**目标指向**的，整组进 `onHit`。
+     */
     effects: [
-      // M14：120→205 —— 白字压回「低伤害」后主读条承担输出，读条可打断即其反制面
-      // M14b：205→230 —— 位移生效后近战 7~8 秒贴脸击杀，法师输在 100~300 伤害的窄差（基线 28.6%）
-      { kind: 'damage', school: School.Frost, amount: { flat: 230 } },
       {
-        kind: 'applyAura',
-        aura: {
-          id: 'mage.frostbolt.chill',
-          name: '霜矢',
-          kind: 'debuff',
-          duration: 3,
-          dispelType: DispelType.Magic,
-          clearableByTrinket: false,
-          modifiers: { moveSpeed: 0.7 },
-          description: '移动速度降低 30%。',
-        },
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [
+          // M14：120→205 —— 白字压回「低伤害」后主读条承担输出，读条可打断即其反制面
+          // M14b：205→230 —— 位移生效后近战 7~8 秒贴脸击杀，法师输在 100~300 伤害的窄差（基线 28.6%）
+          { kind: 'damage', school: School.Frost, amount: { flat: 230 } },
+          {
+            kind: 'applyAura',
+            aura: {
+              id: 'mage.frostbolt.chill',
+              name: '霜矢',
+              kind: 'debuff',
+              duration: 3,
+              dispelType: DispelType.Magic,
+              clearableByTrinket: false,
+              modifiers: { moveSpeed: 0.7 },
+              description: '移动速度降低 30%。',
+            },
+          },
+        ],
       },
     ],
     description: '造成冰霜伤害，并使目标移动速度降低 30%，持续 3 秒。',
@@ -83,7 +94,14 @@ const skills: SkillDef[] = [
     counters:
       '瞬发不能被专用打断，但沉默、火焰学派锁定和硬控制仍会封住它；距离只有 25 米，是法师技能里最容易被拉开的；8 秒冷却，被计时后可以预判躲视线。',
     // M14：150→225 —— 瞬发爆发件，8s 冷却
-    effects: [{ kind: 'damage', school: School.Fire, amount: { flat: 225 } }],
+    // W23：瞬发≠瞬中 —— 火球仍要飞过去（6.6），到达才结算
+    effects: [
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [{ kind: 'damage', school: School.Fire, amount: { flat: 225 } }],
+      },
+    ],
     description: '瞬发造成中等火焰伤害，可在移动中使用。',
   },
   {
@@ -103,9 +121,16 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 35 },
     counters:
       '读条期间可被打断（锁奥术 3 秒）、沉默或控制掐掉；命中后受到伤害即提前解除，队友一次误伤就白给（8.2）；走「迷惑」递减链 100%→50%→25%→免疫；可被「战斗意志」解除，也可被驱散魔法移除。',
+    // W23：变形也要飞过去才生效（6.6）—— 走位躲不掉，但那 0.5 秒是真的
     effects: [
-      // 8.2 迷惑/变形：受伤提前解除 + 走 incapacitate 递减链，由 sim 层统一按 DrCategory.Incapacitate 结算
-      { kind: 'incapacitate', duration: 4, breakDamage: 100 },
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [
+          // 8.2 迷惑/变形：受伤提前解除 + 走 incapacitate 递减链，由 sim 层统一按 DrCategory.Incapacitate 结算
+          { kind: 'incapacitate', duration: 4, breakDamage: 100 },
+        ],
+      },
     ],
     description: '将目标变为无害生物 4 秒，期间无法行动，受到伤害会提前解除。',
   },
@@ -360,7 +385,14 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 18 },
     counters:
       '伤害是法师技能里最低的一档，靠 GCD 节奏叠出来 —— 对手开减伤或吸收护盾就能大幅抵消；仍是冰霜魔法，沉默与冰霜学派锁定期间照样用不出来（7.3）；没有任何控制效果，单靠它无法阻止近战贴身。',
-    effects: [{ kind: 'damage', school: School.Frost, amount: { flat: 95 } }],
+    // W23：冰枪飞到才结算（6.6）
+    effects: [
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [{ kind: 'damage', school: School.Frost, amount: { flat: 95 } }],
+      },
+    ],
     description: '瞬发投出一柄冰枪，造成少量冰霜伤害。无冷却、可在移动中使用 —— 被追击时的主要输出手段。',
   },
   /**
@@ -422,7 +454,14 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 22 },
     counters:
       '伤害低于烈焰爆，3 秒冷却决定它只能当填充；火焰学派被锁（断法命中火系技能）时不可用，此时要换冰霜键；25 米射程在法师技能里偏短，被拉开就够不到。',
-    effects: [{ kind: 'damage', school: School.Fire, amount: { flat: 110 } }],
+    // W23：飞到才结算（6.6）
+    effects: [
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [{ kind: 'damage', school: School.Fire, amount: { flat: 110 } }],
+      },
+    ],
     description: '瞬发灼烧目标造成少量火焰伤害。冷却短、可移动 —— 冰霜系被封锁时的备用输出。',
   },
   /**

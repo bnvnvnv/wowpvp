@@ -10,7 +10,7 @@
 import { clampDisplacement } from '../../math/geometry.js';
 import { addScaled, normalize2D, sub, yawToDir, type Vec3 } from '../../math/vec3.js';
 import { teleportTo } from '../movement.js';
-import { spawnColliding, spawnDelayedImpact } from '../projectile.js';
+import { spawnColliding, spawnDelayedImpact, spawnHoming } from '../projectile.js';
 import { asSkillId } from '../../types/ids.js';
 import type { CombatEntity } from '../entity.js';
 import { registerEffect, type EffectContext } from './registry.js';
@@ -123,6 +123,31 @@ registerEffect('spawnProjectile', (ctx, e) => {
     pierce: e.pierce,
     onHit: e.onHit,
   });
+});
+
+/**
+ * 6.6 锁定投射物（W23）。**每个目标一发**，到达才结算 `onHit`。
+ *
+ * ★★ **结算走的是同一条路，一条也不旁路。** 弹体到达时由
+ *   `tickWorld` 第 5 步的 `resolve(projectile.sourceId, projectile.skillId, …)`
+ *   结算 —— 与直接施放共用 `resolveEffects` / 效果注册表，于是暴击掷骰、
+ *   `damage.skillId`（X3 死亡回顾）、S7 的来源抹除、统计折叠、击杀归账、
+ *   光环施加（含 `applyControl` 从 skillId 反查学派）全部自动跟上。
+ *   在这里另写一条「投射物专用结算」是本仓库最贵的那类错误
+ *   （tick.ts 头部的 A2 教训），所以这个处理器**只负责生成弹体**。
+ *
+ * ★ `spawnHoming` 从 M4 起就零生产调用方 —— 这里是它的第一个。
+ */
+registerEffect('lockedProjectile', (ctx, e, targets) => {
+  for (const t of targets) {
+    spawnHoming(ctx.world, ctx.projectiles, {
+      skillId: asSkillId(ctx.skillId),
+      source: ctx.source,
+      target: t,
+      speed: e.speed,
+      onHit: e.onHit,
+    });
+  }
 });
 
 registerEffect('delayedGroundImpact', (ctx, e, targets) => {

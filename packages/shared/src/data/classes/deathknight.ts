@@ -9,7 +9,7 @@
  * 文档没有给出的次要数值（伤害系数、资源消耗、光环细节）在下面逐条注释标注。
  */
 
-import { RANGE } from '../../constants/combat.js';
+import { RANGE, SPELL_PROJECTILE } from '../../constants/combat.js';
 import {
   CastKind,
   DispelType,
@@ -130,30 +130,37 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.RunicPower, amount: 30 },
     counters:
       '普通减速不能被「战斗意志」解除（8.3），但属于移动限制，可被自由祝福、驱散移动限制类效果或免疫新减速的状态摆脱；减速随时间衰减，拖过 4 秒就基本失效；受减速叠加规则限制，不与其他减速叠乘；魔法技能，沉默与冰霜学派锁定期间不可用。',
+    // W23：锁链要甩到才缠上（6.6 锁定投射物）
     effects: [
       {
-        kind: 'applyAura',
-        aura: {
-          id: 'deathknight.chains_of_ice',
-          name: '寒缚链',
-          kind: 'debuff',
-          duration: 4,
-          dispelType: DispelType.Movement,
-          clearableByTrinket: false,
-          // 初始值（减速 60% → moveSpeed 0.4）。衰减由下面的 decay 表达
-          modifiers: { moveSpeed: 0.4 },
-          /**
-           * M11：原本是一条 `custom` handler（`decayAuraModifier`）。
-           * ★ 但那个 handler **从来没有被注册过** —— 它落在 `displacement.ts`
-           *   的 custom 兜底分支里，只发一条事件、不产生任何效果。
-           *   也就是说「减速逐渐恢复」这条规则写在数据里、写在描述里，
-           *   但**四个阶段以来一次都没有生效过**：减速全程是恒定的 60%。
-           *   schema v1.1 的 `AuraDef.decay` 已经能表达它，sim 也实现了
-           *   （`aura.ts` 的 `withDecay()`），所以这里改成纯数据。
-           */
-          decay: { field: 'moveSpeed', from: 0.4, to: 1.0, duration: 4 },
-          description: '移动速度降低 60%，并在 4 秒内逐渐恢复。',
-        },
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [
+          {
+            kind: 'applyAura',
+            aura: {
+              id: 'deathknight.chains_of_ice',
+              name: '寒缚链',
+              kind: 'debuff',
+              duration: 4,
+              dispelType: DispelType.Movement,
+              clearableByTrinket: false,
+              // 初始值（减速 60% → moveSpeed 0.4）。衰减由下面的 decay 表达
+              modifiers: { moveSpeed: 0.4 },
+              /**
+               * M11：原本是一条 `custom` handler（`decayAuraModifier`）。
+               * ★ 但那个 handler **从来没有被注册过** —— 它落在 `displacement.ts`
+               *   的 custom 兜底分支里，只发一条事件、不产生任何效果。
+               *   也就是说「减速逐渐恢复」这条规则写在数据里、写在描述里，
+               *   但**四个阶段以来一次都没有生效过**：减速全程是恒定的 60%。
+               *   schema v1.1 的 `AuraDef.decay` 已经能表达它，sim 也实现了
+               *   （`aura.ts` 的 `withDecay()`），所以这里改成纯数据。
+               */
+              decay: { field: 'moveSpeed', from: 0.4, to: 1.0, duration: 4 },
+              description: '移动速度降低 60%，并在 4 秒内逐渐恢复。',
+            },
+          },
+        ],
       },
     ],
     description: '使目标移动速度降低 60%，减速在 4 秒内逐渐衰减至消失。',
@@ -173,7 +180,14 @@ const skills: SkillDef[] = [
     requiresLos: true,
     counters:
       '受昏迷递减，15 秒内连续昏迷 100%→50%→25%→免疫（8.2）；可被「战斗意志」解除（8.3）；抗控型护甲缩短持续时间；需要视线，墙后无法起手；魔法技能，沉默或暗影学派锁定期间不可用；完全免疫与法术免疫直接无效。',
-    effects: [{ kind: 'stun', duration: 2 }],
+    // W23：暗影之手要伸过去才掐住（6.6）
+    effects: [
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [{ kind: 'stun', duration: 2 }],
+      },
+    ],
     description: '扼住目标咽喉，使其昏迷 2 秒。',
   },
   {

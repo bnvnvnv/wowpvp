@@ -30,8 +30,16 @@ const MOBILITY_KINDS = new Set([
   'teleportBehindTarget', 'pullTarget',
 ]);
 
-const hasKind = (sk: SkillDef, set: Set<string>): boolean =>
-  sk.effects.some((e) => set.has(e.kind));
+/**
+ * ★ W23：控制与位移的载荷可能住在 `lockedProjectile.onHit` 里
+ *   （制裁之锤、扼喉、化形术、纠缠根须都是瞬发控制）。只看顶层的话
+ *   这四条会从「★★硬通货」掉到「★好用」，审计结论悄悄失真。
+ */
+const hasKind = (sk: SkillDef, set: Set<string>): boolean => {
+  const scan = (list: readonly SkillDef['effects'][number][]): boolean =>
+    list.some((e) => set.has(e.kind) || (e.kind === 'lockedProjectile' && scan(e.onHit)));
+  return scan(sk.effects);
+};
 
 const classify = (sk: SkillDef): { tier: Tier; why: string } => {
   const t = sk.cast.time;

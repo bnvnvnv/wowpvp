@@ -28,7 +28,7 @@
 // ★ 逐模块 import 而不是从 `../index.js` —— index 现在也导出本文件，
 //   走 index 会形成循环依赖。
 import { getClass, getSkill, getWeapon } from '../data/index.js';
-import type { AuraDef, SkillDef } from '../data/schema.js';
+import type { AuraDef, EffectDef, SkillDef } from '../data/schema.js';
 import { CastFailure, CastKind, DrCategory } from '../types/enums.js';
 import { dirToYaw, distance2D, sub, yawToDir, type Vec3 } from '../math/vec3.js';
 import { getCast, isCasting, validateCast, type CastingStore } from '../sim/casting.js';
@@ -87,9 +87,30 @@ const totalDamageOf = (
    * 没有目标上下文（`nominalDps`/`standOff` 就是这样调的）→ 行为与旧版逐位一致。
    */
   tickingOnTarget?: ReadonlySet<string>,
+): number => sumDamage(sk.effects, self, tickingOnTarget);
+
+/**
+ * `totalDamageOf` 的实际累加体。拆成独立函数**只为了一件事**：
+ * `lockedProjectile.onHit` 要能原样递归进去。
+ *
+ * ★★ **W23 的结构红线。** 法术弹道迁移把伤害从技能顶层挪进了
+ *   `lockedProjectile.onHit`（21 个技能）。这个函数如果不跟着下探，
+ *   bot 会认为法师/牧师/德鲁伊/圣骑士手里**一个有伤害的技能都没有** ——
+ *   `hasDamage` 全假 → 选招池只剩杂项 → 法系 bot 集体哑火，
+ *   `pnpm balance` 的基线会整体塌穿。这不是猜测，是 `totalDamageOf`
+ *   头部那三条老教训（旋刃斩、暴风雪、陨星）的第四次复发预案。
+ * ★ 递归而不是「扁平化一次再算」：`tickingOnTarget` 的 DoT 去重逻辑
+ *   必须同样作用在 onHit 里的 DoT 上 —— 暗言术·痛 / 月火 / 毒蛇钉刺
+ *   三条零冷却 DoT 迁移后**全在 onHit 里**，正是那条教训的原案发现场。
+ */
+const sumDamage = (
+  effects: readonly EffectDef[],
+  self: CombatEntity,
+  tickingOnTarget?: ReadonlySet<string>,
 ): number => {
   let sum = 0;
-  for (const e of sk.effects) {
+  for (const e of effects) {
+    if (e.kind === 'lockedProjectile') sum += sumDamage(e.onHit, self, tickingOnTarget);
     if (e.kind === 'damage') sum += magnitudeOf(e.amount, self);
     if (e.kind === 'spawnProjectile') {
       for (const h of e.onHit) if (h.kind === 'damage') sum += magnitudeOf(h.amount, self);
@@ -163,10 +184,17 @@ export const isHealSkill = (sk: SkillDef): boolean =>
  * ★ 纯**形状**判断不算数值 —— 算数值要 self（weaponPercent 依赖武器），
  *   而这个判断在 standOff 的过滤器里也要用，保持无状态。
  */
-export const hasDamage = (sk: SkillDef): boolean =>
-  sk.effects.some((e) =>
+export const hasDamage = (sk: SkillDef): boolean => anyDamageShape(sk.effects);
+
+/**
+ * `hasDamage` 的形状判定体。★ W23 起有第六种形状：`lockedProjectile.onHit`
+ *   （见 `sumDamage` 的结构红线注释 —— 漏了它法系 bot 直接哑火）。
+ */
+const anyDamageShape = (effects: readonly EffectDef[]): boolean =>
+  effects.some((e) =>
     e.kind === 'damage' ||
     (e.kind === 'spawnProjectile' && e.onHit.some((h) => h.kind === 'damage')) ||
+    (e.kind === 'lockedProjectile' && anyDamageShape(e.onHit)) ||
     (e.kind === 'applyAura' &&
       (e.aura.periodic?.effects.some((h) => h.kind === 'damage') ?? false)) ||
     (e.kind === 'spawnGroundArea' &&
@@ -228,9 +256,22 @@ export const isSelfDefenseSkill = (sk: SkillDef): boolean =>
  */
 export const ccCategoryOf = (sk: SkillDef): DrCategory | undefined => {
   if (isInterruptSkill(sk)) return undefined;
-  for (const e of sk.effects) {
+  return ccCategoryIn(sk.effects);
+};
+
+/**
+ * ★ W23：控制效果同样会被挪进 `lockedProjectile.onHit`（制裁之锤、扼喉、
+ *   化形术、纠缠根须都在其中）。不下探的话 bot 的「控制」步骤会认为
+ *   四个职业手里一个控制键都没有 —— 与 `hasDamage` 同族的静默失效。
+ */
+const ccCategoryIn = (effects: readonly EffectDef[]): DrCategory | undefined => {
+  for (const e of effects) {
     const cat = (CONTROL_DR_CATEGORY as Partial<Record<string, DrCategory>>)[e.kind];
     if (cat !== undefined) return cat;
+    if (e.kind === 'lockedProjectile') {
+      const inner = ccCategoryIn(e.onHit);
+      if (inner !== undefined) return inner;
+    }
   }
   return undefined;
 };

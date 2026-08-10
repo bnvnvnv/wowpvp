@@ -764,7 +764,11 @@ export const tickWorld = (
   if (deps.arena) {
     tickArena(
       deps.arena,
-      { world: deps.world, auras: deps.auras, dr: deps.dr, ground: deps.ground },
+      {
+        world: deps.world, auras: deps.auras, dr: deps.dr, ground: deps.ground,
+        // 回合重置要清弹体仓 —— 见 arena.ts 的 resetRound
+        projectiles: deps.projectiles,
+      },
       dt,
       sinks.arena ?? {},
     );

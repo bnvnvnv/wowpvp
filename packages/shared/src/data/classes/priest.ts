@@ -10,7 +10,7 @@
  * 竞技场战斗抑制会持续削弱它的治疗与吸收上限。
  */
 
-import { RANGE } from '../../constants/combat.js';
+import { RANGE, SPELL_PROJECTILE } from '../../constants/combat.js';
 import {
   CastKind,
   DispelType,
@@ -48,7 +48,14 @@ const skills: SkillDef[] = [
     // M14：140→155 —— 惩击是牧师唯一不锁武器方案的主动输出
     // M14b：155→195 —— 减速/位移生效后牧师被压制（基线 31.0%→28.6%）：输给法师/死骑的都是
     //   窄差竞速，175 不足以翻回，再抬一档
-    effects: [{ kind: 'damage', school: School.Holy, amount: { flat: 195 } }],
+    // W23：神圣飞弹要飞到才结算（6.6 锁定投射物）
+    effects: [
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [{ kind: 'damage', school: School.Holy, amount: { flat: 195 } }],
+      },
+    ],
     description: '造成基础神圣伤害。1.2 秒读条，原地施放。',
   },
   {
@@ -325,7 +332,14 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 45 },
     counters:
       '仅魔杖+圣物方案可用，换回法杖即失效；瞬发但走暗影学派，被暗影学派锁定或沉默期间不可用；选这套方案的代价是治疗与护盾 -10%，输出换生存。',
-    effects: [{ kind: 'damage', school: School.Shadow, amount: { flat: 175 } }],
+    // W23：飞到才结算（6.6）
+    effects: [
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [{ kind: 'damage', school: School.Shadow, amount: { flat: 175 } }],
+      },
+    ],
     description: '瞬发暗影冲击，造成中等暗影伤害。仅魔杖+圣物方案可用。',
   },
   /**
@@ -350,21 +364,28 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 30 },
     counters:
       '持续伤害属于魔法减益，敌方驱散魔法一次就整段抹掉（8.4）；伤害分 6 跳给出，对爆发秒杀毫无帮助；暗影学派被锁或沉默期间不可用；不造成任何控制，阻止不了近战贴身。',
+    // W23：暗影之力飞到才附上（6.6）—— DoT 是目标指向效果，整个进 onHit
     effects: [
       {
-        kind: 'applyAura',
-        aura: {
-          id: 'priest.shadow_word_pain.dot',
-          name: '暗言术·痛',
-          description: '持续受到暗影伤害。',
-          kind: 'debuff',
-          duration: 12,
-          dispelType: DispelType.Magic,
-          periodic: {
-            interval: 2,
-            effects: [{ kind: 'damage', school: School.Shadow, amount: { flat: 45 } }],
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [
+          {
+            kind: 'applyAura',
+            aura: {
+              id: 'priest.shadow_word_pain.dot',
+              name: '暗言术·痛',
+              description: '持续受到暗影伤害。',
+              kind: 'debuff',
+              duration: 12,
+              dispelType: DispelType.Magic,
+              periodic: {
+                interval: 2,
+                effects: [{ kind: 'damage', school: School.Shadow, amount: { flat: 45 } }],
+              },
+            },
           },
-        },
+        ],
       },
     ],
     description: '瞬发施加暗影持续伤害，12 秒内每 2 秒造成一次伤害。可在移动中使用。',
@@ -385,7 +406,14 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 50 },
     counters:
       '7 秒冷却决定它只是节奏键而不是爆发；暗影学派锁定与沉默都能封住（7.3）；纯伤害没有任何控制，被近战贴上时它救不了自己。',
-    effects: [{ kind: 'damage', school: School.Shadow, amount: { flat: 200 } }],
+    // W23：飞到才结算（6.6）
+    effects: [
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [{ kind: 'damage', school: School.Shadow, amount: { flat: 200 } }],
+      },
+    ],
     description: '瞬发一记精神冲击造成暗影伤害。读条被压制时的主要输出手段。',
   },
   {

@@ -11,7 +11,7 @@
  *  3. 群奔咆哮给旗手自己的加速受 12.3「旗手移动加成总上限」限制（CTF.FLAG_CARRIER_MAX_SPEED_BONUS = 10%）。
  */
 
-import { CTF, RANGE } from '../../constants/combat.js';
+import { CTF, RANGE, SPELL_PROJECTILE } from '../../constants/combat.js';
 import {
   CastKind,
   DispelType,
@@ -54,26 +54,33 @@ const skills: SkillDef[] = [
     // M14：45→40 —— 治疗（120 耗）与输出共享法力，回复 13/s 下让两者能并行
     cost: { resource: Resource.Mana, amount: 40 },
     counters: '瞬发但伤害偏低，靠持续伤害积累；持续伤害属于魔法减益，可被驱散魔法直接移除（8.4），也不能被「战斗意志」解除（8.3）；沉默期间无法施放；只能在人形下使用，进入形态后失去这条消耗手段。',
+    // W23：月火要飞到才结算（6.6 锁定投射物）—— 直伤与 DoT 都是目标指向效果
     effects: [
-      // M14：90→175 —— 月火是德鲁伊唯一直伤：占位值下他打不死任何人（基线 4.8% 胜率）
-      // M14b：175→205 —— 减速与位移生效后近战贴脸时间变长，唯一直伤再抬一档（基线 19.0%）
-      { kind: 'damage', school: School.Nature, amount: { flat: 205, powerCoef: 0.35 } },
       {
-        kind: 'applyAura',
-        aura: {
-          id: 'druid.moonfire.dot',
-          name: '月火',
-          kind: 'debuff',
-          duration: 12,
-          dispelType: DispelType.Magic,
-          clearableByTrinket: false,
-          periodic: {
-            interval: 3,
-            // M14：25→55 —— DoT 与直伤同轮加码，长局职业吃满 12 秒跳
-            effects: [{ kind: 'damage', school: School.Nature, amount: { flat: 55, powerCoef: 0.1 } }],
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [
+          // M14：90→175 —— 月火是德鲁伊唯一直伤：占位值下他打不死任何人（基线 4.8% 胜率）
+          // M14b：175→205 —— 减速与位移生效后近战贴脸时间变长，唯一直伤再抬一档（基线 19.0%）
+          { kind: 'damage', school: School.Nature, amount: { flat: 205, powerCoef: 0.35 } },
+          {
+            kind: 'applyAura',
+            aura: {
+              id: 'druid.moonfire.dot',
+              name: '月火',
+              kind: 'debuff',
+              duration: 12,
+              dispelType: DispelType.Magic,
+              clearableByTrinket: false,
+              periodic: {
+                interval: 3,
+                // M14：25→55 —— DoT 与直伤同轮加码，长局职业吃满 12 秒跳
+                effects: [{ kind: 'damage', school: School.Nature, amount: { flat: 55, powerCoef: 0.1 } }],
+              },
+              description: '每 3 秒受到一次自然伤害，持续 12 秒。',
+            },
           },
-          description: '每 3 秒受到一次自然伤害，持续 12 秒。',
-        },
+        ],
       },
     ],
     description: '造成初始自然伤害，并附加 12 秒持续伤害。',
@@ -164,9 +171,14 @@ const skills: SkillDef[] = [
     requiresLos: true,
     cost: { resource: Resource.Mana, amount: 80 },
     counters: '1.3 秒原地读条，打断、沉默、昏迷和自身被迫移动都能取消；定身受 root 递减链影响（8.2，100%→50%→25%→免疫）；受到较高伤害会提前解除，所以不要在集火目标身上开；「战斗意志」、自由祝福、闪现、消失、逃脱都能直接摆脱；被定身者仍可正常施法与攻击。',
+    // W23：根须要长过去才缠上（6.6）
     effects: [
-      // 8.2 定身受伤解除：阈值取基础生命的约 30%
-      { kind: 'root', duration: 3, breakDamage: 300 },
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        // 8.2 定身受伤解除：阈值取基础生命的约 30%
+        onHit: [{ kind: 'root', duration: 3, breakDamage: 300 }],
+      },
     ],
     description: '将目标定身 3 秒，受到较高伤害后提前解除。',
   },
@@ -185,21 +197,28 @@ const skills: SkillDef[] = [
     requiresLos: true,
     cost: { resource: Resource.Mana, amount: 100 },
     counters: '最长的一条读条（1.5 秒原地），是德鲁伊最容易被打断的技能；受迷惑递减链影响（8.2 incapacitate，100%→50%→25%→免疫）；目标同时无法被攻击也无法被治疗，误用会救下对手；可被驱散魔法移除，也可被「战斗意志」解除（8.3）。',
+    // W23：旋风要卷过去才罩住（6.6）
     effects: [
       {
-        kind: 'applyAura',
-        aura: {
-          id: 'druid.cyclone',
-          name: '气旋囚笼',
-          kind: 'debuff',
-          duration: 2.5,
-          dispelType: DispelType.Magic,
-          drCategory: DrCategory.Incapacitate,
-          clearableByTrinket: true,
-          // untargetable：不能被选中、攻击或治疗；stunned：无法行动
-          flags: { untargetable: true, stunned: true },
-          description: '被卷入旋风，2.5 秒内无法行动，也无法被攻击或治疗。',
-        },
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [
+          {
+            kind: 'applyAura',
+            aura: {
+              id: 'druid.cyclone',
+              name: '气旋囚笼',
+              kind: 'debuff',
+              duration: 2.5,
+              dispelType: DispelType.Magic,
+              drCategory: DrCategory.Incapacitate,
+              clearableByTrinket: true,
+              // untargetable：不能被选中、攻击或治疗；stunned：无法行动
+              flags: { untargetable: true, stunned: true },
+              description: '被卷入旋风，2.5 秒内无法行动，也无法被攻击或治疗。',
+            },
+          },
+        ],
       },
     ],
     description: '将目标卷入旋风 2.5 秒，期间目标无法行动，也无法被攻击或治疗。受控制递减影响。',
@@ -475,7 +494,14 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 30 },
     counters:
       '**1.4 秒读条且必须原地**：被打断会连带锁死自然学派 3 秒，纠缠根须和治疗之触一起封掉（7.2）；沉默、硬控、击退和自己移动都会中止（7.3）；熊/猎豹形态下不可用，切形态就等于放弃它。',
-    effects: [{ kind: 'damage', school: School.Nature, amount: { flat: 100 } }],
+    // W23：飞到才结算（6.6）
+    effects: [
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [{ kind: 'damage', school: School.Nature, amount: { flat: 100 } }],
+      },
+    ],
     description: '召唤自然之力打击目标，造成自然伤害。无冷却，人形态下的主力填充。',
   },
   {
@@ -507,7 +533,14 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Mana, amount: 45 },
     counters:
       '**10 秒冷却**，是月火术（6 秒）之外的第二个瞬发键而不是主力输出，单发伤害低于月火术首击；耗蓝 45 偏高，长局里连按会见底；熊/猎豹形态下不可用，切形态就等于放弃它。',
-    effects: [{ kind: 'damage', school: School.Arcane, amount: { flat: 175 } }],
+    // W23：飞到才结算（6.6）
+    effects: [
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [{ kind: 'damage', school: School.Arcane, amount: { flat: 175 } }],
+      },
+    ],
     description: '牵引星辰之力瞬间轰击目标，造成奥术伤害。自然系被打断封锁时，这是唯一还能按出去的伤害技能。',
   },
   {
