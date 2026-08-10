@@ -54,6 +54,18 @@ export interface CtfHudView {
    *   试验场传的是它自己的本地口径（720 秒演示钟）。
    */
   timeRemaining?: number;
+  /**
+   * A17：已进入突然死亡加时（先得分者胜）。
+   *
+   * ★ 进加时之后 `timeRemaining` 的**含义变了** —— 它不再是「比赛还剩多久」，
+   *   而是「距加时硬上限还剩多久」（`CTF.OVERTIME_HARD_CAP`，见
+   *   `sim/match/flag.ts` 与 `AuraSnapshot` 同文件的 `MatchSnapshot.overtime`）。
+   *   同一个数字两种含义，靠这个旗子区分：不显示它的话，玩家会看到倒计时
+   *   在归零后**又跳回一个新数**，只能理解成 HUD 坏了。
+   * ★ 刻意不叫 `suddenDeath` —— 竞技场那个同名字段一开就会带出位置揭示
+   *   （`suddenDeathBlips`），两件事同名不同物，混用等于给潜行旗手点名。
+   */
+  overtime?: boolean;
   flags: readonly FlagView[];
   /** 12.4 战场聚焦层数 */
   focusStacks: number;
@@ -92,6 +104,34 @@ const FLAG_STATE_GLYPH: Record<FlagState, string> = {
 const mmss = (s: number): string => {
   const t = Math.max(0, Math.round(s));
   return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+};
+
+/**
+ * 比赛时钟开始变色的余量，秒。
+ *
+ * ★ **占位值 60s**：没有规格出处。取一分钟的理由是它刚好是「还来不来得及
+ *   再打一次进攻」的量级 —— 短到该着急，长到还能做点什么。
+ */
+export const CTF_CLOCK_URGENT_SECONDS = 60;
+
+/**
+ * 15.4「比赛时间」那一行。A17 之后它要同时表达两件事：还剩多久、以及
+ * **这个数说的是哪件事**。
+ *
+ * ★★ 17.2 不能只靠颜色：加时状态走**两条**通道 —— 「⏱ 加时」徽标（字形+文字）
+ *   与 `urgent` 变色。把徽标去掉只留颜色，色觉受限的玩家就只能看到
+ *   一个含义突然变了的数字。
+ * ★ 不传 `timeRemaining` 就整行不画（W12 起的口径：不限时的一局
+ *   不画一个数到零也不发生任何事的倒计时）。
+ */
+export const ctfClockHtml = (timeRemaining: number | undefined, overtime = false): string => {
+  if (timeRemaining === undefined) return '';
+  const urgent = overtime || timeRemaining <= CTF_CLOCK_URGENT_SECONDS;
+  const badge = overtime ? '<span class="mh-ot">⏱ 加时</span>' : '';
+  // 加时里这个数是「距加时硬上限」，标签跟着换 —— 同一个数字不能有两种读法
+  const label = overtime ? '加时上限' : '剩余';
+  const cls = `mh-row mh-clock${urgent ? ' urgent' : ''}${overtime ? ' overtime' : ''}`;
+  return `<div class="${cls}">${badge}${label} ${mmss(timeRemaining)}</div>`;
 };
 
 const esc = (s: string): string =>
@@ -164,7 +204,7 @@ export class ModeHud {
         <span class="mh-vs">/ ${v.scoreToWin}</span>
         <span class="team blue">${v.scoreBlue}</span>
       </div>
-      ${v.timeRemaining === undefined ? '' : `<div class="mh-row">剩余 ${mmss(v.timeRemaining)}</div>`}
+      ${ctfClockHtml(v.timeRemaining, v.overtime ?? false)}
       ${flagRows}
       ${focus}
       ${v.respawnIn === undefined ? '' : `<div class="mh-row">复活波次 ${Math.ceil(v.respawnIn)}s</div>`}

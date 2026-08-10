@@ -286,6 +286,35 @@
       @keyframes sk-press { 0% { transform: scale(1); } 45% { transform: scale(.9); } 100% { transform: scale(1); } }
       #skill-bar .slot.pressed .sk-head { animation: sk-press .17s ease-out; }
 
+      /* ── X21：0.4s 排队窗过期的回执 ────────────────────────────
+         ★★ **两个静态相位，不是一条 CSS 动画。** 技能栏每 50ms 整块重建
+            innerHTML，挂在格子上的 animation 会跟着重新开始播 ——
+            「一次短促红闪」就变成每秒 20 次的频闪。相位由 JS 按经过时间给
+            （hot → fade → 消失），重建多少次都是同一个样子。
+            （`sk-press` 能用动画，是因为它只播一次且发生在两次重建之间。）
+         ★★ 小字**绝对定位、盖在格子自己身上**，不进流 —— 进流的话技能栏
+            会整体长高一行再缩回去，等于在 X18② 刚修掉的「面板上跳」上
+            再犯一次。⚠️ 也不能往格子**外面**飘：上方那一条带子归
+            `#self-auras`（X17），飘出去会和它打架；盖在自己身上既没有
+            碰撞面，也正好落在玩家刚按下去那一格 —— 眼睛本来就在那里。
+            被盖住的只有 1.1 秒的按键标签，那是这一刻最不需要的信息。
+         ★ 17.2 双通道：颜色 + ⌛ 字形 + 「没赶上」三个字，
+           而且这条与 `.sk-block` 的四类阻碍**长相不同** ——
+           它不是「不能放」，是「按早了」。                             */
+      #skill-bar .slot { position: relative; }
+      #skill-bar .slot.late { border-color: var(--c-danger); }
+      #skill-bar .slot.late[data-late="hot"] {
+        box-shadow: 0 0 0 2px color-mix(in srgb, var(--c-danger) 70%, transparent);
+      }
+      #skill-bar .sk-late {
+        position: absolute; left: 2px; right: 2px; top: 2px; z-index: 2;
+        text-align: center; border-radius: 3px; padding: 1px 0;
+        background: rgba(30,8,10,.92);
+        font-size: 10px; font-weight: 600; color: var(--c-danger);
+        text-shadow: 0 1px 2px #000; pointer-events: none;
+      }
+      #skill-bar .slot.late[data-late="fade"] .sk-late { opacity: .55; }
+
       /* ── 技能 tooltip（第一次消费 SkillDef.description / counters）──
          ★ 自绘而不是原生 title：原生提示有 ~1 秒延迟、样式不可控，
            而这里要的是「扫一眼就知道这招怎么反制」。
@@ -407,6 +436,66 @@
       .np-cast i { display: block; height: 100%; background: var(--school); }
       .np-cast.shielded { outline: 1px dashed #8e96a8; }
 
+      /* ── X18②：读条区常驻占位 ─────────────────────────────────
+         ★★ `visibility: hidden` 而**不是** `display: none` —— 这正是两者的
+            区别所在：visibility 保留占位，display 不保留。
+            姓名板锚在头顶（transform 里的 -100%）向上生长，读条节点
+            出现/消失时整块板会上下跳 6px，而它是**可点击**的选中面：
+            点击热区在光标底下移动，混战里「点了没选中」的一部分就是它。
+         ⚠️ 想省这 6px 的人请先读这段：省下来的是像素，赔进去的是点击命中率。 */
+      .np-cast.idle { visibility: hidden; }
+
+      /* ── X18③：低血（<35%，与 bot 开保命键同一条线）────────────
+         ★ 条色由 JS 换成语义色板的 `neutral`（不是 danger —— 四套色板里
+           danger 与 hostile 同值，敌人姓名板本来就是那个颜色，等于没变）。
+         ★★ 17.2 不能只靠颜色：同时冒出一个百分比数字，这是第二通道。
+         ⚠️ 百分比**绝对定位**，不占布局高度 —— 否则它一出现整块板就上跳，
+            正是上面那条刚修掉的毛病。 */
+      .np-hp.low { box-shadow: inset 0 0 0 1px rgba(0,0,0,.5); }
+      .np-pct { position: absolute; right: 2px; top: 0; font-size: 9px; font-weight: 700;
+                color: var(--c-neutral); text-shadow: 0 1px 2px #000, 0 0 4px rgba(0,0,0,.9); }
+
+      /* ── X17 光环行（目标框 / 焦点框 / 自身）──────────────────
+         ★★ 17.2「不能只靠颜色」在这里是**三条**通道：
+            边框色（增益=友方色 / 减益=敌方色）+ 角标字形（＋ / －）+ class。
+            截图压掉颜色、或红绿色弱时，字形照样能分。
+         ★ 格子底色是**学派色**（14.2 的视觉语言，与技能图标同一份），
+           查不到学派或被 S7 掩码时回落中性灰 —— 不许编颜色。         */
+      .aura-row { display: flex; gap: 3px; margin-top: 5px; align-items: center; }
+      .aura { position: relative; flex: none; width: 20px; height: 20px; border-radius: 4px;
+              overflow: hidden; border: 1px solid #4a5265; background: rgba(10,12,18,.7); }
+      .aura .aura-ico { display: block; width: 100%; height: 100%; object-fit: cover;
+                        background: color-mix(in srgb, var(--aura) 55%, transparent); }
+      .aura.buff { border-color: var(--c-friendly); }
+      .aura.debuff { border-color: var(--c-hostile); }
+      .aura.unknown { border-color: #6f7a90; }
+      /* 字形通道：增益 ＋、减益 －、掩码 ·（与 BLOCKER_GLYPH / CONTROL_VISUALS 不撞）*/
+      .aura-sign { position: absolute; left: 1px; top: -1px; font-size: 9px; line-height: 1;
+                   font-weight: 700; text-shadow: 0 1px 2px #000, 0 0 3px #000; }
+      .aura.buff .aura-sign { color: var(--c-friendly); }
+      .aura.debuff .aura-sign { color: var(--c-hostile); }
+      .aura.unknown .aura-sign { color: #aab2c4; }
+      .aura-left { position: absolute; left: 0; right: 0; bottom: -1px; text-align: center;
+                   font-size: 9px; font-weight: 700; color: #f2f5fa;
+                   font-variant-numeric: tabular-nums;
+                   text-shadow: 0 1px 2px #000, 0 0 3px #000; }
+      .aura-stk { position: absolute; right: 1px; top: -1px; font-size: 9px; font-style: normal;
+                  font-weight: 700; color: #ffd166; text-shadow: 0 1px 2px #000; }
+      /* 14.3 护盾的「强度衰减」：格子底部一道随剩余吸收量退下去的条 */
+      .aura-abs { position: absolute; left: 0; right: 0; bottom: 0; display: block;
+                  background: rgba(255,255,255,.28); pointer-events: none; }
+      /* 截断不是悄悄丢掉：还有几枚没显示要说出来 */
+      .aura.more { width: auto; min-width: 20px; padding: 0 3px; font-size: 10px;
+                   color: #9aa3b6; display: flex; align-items: center; justify-content: center; }
+
+      /* X17 自身光环行：技能栏正上方 —— 决策时视线本来就在这一带
+         （施法条 + 技能格），放到别处等于没说。
+         ⚠️ 108px 是量出来的：技能栏顶边约 100px（bottom 18 + 格高 ~82），
+            玩家施法条在 132px 起 —— 这一行 20px 高正好卡在中间那道缝里。
+            改任何一头的高度都要回来重量一次。
+         ⚠️ `HudUnit.auras` 没接线时 JS 让它 display:none，默认路径不变。 */
+      #self-auras { position: absolute; left: 50%; bottom: 108px; transform: translateX(-50%); }
+
       /* ── M8 HUD（规格书 15.1 / 15.3 / 15.4）───────────────────── */
       /* 15.1 左侧：最多 12 名队友 */
       /* 15.1 左侧。试验场里 #stats 占了左上角，队伍框让到它下面 */
@@ -451,6 +540,13 @@
       .mh-flag.blue { color: #8fc4ff; }
       .mh-msg { color: #ffd76a; font-size: 11px; }
       .mh-glyph { display: inline-block; width: 12px; font-weight: 700; }
+      /* A17 夺旗加时：徽标（字形+文字）与变色是**两条**通道 —— 17.2。
+         加时之后 timeRemaining 的含义从「比赛还剩多久」换成「距加时硬上限」，
+         不说出来的话玩家只会看到倒计时归零后又跳回一个新数。 */
+      .mh-ot { display: inline-block; margin-right: 5px; padding: 0 5px; border-radius: 3px;
+               font-size: 10px; font-weight: 700; color: #1a1206;
+               background: var(--c-neutral); }
+      .mh-clock.overtime { color: var(--c-neutral); font-weight: 700; }
 
       /* 速赢清单：O 键记分板（对局中看比分与双方名单） */
       #scoreboard { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);

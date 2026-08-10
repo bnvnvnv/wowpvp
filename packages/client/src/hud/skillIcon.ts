@@ -263,6 +263,16 @@ export const setRemoteIconsAvailable = (v: boolean): void => {
 };
 
 /**
+ * 当前是否走真实图标。
+ *
+ * ★ X17 的光环行也要按这个开关决定「真图标还是色块」，而它不在本文件里 ——
+ *   与其让它自己再探测一次（第二次 HEAD 请求、第二份状态、迟早分叉），
+ *   不如把这一个布尔读出去。**只读，不给第二个写入口**：
+ *   写仍然只有 `probeIconAssets` 与 `setRemoteIconsAvailable` 两条。
+ */
+export const remoteIconsReady = (): boolean => remoteIconsAvailable;
+
+/**
  * 技能图标 HTML：有素材用真实图标，否则用程序化 SVG。
  *
  * ★ 两条路径都带 `sk-icon` class —— 验收脚本与 CSS 不感知图标来源。

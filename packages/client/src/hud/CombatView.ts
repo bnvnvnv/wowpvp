@@ -26,6 +26,7 @@ import type {
   ClassId,
   DisplayFlags,
   EntityId,
+  School,
   SkillDef,
   TeamId,
   Vec3,
@@ -59,6 +60,58 @@ export interface HudUnit {
    */
   weaponId: WeaponId | undefined;
   flags: DisplayFlags;
+  /**
+   * X17：身上的光环，供目标框/自身框的光环行（`auraRow.ts`）。
+   *
+   * ★★ **可选**是有意的，理由与 `HudSkillSlot.gcdRemaining` 完全相同：
+   *   生产方有两个（本地 director 与快照视图），任何一方还没接线时
+   *   「没填」必须是一个合法状态 —— 而不是编译错误、也不是一个空控件。
+   *   `auraRowHtml` 对空行返回空串，于是未接线时目标框的 HTML 与
+   *   改造前**逐字节一致**。
+   * ⚠️ 这里放的是**已经可以给玩家看的**光环。裁剪（谁能看见谁的什么）
+   *   是服务器 `net/visibility.ts` 的事，HUD 不做第二次判断也不该做。
+   */
+  auras?: readonly HudAura[];
+}
+
+/** 增益 / 减益 / 说不清。★ `unknown` 专门留给 S7 掩码（`HIDDEN_AURA_ID`）*/
+export type HudAuraKind = 'buff' | 'debuff' | 'unknown';
+
+/**
+ * HUD 眼里的一枚光环。★ 同样刻意**只列 HUD 真的读的字段** ——
+ * `AuraInstance` 上的 `sourceId` / `damageAccumulated` / `nextTickAt`
+ * 一个都不在这里：它们是规则层的记账，混进表现层就成了将来误用的入口。
+ */
+export interface HudAura {
+  /**
+   * 光环 id。★ **`HIDDEN_AURA_ID`（`'hidden'`）是一个合法值** ——
+   *   服务器对「会泄露施加者职业」的光环就是发这个中性 token（S7）。
+   *   消费方（`auraRow.ts`）对它不查名字、不查学派、不查图标。
+   */
+  id: string;
+  kind: HudAuraKind;
+  /**
+   * 到期时刻，与 `CombatView.now` **同钟**。
+   *
+   * ★ 发**事实**而不是 `remaining`，与 P11 给 `AuraSnapshot.expiresAt` 的
+   *   理由一字不差：一份快照在插值期间会被读很多次，`remaining` 越读越旧，
+   *   `expiresAt` 在光环整个生命周期里不变。
+   * ★ `persistent`（潜行、德鲁伊形态）不填或填 `Infinity` —— 光环行
+   *   因此不画倒计时，而不是画一个不动的数字。
+   */
+  expiresAt?: number;
+  stacks?: number;
+  /** 学派，供格子取色。查不到不填，消费方回落中性灰 —— 不许编颜色 */
+  school?: School;
+  /** 吸收盾剩余量 / 初始量（14.3 的「强度衰减」）。只有护盾类才有 */
+  absorbRemaining?: number;
+  absorbInitial?: number;
+  /**
+   * 玩家可见名。★ **可选**：联网侧手里只有 `AuraSnapshot.auraId`，
+   * 而仓库里没有 `auraId → AuraDef` 的注册表（`visibility.ts` 已经写明），
+   * 查不到就别填 —— 消费方退回 id，不编中文名。
+   */
+  name?: string;
 }
 
 /** 技能栏一格。与 `CombatDirector.SkillSlotView` 同构 */

@@ -24,8 +24,16 @@ import {
   type CastState,
   type WeaponDef,
 } from '@wowpvp/shared';
-import { castBarProgress } from './CombatHud.js';
 import {
+  QUEUE_EXPIRED_HOT_MS,
+  QUEUE_EXPIRED_MS,
+  castBarProgress,
+  queueExpiredPhase,
+  queueExpiredText,
+} from './CombatHud.js';
+import {
+  CTF_CLOCK_URGENT_SECONDS,
+  ctfClockHtml,
   isFlagBlip,
   type ArenaBlip,
   type ArenaHudView,
@@ -656,5 +664,111 @@ describe('浮动数字弹跳（打击感改造）', () => {
     expect(POP_PEAK.critTaken).toBe(POP_PEAK.crit);
     expect(isCritKind('crit') && isCritKind('critTaken')).toBe(true);
     expect(isCritKind('damage')).toBe(false);
+  });
+});
+
+/**
+ * X21：0.4 秒排队窗过期的 HUD 回执。
+ *
+ * ★★ 这条债的拍板结论是「**要提示，但换一路说**」：sim 侧刻意不发
+ *   `onFailed` —— 一条迟到 0.4 秒的「公共冷却中」比沉默**更**误导。
+ *   所以 HUD 这边说的必须是「刚才那一下没赶上」，
+ *   而不是任何一种「你不能放这个技能」。
+ */
+describe('★★ X21 排队窗过期：换一路说，不复用失败提示', () => {
+  it('★ 两个静态相位：亮 → 暗 → 消失', () => {
+    expect(queueExpiredPhase(0)).toBe('hot');
+    expect(queueExpiredPhase(QUEUE_EXPIRED_HOT_MS - 1)).toBe('hot');
+    expect(queueExpiredPhase(QUEUE_EXPIRED_HOT_MS)).toBe('fade');
+    expect(queueExpiredPhase(QUEUE_EXPIRED_MS - 1)).toBe('fade');
+    expect(queueExpiredPhase(QUEUE_EXPIRED_MS)).toBe('off');
+    expect(queueExpiredPhase(999999)).toBe('off');
+    // 时钟倒退 / NaN 不许把提示卡成常驻
+    expect(queueExpiredPhase(-1)).toBe('off');
+    expect(queueExpiredPhase(Number.NaN)).toBe('off');
+    expect(QUEUE_EXPIRED_HOT_MS).toBeLessThan(QUEUE_EXPIRED_MS);
+  });
+
+  it('★ 比屏幕中部提示短 —— 这只是回执，不是要求改变操作的信息', () => {
+    // 中部提示是 1600ms（合同 C2），排队回执必须明显更短
+    expect(COMBAT_HUD_SRC).toContain('const CENTER_NOTICE_MS = 1600;');
+    expect(QUEUE_EXPIRED_MS).toBeLessThan(1600);
+  });
+
+  it('★★ 措辞说的是「没赶上」，不是任何一种「不能放」', () => {
+    expect(queueExpiredText(0.4)).toBe('没赶上 0.4s');
+    expect(queueExpiredText(0.4)).not.toContain('冷却');
+    expect(queueExpiredText(0.4)).not.toContain('不能');
+    expect(queueExpiredText(-1), '负数不许印出来').toBe('没赶上 0.0s');
+  });
+
+  it('★★ API 就是 flashQueueExpired(skillId, waited)，非模态、自动消失', () => {
+    expect(COMBAT_HUD_SRC).toContain('flashQueueExpired(skillId: string, waited: number): void');
+    // 立刻重画一次，不等下一个 50ms 节流窗 —— 回执要紧跟着那次按键
+    expect(COMBAT_HUD_SRC)
+      .toContain('if (this.lastSlots.length > 0) this.renderSkillBar(this.lastSlots);');
+    // 过期即丢账：换武器方案让这个技能离开技能栏，也不会永远挂在那里
+    expect(COMBAT_HUD_SRC).toContain('this.lateFlash = undefined;');
+  });
+
+  it('★★ 不用 CSS animation —— 技能栏每 50ms 重建，动画会变成每秒 20 次频闪', () => {
+    const late = INDEX_HTML.slice(INDEX_HTML.indexOf('X21：0.4s 排队窗过期的回执'));
+    const block = late.slice(0, late.indexOf('/* ── 技能 tooltip'));
+    expect(block.length).toBeGreaterThan(0);
+    // ⚠️ 查的是 `animation:` 这条**属性**，不是「出现过 animation 这个词」——
+    //   上面那段注释里正解释着为什么不能用它
+    expect(block).not.toMatch(/animation\s*:/);
+    // 小字绝对定位，不进流 —— 进流的话技能栏会整体长高一行再缩回去
+    expect(block).toContain('position: absolute');
+    expect(INDEX_HTML).toContain('#skill-bar .slot { position: relative; }');
+  });
+
+  it('★ 与 blockers 分级是两条通道：「没赶上」不是一种「不能放」', () => {
+    const bar = /private renderSkillBar\([\s\S]*?\n {2}\}/.exec(COMBAT_HUD_SRC)?.[0] ?? '';
+    expect(bar).toContain('const late = this.lateFlashFor(s.skill.id as string);');
+    expect(bar).toContain('class="sk-late"');
+    // 原来那套 sk-block 的分级判定一行没动
+    expect(bar).toContain('pickBlocker(s.blockers)');
+    expect(bar).toContain('data-blk=');
+  });
+});
+
+/**
+ * A17：夺旗限时与突然死亡加时。快照已经带了 `match.timeRemaining` /
+ * `match.overtime`，这里是 HUD 的承接面。
+ */
+describe('★ A17 夺旗加时徽标', () => {
+  it('★ 不限时的一局仍然一行都不画（W12 的口径没变）', () => {
+    expect(ctfClockHtml(undefined)).toBe('');
+    expect(ctfClockHtml(undefined, true)).toBe('');
+  });
+
+  it('★★ 加时走两条通道：「加时」徽标（字形+文字）与变色，不能只有颜色', () => {
+    const ot = ctfClockHtml(45, true);
+    expect(ot).toContain('mh-ot');
+    expect(ot).toContain('加时');
+    expect(ot).toContain('overtime');
+    expect(ot).toContain('urgent');
+    expect(INDEX_HTML).toContain('.mh-clock.overtime');
+    expect(INDEX_HTML).toContain('.mh-ot {');
+  });
+
+  it('★★ 加时之后这个数的含义变了，标签跟着换 —— 同一个数字不能有两种读法', () => {
+    expect(ctfClockHtml(300, false)).toContain('剩余 5:00');
+    expect(ctfClockHtml(300, true)).toContain('加时上限 5:00');
+    expect(ctfClockHtml(300, true)).not.toContain('剩余');
+  });
+
+  it('★ 常规时段只在最后一分钟变色', () => {
+    expect(ctfClockHtml(CTF_CLOCK_URGENT_SECONDS + 1, false)).not.toContain('urgent');
+    expect(ctfClockHtml(CTF_CLOCK_URGENT_SECONDS, false)).toContain('urgent');
+  });
+
+  it('★ 场景不传 overtime 时与改造前一致（可选字段：没填是合法状态）', () => {
+    const v: CtfHudView = {
+      scoreRed: 0, scoreBlue: 0, scoreToWin: 3, flags: [], focusStacks: 0, timeRemaining: 300,
+    };
+    expect(v.overtime).toBeUndefined();
+    expect(ctfClockHtml(v.timeRemaining, v.overtime ?? false)).toContain('剩余 5:00');
   });
 });

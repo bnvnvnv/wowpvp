@@ -29,6 +29,14 @@ import { SCHOOL_TEXT } from '../combat/CombatDirector.js';
 import type { CombatView, HudSkillSlot, HudUnit } from './CombatView.js';
 import { skillIconHtml } from './skillIcon.js';
 import { SCHOOL_COLOR } from './schoolColor.js';
+import { auraRowHtml, auraRowModel } from './auraRow.js';
+import {
+  isLowHealth,
+  lowHealthColor,
+  needsRelayout,
+  stackNameplates,
+  type NameplateSpot,
+} from './nameplateLayout.js';
 import {
   BLOCKER_GLYPH,
   blockerCategory,
@@ -75,6 +83,46 @@ const FLASH_DURATION = 0.26;
  */
 const CENTER_NOTICE_MS = 1600;
 
+/**
+ * X21：排队窗过期提示的总时长与「亮相」时长，毫秒。
+ *
+ * ★★ **占位值，没有出处**（1100 / 260）。选它们的理由：
+ *   过期本身只值一瞥 —— 玩家已经知道「刚才按了一下」，这里只补一句
+ *   「那一下没赶上」。停留 1.1 秒够扫一眼又短到不会盖住下一次按键，
+ *   与屏幕中部提示（1600ms）刻意**不同**：那是要求改变操作的信息，
+ *   这条只是回执。
+ *
+ * ★★ **为什么用两个静态相位而不是一条 CSS 动画：**
+ *   技能栏每 50ms 整块重建 innerHTML —— 挂在格子上的 `animation`
+ *   会跟着**重新开始播**，于是「一次短促红闪」变成每秒 20 次的频闪。
+ *   `pulseSlot` 能用动画是因为它只播一次且发生在两次重建之间。
+ *   这里改成由数据决定的两相（亮 → 暗 → 消失）：重建多少次都是同一个样子，
+ *   而「出现—变暗—消失」在视觉上就是一次闪。
+ */
+export const QUEUE_EXPIRED_MS = 1100;
+export const QUEUE_EXPIRED_HOT_MS = 260;
+
+/** X21 提示的当前相位。`off` = 已经过去了，不画 */
+export type QueueExpiredPhase = 'hot' | 'fade' | 'off';
+
+export const queueExpiredPhase = (elapsedMs: number): QueueExpiredPhase => {
+  if (!(elapsedMs >= 0) || elapsedMs >= QUEUE_EXPIRED_MS) return 'off';
+  return elapsedMs < QUEUE_EXPIRED_HOT_MS ? 'hot' : 'fade';
+};
+
+/**
+ * X21 的小字。
+ *
+ * ★★ **措辞是这条债的一半。** 排队窗（0.4s）过期的真实含义是
+ *   「你按早了，等这一下轮到的时候窗口已经关了」—— 而 sim 侧刻意
+ *   **不发** `onFailed`：一条迟到 0.4 秒的「公共冷却中」比沉默更误导
+ *   （docs/15 X21 拍板记录）。所以这里说的是**没赶上**，
+ *   不是任何一种「不能放」。
+ * ★ 带上 `waited`：0.4 秒和 0.1 秒是两种手感，玩家据此知道要早多少。
+ */
+export const queueExpiredText = (waited: number): string =>
+  `没赶上 ${Math.max(0, waited).toFixed(1)}s`;
+
 export class CombatHud {
   private readonly root: HTMLElement;
   private readonly targetFrame: HTMLElement;
@@ -108,6 +156,24 @@ export class CombatHud {
   private readonly nameplateLayer: HTMLElement;
   private nameplates = new Map<number, HTMLElement>();
   private lastFullUpdate = 0;
+  /**
+   * X17：自身框的光环行。
+   *
+   * ★ 为什么是一个**独立**的容器而不是一块「玩家单位框」：15.1 的四区里
+   *   自己的血量/资源已经在左侧队伍框里（场景把自己也放进 allies），
+   *   再画一个自身框是重复信息。缺的只有光环这一行，就只补这一行。
+   * ⚠️ `HudUnit.auras` 没接线时它恒为空串 ⇒ 容器 `display:none`、
+   *   默认路径一个像素都不变（P10「钩子式，默认路径不带」的先例）。
+   */
+  private readonly selfAuras!: HTMLElement;
+  /** 上一次写进去的光环行 HTML。相同就不重解析一次 innerHTML */
+  private lastSelfAuraHtml = '';
+  /** X18①：上一次算避让时各板的落点，用于判断「值不值得重算」*/
+  private lastPlateSpots: NameplateSpot[] | undefined;
+  /** X18①：id → 向上错位 px。每帧照着它摆位，20Hz 才重算一次 */
+  private plateOffsets: ReadonlyMap<number, number> = new Map();
+  /** X21：当前正在闪的那一格（技能 id + 起始时刻 + 迟到了多久）*/
+  private lateFlash: { skillId: string; at: number; waited: number } | undefined;
   /**
    * M9 / 17.2：当前可访问性设置。
    *
@@ -162,6 +228,7 @@ export class CombatHud {
       <div id="focus-frame" class="unit-frame"></div>
       <div id="aim-hint"></div>
       <div id="player-cast"></div>
+      <div id="self-auras" style="display:none"></div>
       <div id="skill-bar"></div>
       <div id="skill-tip" hidden></div>
       <div id="center-notice"></div>
@@ -186,6 +253,7 @@ export class CombatHud {
     this.targetFrame = this.root.querySelector('#target-frame')!;
     this.focusFrame = this.root.querySelector('#focus-frame')!;
     this.playerCastBar = this.root.querySelector('#player-cast')!;
+    this.selfAuras = this.root.querySelector('#self-auras')!;
     this.skillBar = this.root.querySelector('#skill-bar')!;
     /**
      * 技能格点击 → 施放。**事件委托**挂在容器上：格子每 20Hz 全量重建
@@ -397,6 +465,7 @@ export class CombatHud {
 
     this.renderUnitFrame(this.targetFrame, dir.target, dir, '目标');
     this.renderUnitFrame(this.focusFrame, dir.focus, dir, '焦点');
+    this.renderSelfAuras(dir);
     this.renderPlayerCast(dir);
     this.renderSkillBar(dir.skillSlots());
     this.renderLog(dir);
@@ -467,8 +536,58 @@ export class CombatHud {
         <span class="weapon" title="10.6：敌人可见当前武器，但看不到备用装备">${esc(weapon?.name ?? '')}</span>
         ${controlBadges(unit)}
       </div>
+      ${auraRowHtml(auraRowModel(unit.auras, dir.now))}
       ${cast ? this.castBarHtml(cast, dir) : ''}
     `;
+  }
+
+  /**
+   * X17：自己身上的光环行。
+   *
+   * ★ 放在技能栏正上方 —— 玩家决策时视线本来就在那一带（施法条 + 技能格），
+   *   把「我中了什么、我的爆发还剩几秒」放在别处等于没说。
+   * ⚠️ 与目标框共用 `auraRowModel/auraRowHtml`：三处光环行（目标/焦点/自己）
+   *   口径分叉的话，同一枚光环会在两个控件上显示不同的秒数。
+   */
+  private renderSelfAuras(dir: CombatView): void {
+    const html = auraRowHtml(auraRowModel(dir.player.auras, dir.now));
+    // 内容没变就别重解析一次 innerHTML（X10 点过名：HUD 的 DOM 是 CPU 嫌疑人）
+    if (html === this.lastSelfAuraHtml) return;
+    this.lastSelfAuraHtml = html;
+    this.selfAuras.innerHTML = html;
+    this.selfAuras.style.display = html === '' ? 'none' : '';
+  }
+
+  /**
+   * X21：告诉玩家「刚才那一下没赶上 0.4 秒的排队窗」。
+   *
+   * ★★ **非模态、自动消失、不复用失败提示。** sim 侧刻意不发 `onFailed`
+   *   （一条迟到的「公共冷却中」比沉默更误导），这里换的是另一条通道：
+   *   对应技能格短促红闪 + 一行小字。它不弹窗、不进战斗日志、不占中部提示。
+   * ★ 立刻重画一次技能栏 —— 不等下一个 50ms 节流窗，否则「按下」与
+   *   「回执」之间会隔一拍，而这条提示的全部价值就在于它紧跟着那次按键。
+   *
+   * @param skillId 没赶上的那个技能。不在当前技能栏里（换了武器方案）时静默忽略
+   * @param waited  这次输入在排队里躺了多久，秒（≈0.4）
+   */
+  flashQueueExpired(skillId: string, waited: number): void {
+    this.lateFlash = { skillId, at: performance.now(), waited };
+    if (this.lastSlots.length > 0) this.renderSkillBar(this.lastSlots);
+  }
+
+  /** 某一格现在该不该画 X21 的提示。顺手清理已经过期的记账 */
+  private lateFlashFor(skillId: string): { phase: 'hot' | 'fade'; text: string } | undefined {
+    const f = this.lateFlash;
+    if (!f) return undefined;
+    const phase = queueExpiredPhase(performance.now() - f.at);
+    if (phase === 'off') {
+      // ⚠️ 过期就丢掉记账 —— 否则换武器方案让这个技能离开技能栏之后，
+      //   它会一直挂在这里等一个永远不会再来的渲染
+      this.lateFlash = undefined;
+      return undefined;
+    }
+    if (f.skillId !== skillId) return undefined;
+    return { phase, text: queueExpiredText(f.waited) };
   }
 
   /**
@@ -615,10 +734,22 @@ export class CombatHud {
          *   所以实际到达这里的焦点来自辅助技术或程序调用，不是 Tab 键。
          */
         const aria = skillAriaLabel(s.skill, this.skillKeyLabel(i), reason);
+        /**
+         * X21：排队窗过期的短提示。
+         * ★ 它**不改**上面那套 blockers 分级 —— 「没赶上」不是一种「不能放」，
+         *   两者同时出现是合法的（按早了，而且现在确实还在冷却）。
+         */
+        const late = this.lateFlashFor(s.skill.id as string);
+        /**
+         * ⚠️ 三处 `late ?` 的写法都刻意**贴着原来那一行**（class 后缀、
+         *   行内属性、紧挨 `<kbd>` 的节点）—— 没有排队提示时输出与改造前
+         *   逐字节一致，连一行空白都不多。技能格的 innerText 是 verify-m2
+         *   的读数来源，多一个空行就是多一个空格。
+         */
         return `
-          <div class="slot ${usable ? 'usable' : 'blocked'}" style="--school:${color}"
-               role="button" tabindex="0" aria-label="${esc(aria)}">
-            <kbd>${esc(this.skillKeyLabel(i))}</kbd>
+          <div class="slot ${usable ? 'usable' : 'blocked'}${late ? ' late' : ''}" style="--school:${color}"${late ? ` data-late="${late.phase}"` : ''}
+               role="button" tabindex="0" aria-label="${esc(late ? `${aria}（${late.text}）` : aria)}">
+            ${late ? `<div class="sk-late">⌛ ${esc(late.text)}</div>` : ''}<kbd>${esc(this.skillKeyLabel(i))}</kbd>
             <div class="sk-head">${skillIconHtml(s.skill, 26)}${sweep}${gcdSweep}<div class="sk-name">${esc(s.skill.name)}</div></div>
             <div class="sk-meta">
               ${s.skill.cast.kind === CastKind.Instant ? '瞬发' : `${s.skill.cast.time}s`}
@@ -736,6 +867,14 @@ export class CombatHud {
         distance2D(a.position, dir.player.position) - distance2D(b.position, dir.player.position))
       .forEach((e, i) => nameplateRank.set(e.id as number, i));
 
+    /**
+     * X18①：本帧真正会画出来的板（过了距离、过了密度、没被剔出屏幕）。
+     *
+     * ★ 避让只看这一批 —— 被密度裁掉或跑出屏幕的板不该占位置，
+     *   否则一个看不见的人会把两块看得见的板顶开。
+     */
+    const live: { spot: NameplateSpot; el: HTMLElement; unit: HudUnit }[] = [];
+
     for (const e of entities) {
       const key = e.id as number;
       seen.add(key);
@@ -792,8 +931,30 @@ export class CombatHud {
         el.style.display = 'none';
         continue;
       }
+      live.push({ spot: { id: key, x, y }, el, unit: e });
+    }
+
+    /**
+     * ★★ X18①：重叠避让**每 20Hz 一拍，而且落点没怎么变就连算都不算**。
+     *
+     *   X10 已经点名姓名板 DOM 是 CPU 嫌疑人，所以这条避让的第一约束是
+     *   「几乎不要钱」。位置照常每帧跟镜头（下面那个循环），错位量落后
+     *   最多 50ms —— 12v12 里三对重叠被分开的收益远大于半帧的滞后。
+     *   算法与迟滞见 `nameplateLayout.ts`。
+     */
+    if (full) {
+      const spots = live.map((l) => l.spot);
+      if (needsRelayout(this.lastPlateSpots, spots)) {
+        this.plateOffsets = stackNameplates(spots, this.plateOffsets);
+        this.lastPlateSpots = spots;
+      }
+    }
+
+    for (const { spot, el, unit: e } of live) {
+      // 向**上**错位：姓名板锚在头顶（translate -100%），往上摞才不压住身体
+      const lift = this.plateOffsets.get(spot.id) ?? 0;
       el.style.display = '';
-      el.style.transform = `translate(-50%,-100%) translate(${x}px,${y}px)`;
+      el.style.transform = `translate(-50%,-100%) translate(${spot.x}px,${spot.y - lift}px)`;
       el.classList.toggle('selected', dir.target?.id === e.id);
       el.classList.toggle('focused', dir.focus?.id === e.id);
 
@@ -817,6 +978,21 @@ export class CombatHud {
       const teamColor = friendly ? p.friendly : p.hostile;
 
       const hpPct = Math.max(0, (e.health / e.maxHealth) * 100);
+      /**
+       * ★★ X18③：低血变色 + 百分比小字。
+       *
+       *   4px 高的纯色条回答不了「谁进了斩杀线」——12v12 里那正是
+       *   决定打谁的那一条信息。低于 `NAMEPLATE_LOW_HP`（0.35，与 bot
+       *   开保命键同一条线）时换色，**并且**同时冒出一个百分比数字：
+       *   17.2 不能只靠颜色，数字就是第二通道。
+       * ⚠️ 低血色取 `neutral` 不取 `danger` —— 四套色板里 `danger` 与
+       *   `hostile` 是同一个值，敌人姓名板本来就是那个颜色（判据与理由
+       *   都在 `nameplateLayout.lowHealthColor`）。
+       * ⚠️ 百分比是**绝对定位**的（index.html 的 `.np-pct`），不占布局高度 ——
+       *   否则它一出现整块板就往上跳，正是 X18② 要修的那个毛病。
+       */
+      const low = isLowHealth(e.health, e.maxHealth);
+      const hpColor = low ? lowHealthColor(p) : teamColor;
       const cast = dir.castOf(e);
       /**
        * ★ 姓名板施法条与玩家条/目标框**同一个** `castBarProgress` ——
@@ -824,13 +1000,27 @@ export class CombatHud {
        *   三处口径分叉的话玩家会在两个控件上看到互相矛盾的进度。
        */
       const castP = cast ? castBarProgress(cast, dir.now) : undefined;
+      /**
+       * ★★ X18②：读条区**常驻占位**。
+       *
+       *   在此之前这个节点是「有施法才插进来」的 —— 于是对面每开始读一条，
+       *   整块姓名板就往上跳 6px（板锚在头顶、向上生长），读完再跳回来。
+       *   它不只是难看：姓名板是**可点击**的选中面，点击热区在光标底下
+       *   来回移动，混战里「点了没选中」的一部分就是它。
+       *   现在节点恒在，只切 `idle`（CSS 里是 `visibility: hidden`）——
+       *   visibility 不改变布局高度，这正是它与 display 的区别。
+       */
+      const castCls = cast && castP
+        ? `${cast.interruptible ? '' : ' shielded'}${castP.channeling ? ' channeling' : ''}`
+        : ' idle';
       el.innerHTML = `
         <div class="np-name" style="color:${teamColor}">${esc(e.name)}</div>
-        <div class="np-hp"><i style="width:${hpPct}%;background:${teamColor}"></i></div>
-        ${cast && castP ? `<div class="np-cast ${cast.interruptible ? '' : 'shielded'}${castP.channeling ? ' channeling' : ''}"
-             style="--school:${SCHOOL_COLOR[cast.school] ?? '#ccc'}">
-             <i style="width:${castP.pct}%"></i>
-           </div>` : ''}
+        ${low ? `<b class="np-pct">${Math.round(hpPct)}%</b>` : ''}
+        <div class="np-hp${low ? ' low' : ''}"><i style="width:${hpPct}%;background-color:${hpColor}"></i></div>
+        <div class="np-cast${castCls}"
+             style="--school:${cast ? SCHOOL_COLOR[cast.school] ?? '#ccc' : 'transparent'}">
+             <i style="width:${castP ? castP.pct : 0}%"></i>
+           </div>
       `;
     }
 
