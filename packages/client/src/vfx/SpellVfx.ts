@@ -78,6 +78,9 @@ import {
   type BoltForm,
 } from './boltVfx.js';
 import { fizzlePlanFor, windupPlanFor, windupStyleOf, type WindupStyle } from './castVfx.js';
+import { castCircleStyleOf } from './castTint.js';
+// ★ three 的 examples 包，只取一个纯几何合并函数（`StatusMarkers` 已在用同一个）
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { vfxScaleOf } from './skillWeight.js';
 import {
   MAX_FILL_AREAS,
@@ -586,9 +589,21 @@ interface WindupEntry {
    *  ★ 与外圈**反向**转 —— 两层反转是「机关在动」的最短路径 */
   runes?: THREE.Mesh;
   runeMat?: THREE.MeshBasicMaterial;
+  /**
+   * 这一圈法阵的**签名色**（外圈色 = primary、纹章色 = secondary，
+   * 由 `castTint.ts` 放大到色系预算上限）。聚能粒子也吃它 ——
+   * 外圈/纹章/粒子三层同色才读得出「这是同一个技能的光环」。
+   */
   visual: AttributeVisual;
   /** 按属性分化的蓄力形态（castVfx.ts 的 WINDUP_STYLES）*/
   style: WindupStyle;
+  /**
+   * 建这个节点时用的技能 id。★ 换技能必须重建 —— 见 `syncCasts` 里那条差分。
+   * 缺省（查不回技能的兜底路径）时为 undefined，与「任何 id 都不等」同效。
+   */
+  skillId?: string;
+  /** 签名规模换算出的法阵尺寸乘数（castTint.ts 的 CIRCLE_SCALE_GAIN）*/
+  circleScale: number;
   /** 聚能粒子的节拍计时器 */
   timer: number;
   /** 累计旋转角 */
@@ -604,6 +619,36 @@ interface WindupEntry {
  *   远处那些只留法阵，玩家读到的信息一样不少。
  */
 const MAX_WINDUP_EMITTERS = 4;
+
+/**
+ * 法阵外圈的几何体：**一道连续的圆环 + n 个外扩的断齿**，合并成一个。
+ *
+ * ★★ 齿数是技能身份的**非颜色**通道（`castTint.ts` 的 `circleTeethOf`）。
+ *   色相预算在 14.2 那里封死在 ±0.08，同学派技能的颜色差到此为止；
+ *   而「这个法阵有五个齿、那个有八个」是一眼可数、与属性色正交、
+ *   色盲下照样成立的差别 —— 17.2 一直更偏好的正是这种通道。
+ *
+ * ★ 齿只**向外**长（1.0 → 1.14），连续的圆环一位不动：
+ *   那道圆是 14.4 的关键元素（「这个人在施法」，`verify:m12` #14e/#48d
+ *   钉着），把它切成虚线等于削弱告示本身。
+ *
+ * ★ 合并成**一个** BufferGeometry 而不是加几个 Mesh：一个施法者的法阵
+ *   只该有外圈 + 纹章两次 draw call，12v12 里十几个人一起读条的账
+ *   是按人乘的（`MAX_WINDUP_EMITTERS` 裁的是粒子，法阵一个都不裁）。
+ */
+const makeCircleGeometry = (teeth: number): THREE.BufferGeometry => {
+  const base = new THREE.RingGeometry(0.86, 1, 56);
+  const n = Math.max(0, Math.round(teeth));
+  if (n === 0) return base;
+  const step = (Math.PI * 2) / n;
+  const parts: THREE.BufferGeometry[] = [base];
+  for (let i = 0; i < n; i++) {
+    parts.push(new THREE.RingGeometry(1, 1.14, 3, 1, i * step, 0.11));
+  }
+  const merged = mergeGeometries(parts);
+  for (const p of parts) p.dispose();
+  return merged;
+};
 
 /**
  * 同时冒拖尾粒子的表现用弹体上限（同上，按到相机的距离取最近的几发）。
@@ -1448,8 +1493,17 @@ export class SpellVfx {
     for (const c of casts) {
       present.add(c.id);
       const skill = getSkill(asSkillId(c.skillId));
-      // ★ 蓄力也用签名色 —— 读条和放出来必须是同一个颜色，见 visualFor 的 ★★
-      const av = skill ? this.visualFor(skill) : ATTRIBUTE_VISUALS.arcane;
+      const sig = skill ? signatureOf(skill) : resolveSignature(c.skillId);
+      /**
+       * ★ 蓄力也用签名色 —— 读条和放出来必须是同一个颜色，见 visualFor 的 ★★
+       * ★★ 查不回技能的兜底路径**也要先叠 tintShift**：`castCircleStyleOf`
+       *   的契约是「收已上色的视觉、内部补差额」，喂它一份没上色的基色，
+       *   补出来的差额就变成了 `motifShift - tintShift`（最坏 0.16 色环）——
+       *   一条谁都不会去看的兜底分支恰好打穿 14.2 的 ±0.08 预算。
+       */
+      const av = skill
+        ? this.visualFor(skill)
+        : tintedVisual(ATTRIBUTE_VISUALS.arcane, sig.tintShift);
       const plan = windupPlanFor({
         now,
         startedAt: c.startedAt,
@@ -1458,7 +1512,22 @@ export class SpellVfx {
         density,
       });
 
-      const entry = this.ensureWindup(c.id, av, c.skillId);
+      /**
+       * ★★ 换技能就重建法阵节点。
+       *
+       *   `WindupEntry` 按**施法者 id** 缓存，颜色/纹章/形态全在
+       *   `ensureWindup` 建节点那一刻定死。此前靠「一次施法结束 →
+       *   下一帧差分摘掉 → 再读条时重建」兜住换技能这件事，
+       *   但那是**巧合**：只要哪天施法注册表在两次施法之间不留空帧
+       *   （引导接读条、服务器合帧、或者未来的连续施法），
+       *   火球的法阵就会顶着冰霜的雪花纹章继续转 ——
+       *   而且不会有任何断言红，只有玩家看到「颜色好像都一样」。
+       *   一行差分把这条隐患关掉，代价只有换技能那一帧的一次重建。
+       */
+      const stale = this.windups.get(c.id);
+      if (stale && stale.skillId !== c.skillId) this.removeWindup(c.id);
+
+      const entry = this.ensureWindup(c.id, av, sig, c.skillId);
       entry.lastProgress = plan.progress;
 
       /**
@@ -1472,7 +1541,13 @@ export class SpellVfx {
       // ★ spinScale 按属性：冰霜慢而稳、火焰急、物理几乎不转（castVfx.ts 风格表）
       entry.spin += plan.circleSpin * entry.style.spinScale * dt * (0.8 + 0.4 * ws);
       entry.group.position.set(c.position.x, c.position.y + 0.06, c.position.z);
-      entry.group.scale.setScalar(2.2 * plan.circleScale * ws);
+      /**
+       * ★ 尺寸吃**两个**乘数：`ws` 是数据推导的分量（冷却/耗蓝/范围），
+       *   `entry.circleScale` 是签名手写的表达意图，与释放爆发那里
+       *   `ws × sig.scale` 同一个道理。区别是法阵贴地、占的是地面，
+       *   所以签名那一半在 `castTint.ts` 里先衰减到 0.9–1.2 才进来。
+       */
+      entry.group.scale.setScalar(2.2 * plan.circleScale * ws * entry.circleScale);
       entry.ring.rotation.z = entry.spin;
       if (entry.runes) entry.runes.rotation.z = -entry.spin * 0.6;
       // 第一人称压透明度，与粒子的 closeFade 同一条规矩（14.3 / 验收 #49）
@@ -1523,7 +1598,9 @@ export class SpellVfx {
           : { x: hand.x + Math.cos(ang) * r, y: hand.y + (Math.random() - 0.5) * 0.5, z: hand.z + Math.sin(ang) * r };
       this.emitBurst(
         spawn,
-        av,
+        // ★ 用法阵的签名色而不是 `av`：外圈/纹章/聚能粒子三层同色，
+        //   玩家读到的才是「这个技能的光环」而不是「学派的光环 + 别的粒子」
+        entry.visual,
         {
           /**
            * ★★ 分量只乘在**低画质早退之后**（上方 `plan.count <= 0` 那条 continue）。
@@ -1556,24 +1633,41 @@ export class SpellVfx {
    *   符文贴图缩在里面当纹理层；素材缺失时只剩外圈，**信息一点不丢**
    *   （与本文件其它退化路径同一条原则）。
    */
-  private ensureWindup(id: number, av: AttributeVisual, skillId?: string): WindupEntry {
+  private ensureWindup(
+    id: number,
+    av: AttributeVisual,
+    sig: Pick<ResolvedSignature, 'tintShift' | 'scale'>,
+    skillId?: string,
+  ): WindupEntry {
     let entry = this.windups.get(id);
     if (entry) return entry;
 
     const group = new THREE.Group();
     group.rotation.x = -Math.PI / 2;
 
+    /**
+     * ★★ 技能级的法阵签名（`castTint.ts`）。
+     *   `av` 进来时已经带了 `sig.tintShift`，这里把它放大到色系预算上限
+     *   并让**外圈与纹章反向**偏移 —— 同学派的两个技能于是有
+     *   「暖芯冷边」/「冷芯暖边」两张脸，而每一层仍钳在 ±TINT_CLAMP 内。
+     *   14.2「看颜色识属性」一位不破：火技能永远是暖色，只是暖得各不相同。
+     */
+    const circle = castCircleStyleOf(av, sig, skillId);
+    const tinted: AttributeVisual = {
+      ...av, primary: circle.ringColor, secondary: circle.motifColor,
+    };
+
     // ★ 几何体逐实例新建 —— removeWindup 会释放它（共享的话第一个人施法结束
     //   就会把全场法阵打成空白，与 disposeNode 的 ★★ 是同一个坑）
     const ringMat = new THREE.MeshBasicMaterial({
-      color: av.primary,
+      color: circle.ringColor,
       transparent: true,
       opacity: 0,
       depthWrite: false,
       side: THREE.DoubleSide,
       blending: THREE.AdditiveBlending,
     });
-    const ring = new THREE.Mesh(new THREE.RingGeometry(0.86, 1, 56), ringMat);
+    const ring = new THREE.Mesh(makeCircleGeometry(circle.teeth), ringMat);
     ring.renderOrder = 3;
     group.add(ring);
 
@@ -1594,14 +1688,16 @@ export class SpellVfx {
     if (tex) {
       runeMat = new THREE.MeshBasicMaterial({
         map: tex,
-        color: av.secondary,
+        color: circle.motifColor,
         transparent: true,
         opacity: 0,
         depthWrite: false,
         side: THREE.DoubleSide,
         blending: THREE.AdditiveBlending,
       });
-      const side = 1.55 * style.motifScale;
+      // ★ 纹章额外吃签名规模（衰减 0.5）：「大招的印记更大」这句话
+      //   主要由中央这个符号说 —— 它长在法阵里面，放大不占地面
+      const side = 1.55 * style.motifScale * circle.motifScale;
       runes = new THREE.Mesh(new THREE.PlaneGeometry(side, side), runeMat);
       runes.renderOrder = 3;
       group.add(runes);
@@ -1612,7 +1708,9 @@ export class SpellVfx {
       group, ring, ringMat,
       ...(runes ? { runes } : {}),
       ...(runeMat ? { runeMat } : {}),
-      visual: av, style, timer: 0, spin: 0, lastProgress: 0, lastPos: { x: 0, y: 0, z: 0 },
+      ...(skillId !== undefined ? { skillId } : {}),
+      visual: tinted, style, circleScale: circle.circleScale,
+      timer: 0, spin: 0, lastProgress: 0, lastPos: { x: 0, y: 0, z: 0 },
     };
     this.windups.set(id, entry);
     return entry;
