@@ -212,6 +212,19 @@ export const closeUpOpacity = (
 };
 
 /**
+ * 镜头是不是已经进到第一人称里了。
+ *
+ * ★ X30 的 debuff 壳层需要的是**判据**而不是上限：它的基准不透明度
+ *   本来就低于 `FIRST_PERSON_OPACITY_CAP`，`closeUpOpacity` 对它一点作用
+ *   都没有 —— 而第一人称下镜头是**在壳里面**的，正面那层被背面剔除、
+ *   背面那层糊在整个视野上。所以壳需要显式知道「现在是第一人称」，
+ *   自己再收一档（见 `StatusMarkers.setDebuffShell` 的 FP 处理）。
+ * ★ 阈值仍然只有这一个常量 —— 判据不许出现第二份。
+ */
+export const isFirstPersonDistance = (cameraDistance: number): boolean =>
+  cameraDistance < FIRST_PERSON_DISTANCE;
+
+/**
  * ★ 验收 #49 后半句：最远镜头下旗手和范围仍清晰。
  *
  * 14.3 最后一条点名了四样在最远镜头必须保留的东西：

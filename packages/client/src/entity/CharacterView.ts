@@ -15,7 +15,8 @@ import * as THREE from 'three';
 import { BOSS_CLASS_ID, GEOMETRY } from '@wowpvp/shared';
 import { AnimState } from './AnimationController.js';
 import { ModelLibrary, type CharacterModel } from './ModelLibrary.js';
-import { buildUpperBodyAdditive } from './animLayer.js';
+import { buildUpperBodyAdditive, findHeadBone } from './animLayer.js';
+import { STUN_WOBBLE, stunWobbleAt, wobbleWeightStep } from './stunWobble.js';
 import { swingClipsFor, swingStyleFor, swingTimeScaleFor } from './weaponAnim.js';
 
 /** 各动作状态的调试配色。模型加载前（或加载失败时）的兜底表现 */
@@ -289,6 +290,13 @@ export class CharacterView {
     this.currentClip = '';
     this.currentKey = '';
     this.buildCastLayer(m);
+    /**
+     * X30：程序化摇头要拧的那一根。★ 只在**骨骼**里找 —— 模型里还有一个
+     *   叫 `Mage_Head` 的网格，模糊匹配会先撞上它（见 `findHeadBone`）。
+     */
+    const headBones: THREE.Object3D[] = [];
+    m.root.traverse((o) => { if ((o as THREE.Bone).isBone) headBones.push(o); });
+    this.headBone = findHeadBone(headBones);
     this.applyClip();
 
     if (this.pendingWeaponId !== undefined) {
@@ -696,6 +704,94 @@ export class CharacterView {
     this.model?.root.scale.setScalar(scale);
   }
 
+  // ── X30：被击晕的摇头晃脑（程序化，素材里没有 Dizzy 片段）──────
+
+  /** 头骨（挂模型时找一次）。找不到 → 回落整模小幅摇摆，见 `applyStunWobble` */
+  private headBone: THREE.Object3D | undefined;
+  private stunTarget = 0;
+  private stunWeight = 0;
+  /** 相位钟：被晕期间累加，完全停下时归零（下次被晕从头晃）*/
+  private wobbleClock = 0;
+  /**
+   * 上一帧被拧之前的**干净**姿势。
+   *
+   * ★★ 必须存起来逐帧还原，不能只靠「mixer 每帧会重写这根骨」——
+   *   那个前提**不一定成立**：当前片段可能压根没有 head 轨道（`Hit_A` 的
+   *   遮罩范围、或将来某个只动手臂的片段），此时骨骼保持上一帧的值，
+   *   而我们每帧再乘一次偏移 = **指数级累积**，头会越转越歪直到拧断。
+   *   这类 bug 只在特定片段下出现，肉眼看到时早就查不回原因了。
+   */
+  private readonly wobbleBase = new THREE.Quaternion();
+  private wobbleApplied = false;
+  /** 整模回落时同理：进入摇摆前的基准欧拉角（只用 x/y，z 留给 P6 侧闪）*/
+  private wobbleBodyBase: { x: number; y: number } | undefined;
+  private readonly wobbleEuler = new THREE.Euler();
+  private readonly wobbleQuat = new THREE.Quaternion();
+
+  /**
+   * 被击晕 ↔ 解除。**判据在调用方**（`stunWobbleActive(flags)`，恐惧要排掉）。
+   *
+   * ★ 这里只管「晃不晃」；死亡与变形两条否决由 `applyStunWobble` 自己兜 ——
+   *   它们是本视图内部才知道的状态（尸体不该晃、小鸡没有人形骨架），
+   *   让场景去判会变成两份口径。
+   */
+  setStunned(on: boolean): void {
+    this.stunTarget = on ? 1 : 0;
+  }
+
+  /** 当前晃动权重（自检 / 单测用）。0 = 完全没在晃 */
+  get stunWobbleWeight(): number {
+    return this.stunWeight;
+  }
+
+  /**
+   * 每帧的程序化摇头。★★ **必须在 `mixer.update()` 之后**跑：
+   * 它是叠在动画姿势上的后处理，跑在前面会被 mixer 当场覆盖掉。
+   */
+  private applyStunWobble(dt: number): void {
+    // 死亡与变形一票否决：尸体不晃、小鸡没有人形骨架（`canOverride` 同一组守卫）
+    const want =
+      this.stunTarget > 0 && !this.morphed && this.state !== AnimState.Death ? 1 : 0;
+    this.stunWeight = wobbleWeightStep(this.stunWeight, want, dt);
+
+    if (this.stunWeight <= 0) {
+      this.wobbleClock = 0;
+      this.wobbleApplied = false;
+      if (this.wobbleBodyBase && this.model) {
+        this.model.root.rotation.x = this.wobbleBodyBase.x;
+        this.model.root.rotation.y = this.wobbleBodyBase.y;
+      }
+      this.wobbleBodyBase = undefined;
+      return;
+    }
+
+    this.wobbleClock += dt;
+    const s = stunWobbleAt(this.wobbleClock, this.stunWeight);
+
+    if (this.headBone) {
+      // 存干净姿势 → 在它上面乘一个小旋转。骨骼级，腿和身体照常播动画
+      this.wobbleBase.copy(this.headBone.quaternion);
+      this.wobbleEuler.set(s.pitch, s.yaw, s.roll);
+      this.headBone.quaternion.multiply(this.wobbleQuat.setFromEuler(this.wobbleEuler));
+      this.wobbleApplied = true;
+      return;
+    }
+
+    /**
+     * 回落：整模小幅摇摆（骨架没有 head 的模型 / BOSS）。
+     * ★ **只动 x/y，不动 z** —— `rotation.z` 是 P6 程序化侧闪的通道，
+     *   两者共用一个轴的话「闪避完回位」会把摇摆的偏移一起擦掉
+     *   （远端角色的 AnimState 不一定是 Stunned，侧闪的守卫拦不住这种并发）。
+     * ★ 胶囊兜底阶段（模型还没挂上 / `?art=off`）什么都不做：
+     *   与 `playAvoidReact` 同一条规矩，头顶星星标记那条信息通道仍在。
+     */
+    const root = this.model?.root;
+    if (!root) return;
+    this.wobbleBodyBase ??= { x: root.rotation.x, y: root.rotation.y };
+    root.rotation.x = this.wobbleBodyBase.x + s.pitch * STUN_WOBBLE.BODY_FACTOR;
+    root.rotation.y = this.wobbleBodyBase.y + s.yaw * STUN_WOBBLE.BODY_FACTOR;
+  }
+
   private applyMorphVisibility(): void {
     const showCreature = this.morphed && this.morphNode !== undefined;
     if (this.morphNode) this.morphNode.visible = showCreature && !this.firstPerson;
@@ -705,7 +801,14 @@ export class CharacterView {
 
   /** 每帧推进动画与受击闪光 */
   update(dt: number): void {
+    /**
+     * X30：先把上一帧拧进去的摇头**还原**，再让 mixer 写这一帧的姿势。
+     * ★ 顺序是死的：还原 → mixer → 重新拧。理由见 `wobbleBase` 的 ★★
+     *   （当前片段没有 head 轨道时，不还原就是每帧连乘）。
+     */
+    if (this.wobbleApplied && this.headBone) this.headBone.quaternion.copy(this.wobbleBase);
     this.mixer?.update(dt);
+    this.applyStunWobble(dt);
     if (this.hitReactCooldown > 0) this.hitReactCooldown -= dt;
     // P6 程序化侧闪：sin 半波去-回，闪完恢复基准（模型根的 x/侧倾归位）
     if (this.dodgeElapsed !== undefined) {

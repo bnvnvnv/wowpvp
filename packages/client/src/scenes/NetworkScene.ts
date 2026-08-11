@@ -27,7 +27,6 @@ import {
   GEOMETRY,
   MAP_BY_ID,
   RANGE,
-  SIM,
   TEAM_RED,
   Targeting,
   createMovementState,
@@ -111,6 +110,9 @@ import { TargetRing } from '../vfx/TargetRing.js';
 import { FactionRings } from '../vfx/FactionRing.js';
 import { strongestShield, type ControlKind } from '../vfx/status.js';
 import { visualForAuraId, visualForSchool } from '../vfx/schools.js';
+import { debuffShellOf } from '../vfx/debuffAura.js';
+import { stunWobbleActive } from '../entity/stunWobble.js';
+import { isMorphedByAuraIds } from '../entity/morphForm.js';
 import {
   DEFAULT_ACCESSIBILITY,
   loadAccessibility,
@@ -128,8 +130,14 @@ import { HitFeedback } from '../feedback/HitFeedback.js';
 const NET_HINT_TEXT =
   'Tab 选目标 · 点模型选中 · F 焦点 · 1–9 技能 · Esc 取消读条 · G 交互 · R 解控 · O 记分板 · F10 设置与键位重绑';
 
-/** 8.2「迷惑」链的光环 id（`control.${kind}`，见 shared/sim/effects/combat.ts）*/
-const MORPH_AURA_ID = 'control.incapacitate';
+/**
+ * 8.2「迷惑」= 换小动物模型的判据**不在这里**：见 `entity/morphForm.ts`。
+ * ⚠️ 这里曾经是一行 `const MORPH_AURA_ID = 'control.incapacitate'` ——
+ *   按**单一光环 id** 比对，于是自带 id 的气旋囚笼（`druid.cyclone`，
+ *   同为 Incapacitate + stunned）在联网局里不换模型，人形边走边晃头，
+ *   而试验场同一发是小鸡（X29 复盘）。判据统一到递减类别 + 旗标之后，
+ *   两个场景与 sim 的游走判据同源。
+ */
 
 /**
  * 大乱斗「巨人化药水」的光环 id（shared/data/party.ts）。
@@ -2328,6 +2336,11 @@ export class NetworkScene {
     const pos = this.predictor.renderPosition(dt);
     const s = this.predictor.state;
 
+    /**
+     * ★ 快照要在动作状态机之前取：`dead` / `stunned` 是**覆盖状态**
+     *   （`AnimationController` 的最高优先级两条），拿不到快照就喂不进去。
+     */
+    const meSnap = this.lastEntities.find((e) => e.id === this.selfId);
     this.selfAnim.update({
       horizontalDistance: s.lastHorizontalDistance,
       dt: realDt, // ★ 状态机时钟（见 draw 头注）
@@ -2336,6 +2349,16 @@ export class NetworkScene {
       teleported: s.teleported,
       forward: this.pendingInput?.forward ?? 0,
       strafe: this.pendingInput?.strafe ?? 0,
+      /**
+       * ★★ X29：这两条此前**根本没传** —— 于是联网侧永远进不了
+       *   `AnimState.Death`/`Stunned`：自己的尸体站着不倒，被控时不踉跄，
+       *   而 `CharacterView.applyStunWobble` 的「死亡一票否决」判的正是
+       *   `AnimState.Death`，没有它那条否决在联网侧是**死代码**，
+       *   尸体会一直摇头（`flags` 不随死亡清空，见 `deriveStatusFlags`）。
+       *   口径与试验场假人循环逐字相同。
+       */
+      dead: meSnap ? !meSnap.alive : false,
+      stunned: meSnap?.flags.stunned ?? false,
     });
 
     this.selfView.setTransform(pos, this.characterYaw);
@@ -2343,15 +2366,17 @@ export class NetworkScene {
     // M12：动画节奏、施法姿态、手上武器、模型动画推进
     this.selfView.setLocomotionTimeScale(this.selfAnim.timeScale);
     this.selfView.setCasting(this.view.playerCast !== undefined);
-    const meSnap = this.lastEntities.find((e) => e.id === this.selfId);
     if (meSnap) {
       this.syncWeapon(meSnap.id as number, this.selfView, meSnap.equipment?.currentWeaponId as string | undefined);
       // 8.2「迷惑」= 被变形（快照 auras 是权威，重连也不丢）
-      this.selfView.setMorphed(meSnap.auras.some((a) => a.auraId === MORPH_AURA_ID));
+      // ★ 判据统一走 `isMorphedByAuraIds` —— 按单一 id 比会漏掉气旋囚笼（X29）
+      this.selfView.setMorphed(isMorphedByAuraIds(meSnap.auras));
+      // X30：自己被击晕时也晃 —— 第三人称下看得见自己的后脑勺
+      this.selfView.setStunned(stunWobbleActive(meSnap.flags));
       this.selfView.setBodyScale(
         meSnap.auras.some((a) => a.auraId === GIANT_AURA_ID) ? GIANT_BODY_SCALE : 1,
       );
-      this.updateMarkersFor(meSnap, this.selfView);
+      this.updateMarkersFor(meSnap, this.selfView, realDt);
     }
     this.selfView.update(dt);
 
@@ -2409,6 +2434,14 @@ export class NetworkScene {
         teleported: e.teleported,
         forward: 0,
         strafe: 0,
+        /**
+         * ★★ X29：远端角色此前**没有**这两条 —— 死了不倒地、被控不踉跄，
+         *   而且 `applyStunWobble` 的死亡否决（判 `AnimState.Death`）
+         *   在联网侧因此从来没生效过：尸体一直在摇头，直到那枚控制光环
+         *   自然到期（光环不随死亡清除）。与试验场假人循环同一份口径。
+         */
+        dead: !e.snapshot.alive,
+        stunned: e.snapshot.flags.stunned,
       });
 
       view.setTransform(e.position, e.yaw);
@@ -2423,11 +2456,13 @@ export class NetworkScene {
       view.setCasting(this.view.castOfId(e.snapshot.id) !== undefined);
       this.syncWeapon(id, view, e.snapshot.equipment?.currentWeaponId as string | undefined);
       // 8.2「迷惑」= 被变形；14.3 控制标记 —— 都从快照读，与试验场同一套表现
-      view.setMorphed(e.snapshot.auras.some((a) => a.auraId === MORPH_AURA_ID));
+      view.setMorphed(isMorphedByAuraIds(e.snapshot.auras));
+      // X30：被击晕的摇头晃脑（恐惧要排掉 —— 判据在 stunWobbleActive，两场景共用）
+      view.setStunned(stunWobbleActive(e.snapshot.flags));
       view.setBodyScale(
         e.snapshot.auras.some((a) => a.auraId === GIANT_AURA_ID) ? GIANT_BODY_SCALE : 1,
       );
-      this.updateMarkersFor(e.snapshot, view);
+      this.updateMarkersFor(e.snapshot, view, realDt);
       view.update(dt);
     }
 
@@ -2450,8 +2485,18 @@ export class NetworkScene {
    *   护盾也走同一个 `strongestShield()` 判据 —— 两条路不会各写一遍。
    * ★ 护盾数据来自快照新增的 `absorbRemaining/absorbInitial`（M16d 协议债，
    *   此前这里只能如实不画）。
+   *
+   * ⚠️★ **`realDt` 是 X30 顺手修的**：此前这里传的是 `SIM.TICK_DT`（0.05）——
+   *   一个**固定**值，而它喂的是 `StatusMarkers` 里三条**秒**计时
+   *   （护盾承伤 0.15 / 破裂 0.4 / X7 的 0.3 秒过期收束）。60fps 下每帧扣
+   *   0.05 秒 = 时间流速 3 倍，那三段演出全都只有名义时长的三分之一，
+   *   而画面上只是「碎得有点快」，没有人会报。试验场那边一直传的是
+   *   `realDt`（「状态标记是倒计时，不在顿帧时钟上」），两条路本就该一致。
+   *   X30 的壳层脉动同样吃这个 dt，不修的话火焰会闪成频闪灯。
    */
-  private updateMarkersFor(snap: HydratedEntitySnapshot, view: CharacterView): void {
+  private updateMarkersFor(
+    snap: HydratedEntitySnapshot, view: CharacterView, realDt: number,
+  ): void {
     let m = this.statusMarkers.get(snap.id as number);
     if (!m) {
       m = new StatusMarkers();
@@ -2475,7 +2520,19 @@ export class NetworkScene {
     if (snap.flags.rooted) active.set('rooted', schoolOf('root'));
     if (snap.flags.silenced) active.set('silenced', schoolOf('silence'));
     if (snap.flags.disarmed) active.set('disarmed', schoolOf('disarm'));
-    m.update(active, this.quality.current, this.cam.distance, SIM.TICK_DT, this.elapsed);
+
+    /**
+     * X30：**中招的那一层** —— debuff 学派色壳。
+     * ★★ `snap.auras` **原样**喂进去：`AuraSnapshot` 结构上就是 `ShellAuraLike`
+     *   （`debuffAura.ts` 的 id 字段收 `auraId` / `id` 两个名字正是为了这个），
+     *   12v12 每帧 24 个实体因此省掉 24 次 `.map()` 和它产生的短命对象。
+     * ★ S7 掩码（`HIDDEN_AURA_ID`）由 `debuffShellOf` 内部强制走中性灰 ——
+     *   这里**不许**做任何补救式的学派回填，那正是把服务器刚掩掉的
+     *   从旁边漏回去。
+     */
+    m.setDebuffShell(debuffShellOf(snap.auras));
+
+    m.update(active, this.quality.current, this.cam.distance, realDt, this.elapsed);
 
     const shield = strongestShield(snap.auras);
     m.setShield(

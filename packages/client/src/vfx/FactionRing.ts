@@ -112,7 +112,12 @@ const HOSTILE_OPACITY = 0.42;
  *   后处理或模板缓冲做得到，而那正是上面拒绝的开销。
  *   docs/15 的 X14 行如实记着这一点，真机看过再决定要不要升级。
  */
-const RIM_RADIUS_SCALE = 1.16;
+/**
+ * ★ 导出是给 X30 的 debuff 壳层做**分层门禁**用的：那层壳也是一圈胶囊，
+ *   半径必须留在这个数以内，否则两条信息（他是哪边 / 他中了什么）
+ *   会在同一圈像素上打架。`debuffShell.test.ts` 拿它逐帧比。
+ */
+export const RIM_RADIUS_SCALE = 1.16;
 const RIM_HEIGHT_SCALE = 1.02;
 /** 微光强度。0.13 是「凑近看得出、混战里不刺眼」，占位值，真机可调 */
 const RIM_OPACITY = 0.13;

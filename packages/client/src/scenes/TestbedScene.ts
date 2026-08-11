@@ -7,12 +7,12 @@
 
 import * as THREE from 'three';
 import {
-  DrCategory,
   GEOMETRY,
   MOVE,
   Targeting,
   aurasOf,
   createMovementState,
+  isMorphedFormAura,
   distance2D,
   stepMovement,
   movementLockOf,
@@ -77,6 +77,8 @@ import type { MinimapBlip } from '../hud/ModeHud.js';
 import { FlagMarkers } from '../vfx/FlagMarkers.js';
 import type { ControlKind } from '../vfx/status.js';
 import { visualForAuraId, visualForSchool } from '../vfx/schools.js';
+import { debuffShellOf } from '../vfx/debuffAura.js';
+import { stunWobbleActive } from '../entity/stunWobble.js';
 
 /** 技能栏槽位数，与 CombatDirector 的 PLAYER_SKILL_IDS 长度一致 */
 /**
@@ -1026,14 +1028,15 @@ export class TestbedScene {
 
   /**
    * M12 / 8.2「迷惑」：被化形术命中的实体换成小动物模型。
-   * ★ 判据是**光环的递减类别**而不是光环名 —— 8.2 的「迷惑」链
-   *   （incapacitate + stunned 标志）就是「被变成无害生物」这一类，
-   *   恐惧同类别但置 feared，据此排除。素材缺失时 setMorphed 内部安静跳过。
+   * ★ 判据是**光环的递减类别 + 旗标**而不是光环名，判据本体在 sim
+   *   （`isMorphedFormAura`，与「该不该游走」同源）—— 此前这里手写了一遍，
+   *   联网侧又手写了另一遍（按单一 id 比），气旋囚笼当场分家（X29）。
+   *   恐惧同类别但置 feared，判据里自然排除。素材缺失时 setMorphed 安静跳过。
+   * ★ 本地 sim 手里有 `AuraDef`，直接喂判据 —— 联网侧只有 id，
+   *   走 `entity/morphForm.ts` 的两条反查路径，最后落到同一个函数。
    */
   private isMorphed(id: EntityId): boolean {
-    return aurasOf(this.combat.auras, id).some(
-      (a) => a.def.drCategory === DrCategory.Incapacitate && a.def.flags?.stunned === true,
-    );
+    return aurasOf(this.combat.auras, id).some((a) => isMorphedFormAura(a.def));
   }
 
   /**
@@ -1127,6 +1130,21 @@ export class TestbedScene {
       if (e.flags.rooted) active.set('rooted', tint('root'));
       if (e.flags.silenced) active.set('silenced', tint('silence'));
       if (e.flags.disarmed) active.set('disarmed', tint('disarm'));
+
+      /**
+       * X30：**中招的那一层** —— debuff 学派色壳。
+       * ★ 本地这边把 `AuraInstance` 投影成 `ShellAuraLike`（联网侧的
+       *   `AuraSnapshot` 结构上就已经是它，原样传即可）。`kind` 如实填 ——
+       *   它只是索引查不到时的兜底，主判据永远是 `auraDefById`。
+       */
+      m.setDebuffShell(debuffShellOf(
+        aurasOf(this.combat.auras, e.id).map((a) => ({
+          id: a.def.id,
+          expiresAt: a.expiresAt,
+          school: a.def.school,
+          kind: a.def.kind,
+        })),
+      ));
 
       m.update(active, this.quality.current, dist, dt, this.elapsed);
 
@@ -1482,6 +1500,8 @@ export class TestbedScene {
     this.view.setLocomotionTimeScale(this.anim.timeScale);
     this.view.setCasting(this.combat.playerCast !== undefined);
     this.view.setMorphed(this.isMorphed(this.combat.player.id));
+    // X30：被击晕的摇头晃脑（恐惧要排掉 —— 判据在 stunWobbleActive）
+    this.view.setStunned(stunWobbleActive(this.combat.player.flags));
     this.syncWeapon(this.combat.player.id as number, this.view, this.combat.player.weaponId as string);
     this.view.update(dt);
 
@@ -1540,6 +1560,8 @@ export class TestbedScene {
       }
       v.setCasting(this.combat.castOf(e) !== undefined);
       v.setMorphed(this.isMorphed(e.id));
+      v.setStunned(stunWobbleActive(e.flags)); // X30
+
       this.syncWeapon(e.id as number, v, e.weaponId as string);
       v.update(dt);
     }

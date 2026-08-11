@@ -51,6 +51,31 @@ const depthOf = (o: THREE.Object3D): number => {
   return d;
 };
 
+/**
+ * X30：找**头**骨骼 —— 程序化「摇头晃脑」要拧的那一根。
+ *
+ * ★★ 名字是**核对过**的，不是猜的（A14 之鉴）：把八个玩家 GLB 的 JSON 块
+ *   dump 出来逐个看过，每一个都有且只有一根叫 `head` 的骨骼，**没有 neck**。
+ *   `neck` 那条分支留着是给将来别的骨架用的兜底，不是幻想出来的名字。
+ * ★ 只在**骨骼**里找（调用方传的就是 `isBone` 过滤过的列表）——
+ *   模型里还有叫 `Mage_Head` 的**网格**，按名字模糊匹配会先撞上它，
+ *   而拧一个网格既不带动脸也不带动帽子。
+ * ★ 优先精确匹配 `head`，其次层级最浅的含 head 名，再次 neck；
+ *   都没有返回 undefined —— 调用方回落到「整模小幅摇摆」，绝不 T-pose。
+ */
+export const findHeadBone = (bones: readonly THREE.Object3D[]): THREE.Object3D | undefined => {
+  const exact = bones.find((b) => b.name.toLowerCase() === 'head');
+  if (exact) return exact;
+  const shallowest = (list: readonly THREE.Object3D[]): THREE.Object3D | undefined =>
+    list.length === 0
+      ? undefined
+      : list.reduce((best, b) => (depthOf(b) <= depthOf(best) ? b : best));
+  return (
+    shallowest(bones.filter((b) => /head/i.test(b.name))) ??
+    shallowest(bones.filter((b) => /neck/i.test(b.name)))
+  );
+};
+
 /** 一个骨骼子树里的全部骨骼名（含自身）。上半身遮罩集 = 上半身根的子树 */
 export const subtreeBoneNames = (root: THREE.Object3D): Set<string> => {
   const names = new Set<string>();

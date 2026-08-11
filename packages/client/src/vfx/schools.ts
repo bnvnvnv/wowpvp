@@ -160,7 +160,7 @@ export const visualOf = (skill: SkillDef): AttributeVisual =>
   ATTRIBUTE_VISUALS[visualAttributeOf(skill)];
 
 /**
- * 光环 id 的属性视觉。
+ * 光环 id 的属性视觉**键**。
  *
  * 约定：光环 id 是 `<class>.<skill>` 或 `<class>.<skill>.<名>`，取前两段查回技能。
  * ★ 护盾光环的 id **就是技能 id**（`mage.ice_barrier` / `priest.power_word_shield`），
@@ -168,10 +168,18 @@ export const visualOf = (skill: SkillDef): AttributeVisual =>
  *   八职业的盾长得一模一样。
  * ★ 查不回技能的（`control.*` 这类系统光环）返回 undefined，由调用方决定
  *   退到什么 —— 编一个颜色比不画更糟。
+ * ★ X30 起返回**键**而不是整套视觉：debuff 壳层要用属性键去查运动档案
+ *   （火上窜/霜下沉），只拿到颜色是不够的。颜色版见下面一行。
  */
-export const visualForAuraId = (auraId: string): AttributeVisual | undefined => {
+export const visualAttributeForAuraId = (auraId: string): VisualAttribute | undefined => {
   const skill = getSkill(asSkillId(auraId.split('.').slice(0, 2).join('.')));
-  return skill ? visualOf(skill) : undefined;
+  return skill ? visualAttributeOf(skill) : undefined;
+};
+
+/** 光环 id 的属性视觉。判据只有一处（上面那个），这里只是取值 */
+export const visualForAuraId = (auraId: string): AttributeVisual | undefined => {
+  const attr = visualAttributeForAuraId(auraId);
+  return attr ? ATTRIBUTE_VISUALS[attr] : undefined;
 };
 
 /**
@@ -189,6 +197,14 @@ export const visualForAuraId = (auraId: string): AttributeVisual | undefined => 
 /** 某学派的 `AttributeVisual`（命中爆发用）*/
 export const visualForSchool = (school: School): AttributeVisual =>
   ATTRIBUTE_VISUALS[SCHOOL_TO_VISUAL[school]];
+
+/**
+ * 某学派的视觉属性**键**（`visualForSchool` 的键版）。
+ * ★ 与 `visualAttributeForAuraId` 同一个动机：X30 的 debuff 壳层按属性键
+ *   查运动档案，而 `control.*` 光环只查得回学派、查不回技能。
+ */
+export const visualAttributeForSchool = (school: School): VisualAttribute =>
+  SCHOOL_TO_VISUAL[school];
 
 // ── P3 技能签名：色相偏移 ──────────────────────────────────────
 

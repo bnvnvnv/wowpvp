@@ -15,12 +15,22 @@ import * as THREE from 'three';
 import { GEOMETRY } from '@wowpvp/shared';
 import { QualityTier } from '../render/quality.js';
 import {
+  NEUTRAL_SHELL_MOTION,
+  SHELL_FADE_IN,
+  SHELL_FADE_OUT,
+  SHELL_LAYERS,
+  type ShellCategory,
+  type ShellMotion,
+  type ShellPick,
+} from './debuffAura.js';
+import {
   CONTROL_VISUALS,
   SHIELD_VISUALS,
   ShieldState,
   closeUpOpacity,
   controlMarkerScale,
   essentialMarkerScale,
+  isFirstPersonDistance,
   shieldStateFor,
   type ControlKind,
 } from './status.js';
@@ -40,6 +50,17 @@ const R = GEOMETRY.HITBOX_RADIUS;
 const SHIELD_FALLBACK_COLOR = 0xffd98a;
 /** W16 复活保护：亮金（语义近圣光，与护盾回落色同族但形态完全不同）*/
 const SPAWN_PROTECTION_COLOR = 0xffe9a0;
+
+/**
+ * X30：第一人称下 debuff 壳的收缩系数。
+ *
+ * ★ 不能只靠 `closeUpOpacity`：壳的基准（0.20 / 0.26）本来就低于那条
+ *   0.25 的上限，压不到。而第一人称时镜头**在壳里面** —— 正面那层被背面
+ *   剔除掉（看不见），背面那层糊在整个视野上（14.3 第五条点名不许）。
+ * ★ 0.3 而不是 0：留一点点色调是对的，「我身上有个冰系减速」在第一人称下
+ *   也该看得出来；14.4 只禁止把关键信息**隐藏**，不禁止压淡。
+ */
+const FIRST_PERSON_SHELL_FACTOR = 0.3;
 
 /**
  * X7：护盾**自然过期**的收束淡出时长，秒。
@@ -120,6 +141,17 @@ const makeControlGeometry = (shape: string): THREE.BufferGeometry => {
   }
 };
 
+/**
+ * X30：debuff 壳的胶囊几何体。
+ * ★ 与 `FactionRing.makeRimGeometry` 同一条公式（总高 = length + 2×radius），
+ *   低分段数（3×10）—— 它是一层朦胧的色膜，多边形多一倍也看不出区别。
+ */
+const makeShellGeometry = (radiusScale: number, heightScale: number): THREE.CapsuleGeometry => {
+  const r = R * radiusScale;
+  const total = H * heightScale;
+  return new THREE.CapsuleGeometry(r, Math.max(0.05, total - r * 2), 3, 10);
+};
+
 /** 挂点对应的高度 */
 const anchorY = (anchor: string): number => {
   if (anchor === 'feet') return 0.06;
@@ -194,6 +226,33 @@ export class StatusMarkers {
   private readonly spawnPillar: THREE.Mesh;
   private spawnProtected = false;
 
+  /**
+   * X30：**中招的那一层** —— debuff 学派色壳（用户 2026-08-11 拍板）。
+   *
+   * ★ 选哪一枚、什么颜色、怎么动全在 `debuffAura.ts`（纯判据，逐条可断言）；
+   *   这里只负责画。与 `status.ts` / 本文件的分工逐字相同。
+   * ★ 与 X14 的阵营 rim 同族的便宜路：内层正面色膜（「身上有一层冰蓝色」）
+   *   + 外缘背面加法（廉价边缘光）。分层表见 `SHELL_LAYERS` 的注释 ——
+   *   半径 1.05/1.11 都在阵营 rim（1.16）以内，护盾球壳（1.85+）在最外面。
+   * ★ 硬约束与护盾壳一字不差：**纯程序化、零贴图**，`?art=off` 下照常构造。
+   */
+  private readonly shellDebuff: THREE.Group;
+  private readonly debuffFill: THREE.Mesh;
+  private readonly debuffRim: THREE.Mesh;
+  private readonly debuffFillMat: THREE.MeshBasicMaterial;
+  private readonly debuffRimMat: THREE.MeshBasicMaterial;
+  /** 当前生效的壳（undefined = 没中招）*/
+  private debuffPick: ShellPick | undefined;
+  /**
+   * 淡入淡出权重 0..1。★ 与「有没有 pick」分开记：解除之后还要淡 0.28 秒，
+   * 那期间 `debuffPick` 已经是 undefined 了，但壳还得知道用哪个颜色淡出 ——
+   * 所以颜色写在材质上（不随 pick 清空），权重单独走。
+   */
+  private debuffWeight = 0;
+  private debuffMotion: ShellMotion | undefined;
+  /** 壳自己的相位钟：每次**重新**中招从 0 起，脉动不会从半路接上 */
+  private debuffPhase = 0;
+
   constructor() {
     for (const [kind, v] of Object.entries(CONTROL_VISUALS) as [ControlKind, typeof CONTROL_VISUALS[ControlKind]][]) {
       const mesh = new THREE.Mesh(
@@ -267,6 +326,35 @@ export class StatusMarkers {
     this.spawnPillar.visible = false;
     this.spawnPillar.renderOrder = 9;
     this.group.add(this.spawnPillar);
+
+    // X30：debuff 学派色壳（分层表见 SHELL_LAYERS）
+    this.shellDebuff = new THREE.Group();
+    this.shellDebuff.position.y = H * 0.5;
+    this.shellDebuff.visible = false;
+    this.debuffFillMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 0, depthWrite: false, side: THREE.FrontSide,
+    });
+    this.debuffFill = new THREE.Mesh(
+      makeShellGeometry(SHELL_LAYERS.fill.radiusScale, SHELL_LAYERS.fill.heightScale),
+      this.debuffFillMat,
+    );
+    this.debuffFill.renderOrder = 8;
+    this.shellDebuff.add(this.debuffFill);
+    this.debuffRimMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.BackSide,
+      blending: THREE.AdditiveBlending,
+    });
+    this.debuffRim = new THREE.Mesh(
+      makeShellGeometry(SHELL_LAYERS.rim.radiusScale, SHELL_LAYERS.rim.heightScale),
+      this.debuffRimMat,
+    );
+    this.debuffRim.renderOrder = 8;
+    this.shellDebuff.add(this.debuffRim);
+    this.group.add(this.shellDebuff);
   }
 
   /** W16：复活保护开关。检测在调用方（按光环 id，两个场景同一判据）*/
@@ -280,6 +368,99 @@ export class StatusMarkers {
   /** 诊断出口（verify 断言读它）*/
   get spawnProtectionVisible(): boolean {
     return this.spawnProtected;
+  }
+
+  /**
+   * X30：这一帧该罩哪一层 debuff 壳。传 undefined = 没中招（走淡出）。
+   *
+   * ★ 判据全在 `debuffShellOf()` —— 两个场景各自把自己的光环列表喂给它，
+   *   这里只接结果。**不许**在这个方法里补任何「哪个更重要」的判断，
+   *   那会变成第二份优先级实现。
+   * ★ 颜色写在材质上而**不是**跟着 `debuffPick` 走：解除之后还有
+   *   0.28 秒淡出，那期间 pick 已经没了，壳仍要用最后那个颜色淡下去。
+   */
+  setDebuffShell(pick: ShellPick | undefined): void {
+    const prev = this.debuffPick;
+    this.debuffPick = pick;
+    if (pick === undefined) return;
+    /**
+     * 换了一枚（被冰减速的中途又吃了一记火焰昏迷）→ 相位重来。
+     * ★ 不重置的话新学派的脉动会从旧学派的半路接上，读作
+     *   「同一个东西变了个色」而不是「又中了一发」。
+     */
+    if (prev === undefined || prev.auraId !== pick.auraId || prev.category !== pick.category) {
+      this.debuffPhase = 0;
+    }
+    this.debuffFillMat.color.set(pick.color);
+    this.debuffRimMat.color.set(pick.edge);
+    this.debuffMotion = pick.motion;
+  }
+
+  /** 当前是否在画 debuff 壳（自检 / 单测用）*/
+  get debuffShellVisible(): boolean {
+    return this.shellDebuff.visible;
+  }
+
+  /** 壳选中的类别（自检 / 单测用）。淡出期间已经是 undefined —— 它跟着 pick 走 */
+  get debuffShellCategory(): ShellCategory | undefined {
+    return this.debuffPick?.category;
+  }
+
+  /** 壳的内层颜色（自检 / 单测用）。★ S7 的中性灰是从这里断言的 */
+  get debuffShellColor(): number {
+    return this.debuffFillMat.color.getHex();
+  }
+
+  /** 壳的内层当前不透明度（自检 / 单测用）—— 淡入淡出与脉动都写在这一个通道上 */
+  get debuffShellOpacity(): number {
+    return this.debuffFillMat.opacity;
+  }
+
+  /**
+   * 壳相对身体中心的竖向偏移（自检 / 单测用）。
+   * ★ 灰度下区分火与霜的那条通道就在这里：火恒为正（往上窜）、霜恒为负（往下沉）。
+   */
+  get debuffShellDrift(): number {
+    return this.shellDebuff.position.y - H * 0.5;
+  }
+
+  /**
+   * 推进一帧 debuff 壳：淡入淡出 + 学派脉动 + 竖向漂移。
+   * ★ 由 `update()` 调用 —— 与控制标记同一个时钟，场景不需要多喂一次。
+   */
+  private advanceDebuffShell(dt: number, cameraDistance: number): void {
+    const rising = this.debuffPick !== undefined;
+    const step = dt / (rising ? SHELL_FADE_IN : SHELL_FADE_OUT);
+    this.debuffWeight = rising
+      ? Math.min(1, this.debuffWeight + step)
+      : Math.max(0, this.debuffWeight - step);
+
+    if (this.debuffWeight <= 0) {
+      this.shellDebuff.visible = false;
+      this.debuffFillMat.opacity = 0;
+      this.debuffRimMat.opacity = 0;
+      this.shellDebuff.position.y = H * 0.5;
+      this.debuffPhase = 0; // 下一次中招从头脉动
+      return;
+    }
+
+    this.shellDebuff.visible = true;
+    this.debuffPhase += dt;
+    const m = this.debuffMotion ?? NEUTRAL_SHELL_MOTION;
+    const pulse = 1 + Math.sin(this.debuffPhase * m.rate) * m.amp;
+    const fp = isFirstPersonDistance(cameraDistance) ? FIRST_PERSON_SHELL_FACTOR : 1;
+    const k = this.debuffWeight * Math.max(0, pulse) * fp;
+    this.debuffFillMat.opacity = SHELL_LAYERS.fill.opacity * k;
+    this.debuffRimMat.opacity = SHELL_LAYERS.rim.opacity * k;
+
+    /**
+     * 竖向漂移。★★ 用 `0.5 + 0.5·sin` 而不是裸 `sin`：裸的会让壳上下**对称**
+     *   摆动，于是 `drift` 的正负只改变相位、不改变观感 —— 火与霜在灰度下
+     *   又变成同一个东西。半波偏置让正的 drift **恒在中心之上**（往上窜）、
+     *   负的恒在中心之下（往下沉），符号第一次真的成为一条通道。
+     */
+    const bias = 0.5 + 0.5 * Math.sin(this.debuffPhase * m.rate * 0.5);
+    this.shellDebuff.position.y = H * 0.5 + m.drift * bias * this.debuffWeight;
   }
 
   /**
@@ -361,6 +542,9 @@ export class StatusMarkers {
       this.shieldInner.rotation.y = this.shellSpin * 0.35;
       this.shieldOuter.rotation.y = -this.shellSpin * 0.22;
     }
+
+    // X30：debuff 学派色壳（与控制标记同一个时钟，场景不需要多喂一次）
+    this.advanceDebuffShell(dt, cameraDistance);
   }
 
   /**
@@ -499,6 +683,10 @@ export class StatusMarkers {
     this.shieldOuter.geometry.dispose();
     this.shieldInnerMat.dispose();
     this.shieldOuterMat.dispose();
+    this.debuffFill.geometry.dispose();
+    this.debuffRim.geometry.dispose();
+    this.debuffFillMat.dispose();
+    this.debuffRimMat.dispose();
   }
 }
 
