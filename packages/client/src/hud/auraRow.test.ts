@@ -167,6 +167,28 @@ describe('★ X17 光环行：图标来源', () => {
     expect(auraIconUrl('nope')).toBeUndefined();
   });
 
+  it('★★ X26 正面用例：id 反查不回技能的那四条，靠注册表拿到了正确的图标', () => {
+    // 此前它们在光环行上是**光秃秃的色块** —— 玩家被致死打击的重伤咬着
+    // 和被油腻地面绊住，看到的是同一个灰格子
+    const pairs: readonly [string, string][] = [
+      ['warrior.mortal_wounds', 'warrior.mortal_strike'],
+      ['deathknight.winter_domain_chill', 'deathknight.winter_domain'],
+      ['ffa.greasy', 'ffa.drumstick_volley'],
+      ['ffa.stardust', 'ffa.starfall'],
+    ];
+    for (const [auraId, skillId] of pairs) {
+      expect(auraIconUrl(auraId), `${auraId} 还是没图标`).toBe(auraIconUrl(skillId));
+      expect(auraIconUrl(auraId)).toContain('/art/ui/skills/');
+    }
+  });
+
+  it('★★ 原样查排在注册表前面：`rogue.stealth` 要的是潜行那张图，不是消失', () => {
+    // 潜行与消失施加同一枚光环，注册表按先来先得只记得住一个技能 ——
+    // 名字对得上的那张图永远最准，所以第一级台阶是「原样查」
+    expect(auraIconUrl('rogue.stealth')).toBe(auraIconUrl('rogue.stealth'));
+    expect(auraIconUrl('rogue.stealth')).not.toBe(auraIconUrl('rogue.vanish'));
+  });
+
   it('★★ 素材没探测通过时一律走色块 —— 不许每秒发几十个注定 404 的 <img>', () => {
     setRemoteIconsAvailable(false);
     expect(auraRowModel([aura()], 100).chips[0]!.iconUrl).toBeUndefined();

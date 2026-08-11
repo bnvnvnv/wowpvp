@@ -33,6 +33,7 @@ import {
   type SkillDef,
 } from '@wowpvp/shared';
 
+import { auraSchoolById } from '../data/auraRegistry.js';
 import type { CombatDirector } from '../combat/CombatDirector.js';
 import type {
   CombatView, HudAura, HudLogEntry, HudSkillSlot, HudUnit,
@@ -42,23 +43,34 @@ import type {
  * 某个实体身上的光环 → HUD 形状。
  *
  * ★ 本地模拟这边**什么都查得到**（`AuraDef` 就在手里），所以 kind / school /
- *   name 一律如实填 —— 与联网侧只能报 `'unknown'` 的诚实降级形成对照，
- *   两边的差别是**协议带不带这些字段**，不是两套判断标准。
+ *   name 一律如实填。
+ * ★★ **X26 收口：`school` 走注册表，不走手里这份 `AuraDef`。**
+ *   联网侧 `toHudAura` 用的是「`def.school` 查不到就问**施加它的技能**」这条
+ *   两级回落，而 63 枚光环里有 **53 枚**自己不写 `school`（断筋、审判、
+ *   剑刃风暴…）。本地只读 `a.def.school` 的话，同一枚断筋在试验场是中性灰
+ *   `#9aa3b6`、在联网局是钢铁色 `#d8cbb4` —— 判据从一处变成了两处。
+ *   现在两条投影都调 `auraSchoolById`（同 `vfx/debuffAura.ts` 的纪律：
+ *   手里有 def 也照样走同一张表）。
+ * ★ 优先级与联网侧对齐：**实例 > 注册表**。`control.*` 的学派是 sim 施加时
+ *   算出来的、写在实例的 def 上，注册表查不到它 —— 所以实例那份排前面。
  * ★ `expiresAt` 直接给：persistent 光环在 sim 里本来就是 `Infinity`
  *   （`AuraInstance.expiresAt` 的注释），而 `auraRowModel` 对 `Infinity`
  *   不画倒计时 —— 两边口径已经对上，这里不需要转换。
  */
 export const hudAurasOf = (dir: CombatDirector, id: EntityId): HudAura[] =>
-  aurasOf(dir.auras, id).map((a) => ({
-    id: a.def.id,
-    kind: a.def.kind,
-    expiresAt: a.expiresAt,
-    stacks: a.stacks,
-    ...(a.def.school !== undefined ? { school: a.def.school } : {}),
-    ...(a.absorbRemaining > 0 ? { absorbRemaining: a.absorbRemaining } : {}),
-    ...(a.absorbInitial > 0 ? { absorbInitial: a.absorbInitial } : {}),
-    name: a.def.name,
-  }));
+  aurasOf(dir.auras, id).map((a) => {
+    const school = a.def.school ?? auraSchoolById(a.def.id);
+    return {
+      id: a.def.id,
+      kind: a.def.kind,
+      expiresAt: a.expiresAt,
+      stacks: a.stacks,
+      ...(school !== undefined ? { school } : {}),
+      ...(a.absorbRemaining > 0 ? { absorbRemaining: a.absorbRemaining } : {}),
+      ...(a.absorbInitial > 0 ? { absorbInitial: a.absorbInitial } : {}),
+      name: a.def.name,
+    };
+  });
 
 export class LocalCombatView implements CombatView {
   constructor(private readonly dir: CombatDirector) {}

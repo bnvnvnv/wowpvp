@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { CombatDirector } from '../combat/CombatDirector.js';
+import { auraDefById, auraSchoolById } from '../data/auraRegistry.js';
 import { LocalCombatView } from './LocalCombatView.js';
 
 const SPAWN = { x: 0, y: 0, z: 0 };
@@ -32,6 +33,27 @@ describe('LocalCombatView（X17 试验场侧光环投影）', () => {
     expect(shield, '霜甲护盾没投影出来').toBeDefined();
     expect(shield!.absorbRemaining).toBeGreaterThan(0);
     expect(shield!.absorbInitial).toBe(shield!.absorbRemaining);
+  });
+
+  /**
+   * ★★ **X26 收口：本地这条投影的 `school` 也走注册表。**
+   *
+   *   霜甲护盾的 `AuraDef` **自己不写 `school`**（63 枚里 53 枚都不写），
+   *   只有施加它的技能写了 `School.Frost`。改之前本地只读 `a.def.school`，
+   *   于是同一枚护盾在试验场是中性灰、在联网局是冰蓝 —— 判据成了两处。
+   *   这条走的是**真的** `hudAurasOf`（不是复刻一份公式），
+   *   `net/snapshotAuras.test.ts` 那条全注册表门禁负责比「两边是否一致」。
+   */
+  it('★★ school 从施加技能推得出来（def 自己不写，别退回中性灰）', () => {
+    const dir = new CombatDirector([], SPAWN);
+    const view = new LocalCombatView(dir);
+    shieldSelf(dir);
+    const shield = view.player.auras!.find((a) => a.absorbRemaining !== undefined)!;
+    expect(auraDefById(shield.id)?.school, '这枚光环自己写了 school —— 换一枚测')
+      .toBeUndefined();
+    expect(shield.school, '本地侧退回了中性灰（X26 的两处判据复发）')
+      .toBe(auraSchoolById(shield.id));
+    expect(shield.school).toBeDefined();
   });
 
   it('★ 本地这边查得到向与名字 —— 与联网侧只能报 unknown 形成对照', () => {

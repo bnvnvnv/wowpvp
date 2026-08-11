@@ -99,6 +99,7 @@ import {
   type EntityId,
 } from '@wowpvp/shared';
 
+import { auraNameById } from '../data/auraRegistry.js';
 import { strongestShield } from '../vfx/status.js';
 import { VERIFY_DUMMIES, type DummySpot } from './dummyLayouts.js';
 
@@ -774,7 +775,8 @@ export class CombatDirector {
         break;
       case 'dispelled':
         // ★ 同上：驱散提示里也不该出现内部 id。⚠️ 这条走的是回落链第 2/3 级 ——
-        //   光环已经被移走了，实例查不到，只能靠 id 前缀反查技能名
+        //   光环已经被移走了，实例查不到。X26 之前只能靠 id 前缀反查**技能**名
+        //   （「驱散了 霜矢」），现在注册表直接给得出**光环**名（「驱散了 寒冷」）
         this.push(
           `${name(ev.sourceId as never)} 驱散了 ${name(ev.targetId as never)} 的 ` +
             this.auraDisplayName(ev.targetId, ev.auraId),
@@ -805,21 +807,30 @@ export class CombatDirector {
    * ★★ 存在的理由：日志里曾经直接打内部 id ——「获得 mage.frostbolt.chill 3.0s」。
    *   那是给写代码的人看的，不是给玩家看的。
    *
-   * ⚠️ **三级回落，可靠度逐级下降，如实写在这里：**
+   * ⚠️ **四级回落，可靠度逐级下降，如实写在这里：**
    *   1. **目标身上这条光环实例的 `def.name`** —— 光环定义自带的显示名，唯一
    *      权威的一级。事件是效果结算**之后**成批送来的，所以此刻它已经在
    *      `auras` 仓里了（`auraRemoved` / `dispelled` 是例外，见下）。
-   *   2. 查不到实例时，把 auraId 的**前缀**当技能 id 反查技能名
-   *      （`mage.frostbolt.chill` → `mage.frostbolt` → 「寒冰箭」）。
+   *   2. **X26 注册表**（`data/auraRegistry.ts`）—— 同样是 `AuraDef.name`，
+   *      只是从静态数据里查而不是从实例里读，所以**光环已经掉了也答得出**
+   *      （`auraRemoved` / `dispelled` 走的正是这一级）。
+   *      ★ 这一级把两条路对齐了：联网侧的 `toHudAura` 用的是同一张表，
+   *      于是「被驱散了 X」在试验场与联网局说的是同一个词。
+   *   3. 再查不到就把 auraId 的**前缀**当技能 id 反查**技能**名
+   *      （`mage.frostbolt.chill` → `mage.frostbolt` → 「霜矢」）。
    *      ⚠️ 这一级依赖「光环 id 以所属技能 id 开头」这条**书写约定**，
-   *      不是 schema 保证的 —— 数据里换个命名它就静默失效（回落到第 3 级）。
-   *   3. 都查不到才裸露 id。宁可露出 `control.stun`，也不编一个名字：
+   *      不是 schema 保证的 —— 数据里换个命名它就静默失效（回落到第 4 级）。
+   *      ⚠️ 它给的是**技能**名而不是光环名，第 2 级能答时轮不到它。
+   *      **不许删**：运行时拼出来的 id（`control.*`）注册表里没有。
+   *   4. 都查不到才裸露 id。宁可露出 `control.stun`，也不编一个名字：
    *      编出来的名字玩家找不到对应技能，比看见 id 更糟。
    */
   private auraDisplayName(targetId: EntityId, auraId: string): string {
     for (const a of aurasOf(this.auras, targetId)) {
       if (a.def.id === auraId && a.def.name) return a.def.name;
     }
+    const byRegistry = auraNameById(auraId);
+    if (byRegistry) return byRegistry;
     const parts = auraId.split('.');
     // ★ 从长到短试前缀：技能 id 是 `<职业>.<技能>` 两段，但不写死段数 ——
     //   将来出现三段技能 id 时这里不需要跟着改

@@ -107,8 +107,9 @@ export interface HudAura {
   absorbRemaining?: number;
   absorbInitial?: number;
   /**
-   * 玩家可见名。★ **可选**：联网侧手里只有 `AuraSnapshot.auraId`，
-   * 而仓库里没有 `auraId → AuraDef` 的注册表（`visibility.ts` 已经写明），
+   * 玩家可见名。★ **仍然可选**，即使 X26 起联网侧多半填得出来
+   * （`data/auraRegistry.ts` 按技能数据表建的 `auraId → AuraDef`）：
+   * `control.*`、S7 掩码、以及将来 sim 现造的光环在表里没有条目。
    * 查不到就别填 —— 消费方退回 id，不编中文名。
    */
   name?: string;

@@ -47,6 +47,7 @@ import {
   CastFailure,
 } from '@wowpvp/shared';
 
+import { auraEntryById, auraSchoolById } from '../data/auraRegistry.js';
 import type {
   CombatView, HudAura, HudAuraKind, HudLogEntry, HudSkillSlot, HudUnit,
 } from '../hud/CombatView.js';
@@ -69,30 +70,43 @@ const toMap = (r: Readonly<Record<string, number>>): ReadonlyMap<string, number>
  * X17：`AuraSnapshot` → `HudAura`。
  *
  * ★★ **`kind` 是这条投影唯一需要动脑子的字段** —— 快照里没有它。
- *   仓库里也没有 `auraId → AuraDef` 的注册表（`net/visibility.ts` 写明了），
- *   所以绝大多数光环这里如实报 `'unknown'`，光环行退到中性灰 + `·` 角标。
+ *   X26 之前仓库里也没有 `auraId → AuraDef` 的表，于是绝大多数光环
+ *   如实报 `'unknown'`，光环行退到中性灰 + `·` 角标。**现在有了**
+ *   （`data/auraRegistry.ts`，用户拍板走客户端表、零协议改动），
+ *   数据里写着的那些光环这里报得出真实的 buff/debuff 向与玩家可见名。
  *
- * ★ 唯一的例外是 `control.*`：那个 id **是 sim 自己拼出来的**
- *   （`sim/effects/combat.ts` 的 ``id: `control.${kind}` ``，同处写死
- *   `kind: 'debuff'`）—— 它是一条结构事实，不是从数据表里猜的推论。
- *   所以只认这一条前缀，别的一律 unknown。
+ * ── 三级台阶，按可信度排 ──────────────────────────────────────
  *
- * ⚠️ 同理**不填 `name`**：查得到的只有「施加它的技能」的名字
- *   （光环 id 去掉最后一段），那不是光环名。消费方退回 id 是诚实的，
- *   编一个中文名会让玩家以为自己看到的是权威名称。
+ *   ① **S7 掩码**（`HIDDEN_AURA_ID`）—— 一律 unknown、不填名字，
+ *      **连注册表都不许查**。服务器刚把 id/学派/吸收量一起抹掉，
+ *      从旁边查回来等于给潜行者报点（`auraEntryById` 第一行也拦一次，
+ *      两处都拦是有意的：这条红线一处都不许放宽）。
+ *   ② **`control.*`** —— 那个 id 是 sim 自己拼出来的
+ *      （`sim/effects/combat.ts` 的 ``id: `control.${kind}` ``，同处写死
+ *      `kind: 'debuff'`），是**结构事实**，排在数据事实前面。
+ *      ⚠️ 它查不回定义，所以**照旧不填 name** —— 「昏迷」这个词是 sim 的
+ *      内部分类名，不是任何一枚光环的玩家可见名。
+ *   ③ **注册表** —— 数据事实。查得到就给 kind / name / school。
+ *   ④ 都不是 → 仍然 `unknown`。运行时现造的 id（将来 sim 新加的系统光环）
+ *      走的就是这一条，**兜底不许删**：注册表补的是「数据里写着的那些」，
+ *      不是「所有可能出现的 id」。
  *
- * ★ `HIDDEN_AURA_ID`（S7 掩码）不需要在这里特判：消费方 `auraRow.ts` 对它
- *   强制转 unknown + 中性色。这里仍然主动把 kind 打成 unknown ——
- *   一个被掩掉的光环连「是增益还是减益」都不该从旁边漏出去。
- *
- * DEBT(X26): 快照不带 buff/debuff 向也不带名字 —— 联网侧除 control.* 外
- *   一律 unknown + name 退回 id。两条出路（协议 1 bit / 客户端建
- *   auraId→AuraDef 注册表）待拍板，见总账 X26。
+ * ★ `school` 的优先级是「**快照 > 注册表**」：快照那个字段只有控制类光环
+ *   才带（`visibility.ts` 的字节预算），但它是服务器**施加时**算出来的
+ *   实际学派 —— 比从数据表推的更权威。快照没带才回落到定义/施加技能。
+ *   ⚠️ 这不是新的泄露面：id 没被掩掉就意味着服务器已经公开了「这是哪一枚」，
+ *     学派是那枚光环的公开属性，客户端本地推出来不多说一个字。
+ *   ★★ **回落本身住在 `auraRegistry.auraSchoolById` 里，不在这一行**
+ *     （X26 收口）：本地投影 `LocalCombatView.hudAurasOf` 调的是同一个函数，
+ *     否则同一枚断筋会「试验场中性灰、联网局钢铁色」。
  */
 export const toHudAura = (a: AuraSnapshot): HudAura => {
-  const kind: HudAuraKind = a.auraId === HIDDEN_AURA_ID
-    ? 'unknown'
-    : a.auraId.startsWith('control.') ? 'debuff' : 'unknown';
+  const masked = a.auraId === HIDDEN_AURA_ID;
+  const isControl = a.auraId.startsWith('control.');
+  // ★★ S7：掩码一路不查表。`auraEntryById` 内部也拦，这里不省 —— 见上面 ①
+  const entry = masked || isControl ? undefined : auraEntryById(a.auraId);
+  const kind: HudAuraKind = masked ? 'unknown' : isControl ? 'debuff' : entry?.def.kind ?? 'unknown';
+  const school = a.school ?? auraSchoolById(a.auraId);
   return {
     id: a.auraId,
     kind,
@@ -100,9 +114,10 @@ export const toHudAura = (a: AuraSnapshot): HudAura => {
     //   `stacks` 缺席 = 1，消费方两处都已经按这个口径写了
     ...(a.expiresAt !== undefined ? { expiresAt: a.expiresAt } : {}),
     ...(a.stacks !== undefined ? { stacks: a.stacks } : {}),
-    ...(a.school !== undefined ? { school: a.school } : {}),
+    ...(school !== undefined ? { school } : {}),
     ...(a.absorbRemaining !== undefined ? { absorbRemaining: a.absorbRemaining } : {}),
     ...(a.absorbInitial !== undefined ? { absorbInitial: a.absorbInitial } : {}),
+    ...(entry !== undefined ? { name: entry.def.name } : {}),
   };
 };
 

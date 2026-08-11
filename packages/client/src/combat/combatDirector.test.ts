@@ -19,6 +19,7 @@ import {
   getSkill,
   isCasting,
   type CombatEntity,
+  type EntityId,
   type Vec3,
 } from '@wowpvp/shared';
 
@@ -305,6 +306,22 @@ describe('光环显示名', () => {
     for (const line of auraLines) {
       expect(line, `光环行仍在打内部 id：${line}`).not.toMatch(/[a-z_]+\.[a-z_]+/);
     }
+  });
+
+  it('★★ X26：光环已经掉了也说得出**光环**名，而不是退回施加它的技能名', () => {
+    // 回落链第 2 级（注册表）。此前实例查不到时只能按 id 前缀反查技能，
+    // 于是「驱散了 霜矢」—— 玩家身上从来没有一个叫霜矢的东西，那是一发法术。
+    // 现在两条路（试验场 / 联网 `toHudAura`）吃同一张表，说的是同一个词
+    const dir = makeDirector();
+    const line = (dir as unknown as {
+      auraDisplayName(t: EntityId, id: string): string;
+    }).auraDisplayName(dir.player.id, 'mage.frostbolt.chill');
+    expect(line).toBe('寒冷');
+    // 表外的 id 仍然走第 3/4 级 —— 兜底一条都没删
+    const fallback = (dir as unknown as {
+      auraDisplayName(t: EntityId, id: string): string;
+    }).auraDisplayName(dir.player.id, 'control.stun');
+    expect(fallback).toBe('control.stun');
   });
 });
 

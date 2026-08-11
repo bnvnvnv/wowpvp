@@ -12,7 +12,10 @@
  * ★ 数据两边都是现成的，缺的一直是这一层投影：
  *     · 试验场 —— `sim/aura.ts` 的 `aurasOf(store, id)`
  *     · 联网   —— 快照里的 `AuraSnapshot`（全公开，零裁剪面）
- *   所以本文件**不查任何全局表**，只吃调用方给的 `HudAura`。
+ *   所以本文件的**投影判据**（kind/名字/秒数/层数/护盾条）一律只吃调用方
+ *   给的 `HudAura`，一处都不去查全局状态。⚠️ 唯一的例外是 `auraIconUrl`
+ *   查两张**静态数据表**（图标表与 X26 光环注册表）—— 那是「这个 id 长什么样」，
+ *   不是「这一刻发生了什么」，与调用方给的那份数据不会分叉。
  *
  * ── 三条纪律 ──────────────────────────────────────────────────
  *
@@ -30,6 +33,7 @@
  */
 
 import { HIDDEN_AURA_ID } from '@wowpvp/shared';
+import { auraSkillById } from '../data/auraRegistry.js';
 import type { HudAura, HudAuraKind } from './CombatView.js';
 import { SCHOOL_COLOR } from './schoolColor.js';
 import { escHtml as esc } from './skillTooltip.js';
@@ -102,15 +106,29 @@ const KIND_RANK: Record<HudAuraKind, number> = { debuff: 0, buff: 1, unknown: 2 
  *
  * ★ 光环 id 多是 `<职业>.<技能>.<后缀>`（`mage.frostbolt.chill`、
  *   `priest.shadow_word_pain.dot`），而 `SKILL_ICON_FILES` 的键是**技能 id**。
- *   所以先原样查一次（`warrior.hamstring` 这类光环 id 与技能同名），
- *   查不到再去掉最后一段再查一次 —— 只退这一层，不做更花哨的猜名：
- *   猜错了会给玩家一张**语义错误**的图，比没有图更糟。
- * ⚠️ `control.<kind>` 与 `HIDDEN_AURA_ID` 天然查不到，回落色块。
+ *   三级台阶，**按精确度**排：
+ *     ① **原样查** —— 光环 id 与技能同名（`warrior.hamstring`、`mage.ice_barrier`）。
+ *        这一条排第一而不是排在注册表后面是有讲究的：`rogue.stealth` 同时被
+ *        潜行与消失施加，注册表按先来先得记的可能是**消失**，而玩家看的是
+ *        身上那枚「潜行」—— 名字对得上的那张图永远最准。
+ *     ② **X26 注册表**（`data/auraRegistry.ts`）—— 精确查「是哪个技能施加的」。
+ *        补的是旧启发式落空的那一批：`warrior.mortal_wounds` → 致死打击、
+ *        `deathknight.winter_domain_chill` → 寒冬领域、`ffa.greasy` → 鸡腿雨、
+ *        `ffa.stardust` → 陨星。此前它们四个在光环行上是**光秃秃的色块**。
+ *     ③ **去掉最后一段再查** —— 旧启发式，**不许删**：运行时拼出来的 id
+ *        （sim 现造的光环）在注册表里没有，只有这一条路。
+ *   ⚠️ 只退这两层，不做更花哨的猜名：猜错了会给玩家一张**语义错误**的图，
+ *     比没有图更糟。
+ * ⚠️ `control.<kind>` 三条全落空，回落色块。
+ * ★★ `HIDDEN_AURA_ID` 第一行挡掉 —— 掩码光环连注册表都不许查（S7）。
  */
 export const auraIconUrl = (auraId: string): string | undefined => {
   if (auraId === HIDDEN_AURA_ID) return undefined;
   const direct = skillIconUrl(auraId);
   if (direct) return direct;
+  const applier = auraSkillById(auraId);
+  const byRegistry = applier ? skillIconUrl(applier.id as string) : undefined;
+  if (byRegistry) return byRegistry;
   const cut = auraId.lastIndexOf('.');
   return cut > 0 ? skillIconUrl(auraId.slice(0, cut)) : undefined;
 };
@@ -185,9 +203,9 @@ export const auraRowModel = (
 };
 
 /**
- * 悬停文本。★ 名字是**可选**的：联网侧手里只有 `AuraSnapshot.auraId`，
- * 仓库里没有 `auraId → AuraDef` 的注册表（见 `visibility.ts` 的说明），
- * 所以查不到名字时退回 id —— 而不是编一个中文名。
+ * 悬停文本。★ 名字仍然是**可选**的，即使 X26 之后联网侧多半填得出来：
+ * `control.*` 与 sim 现造的光环在注册表里没有条目，那时退回 id ——
+ * 而不是编一个中文名。生产方填不出就别填，这里照实显示 id。
  */
 const auraChipLabel = (
   a: HudAura,

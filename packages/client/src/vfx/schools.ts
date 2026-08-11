@@ -18,7 +18,9 @@
  *    已登记为 docs/10 的 Q12。
  */
 
-import { School, asSkillId, getSkill, type SkillDef } from '@wowpvp/shared';
+import { HIDDEN_AURA_ID, School, asSkillId, getSkill, type SkillDef } from '@wowpvp/shared';
+
+import { auraSkillById } from '../data/auraRegistry.js';
 
 /** 14.2 的八项视觉属性 */
 export const VisualAttribute = {
@@ -162,18 +164,31 @@ export const visualOf = (skill: SkillDef): AttributeVisual =>
 /**
  * 光环 id 的属性视觉**键**。
  *
- * 约定：光环 id 是 `<class>.<skill>` 或 `<class>.<skill>.<名>`，取前两段查回技能。
+ * ★★ X26 起**先查注册表**（`data/auraRegistry.ts` 的 `auraId → 施加技能`），
+ *   查不到才回落到旧启发式。两条路都留着，各有各的活：
+ *     ① **注册表** —— 数据事实，认得那四条「id 前两段不是技能 id」的光环
+ *        （`warrior.mortal_wounds` 来自致死打击、`deathknight.winter_domain_chill`
+ *        来自寒冬领域、`ffa.greasy` 来自鸡腿雨、`ffa.stardust` 来自陨星）。
+ *        旧启发式对它们全部落空 —— 玩家被断筋和被油腻地面绊住看到的是同一层灰。
+ *     ② **启发式**（光环 id 是 `<class>.<skill>` 或 `<class>.<skill>.<名>`，
+ *        取前两段查回技能）—— **不许删**：运行时拼出来的 id 只有这一条路，
+ *        注册表里永远不会有它们。
  * ★ 护盾光环的 id **就是技能 id**（`mage.ice_barrier` / `priest.power_word_shield`），
  *   所以冰盾是冰蓝、护心屏障是圣金 —— 此前护盾壳写死一个金色，
  *   八职业的盾长得一模一样。
- * ★ 查不回技能的（`control.*` 这类系统光环）返回 undefined，由调用方决定
+ * ★★ **S7**：`HIDDEN_AURA_ID` 第一行就返回 undefined。掩码光环不许从这条路
+ *   把学派漏回去（`auraEntryById` 内部也拦一次 —— 这条红线两处都拦）。
+ * ★ 两条都查不到（`control.*` 这类系统光环）返回 undefined，由调用方决定
  *   退到什么 —— 编一个颜色比不画更糟。
  * ★ X30 起返回**键**而不是整套视觉：debuff 壳层要用属性键去查运动档案
  *   （火上窜/霜下沉），只拿到颜色是不够的。颜色版见下面一行。
  */
 export const visualAttributeForAuraId = (auraId: string): VisualAttribute | undefined => {
-  const skill = getSkill(asSkillId(auraId.split('.').slice(0, 2).join('.')));
-  return skill ? visualAttributeOf(skill) : undefined;
+  if (auraId === HIDDEN_AURA_ID) return undefined;
+  const exact = auraSkillById(auraId);
+  if (exact) return visualAttributeOf(exact);
+  const guess = getSkill(asSkillId(auraId.split('.').slice(0, 2).join('.')));
+  return guess ? visualAttributeOf(guess) : undefined;
 };
 
 /** 光环 id 的属性视觉。判据只有一处（上面那个），这里只是取值 */

@@ -41,21 +41,14 @@
  *   哪怕调用方（未来某天）真的塞了一个 school 进来也不看。
  */
 
-import {
-  HIDDEN_AURA_ID,
-  SKILL_BY_ID,
-  type AuraDef,
-  type EffectDef,
-  type School,
-  type SkillDef,
-} from '@wowpvp/shared';
+import { HIDDEN_AURA_ID, type AuraDef, type School } from '@wowpvp/shared';
 
+import { auraDefById, auraRegistryIds } from '../data/auraRegistry.js';
 import {
   ATTRIBUTE_VISUALS,
   VisualAttribute,
   visualAttributeForAuraId,
   visualAttributeForSchool,
-  visualAttributeOf,
 } from './schools.js';
 
 /** 控制光环在 sim 里被统一改写成的 id 前缀（`sim/effects/combat.ts`）*/
@@ -86,119 +79,37 @@ export const SHELL_CATEGORY_RANK: Record<ShellCategory, number> = {
   masked: 0,
 };
 
-// ── 光环定义索引（X26 的半边，只服务壳层）────────────────────────
+// ── 光环定义索引（X26 的注册表，壳层是它的第一个消费方）────────────
 
 /**
- * `auraId → AuraDef` 的客户端索引。
+ * `auraId → AuraDef` 的查询入口。
  *
- * ★★ **为什么必须有它**：联网快照里除了 `control.*` 之外，一枚光环
- *   连「是增益还是减益」都没有（`toHudAura` 一律报 unknown，DEBT X26）。
- *   而壳层的第一条规则就是「buff 不上壳」—— 没有这个索引，联网侧要么
- *   给所有光环上壳（喝了药也一层光），要么只剩控制类有壳（用户点名的
- *   **冰系减速**当场没有表现）。两条都不能接受。
+ * ★★ **实现已经搬去 `data/auraRegistry.ts`**（X26）。此前这张索引长在本文件里、
+ *   只服务壳层；用户 2026-08-11 拍板「体验上没区别就尽量减轻服务端负担」
+ *   之后，同一张表还要供 HUD 光环行（kind + 玩家可见名）、图标与学派色用 ——
+ *   三个消费面共用一份判据，比各自建一张迟早会漂的表强。
+ *   这两行是**转出口**，壳层这边一个字都不必改。
  *
- * ★★ **判据只有一处**：本地模拟侧手里明明有 `AuraDef`，仍然走同一个索引 ——
+ * ★★ **为什么壳层必须有它**：联网快照里除了 `control.*` 之外，一枚光环
+ *   连「是增益还是减益」都没有。而壳层的第一条规则就是「buff 不上壳」——
+ *   没有这张表，联网侧要么给所有光环上壳（喝了药也一层光），要么只剩
+ *   控制类有壳（用户点名的**冰系减速**当场没有表现）。两条都不能接受。
+ *
+ * ★★ **判据只有一处**：本地模拟侧手里明明有 `AuraDef`，仍然走同一张表 ——
  *   两条路各写一遍「这算不算减速」迟早会漂，而玩家只会发现
  *   「单机是冰蓝的、联机是灰的」（`strongestShield` 同款理由）。
- *
- * ⚠️ 这**不等于**销掉 X26：X26 要的是 HUD 光环行的 kind + 玩家可见名，
- *   那条路要么走协议 1 bit、要么把这张索引接到 `auraRow.ts` 上，
- *   两者都还没拍板。本文件只用它回答壳层自己的三个问题
- *   （是不是减益 / 哪一类 / 什么学派），不碰 HUD。
- *
- * ★ 懒建一次：117 技能走一遍，之后是纯 Map 查询。
  */
-let auraDefIndex: Map<string, IndexedAura> | undefined;
-
-/**
- * 索引里的一条：光环定义 + **是哪个技能施加的**。
- *
- * ★★ 记住施加者是这条索引真正的增值。光环 id 的前两段**不一定**是技能 id ——
- *   实测四条对不上（`warrior.mortal_wounds` 来自致死打击、
- *   `deathknight.winter_domain_chill` 来自寒冬领域、大乱斗的两条道具减益），
- *   靠 id 反查技能的话它们全都退成中性灰：玩家被断筋和被油滑地面绊住
- *   看到的是同一层灰壳。拿着技能就能直接问 `visualAttributeOf(skill)`，
- *   **而且那个函数是毒感知的**（毒刃学派是物理，玩家该看到黄绿）。
- */
-interface IndexedAura {
-  def: AuraDef;
-  skill: SkillDef;
-}
-
-/**
- * 从技能数据里把所有 `AuraDef` 收集出来。
- *
- * ★★ **结构化遍历而不是逐个 effect kind 写 case**：光环藏在
- *   `applyAura.aura`、`lockedProjectile.onHit`、`spawnGroundArea.onTick`、
- *   `delayedGroundImpact.onImpact`、`spawnTrap.onTrigger`、`onNthHit.effects`、
- *   `spendComboPoints.base`、以及光环自己的 `periodic.effects` 里 ——
- *   八个入口，而且**每加一种嵌套 effect 就多一个**。写 case 表的失败模式是
- *   「新加的那种嵌套里的光环查不到 → 那个 debuff 静默地没有壳」，
- *   没有任何测试会红（`schools.ts` 的 W23 注释记的就是这一课）。
- *   按结构走（数组里第一项带 `kind` 就是 effect 列表；带 `dispelType` +
- *   `id` 的对象就是 AuraDef）则**加什么都自动覆盖**。
- */
-const isEffectList = (v: readonly unknown[]): boolean =>
-  v.length > 0 && typeof (v[0] as { kind?: unknown } | undefined)?.kind === 'string';
-
-/** 一个对象长得像 `AuraDef` 吗 —— `dispelType` 是它独有的必填字段 */
-const looksLikeAura = (o: Record<string, unknown>): boolean =>
-  typeof o.dispelType === 'string' && typeof o.id === 'string' && typeof o.kind === 'string';
-
-const collectAuras = (
-  effects: readonly EffectDef[],
-  skill: SkillDef,
-  out: Map<string, IndexedAura>,
-): void => {
-  for (const e of effects) {
-    for (const v of Object.values(e as unknown as Record<string, unknown>)) {
-      if (v === null || typeof v !== 'object') continue;
-      if (Array.isArray(v)) {
-        if (isEffectList(v)) collectAuras(v as EffectDef[], skill, out);
-        continue;
-      }
-      const o = v as Record<string, unknown>;
-      if (looksLikeAura(o)) {
-        const def = v as unknown as AuraDef;
-        // ★ 先来先得：同一个光环被两个技能施加时算第一个（数据里目前没有）
-        if (!out.has(def.id)) out.set(def.id, { def, skill });
-        // 光环自己的周期效果里还能再套光环（毒的每跳叠层…）
-        if (def.periodic) collectAuras(def.periodic.effects, skill, out);
-        continue;
-      }
-      // `spendComboPoints.base` / `spendResource.base`：**单个** effect，不是数组
-      if (typeof o.kind === 'string') collectAuras([v as EffectDef], skill, out);
-    }
-  }
-};
-
-const buildAuraIndex = (): Map<string, IndexedAura> => {
-  const out = new Map<string, IndexedAura>();
-  // ★ 用 SKILL_BY_ID 而不是 ALL_SKILLS：前者含 BOSS 与大乱斗派对技能，
-  //   而「被 BOSS 的火焰吐息点着了」当然也该有壳
-  for (const skill of SKILL_BY_ID.values()) collectAuras(skill.effects, skill, out);
-  return out;
-};
-
-const auraEntryById = (id: string): IndexedAura | undefined => {
-  auraDefIndex ??= buildAuraIndex();
-  return auraDefIndex.get(id);
-};
-
-/** 按 id 查光环定义。查不到返回 undefined（`control.*` 与掩码天然查不到）*/
-export const auraDefById = (id: string): AuraDef | undefined => auraEntryById(id)?.def;
+export { auraDefById };
 
 /**
  * 索引里的全部光环 id（诊断 / 门禁用）。
  * ★ 存在的理由是**回归护栏**：`debuffShell.test.ts` 拿它逐枚断言
- *   「每一枚减益都解析得出学派色」+ 「总数不许缩水」——
- *   哪天嵌套遍历漏了一种 effect，掉的是数量，而画面上只是
+ *   「每一枚减益都解析得出学派色」，而覆盖率本身由
+ *   `data/auraRegistry.test.ts` 与数据源码逐字对照 ——
+ *   哪天深走漏了一条枝，掉的是这个集合，而画面上只是
  *   「某个 debuff 忽然没有壳了」，不会有任何别的东西报错。
  */
-export const indexedAuraIds = (): readonly string[] => {
-  auraDefIndex ??= buildAuraIndex();
-  return [...auraDefIndex.keys()];
-};
+export { auraRegistryIds as indexedAuraIds };
 
 // ── 分类 ─────────────────────────────────────────────────────────
 
@@ -240,8 +151,11 @@ const categoryOfDef = (def: AuraDef): ShellCategory | undefined => {
  *   HUD 投影叫 `id`（`HudAura`）。两个都收，于是 `NetworkScene` 能把
  *   `snap.auras` **原样**喂进来 —— 12v12 每帧 24 个实体，省掉的是
  *   24 次 `.map()` 和它产生的一整批短命对象。
- * ★ `kind` 只有本地侧填得出（联网侧 X26 未销账）—— 所以它只是**兜底**，
- *   主判据永远是 `auraDefById`（见那里的 ★★）。
+ * ★ `kind` 只是**兜底**，主判据永远是 `auraDefById`（见那里的 ★★）。
+ *   ⚠️ X26 之后联网侧的 `toHudAura` 也填得出 kind 了（同一张注册表），
+ *     但那**不能**让这里改成信 kind：`toHudAura` 的 kind 本身就是从
+ *     注册表推的，绕一圈回来只会多一次转换、少一层信息（buff/debuff 两档
+ *     分不出减速与 DoT）。兜底留给**表外**的 id —— 那才是它唯一的用武之地。
  */
 export type ShellAuraLike =
   | { id: string; expiresAt?: number; school?: School; kind?: 'buff' | 'debuff' | 'unknown' }
@@ -271,10 +185,12 @@ export const shellCategoryOf = (a: ShellAuraLike): ShellCategory | undefined => 
  * 一枚光环的学派视觉属性。undefined = 中性灰。
  *
  * ★★ 掩码**第一行就返回 undefined** —— 见文件头的 S7 红线。
- * ★ 三级台阶，按精确度排：
- *   ① 索引里的**施加技能** —— 最准，而且认得毒（毒刃学派是物理，
+ * ★ 三级台阶，按精确度排。前两级都在 `visualAttributeForAuraId` 里
+ *   （X26 起它自己就是「注册表优先、启发式兜底」的那条判据，
+ *   壳层不再另写一遍 —— 判据只有一处）：
+ *   ① 注册表里的**施加技能** —— 最准，而且认得毒（毒刃学派是物理，
  *     玩家该看到黄绿而不是钢铁色）
- *   ② 光环 id 的前两段反查技能 —— 索引外的光环（sim 现造的）还有这一条
+ *   ② 光环 id 的前两段反查技能 —— 表外的光环（sim 现造的）还有这一条
  *   ③ 调用方给的学派 —— `control.*` **只有**这一条路：它的 id 查不回技能，
  *     学派是快照单独带的那个字段
  */
@@ -283,11 +199,8 @@ export const shellAttributeOf = (
   category: ShellCategory,
 ): VisualAttribute | undefined => {
   if (category === ShellCategory.Masked) return undefined;
-  const id = idOf(a);
-  const entry = auraEntryById(id);
-  if (entry) return visualAttributeOf(entry.skill);
   return (
-    visualAttributeForAuraId(id) ??
+    visualAttributeForAuraId(idOf(a)) ??
     (a.school !== undefined ? visualAttributeForSchool(a.school) : undefined)
   );
 };
