@@ -382,8 +382,29 @@ export const stepMovement = (
       (slid.x - s.position.x) ** 2 + (slid.z - s.position.z) ** 2;
     const wantedDistSq = delta.x ** 2 + delta.z ** 2;
 
-    // 滑动后前进得太少 → 可能是被低障碍挡住了，试着迈上去
-    if (s.grounded && slidDistSq < wantedDistSq * 0.5) {
+    /**
+     * 滑动**没走满** → 有一个轴被挡住了，试着迈上去。
+     *
+     * ★★ 判据不能写成「总位移掉到一半以下」（`slidDistSq < wantedDistSq * 0.5`）。
+     *   那条式子在斜着走向台阶时**永远不成立**，于是 `tryStepUp` 一次都不试：
+     *
+     *     · 正 45° 走：X 通过、Z 被挡，滑动距离平方**恰好等于**一半，
+     *       严格小于不成立；
+     *     · 更糟的是下一 tick —— 步骤 6 前那两行「撞墙清零速度」把 `velocity.z`
+     *       归零，于是 `delta.z` 只剩一帧的加速度量（60·dt² ≈ 0.017 m），
+     *       而 `delta.x` 是满速的 0.083 m。此时 X 一轴通过就已经拿到
+     *       `0.083² / (0.083² + 0.017²) ≈ 96%`，离一半更远。**这个状态自我维持**：
+     *       角色贴着台阶侧面一路滑到地图另一头，永远上不去。
+     *
+     *   实测：熔岩裂谷从 (26, 26) 朝 yaw=π/4 直走，在环形阶梯第二级
+     *   （y=0.90）卡住，一路西滑到 x=−18 才掉下来 —— 而正面走同一部楼梯没问题。
+     *   这不是地图数据的毛病，是「什么时候该试着迈一步」的判据写窄了。
+     *
+     * ★ 改成「只要没走满就试一次」是安全的：`tryStepUp` 自己有三道闸
+     *   （抬升后不撞、推进后不撞、落点在一步之内），过不去的墙照样返回
+     *   undefined 回落到 `slid`。代价只是贴墙走时每 tick 多两次碰撞查询。
+     */
+    if (s.grounded && slidDistSq < wantedDistSq * (1 - 1e-9)) {
       const stepped = tryStepUp(s.position, delta, radius, height, obstacles);
       s.position = stepped ?? slid;
     } else {
