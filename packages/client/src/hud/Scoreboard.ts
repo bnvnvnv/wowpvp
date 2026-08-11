@@ -64,7 +64,16 @@ export class Scoreboard {
     this.el.style.display = 'none';
   }
 
-  /** 每帧调用。不可见时零开销（不碰 DOM）*/
+  /**
+   * 每帧调用。不可见时零开销（不碰 DOM）。
+   *
+   * ★★ P4：**可见时也不再每帧解析一次 innerHTML。** 拼字符串是便宜的，
+   *   把它塞进 `innerHTML` 不是 —— 浏览器要解析 HTML、拆掉旧的 50 来个
+   *   节点、建一批新的。而记分板一秒里真正会变的只有血量百分比，
+   *   多数帧拼出来的字符串与上一帧**逐字节相同**。比一次字符串就够了。
+   * ⚠️ 这条脏检查同时修掉一个**行为**缺陷：整块重建会让浏览器把
+   *   选中的文本、滚动位置丢掉，也让「记分板打开时鼠标悬停」永远闪。
+   */
   render(d: ScoreboardData): void {
     if (!this.shown) return;
     this.el.style.display = '';
@@ -85,7 +94,7 @@ export class Scoreboard {
         .join('');
     };
 
-    this.el.innerHTML = `
+    const html = `
       <div class="sb-title">${esc(d.modeLabel)}</div>
       <div class="sb-score">
         <span class="team red">${d.scoreRed}</span>
@@ -98,5 +107,15 @@ export class Scoreboard {
       </div>
       <div class="sb-hint">O 关闭</div>
     `;
+    if (html === this.lastHtml) return;
+    this.lastHtml = html;
+    this.el.innerHTML = html;
   }
+
+  /**
+   * 上一次写进去的整块 HTML（见 `render` 的 ★★）。
+   * ★ `hide()`/`toggle()` **不清它**：面板藏起来时 DOM 内容原样留着，
+   *   下次打开如果数据没变，本来就不需要重写。
+   */
+  private lastHtml = '';
 }

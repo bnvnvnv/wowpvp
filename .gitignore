@@ -32,6 +32,8 @@ m3-*.png
 m4-*.png
 # 验收脚本生成的人工比对截图（每次跑都会重生成，不入库）
 scripts/_*.png
+# P4 剖析台的采样产出（机器相关，只在本地做前后对比，不入库）
+scripts/_profile-*.json
 # diag-vfx.mjs 的截图产出目录
 scripts/.diag/
 m8-*.png

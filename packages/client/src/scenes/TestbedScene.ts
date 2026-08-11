@@ -45,6 +45,8 @@ import { groundOf, presetOf } from '../render/Environment.js';
 import { FAIL_TEXT } from '../combat/CombatDirector.js';
 import { Action, InputManager, type FrameInput } from '../input/InputManager.js';
 import { DecorRenderer } from '../render/DecorRenderer.js';
+import { EntityLod } from '../render/entityLod.js';
+import { canvasSize } from '../render/canvasSize.js';
 import { GameLoop } from '../render/GameLoop.js';
 import { HitStop } from '../render/HitStop.js';
 import { HitFeedback } from '../feedback/HitFeedback.js';
@@ -277,6 +279,11 @@ export class TestbedScene {
    * ★ 与 `targetRing` 分层（「他是哪一边」vs「我选的是他」），见 FactionRing 文件头。
    */
   private readonly factionRings = new FactionRings();
+  /**
+   * P4：骨骼动画分级取样器（离镜头多远、在不在视野里）。
+   * ★ 与联网场景**同一个类**，两条路的分级口径不会分叉。
+   */
+  private readonly entityLod = new EntityLod();
   /** M3：瞄准 */
   private readonly aim = new AimingController();
   private readonly groundIndicator = new GroundIndicator();
@@ -701,6 +708,8 @@ export class TestbedScene {
     // 打击感开关：震动经 shakeAmplitude 归零（唯一入口）；顿帧直接停
     this.cam.setAccessibility(next);
     this.hitStop.enabled = next.hitStop;
+    // X15 指针锁定：与顿帧同形 —— 设置对象是唯一入口，输入层只被告知
+    this.input.setPointerLockEnabled(next.pointerLock);
     saveAccessibility(globalThis.localStorage, next);
   }
 
@@ -744,6 +753,14 @@ export class TestbedScene {
      */
     factionRings: { count: number; rim: boolean };
     /**
+     * P4 骨骼分级的**上一帧直方图**（每帧 / 半频 / 三分频 / 视锥外各几个）。
+     *
+     * ★★ 它是那条优化唯一的可观测出口：分级失效（`strideFor` 恒返回 1）
+     *   在画面上是**零症状**的 —— 性能悄悄退回原样，而没有任何测试会红。
+     *   `scripts/profile-stress.mjs` 每轮都读一次，读到「全在 full」会直接报警。
+     */
+    animLod: { full: number; half: number; third: number; offscreen: number };
+    /**
      * 最近 0.5 秒的平均帧率。
      *
      * ★ **零新增计算** —— `GameLoop` 每帧本来就在算它（只是此前只喂给
@@ -783,6 +800,8 @@ export class TestbedScene {
           .filter((s): s is NonNullable<typeof s> => s !== null),
       },
       factionRings: { count: this.factionRings.count, rim: this.factionRings.rim },
+      // P4：读的是**上一帧**的实况直方图，不是配置 —— 配置说不了「真的省到了」
+      animLod: { ...this.entityLod.stats },
       fps: this.loop.fps,
     };
   }
@@ -821,6 +840,15 @@ export class TestbedScene {
   }
 
   private onPointerMove = (ev: MouseEvent): void => {
+    /**
+     * X15：指针锁定期间**屏幕上没有光标** —— `clientX/Y` 被浏览器冻在
+     * 上锁那一刻，再算 NDC 与悬停射线只是把同一个陈旧坐标重算一遍，
+     * 而「指着谁」这个语义此刻并不存在。悬停拾取整体暂停，退锁自动恢复。
+     */
+    if (this.input.pointerLocked) {
+      this.canvas.classList.remove('cursor-attack', 'cursor-friendly');
+      return;
+    }
     this.shell.ndcFromMouse(ev, this.ndc);
     this.updateHoverCursor();
   };
@@ -1513,6 +1541,11 @@ export class TestbedScene {
       moving,
     );
     this.view.setFirstPerson(this.cam.isFirstPerson);
+    /**
+     * P4 骨骼分级取样：**必须在 `cam.update` 之后、实体循环之前** ——
+     * 用上一帧的视锥判「在不在画面里」，镜头快速转动时边缘的人会晚一帧才动。
+     */
+    this.entityLod.beginFrame(this.cam.camera);
 
     for (const e of this.combat.visibleEntities()) {
       /**
@@ -1563,7 +1596,8 @@ export class TestbedScene {
       v.setStunned(stunWobbleActive(e.flags)); // X30
 
       this.syncWeapon(e.id as number, v, e.weaponId as string);
-      v.update(dt);
+      // P4：远处/屏外的假人降频推进骨骼（攒帧不丢帧，判据在 entity/animLod.ts）
+      v.update(dt, this.entityLod.strideFor(e.position));
     }
 
     // M12 / 14.2：弹体、地面区域、粒子池一次推进（顺序封在 SpellVfx.frame 里）。
@@ -1573,8 +1607,10 @@ export class TestbedScene {
       quality: this.quality.current,
       cameraDistance: this.cam.distance,
       // 点精灵的透视缩放：视口像素高 / (2·tan(fov/2))
+      // ★ P4：画布高走缓存 —— 直接读 `clientHeight` 会在这一帧的 HUD 写入之后
+      //   强制一次同步重排（理由与代价见 render/canvasSize.ts）
       pointScale:
-        this.canvas.clientHeight /
+        canvasSize(this.canvas).h /
         (2 * Math.tan((this.cam.camera.fov * Math.PI) / 360)),
       now: this.combat.world.time,
       cameraPosition: this.cam.camera.position,

@@ -128,10 +128,39 @@ describe('★★ X18① 姓名板互相避让', () => {
     const fn = /private renderNameplates\([\s\S]*?\n {2}\}/.exec(COMBAT_HUD_SRC)?.[0] ?? '';
     expect(fn.length).toBeGreaterThan(0);
     expect(fn).toContain('needsRelayout(this.lastPlateSpots, spots)');
-    // 错位向**上**（板锚在头顶），且每帧照着上一次的结果摆位
-    expect(fn).toContain('translate(${spot.x}px,${spot.y - lift}px)');
+    /**
+     * 错位向**上**（板锚在头顶），且每帧照着上一次的结果摆位。
+     * ⚠️ P4 把「写 style」这一步搬进了 `setPlateAt`（脏检查，见下一条），
+     *   所以这里断言的是**喂进去的坐标**仍然是 `spot.y - lift` ——
+     *   意图一字未改：向上错位、每帧跟镜头。
+     */
+    expect(fn).toContain('this.setPlateAt(spot.id, el, spot.x, spot.y - lift)');
     // 被密度裁掉 / 跑出屏幕的板不参与避让 —— 看不见的人不该顶开看得见的板
     expect(fn).toContain('live.push({ spot: { id: key, x, y }, el, unit: e });');
+  });
+
+  it('★★ P4：位置每帧算，但**没动就不写 DOM**（X10 点名的姓名板 CPU）', () => {
+    const fn = /private setPlateAt\([\s\S]*?\n {2}\}/.exec(COMBAT_HUD_SRC)?.[0] ?? '';
+    expect(fn.length, 'setPlateAt 必须存在 —— 它是姓名板唯一的摆位出口').toBeGreaterThan(0);
+    // 摆位仍是「锚在头顶 + 平移」，与 X18 逐字相同
+    expect(fn).toContain('translate(-50%,-100%) translate(${x}px,${y}px)');
+    /**
+     * ★ 脏检查的两个要件：**亚像素粒度**（1px 会让缓慢平移走成阶梯）
+     *   与**早退**（命中就一个字节都不写）。少任何一个这条优化都不成立。
+     */
+    expect(fn).toMatch(/Math\.abs\(prev\.x - x\) < 0\.5/);
+    expect(fn).toMatch(/Math\.abs\(prev\.y - y\) < 0\.5/);
+    expect(fn).toContain('return;');
+  });
+
+  it('★ P4：画布尺寸不许在每帧路径上现读 —— 那是一次强制同步重排', () => {
+    const fn = /private renderNameplates\([\s\S]*?\n {2}\}/.exec(COMBAT_HUD_SRC)?.[0] ?? '';
+    expect(fn).toContain('canvasSize(canvas)');
+    expect(fn, '现读 clientWidth 等于把 render/canvasSize.ts 白写了')
+      .not.toContain('canvas.clientWidth');
+    const floaters = readSrc('./FloatingNumbers.ts');
+    expect(floaters).toContain('canvasSize(canvas)');
+    expect(floaters).not.toContain('canvas.clientWidth');
   });
 });
 

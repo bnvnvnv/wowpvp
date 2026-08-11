@@ -21,6 +21,7 @@
  */
 
 import * as THREE from 'three';
+import { canvasSize } from '../render/canvasSize.js';
 
 /** 一条正在飘的数字 */
 interface Floater {
@@ -166,8 +167,13 @@ export class FloatingNumbers {
   /** 每帧：推进生命周期并把世界坐标投影到屏幕 */
   update(dt: number, camera: THREE.Camera, canvas: HTMLCanvasElement): void {
     if (this.active.length === 0) return;
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
+    /**
+     * ★★ P4：画布尺寸走缓存。这两行此前是**整个 HUD 每帧路径上最贵的一处**——
+     *   不是因为读属性慢，而是因为读布局属性会当场强制一次同步重排，
+     *   而这一帧前面刚写过一堆 style。首轮剖析里 `get clientWidth` 是
+     *   0.686ms/帧，占「我们的 JS」self time 的三分之一。见 render/canvasSize.ts。
+     */
+    const { w, h } = canvasSize(canvas);
     const v = new THREE.Vector3();
 
     for (let i = this.active.length - 1; i >= 0; i--) {

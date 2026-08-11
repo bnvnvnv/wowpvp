@@ -14,6 +14,7 @@
 import * as THREE from 'three';
 import { BOSS_CLASS_ID, GEOMETRY } from '@wowpvp/shared';
 import { AnimState } from './AnimationController.js';
+import { AnimStride } from './animLod.js';
 import { ModelLibrary, type CharacterModel } from './ModelLibrary.js';
 import { buildUpperBodyAdditive, findHeadBone } from './animLayer.js';
 import { STUN_WOBBLE, stunWobbleAt, wobbleWeightStep } from './stunWobble.js';
@@ -144,6 +145,8 @@ export class CharacterView {
   private weaponId: string | undefined;
   /** 挥砍序号：单手片段按奇偶交替，见 `swingClipsFor` */
   private swingAlt = 0;
+  /** P4 骨骼分级的攒帧器。★ 默认 stride=1 时它是个恒等函数，行为逐字不变 */
+  private readonly animStride = new AnimStride();
 
   constructor(classId?: string) {
     /**
@@ -844,15 +847,29 @@ export class CharacterView {
     // 胶囊体阶段没有小动物可换（见 setMorphed 头注），不动 capsuleParts
   }
 
-  /** 每帧推进动画与受击闪光 */
-  update(dt: number): void {
+  /**
+   * 每帧推进动画与受击闪光。
+   *
+   * @param stride P4 骨骼分级：1 = 每帧推进（默认，与分级之前逐字相同）、
+   *   2/3 = 攒够 2/3 帧再一次喂进去、`Infinity` = 视锥外不推进。
+   *   ★★ **攒帧不是丢帧** —— 判据与攒帧器都在 `entity/animLod.ts`，
+   *   动画时间一秒还是一秒（那边的文件头讲了写错会怎样）。
+   *   ★ 不传 = 1：自己那具视图（试验场的 `view`、联网的 `selfView`）
+   *   刻意不分级 —— 镜头拉到最远时玩家自己也在 18 米外，而他正是全场
+   *   唯一一个「一直被盯着看」的人。
+   */
+  update(dt: number, stride = 1): void {
     /**
      * X30：先把上一帧拧进去的摇头**还原**，再让 mixer 写这一帧的姿势。
      * ★ 顺序是死的：还原 → mixer → 重新拧。理由见 `wobbleBase` 的 ★★
      *   （当前片段没有 head 轨道时，不还原就是每帧连乘）。
+     * ★ 分级跳过 mixer 的那些帧，这一对「还原 → 重新拧」照常跑：
+     *   摇头是叠在骨骼姿势上的后处理，它每帧都要跟着相位钟走，
+     *   而「还原上一帧的偏移」正是不让它连乘的那一步（跟 mixer 跑没跑无关）。
      */
     if (this.wobbleApplied && this.headBone) this.headBone.quaternion.copy(this.wobbleBase);
-    this.mixer?.update(dt);
+    const owed = this.animStride.feed(dt, stride);
+    if (owed !== undefined) this.mixer?.update(owed);
     this.applyStunWobble(dt);
     if (this.hitReactCooldown > 0) this.hitReactCooldown -= dt;
     // P6 程序化侧闪：sin 半波去-回，闪完恢复基准（模型根的 x/侧倾归位）

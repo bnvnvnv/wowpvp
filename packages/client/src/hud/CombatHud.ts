@@ -47,6 +47,7 @@ import {
   skillTooltipHtml,
 } from './skillTooltip.js';
 import { CONTROL_VISUALS } from '../vfx/status.js';
+import { canvasSize } from '../render/canvasSize.js';
 import { Minimap } from './Minimap.js';
 import { ModeHud } from './ModeHud.js';
 import { Scoreboard } from './Scoreboard.js';
@@ -172,6 +173,26 @@ export class CombatHud {
   private lastPlateSpots: NameplateSpot[] | undefined;
   /** X18①：id → 向上错位 px。每帧照着它摆位，20Hz 才重算一次 */
   private plateOffsets: ReadonlyMap<number, number> = new Map();
+  /**
+   * P4：id → 上一帧写进 style 的摆位（含错位量）与显隐。
+   *
+   * ★★ 姓名板的**位置跟踪**必须每帧跑（不然会跟不上镜头），但「每帧跑」
+   *   不等于「每帧写 DOM」：镜头不动的那些帧，24 块板的 transform 一个像素
+   *   都没变，而每写一次 `style.transform` 浏览器就得重算一次样式。
+   *   这里按 0.5px 粒度做脏检查 —— 半像素以内的差别屏幕上表达不出来，
+   *   而站桩对峙（12v12 里相当常见的一段）由此变成零 DOM 写入。
+   * ⚠️ 粒度不能再粗：1px 会让缓慢平移的姓名板走成阶梯。
+   */
+  private plateShown = new Map<number, { x: number; y: number; visible: boolean }>();
+  /**
+   * P4：17.2 密度用的「按距离排第几」。**20Hz 一拍，不是每帧。**
+   *
+   * ★ 它此前每帧要做一次 `[...entities].sort()` —— 一次数组拷贝 + O(n log n)
+   *   次 `distance2D`，而它的**唯一用途**是喂给 `showNamePlate()` 决定
+   *   「这块板画不画」。名次在 50ms 里几乎不会变（人一秒跑 7 米），
+   *   而内容本来就是 20Hz 才重建的。
+   */
+  private plateRank = new Map<number, number>();
   /** X21：当前正在闪的那一格（技能 id + 起始时刻 + 迟到了多久）*/
   private lateFlash: { skillId: string; at: number; waited: number } | undefined;
   /**
@@ -871,8 +892,12 @@ export class CombatHud {
     full: boolean,
   ): void {
     const seen = new Set<number>();
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
+    /**
+     * ★ P4：画布尺寸走缓存。直接读 `clientWidth` 会**当场**触发一次
+     *   同步重排（这一帧前面已经写过 HUD 的样式），而画布整局都没变过 ——
+     *   首轮剖析里这一条是 0.686ms/帧，见 `render/canvasSize.ts`。
+     */
+    const { w, h } = canvasSize(canvas);
     const v = new THREE.Vector3();
 
     /**
@@ -888,12 +913,20 @@ export class CombatHud {
      */
     const entities = dir.visibleUnits()
       .filter((e) => distance2D(e.position, dir.player.position) <= RANGE.MAX_SELECT);
-    // 17.2 姓名板密度需要「按距离排第几」——远处的姓名板才是造成拥挤的那些
-    const nameplateRank = new Map<number, number>();
-    [...entities]
-      .sort((a, b) =>
-        distance2D(a.position, dir.player.position) - distance2D(b.position, dir.player.position))
-      .forEach((e, i) => nameplateRank.set(e.id as number, i));
+    /**
+     * 17.2 姓名板密度需要「按距离排第几」——远处的姓名板才是造成拥挤的那些。
+     * ★ P4：**只在 20Hz 那一拍算**（`full`），中间的帧照着上一拍的名次摆。
+     *   排序结果的唯一去处是「这块板画不画」，而那个决定本来就只在 `full`
+     *   那一拍会改变外观。名次滞后最多 50ms，人一秒跑 7 米 —— 排不乱。
+     */
+    if (full) {
+      this.plateRank.clear();
+      [...entities]
+        .sort((a, b) =>
+          distance2D(a.position, dir.player.position) - distance2D(b.position, dir.player.position))
+        .forEach((e, i) => this.plateRank.set(e.id as number, i));
+    }
+    const nameplateRank = this.plateRank;
 
     /**
      * X18①：本帧真正会画出来的板（过了距离、过了密度、没被剔出屏幕）。
@@ -927,7 +960,7 @@ export class CombatHud {
         this.access,
       )) {
         const existing = this.nameplates.get(key);
-        if (existing) existing.style.display = 'none';
+        if (existing) this.setPlateVisible(key, existing, false);
         continue;
       }
 
@@ -956,7 +989,7 @@ export class CombatHud {
       }
 
       if (behind || x < -80 || x > w + 80 || y < -40 || y > h + 40) {
-        el.style.display = 'none';
+        this.setPlateVisible(key, el, false);
         continue;
       }
       live.push({ spot: { id: key, x, y }, el, unit: e });
@@ -981,8 +1014,18 @@ export class CombatHud {
     for (const { spot, el, unit: e } of live) {
       // 向**上**错位：姓名板锚在头顶（translate -100%），往上摞才不压住身体
       const lift = this.plateOffsets.get(spot.id) ?? 0;
-      el.style.display = '';
-      el.style.transform = `translate(-50%,-100%) translate(${spot.x}px,${spot.y - lift}px)`;
+      /**
+       * ★★ P4：位置**每帧算，但只在真的动了的时候写**。
+       *   镜头静止时这个分支整帧不碰 DOM —— 而不写 style 就不产生新的
+       *   样式失效，帧末那次布局也跟着便宜下来。判据与粒度见 `plateShown`。
+       */
+      this.setPlateAt(spot.id, el, spot.x, spot.y - lift);
+      /**
+       * ⚠️ 这两行**刻意没动**：`classList.toggle(name, force)` 在已经是
+       *   目标状态时不会让样式失效（DOMTokenList 内部就是幂等的），
+       *   而 `style.transform` 会 —— 只有后者值得上面那道脏检查。
+       *   剖析没点名的地方不动，是这一批的纪律。
+       */
       el.classList.toggle('selected', dir.target?.id === e.id);
       el.classList.toggle('focused', dir.focus?.id === e.id);
 
@@ -1058,8 +1101,39 @@ export class CombatHud {
       if (!seen.has(key)) {
         el.remove();
         this.nameplates.delete(key);
+        // ★ 脏检查的记录跟着一起清 —— 留着的话 id 复用（同一局里不会，
+        //   跨局重建会）时会拿上一局的坐标当「没变」，板子就钉在原地了
+        this.plateShown.delete(key);
       }
     }
+  }
+
+  /**
+   * P4：把一块姓名板摆到 (x, y)，**位置没变就一个字节都不写**。
+   *
+   * ★ 0.5px 粒度：屏幕表达不出更细的差别，而它把「站着对峙」那一段
+   *   的 24 次 `style.transform` 写入降到 0。粒度不能再粗，见 `plateShown`。
+   */
+  private setPlateAt(key: number, el: HTMLElement, x: number, y: number): void {
+    const prev = this.plateShown.get(key);
+    if (prev && prev.visible && Math.abs(prev.x - x) < 0.5 && Math.abs(prev.y - y) < 0.5) return;
+    if (!prev || !prev.visible) el.style.display = '';
+    el.style.transform = `translate(-50%,-100%) translate(${x}px,${y}px)`;
+    if (prev) { prev.x = x; prev.y = y; prev.visible = true; }
+    else this.plateShown.set(key, { x, y, visible: true });
+  }
+
+  /**
+   * P4：显隐同样脏检查。★ 藏起来时**不清坐标** —— 重新出现的那一帧
+   * 会因为坐标已经变了而重写 transform；万一恰好没变（镜头没动、人被
+   * 密度裁掉又放回来），`visible` 这一位保证 `display` 仍然会被写回去。
+   */
+  private setPlateVisible(key: number, el: HTMLElement, visible: boolean): void {
+    const prev = this.plateShown.get(key);
+    if (prev && prev.visible === visible) return;
+    el.style.display = visible ? '' : 'none';
+    if (prev) prev.visible = visible;
+    else this.plateShown.set(key, { x: NaN, y: NaN, visible });
   }
 }
 

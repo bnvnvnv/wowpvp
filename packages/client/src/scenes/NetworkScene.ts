@@ -30,7 +30,10 @@ import {
   RANGE,
   TEAM_RED,
   Targeting,
+  admitYaw,
   createMovementState,
+  createTurnBudget,
+  refillTurnBudget,
   getArmor,
   getClass,
   getSkill,
@@ -42,6 +45,7 @@ import {
   needsGroundPlacement,
   resolveGroundPlacement,
   usesNoTarget,
+  wrapAngle,
   type AllyEquipmentSnapshot,
   type ArmorDef,
   type FlagView,
@@ -74,6 +78,8 @@ import { CharacterView } from '../entity/CharacterView.js';
 import { Action, InputManager, type FrameInput } from '../input/InputManager.js';
 import { gateInputWhenDead } from '../input/deathGate.js';
 import { DecorRenderer } from '../render/DecorRenderer.js';
+import { EntityLod } from '../render/entityLod.js';
+import { canvasSize } from '../render/canvasSize.js';
 import { GameLoop } from '../render/GameLoop.js';
 import { MapRenderer } from '../render/MapRenderer.js';
 import { QualityController } from '../render/QualityController.js';
@@ -416,8 +422,40 @@ export class NetworkScene {
   private currentTargetId: EntityId | undefined;
   /** 最近一份快照的实体列表，Tab 从它里面挑 */
   private lastEntities: readonly HydratedEntitySnapshot[] = [];
+  /**
+   * P10：`lastEntities` 的 id 索引。**每份快照重建一次（10Hz），不是每帧。**
+   *
+   * ★★ 为什么值得建：按 id 找人是这个文件里最密的一个动作 —— 每帧的
+   *   `draw`/`drawRemotes`/小地图/队伍框/旗帜/观战/死亡遮罩各要找几次，
+   *   `bodyOf`/`bodyBaseOf`/`yawOf` 更是**每个飞行物每帧**都要找一次
+   *   （弹体的 track 闭包）。24 人 × 一把线性扫描，一帧下来是几百次比较，
+   *   换成 Map 之后是几十次哈希。这不是热点，是「有 Map 不用」的白花钱
+   *   （P10 原话「每帧小额浪费」）。
+   * ★ 唯一的写入点是 `setEntities()` —— 索引与列表不可能不同步。
+   */
+  private entityById = new Map<number, HydratedEntitySnapshot>();
+  /**
+   * P4：骨骼动画分级取样器。★ 与试验场**同一个类** —— 两条路的分级口径
+   * 不会分叉（G4 那批「网络侧做对了、试验场没跟」的反面）。
+   */
+  private readonly entityLod = new EntityLod();
   private started = false;
   private characterYaw = 0;
+  /**
+   * A5：**客户端这一侧的转身令牌桶**（和服务器同一个函数、同一份规则）。
+   *
+   * ★★ 它在这里不是为了防作弊 —— 自己钳自己毫无意义。它在这里是为了让
+   *   `Predictor` 的立身前提继续成立：**重放用的规则必须和服务器完全相同**。
+   *   服务器采信朝向时会钳（`turnRate.ts`），客户端预测若拿未钳的 yaw 积分，
+   *   `stepMovement` 的移动方向当场分叉 —— 实测 1440°/s 转 0.5 秒差 0.164 m,
+   *   正好落在 `CORRECTION` 的**平滑**档，于是快速转身的每一个 tick 都在被
+   *   往回拽（橡皮筋）。自钳之后两边逐位一致，这条纠正根本不会被触发。
+   * ★ 桶容量用客户端口径（比服务器少 5 个 tick 的余量），所以**诚实客户端
+   *   永远碰不到服务器那道闸** —— 见 `TURN_BURST_SERVER_RAD` 的 ★★。
+   * ★ 只有联网路径有它：试验场是本地 sim，没有信任边界（铁律③ —— `?testbed`
+   *   与无参默认路径的载体行为一个字不变）。
+   */
+  private readonly turnBudget = createTurnBudget();
   private pendingInput: FrameInput | null = null;
   /** 客户端估计的服务器时间。收到快照时校准，其余时间自己走 */
   private serverTime = 0;
@@ -487,7 +525,7 @@ export class NetworkScene {
     // 16a 击杀播报与死亡回顾。★ 名字从快照查 —— 本类不持有任何战斗状态
     this.killFeed = new KillFeed(canvas.parentElement ?? document.body);
     this.killFeed.nameOf = (id) =>
-      this.lastEntities.find((e) => (e.id as number) === id)?.name;
+      this.entityOf(id)?.name;
 
     /**
      * W5：死亡遮罩。此前玩家死后对着一具尸体和一个还能拖的镜头，没有任何
@@ -759,6 +797,8 @@ export class NetworkScene {
     this.hud.applyAccessibility(next);
     this.cam.setAccessibility(next);
     this.hitStop.enabled = next.hitStop;
+    // X15 指针锁定：与顿帧同形 —— 设置对象是唯一入口，输入层只被告知
+    this.input.setPointerLockEnabled(next.pointerLock);
     saveAccessibility(globalThis.localStorage, next);
   }
 
@@ -788,6 +828,15 @@ export class NetworkScene {
    *   矩形算的，指针在 canvas 外时算出来的 NDC 超出 [-1,1]，射线自然打不中东西。
    */
   private onWindowMouseMove = (ev: MouseEvent): void => {
+    /**
+     * X15：指针锁定期间屏幕上没有光标，`clientX/Y` 被冻在上锁那一刻 ——
+     * 悬停拾取整体暂停（与试验场同一条），退锁自动恢复。
+     * ★ 12v12 下这还顺手省掉了转身全程每次 mousemove 的 23 次 raycast。
+     */
+    if (this.input.pointerLocked) {
+      this.canvas.classList.remove('cursor-attack', 'cursor-friendly');
+      return;
+    }
     this.shell.ndcFromMouse(ev, this.ndc);
     this.updateHoverCursor();
   };
@@ -834,7 +883,7 @@ export class NetworkScene {
        *   ⚠️ 客户端只判得了「死没死」—— `untargetable`（剑刃风暴）不在
        *   `DisplayFlags` 里，那一条仍然只有服务器判得了。
        */
-      if (!this.lastEntities.find((e) => (e.id as number) === id)?.alive) continue;
+      if (!this.entityOf(id)?.alive) continue;
       const hits = ray.intersectObject(view.group, true);
       if (hits.length && (!best || hits[0]!.distance < best.dist)) {
         best = { id, dist: hits[0]!.distance };
@@ -859,7 +908,7 @@ export class NetworkScene {
     const id = this.pickEntityAt(this.ndc);
     const team = id === undefined
       ? undefined
-      : this.lastEntities.find((e) => (e.id as number) === id)?.team;
+      : this.entityOf(id)?.team;
     cls.toggle('cursor-attack', team !== undefined && team !== this.selfTeam);
     cls.toggle('cursor-friendly', team !== undefined && team === this.selfTeam);
   }
@@ -1037,7 +1086,7 @@ export class NetworkScene {
         const hydrated = this.hydrator.hydrateSnapshot(msg);
         const entities = hydrated.entities;
         this.interp.push(msg.time, entities);
-        this.lastEntities = entities;
+        this.setEntities(entities);
         // 14.4 投射物 / 14.3 地面区域：留给 draw 里的 spellVfx.frame 消费
         this.lastProjectiles = msg.projectiles;
         this.lastGrounds = msg.grounds;
@@ -1153,7 +1202,7 @@ export class NetworkScene {
           // P3 签名命中音的钥匙；来源不可见时协议已抹（回落学派音是正确行为）
           skillId: msg.skillId,
           ...(msg.avoided ? { avoided: msg.avoided } : {}),
-          targetMaxHealth: this.lastEntities.find((e) => e.id === msg.targetId)?.maxHealth,
+          targetMaxHealth: this.entityOf(msg.targetId)?.maxHealth,
         });
         /**
          * W21：白字挥砍动画 —— 协议没有 Swing 消息，从 autoAttack 伤害事件
@@ -1497,7 +1546,7 @@ export class NetworkScene {
     if (this.midJoinNoticeSaid || this.spectating) return;
     const want = this.opts.requestedClassId;
     if (want === undefined || this.selfId === null) return;
-    const me = this.lastEntities.find((e) => e.id === this.selfId);
+    const me = this.entityOf(this.selfId ?? undefined);
     if (!me) return;
     this.midJoinNoticeSaid = true;
     const text = midJoinClassNotice(want, me.classId as string, this.map?.family);
@@ -1594,7 +1643,7 @@ export class NetworkScene {
      * 昏迷/恐惧中照发：8.3「默认允许在昏迷中使用」，解控就是为昏迷造的。
      */
     if (input.pressed.has(Action.Trinket)) {
-      const me = this.lastEntities.find((e) => e.id === this.selfId);
+      const me = this.entityOf(this.selfId ?? undefined);
       const ready = me?.cooldowns?.[TRINKET_COOLDOWN_KEY as string] ?? 0;
       if (this.serverTime < ready) {
         this.view.push(`战斗意志冷却中（还剩 ${Math.ceil(ready - this.serverTime)} 秒）`, 'fail');
@@ -1706,7 +1755,7 @@ export class NetworkScene {
      * 复核，规则只有一个实现处）。1v1 没有队友 → 无候选，遮罩如实说。
      */
     if (input.pressed.has(Action.SpectateNext)) {
-      const meSnap = this.lastEntities.find((e) => e.id === this.selfId);
+      const meSnap = this.entityOf(this.selfId ?? undefined);
       if (meSnap && !meSnap.alive) {
         const next = nextSpectateTarget(
           this.lastEntities, meSnap.id as number, meSnap.team, this.spectatingId,
@@ -1870,7 +1919,7 @@ export class NetworkScene {
 
   /** 自己的装备快照（10.6 完整视图 —— 只有自己和队友有） */
   private selfEquipment(): AllyEquipmentSnapshot | undefined {
-    const me = this.lastEntities.find((e) => e.id === this.selfId);
+    const me = this.entityOf(this.selfId ?? undefined);
     const eq = me?.equipment;
     // ★ 用「有没有备用装备字段」判别联合的哪一支 —— 敌人视图里根本没有它
     return eq && 'spareWeaponIds' in eq ? eq : undefined;
@@ -1944,10 +1993,31 @@ export class NetworkScene {
    *   而协议里没有镜头朝向，服务器做不出符合规格的 Tab。放在客户端不放宽
    *   安全边界 —— 服务器对 `SetTarget` 是校验可见集合的。
    */
+  /**
+   * P10：换一份快照实体列表 —— **列表与 id 索引的唯一写入点**。
+   *
+   * ★ 唯一性就是这个方法存在的全部理由：两个字段各自赋值的话，
+   *   将来任何一处「只更新了列表」都会让 `entityOf()` 返回上一份快照的数据，
+   *   而那种 bug 表现为「偶尔打到幽灵」，查起来极贵。
+   */
+  private setEntities(entities: readonly HydratedEntitySnapshot[]): void {
+    this.lastEntities = entities;
+    this.entityById.clear();
+    for (const e of entities) this.entityById.set(e.id as number, e);
+  }
+
+  /**
+   * P10：按 id 找实体。★ 语义与 `lastEntities.find(e => e.id === id)`
+   * **逐字相同**（含 `undefined` 时返回 undefined），只是不再线性扫描。
+   */
+  private entityOf(id: EntityId | number | undefined): HydratedEntitySnapshot | undefined {
+    return id === undefined ? undefined : this.entityById.get(id as number);
+  }
+
   /** 实体名，供战斗日志。★ 来源不可见时服务器会抹掉 sourceId（已知偏差 #4）*/
   private nameOf(id: EntityId | undefined): string {
     if (id === undefined) return '某个看不见的敌人';
-    return this.lastEntities.find((e) => e.id === id)?.name ?? '?';
+    return this.entityOf(id)?.name ?? '?';
   }
 
   /**
@@ -1983,7 +2053,7 @@ export class NetworkScene {
       const p = this.predictor.position;
       return { x: p.x, y: p.y + GEOMETRY.HITBOX_HEIGHT * 0.9, z: p.z };
     }
-    const e = this.lastEntities.find((x) => x.id === id);
+    const e = this.entityOf(id);
     if (!e) return undefined;
     return { x: e.position.x, y: e.position.y + GEOMETRY.HITBOX_HEIGHT * 0.9, z: e.position.z };
   }
@@ -1991,7 +2061,7 @@ export class NetworkScene {
   private audioDistance(id: EntityId | undefined): { distance?: number } {
     if (id === undefined) return {};
     if (id === this.selfId) return { distance: 0 };
-    const at = this.lastEntities.find((e) => e.id === id)?.position;
+    const at = this.entityOf(id)?.position;
     const me = this.predictor?.position;
     if (!at || !me) return {};
     return { distance: Math.hypot(at.x - me.x, at.z - me.z) };
@@ -2011,7 +2081,7 @@ export class NetworkScene {
     if (id === this.selfId && this.predictor) return { ...this.predictor.position };
     const v = this.views.get(id as number);
     if (v) return { x: v.group.position.x, y: v.group.position.y, z: v.group.position.z };
-    const e = this.lastEntities.find((x) => x.id === id);
+    const e = this.entityOf(id);
     return e ? { ...e.position } : undefined;
   }
 
@@ -2038,7 +2108,7 @@ export class NetworkScene {
     if (!p) return undefined;
     const yaw = id === this.selfId
       ? this.characterYaw
-      : this.lastEntities.find((e) => e.id === id)?.yaw ?? 0;
+      : this.entityOf(id)?.yaw ?? 0;
     // ★ 带上 id：打断/释放时 SpellVfx 据此立刻摘掉这个人的蓄力法阵
     return { position: p, height: GEOMETRY.HITBOX_HEIGHT, yaw, id: id as number };
   }
@@ -2055,7 +2125,7 @@ export class NetworkScene {
       if (!p) continue; // 看不见的人（潜行/离场）不画 —— 与协议的裁剪同向
       const yaw = id === this.selfId
         ? this.characterYaw
-        : this.lastEntities.find((e) => e.id === id)?.yaw ?? 0;
+        : this.entityOf(id)?.yaw ?? 0;
       out.push({
         id: id as number,
         skillId: String(st.skillId),
@@ -2117,7 +2187,7 @@ export class NetworkScene {
    *   `lastEntities` 是空的。宁可多发几帧也不能把活人锁住。
    */
   private selfAlive(): boolean {
-    const me = this.lastEntities.find((e) => e.id === this.selfId);
+    const me = this.entityOf(this.selfId ?? undefined);
     return me === undefined || me.alive;
   }
 
@@ -2134,7 +2204,38 @@ export class NetworkScene {
      * ★ 显式判 `spectating` 而不是靠「没有预测器所以自然返回」——
      *   后者是「碰巧无害」，而本仓库对这类默契的容忍度是零（A8 的教训）。
      */
-    if (this.spectating) return;
+    if (this.spectating) {
+      /**
+       * A5：观战席**没有账本**，与服务器一致 —— 观战的玩家在
+       * `MatchLoop.collectInputs` 里连 `entityId` 都查不到，那边根本不会给他
+       * 开桶。清掉基准（不是清桶）：W24 中途加入坐进身体的那一刻，服务器给的
+       * 是一个全新的、`yaw` 为 undefined 的账本，第一条朝向**原样采信**；
+       * 客户端若还留着进观战之前的那个基准，就会在两边口径不同的情况下
+       * 自己把玩家的朝向往回拖。桶照常注入 —— 时钟不因为在看别人而停。
+       */
+      this.turnBudget.yaw = undefined;
+      refillTurnBudget(this.turnBudget);
+      return;
+    }
+    /**
+     * A5：**令牌注入 + 自钳，在所有早退之前。**
+     *
+     * ★★ 注入必须每个固定步恰好一次、与「这一步发不发得出 `Input`」无关 ——
+     *   服务器那边也是每 tick 注入一次，与「这一 tick 收没收到 Input」无关
+     *   （`collectInputs` 的 ★★）。放在死亡/未开局的早退之后，两个桶就会
+     *   在死亡期间越差越远，复活那一下客户端反而比服务器更严。
+     * ★ 钳的是 `this.characterYaw` 本身，不是发出去的那份拷贝：屏幕上的
+     *   自己、`CastRequest.facing`、方向指示器全都跟着走同一个值 ——
+     *   「客户端显示的朝向」与「服务器采信的朝向」不允许有第二种口径。
+     * ⚠️ 代价如实：被钳的那一下镜头 yaw（`cam.yaw`）已经转过去了，于是镜头
+     *   与角色会短暂分离，靠 4.3 的自动跟随收回来。只有超出令牌桶的转身才
+     *   看得到 —— 桶装得下一次 180° 甩镜头，正常玩不出来。
+     * ⚠️ 死亡期间客户端**不发** `Input`（下面 A11 那道闸），于是服务器的基准
+     *   停在他倒下前那一次主张、桶一路注满；复活后第一条朝向最远也就 180°,
+     *   服务器满桶接得住，不会被钳 —— 这条不需要额外处理，如实记在这里。
+     */
+    refillTurnBudget(this.turnBudget);
+    this.characterYaw = admitYaw(this.turnBudget, wrapAngle(this.characterYaw));
     if (!input || !this.predictor || !this.started) return;
     /**
      * A11：**死后不再发指令帧**。
@@ -2190,7 +2291,7 @@ export class NetworkScene {
     // 施法注册表兜底清理（超时 / 施法者离场），必须在读它之前
     this.view.pruneCasts(
       this.serverTime,
-      (id) => this.lastEntities.some((e) => (e.id as number) === id),
+      (id) => this.entityOf(id) !== undefined,
     );
 
     // 14.2/14.3/14.4：投射物主体、地面边界、粒子池 —— 数据来自最近的快照。
@@ -2198,8 +2299,10 @@ export class NetworkScene {
     this.spellVfx?.frame(dt, {
       quality: this.quality.current,
       cameraDistance: this.cam.distance,
+      // ★ P4：画布高走缓存，直接读 `clientHeight` 会强制一次同步重排
+      //   （理由与代价见 render/canvasSize.ts）
       pointScale:
-        this.canvas.clientHeight /
+        canvasSize(this.canvas).h /
         (2 * Math.tan((this.cam.camera.fov * Math.PI) / 360)),
       // 快照的 impactAt 是服务器时钟 —— now 用同一个钟（收快照时校准）
       now: this.serverTime,
@@ -2256,7 +2359,7 @@ export class NetworkScene {
      *   死亡遮罩对他从头到尾不出现（他没有可以阵亡的身体）。
      */
     if (this.spectating) { this.renderSpectateBanner(); return; }
-    const me = this.lastEntities.find((e) => e.id === this.selfId);
+    const me = this.entityOf(this.selfId ?? undefined);
     if (!me || me.alive) {
       if (this.deathOverlay.style.display !== 'none') this.deathOverlay.style.display = 'none';
       /**
@@ -2270,9 +2373,9 @@ export class NetworkScene {
 
     // 被跟随者死了/离场 → 自动换下一个（与 SpectateController.resolve 同语义）
     if (this.spectatingId !== null) {
-      const still = this.lastEntities.some(
-        (e) => (e.id as number) === this.spectatingId && e.alive && e.team === me.team,
-      );
+      // P10：按 id 找人走索引；「还活着、还是队友」两条判据一字未改
+      const watched = this.entityOf(this.spectatingId);
+      const still = watched !== undefined && watched.alive && watched.team === me.team;
       if (!still) {
         const next = nextSpectateTarget(this.lastEntities, me.id as number, me.team, this.spectatingId);
         this.spectatingId = next ? (next.id as number) : null;
@@ -2282,7 +2385,7 @@ export class NetworkScene {
 
     const mates = this.lastEntities.filter((e) => e.id !== me.id && e.team === me.team && e.alive);
     const watching = this.spectatingId !== null
-      ? this.lastEntities.find((e) => (e.id as number) === this.spectatingId)?.name
+      ? this.entityOf(this.spectatingId ?? undefined)?.name
       : undefined;
     /**
      * W12（W5 的余账）：两种模式的死亡去向不同，如实分开说 ——
@@ -2310,7 +2413,7 @@ export class NetworkScene {
   private renderSpectateBanner(): void {
     const name = this.spectatingId === null
       ? undefined
-      : this.lastEntities.find((e) => (e.id as number) === this.spectatingId)?.name;
+      : this.entityOf(this.spectatingId ?? undefined)?.name;
     const text = spectateBannerText(name);
     if (this.spectateBanner.textContent !== text) this.spectateBanner.textContent = text;
   }
@@ -2323,7 +2426,7 @@ export class NetworkScene {
   private flagViewsFromSnapshot(): FlagView[] {
     return (this.lastMatch?.flags ?? []).map((f) => {
       const carrierName = f.carrierId !== undefined
-        ? this.lastEntities.find((e) => e.id === f.carrierId)?.name
+        ? this.entityOf(f.carrierId)?.name
         : undefined;
       return {
         team: f.team,
@@ -2362,7 +2465,7 @@ export class NetworkScene {
     const anchorId = this.spectating ? this.spectatingId : (this.selfId as number | null);
     const me = anchorId === null
       ? undefined
-      : this.lastEntities.find((e) => (e.id as number) === anchorId);
+      : this.entityOf(anchorId);
     if (!me) return;
     const pos = (this.spectating ? this.lastRemotePos.get(anchorId as number) : this.predictor?.position)
       ?? me.position;
@@ -2397,7 +2500,7 @@ export class NetworkScene {
     for (const f of this.lastMatch?.flags ?? []) {
       if (f.state === FlagState.Carried) {
         const label = f.carrierId !== undefined
-          ? this.lastEntities.find((e) => e.id === f.carrierId)?.name
+          ? this.entityOf(f.carrierId)?.name
           : undefined;
         blips.push({
           x: f.position.x, z: f.position.z, kind: 'flagCarrier', team: f.team,
@@ -2471,7 +2574,7 @@ export class NetworkScene {
    *   成员投影，只换资源容器的读法（分叉教训见该函数注释）。
    */
   private renderParty(): void {
-    const self = this.lastEntities.find((e) => e.id === this.selfId);
+    const self = this.entityOf(this.selfId ?? undefined);
     if (!self) {
       this.hud.party.hide();
       return;
@@ -2611,7 +2714,7 @@ export class NetworkScene {
      * ★ 快照要在动作状态机之前取：`dead` / `stunned` 是**覆盖状态**
      *   （`AnimationController` 的最高优先级两条），拿不到快照就喂不进去。
      */
-    const meSnap = this.lastEntities.find((e) => e.id === this.selfId);
+    const meSnap = this.entityOf(this.selfId ?? undefined);
     this.selfAnim.update({
       horizontalDistance: s.lastHorizontalDistance,
       dt: realDt, // ★ 状态机时钟（见 draw 头注）
@@ -2681,7 +2784,7 @@ export class NetworkScene {
   private spectateCameraTarget(): { x: number; y: number; z: number } | undefined {
     if (this.spectatingId === null) return undefined;
     if (!this.spectating) {
-      const meDead = this.lastEntities.some((e) => e.id === this.selfId && !e.alive);
+      const meDead = this.entityOf(this.selfId ?? undefined)?.alive === false;
       if (!meDead) return undefined;
     }
     return this.lastRemotePos.get(this.spectatingId);
@@ -2716,6 +2819,11 @@ export class NetworkScene {
   private drawRemotes(dt: number, realDt: number): void {
     const sampled = this.interp.sample(this.serverTime, this.selfId ?? undefined);
     const seen = new Set<number>();
+    /**
+     * P4 骨骼分级取样：**在实体循环之前、镜头推完之后**（`drawSelf` 里的
+     * `updateCamera` 已经跑过）。理由见 `render/entityLod.ts` 的 `beginFrame`。
+     */
+    this.entityLod.beginFrame(this.cam.camera);
 
     for (const e of sampled) {
       const id = e.snapshot.id as number;
@@ -2786,7 +2894,8 @@ export class NetworkScene {
         e.snapshot.auras.some((a) => a.auraId === GIANT_AURA_ID) ? GIANT_BODY_SCALE : 1,
       );
       this.updateMarkersFor(e.snapshot, view, realDt);
-      view.update(dt);
+      // P4：远处/屏外的远端角色降频推进骨骼（攒帧不丢帧，判据在 entity/animLod.ts）
+      view.update(dt, this.entityLod.strideFor(e.position));
     }
 
     // 离开视野的（潜行、死亡移除、断线淘汰）→ 收掉
@@ -2877,7 +2986,7 @@ export class NetworkScene {
     if (id === undefined) {
       this.targetRing.update(undefined, 'hostile', this.serverTime, '#fff');
     } else {
-      const snap = this.lastEntities.find((e) => e.id === id);
+      const snap = this.entityOf(id);
       const friendly = snap !== undefined && snap.team === this.selfTeam;
       this.targetRing.update(
         this.renderedPositionOf(id) ?? snap?.position,
@@ -2893,7 +3002,7 @@ export class NetworkScene {
     const fid = this.view.focusId;
     const fSnap = fid === undefined
       ? undefined
-      : this.lastEntities.find((e) => e.id === fid);
+      : this.entityOf(fid);
     this.focusRing.update(
       fid === undefined ? undefined : (this.renderedPositionOf(fid) ?? fSnap?.position),
       'focus', this.serverTime, p.neutral,
