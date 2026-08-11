@@ -390,6 +390,30 @@ export const CONTROL_DR_CATEGORY: Readonly<
 );
 
 /**
+ * `control.<kind>` 光环 id → 那一 kind 的**递减类别 + 旗标**。
+ * 同样**从 `CONTROL_SPECS` 派生**，不是第二份表。
+ *
+ * ★★ 给**表现层**用的反查表。控制光环在施加时 id 被统一改写成
+ *   `control.<kind>`（见下面的 `applyControl`），而快照里只有 `auraId` ——
+ *   客户端那张 `auraDefById` 索引是从技能数据里收集 `AuraDef` 的，
+ *   `control.*` 天然查不到。没有这张表，联网表现层要回答「这枚控制是不是
+ *   把人变成了小动物」就只能拿 id 跟一个字面常量比，而那正是 X29 复盘里
+ *   「同一发气旋囚笼：试验场是小鸡、联网局是人形边走边晃头」的成因 ——
+ *   规则侧按「递减类别 + 旗标」判，表现侧按「单一 id」判，两份口径。
+ * ★ 只投影 `drCategory` 与 `flags` 两样：判形态要的就这两样，
+ *   把整份 spec（含中文名与 clearable）暴露出去只会多出可被误用的面。
+ */
+export const CONTROL_AURA_FORMS: ReadonlyMap<
+  string,
+  Pick<AuraDef, 'drCategory' | 'flags'>
+> = new Map(
+  Object.entries(CONTROL_SPECS).map(([kind, spec]) => [
+    `control.${kind}`,
+    { drCategory: spec.category, flags: { ...spec.flags } },
+  ]),
+);
+
+/**
  * 施加一个控制效果。统一走递减（8.2）与免疫检查（8.4）。
  *
  * ★ 8.3：战斗意志能解除昏迷、恐惧、迷惑、变形、定身，

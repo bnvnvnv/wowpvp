@@ -69,6 +69,12 @@ export interface MovementInput {
  * ★ 此前 `flags.rooted` 在移动积分链上是**零消费方**：定身的光环只置标志，
  *   减速链（moveSpeedMultiplierOf）不认它 —— 「定身的战士照样追人」
  *   （2026-08-09 X10 真机轮实测发现）。
+ *
+ * ⚠️ **`'full'` 锁的是「玩家的意图」，不是「这个实体不许动」。** 8.2 的
+ *   化形游走（`sim/wander.ts`）就在这条锁**之上**：`tickWorld` 第 2 步确认
+ *   锁是 `'full'` 之后，**丢掉玩家输入**、换上自己合成的一份，再以 `'none'`
+ *   积分 —— 玩家的按键一个字节都没被采信，走路的是 sim。想加同类「系统代驾」
+ *   （被拉拽的挣扎、载具）照这条路走，**别去松 lock**：松了就是把操控还回去。
  */
 export type MovementLock = 'none' | 'move' | 'full';
 
@@ -76,6 +82,27 @@ export type MovementLock = 'none' | 'move' | 'full';
 export const movementLockOf = (
   flags: { stunned: boolean; rooted: boolean },
 ): MovementLock => (flags.stunned ? 'full' : flags.rooted ? 'move' : 'none');
+
+/**
+ * 「被化形的人在中招点附近踱步」的锚与分段（8.2 迷惑）。
+ * **规则全在 `sim/wander.ts`**，这里只放它需要跨 tick 存活的那几个数。
+ *
+ * ★ 为什么住在 `MovementState` 而不是新开一个 store：它就是移动状态 ——
+ *   「我现在正被系统代驾着走，锚在哪、这一段什么时候到头」。而且
+ *   `MovementState` 的持有者（服务器 `Match`、`Predictor`、试验场）已经齐了，
+ *   新开 store 就得让每个持有者各记得建一个，忘了的那个静默不游走。
+ * ★ **不进快照**：`SelfMovementSnapshot` 不带它 —— 客户端预测被变形的自己时
+ *   按「站着不动」走，位置由权威快照纠正（见 `wander.ts` 文件头的诚实说明）。
+ */
+export interface WanderState {
+  /** 中招点的 XZ（锚）。**只锚水平面** —— 重力照常，走下台阶就该掉下去 */
+  anchorX: number;
+  anchorZ: number;
+  /** 当前段序号。散列的输入之一，单调递增 */
+  segment: number;
+  /** 本段结束时刻（世界时） */
+  nextTurnAt: number;
+}
 
 export interface MovementState {
   position: Vec3;
@@ -94,6 +121,12 @@ export interface MovementState {
   lastHorizontalDistance: number;
   /** 本 tick 是否发生了传送级别的位置跳变 */
   teleported: boolean;
+  /**
+   * 被化形时的游走锚（8.2 迷惑）。**只有 `tickWorld` 第 2 步写它**，
+   * `stepMovement` 原样透传（它对游走一无所知：游走是「谁来按方向键」的问题，
+   * 不是积分的问题）。没被化形时恒为 undefined —— 默认路径零开销。
+   */
+  wander?: WanderState;
 }
 
 export const createMovementState = (position: Vec3, yaw = 0): MovementState => ({
@@ -538,5 +571,13 @@ export const teleportTo = (
     airSpeedCap: MOVE.BASE_SPEED,
     lastHorizontalDistance: 0,
     teleported: true,
+    /**
+     * ★ 8.2 化形游走的锚**不跟着传送走，直接拔掉**：被拉拽/击退/复活挪走
+     *   之后，旧锚描述的是一个已经不成立的地方 —— 留着它，那只小鸡会掉头
+     *   穿过半张地图往中招点走回去（`driveWander` 的「被挤出圈外就往回走」
+     *   分支正是为软推开那点距离写的，不是为死亡之握写的）。
+     *   置空 = 下一 tick 就地重新下锚，语义正是「你现在被扔在这儿了」。
+     */
+    wander: undefined,
   };
 };

@@ -1,4 +1,5 @@
 export * from './movement.js';
+export * from './wander.js';
 export * from './entity.js';
 export * from './world.js';
 export * from './targeting.js';

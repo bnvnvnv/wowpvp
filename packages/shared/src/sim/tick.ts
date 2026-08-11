@@ -81,6 +81,7 @@ import {
   movementLockOf, separationVelocity, stepMovement, teleportTo,
   type MovementInput, type MovementState,
 } from './movement.js';
+import { driveWander, isWanderIncapacitated, stopWander } from './wander.js';
 import { pruneInvalidTargets } from './targeting.js';
 import { tickSwings, type SwingResult, type SwingStore } from './autoAttack.js';
 import { tickProjectiles, type ProjectileStore } from './projectile.js';
@@ -555,6 +556,35 @@ export const tickWorld = (
     const e = getEntity(deps.world, id);
     if (!e || !e.alive) continue;
     /**
+     * ★★ **8.2 化形游走**（用户口径 2026-08-11：「被变形宠物了也应该是在
+     *   一个小范围内走来走去的」）。规则、参数与判据全在 `sim/wander.ts`。
+     *
+     * ★ **在锁之上，不是把锁松开**：先确认 `movementLockOf` 给出的是 `'full'`
+     *   （玩家此刻本来就一步都走不了），再**丢掉 `deps.inputs` 里那份输入**、
+     *   换上 sim 合成的一份，以 `'none'` 积分 —— 玩家的按键一个字节都没被
+     *   采信，走路的是 sim。顺序反过来（先松锁再喂输入）就是把操控还回去。
+     * ★ 定身优先：`rooted` 的化形目标钉在原地不走（8.x「无法移动」）。
+     * ★ 判据读的是**光环**而不是 `flags`，但门槛仍是 `flags` 派生出来的锁 ——
+     *   于是「本 tick 刚挂上的化形」要等下一 tick 才开始走，与减速、
+     *   移动锁同一个 50ms 时序，不会抢在玩家还没被锁住时就替他走。
+     */
+    const lock = movementLockOf(e.flags);
+    const wandering =
+      lock === 'full' && !e.flags.rooted && isWanderIncapacitated(deps.auras, e);
+    /** 游走结束（打断/过期/解控）就地拔锚 + 抹掉水平动量，见 `stopWander` */
+    const from = wandering ? state : stopWander(state);
+    /**
+     * ★ 第六个参数是**地面连续性闸**（见 `groundContinuous` 的 ★★）：
+     *   不传的话小鸡会照着「圆是凸的」这条纯几何规则一路走下台面 ——
+     *   实测 30 秒掉 12 米，而那是玩家零操控的一段位移。
+     */
+    const drive = wandering
+      ? driveWander(state.wander, id, state.position, state.yaw, deps.world.time, {
+        obstacles, radius: e.radius,
+      })
+      : undefined;
+
+    /**
      * ★★ 没有输入条目 ≠ 免除物理。此前这里是 `continue` —— 整个积分跳过，
      *   不吃重力、不被软推开，而正确性寄托在「联网客户端每 tick 都发输入
      *   （哪怕全零）」的自觉上：停发 Input 的客户端可以悬停在空中、
@@ -564,8 +594,12 @@ export const tickWorld = (
      *   现在缺输入按**全零输入**积分：不走、不跳、朝向保持当前值 ——
      *   重力、速度衰减、软推开照常。「没登记 movement 条目的实体不参与
      *   移动」这条边界**不变**（假人与场景驱动的实体仍然靠它跳过）。
+     *
+     * ★ 游走那份（`drive.input`）排在最前：它**不是**玩家输入的补充，
+     *   是替代 —— 化形期间 `deps.inputs` 里那份连读都不读。
      */
-    const input = deps.inputs.get(id)
+    const input = drive?.input
+      ?? deps.inputs.get(id)
       ?? { forward: 0, strafe: 0, jump: false, yaw: state.yaw };
     /**
      * ★★ `speedMultiplier` 此前**没有传** —— 于是断筋、冰霜锁链、群奔咆哮、
@@ -586,18 +620,20 @@ export const tickWorld = (
     for (const o of movementEntities) {
       if (o.id !== id && o.alive) separationOthers.push(o.position);
     }
-    const r = stepMovement(state, input, dt, obstacles, {
+    const r = stepMovement(from, input, dt, obstacles, {
       radius: e.radius,
       height: e.height,
       speedMultiplier: moveSpeedMultiplierOf(deps.auras, e, deps.world.time),
       /**
        * ★ 定身/昏迷的移动锁。与 speedMultiplier 同理读的是**上一 tick 末**
        *   的 flags（deriveStatusFlags 在第 7 步），差一个 tick，确定性。
+       * ★ 游走期间**刻意传 'none'**：这一步积分的是 sim 自己合成的输入
+       *   （玩家那份在上面就被丢掉了），锁着的话小鸡一步也走不了。
        */
-      lock: movementLockOf(e.flags),
+      lock: wandering ? 'none' : lock,
       separation: separationVelocity(state.position, separationOthers, e.radius),
     });
-    deps.movement.set(id, r.state);
+    deps.movement.set(id, drive ? { ...r.state, wander: drive.wander } : r.state);
     e.position = r.state.position;
     e.yaw = r.state.yaw;
   }

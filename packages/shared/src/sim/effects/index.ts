@@ -32,6 +32,8 @@ export * from './registry.js';
 export {
   dealDamage, dealHeal, applyControl, magnitudeOf, useTrinket, rollCrit,
   setDampening, getDampening, type DampeningState,
+  // ★ 表现层反查「control.<kind> 是什么形态」用（见它自己的 ★★）
+  CONTROL_AURA_FORMS,
 } from './combat.js';
 export { parseBorrowedClass } from './party.js';
 
