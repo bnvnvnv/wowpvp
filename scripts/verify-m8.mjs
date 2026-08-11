@@ -121,10 +121,20 @@ console.log('\n── 验收 #35：战场装备栏与换装反馈（15.3）─�
   const hasAdv = before.includes('优势') && before.includes('代价');
   const hasCurrent = before.includes('当前');
 
-  // B 切换备用武器 → 应出现换装进度条
+  /**
+   * B 切换备用武器 → 应出现换装进度条。
+   * ★ 窗口内轮询而不是单点采样（2026-08-11，P4 剖析批归因）：换装是
+   *   `SWAP_WEAPON_SECONDS = 0.8` **sim 秒**，软渲染下 GameLoop 一帧最多补
+   *   5 个固定步（0.25 sim 秒/帧），进度条实际只在 ~250ms **墙钟**内可见 ——
+   *   原来的「按下后固定睡 250ms 采一次」正压在窗口边界上，机器一忙就滑过去
+   *   （连跑 3/3 挂的既有偶发，与被测功能无关）。
+   */
   await page.keyboard.press('KeyB');
-  await page.waitForTimeout(250);
-  const during = await text('#loadout-panel');
+  let during = '';
+  for (let k = 0; k < 25 && !during.includes('切换武器'); k++) {
+    await page.waitForTimeout(60);
+    during = await text('#loadout-panel');
+  }
 
   check('#35a', '★ 武器/护甲分区显示，当前装备高亮，备用装备显示优缺点（15.3 第一条）',
     hasAdv && hasCurrent && before.includes('武器') && before.includes('护甲'),

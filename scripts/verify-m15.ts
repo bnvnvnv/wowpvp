@@ -17,11 +17,50 @@ const BASE = process.env.VERIFY_URL ?? 'http://localhost:5173';
 const URL = `${BASE}/?tutorial=on&art=off`;
 
 const results: { id: string; name: string; pass: boolean }[] = [];
+/**
+ * ★ 每条断言带「本条耗时 / 累计耗时」（G6：去 sleep 要能看见钱花在哪）。
+ *   时间戳是**诊断**不是判据 —— 慢不判红，但下次谁想再砍一刀有据可依。
+ */
+const t0 = Date.now();
+let tPrev = t0;
 const check = (id: string, name: string, pass: boolean, detail: string): void => {
+  const now = Date.now();
+  const seg = ((now - tPrev) / 1000).toFixed(1);
+  const all = ((now - t0) / 1000).toFixed(1);
+  tPrev = now;
   results.push({ id, name, pass });
-  console.log(`  ${pass ? '✓' : '✗'} ${id} ${name}\n      ${detail}`);
+  console.log(`  ${pass ? '✓' : '✗'} ${id} ${name}  [+${seg}s / ${all}s]\n      ${detail}`);
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * ★★ G6 去 sleep 的主力工具：**条件轮询**取代固定等待。
+ *
+ *   固定 sleep 有两头都亏的毛病 —— 睡短了在慢机器上抖成偶发红，睡长了
+ *   全脚本一起变慢。轮询把「等多久」交给事实：探到就走，探不到才等，
+ *   而 `timeoutMs` 只是**上限**（本脚本一律取原固定 sleep 的 3 倍左右）。
+ *
+ *   不抛错，返回 `{ hit, last }` —— 调用点自己决定「没等到」算失败还是
+ *   继续走（否定路的等待就属于后者：等不到动作生效，断言照样成立）。
+ *
+ * ⚠️ 轮询间隔别低于 ~100ms：实测 SwiftShader 下一次 `page.evaluate` 中位
+ *   65ms、尾部 200ms+，间隔太密就变成探测本身在抢 CPU（m4 递减段的教训：
+ *   探测是延迟源）。需要精确时序的地方用「盲操作 + 事后验证」，不要轮询。
+ */
+const pollFor = async <T>(
+  probe: () => Promise<T>,
+  ok: (v: T) => boolean,
+  timeoutMs: number,
+  intervalMs = 120,
+): Promise<{ hit: boolean; last: T }> => {
+  const end = Date.now() + timeoutMs;
+  for (;;) {
+    const last = await probe();
+    if (ok(last)) return { hit: true, last };
+    if (Date.now() >= end) return { hit: false, last };
+    await sleep(intervalMs);
+  }
+};
 
 interface TutStatus {
   active: boolean; skipped: boolean; current: string | null; done: string[];
@@ -56,6 +95,42 @@ const dummyByClass = (page: Page, cls: string) =>
     page,
     `(() => { for (const e of combat.allEntities()) { if (e.id !== combat.player.id && e.classId === '${cls}') return { id: e.id, x: e.position.x, z: e.position.z, alive: e.alive }; } return null; })()`,
   );
+
+/**
+ * 一次 evaluate 把「这个技能现在能不能按出去」的三件事全读回来。
+ * ★ 合成一次往返而不是三次：SwiftShader 下每次 evaluate 中位 65ms，
+ *   拆开读等于把轮询间隔悄悄变成三倍。
+ */
+interface CastReady {
+  /** 该技能自身冷却剩余（秒，0 = 好了）*/ cd: number;
+  /** 公共冷却剩余（秒）*/ gcd: number;
+  /** 玩家是否正在读条/引导 */ casting: boolean;
+}
+const castReady = (page: Page, skillId: string): Promise<CastReady> =>
+  evalWorld<CastReady>(page, `{
+    cd: Math.max(0, (combat.player.cooldowns.get('${skillId}') ?? 0) - combat.world.time),
+    gcd: Math.max(0, combat.player.gcdUntil - combat.world.time),
+    casting: combat.store.has(combat.player.id),
+  }`);
+
+/** 空闲可出手：不在读条 + GCD 走完 + 该技能冷却好了 */
+const readyNow = (r: CastReady): boolean => !r.casting && r.gcd <= 0.05 && r.cd <= 0.05;
+
+/**
+ * 等场景真的装好（`__scene.tutorial` 可读）。
+ * ★ 这是**机器等待**不是游戏内时长：原来 goto/reload 之后固定睡 1200ms 是赌
+ *   出来的数（实测冷启动 goto 起算到 tutorial 可读 ~2.0s，热启动 ~0.3s）——
+ *   赌输了整脚本崩在第 0 条断言上。上限给得比 3 倍宽，因为 Vite 首次转译
+ *   一个模块图确实可能慢，而这里等长了不影响任何判据。
+ */
+const waitScene = async (page: Page): Promise<void> => {
+  const r = await pollFor(
+    () => page.evaluate('!!(globalThis.__scene && globalThis.__scene.tutorial)')
+      .then((v) => v === true).catch(() => false),
+    (v) => v, 15000, 100,
+  );
+  if (!r.hit) throw new Error('页面 15 秒内没就绪（globalThis.__scene.tutorial 读不到）');
+};
 
 const wrap = (a: number): number => {
   while (a > Math.PI) a -= Math.PI * 2;
@@ -117,8 +192,22 @@ const steerTo = async (
   }
 };
 
+/** 硬目标已经是这个职业的假人了吗 */
+const isTargeting = (page: Page, cls: string): Promise<boolean> =>
+  evalWorld<boolean>(
+    page,
+    `(() => { const id = combat.player.targets.hard; if (id === undefined) return false; const e = combat.allEntities().find((x) => x.id === id); return !!e && e.classId === '${cls}'; })()`,
+  );
+
 /** Tab 循环直到硬目标是指定职业的假人 */
 const targetClass = async (page: Page, cls: string): Promise<void> => {
+  /**
+   * ★ 先看一眼再动手（G6 去 sleep）：目标是**持续**的（5.x：不会自己丢），
+   *   毕业环里这个函数每一轮都被调一次，而每轮开头那一下 Home + Tab 会把
+   *   已经选对的目标**切走**，然后再花 7 次 Tab（每次 150ms）转回来。
+   *   一次 65ms 的探测换掉最坏 1.7 秒的空转，还顺带不再无谓地扰动镜头。
+   */
+  if (await isTargeting(page, cls)) return;
   // ★ Tab 锥是**镜头**前方 140°（5.3）。steerTo 转的是角色 —— 先 Home
   //   把镜头复位到角色背后，锥口才对着刚才走向的目标。
   //   走位过冲时目标可能落在身后 —— 后续几轮左键把镜头转过去再扫一遍。
@@ -142,12 +231,10 @@ const targetClass = async (page: Page, cls: string): Promise<void> => {
     await sleep(150);
     for (let i = 0; i < 8; i++) {
       await page.keyboard.press('Tab');
+      // ⚠️ 150ms 是**语义等待**不是懒惰等待：Tab 走 `input.pressed` 由场景
+      //   循环逐帧消费，SwiftShader 一帧 50~100ms，按完立刻探会探在换目标之前。
       await sleep(150);
-      const ok = await evalWorld<boolean>(
-        page,
-        `(() => { const id = combat.player.targets.hard; if (id === undefined) return false; const e = combat.allEntities().find((x) => x.id === id); return !!e && e.classId === '${cls}'; })()`,
-      );
-      if (ok) return;
+      if (await isTargeting(page, cls)) return;
     }
   }
   throw new Error(`扫了三个镜头方向也没选中 ${cls}`);
@@ -157,6 +244,39 @@ const playerCasting = (page: Page): Promise<boolean> =>
   page.evaluate(
     "(() => { const s = globalThis.__scene; return s.combat.store.has(s.combat.player.id); })()",
   ) as Promise<boolean>;
+
+/**
+ * 按一个技能，并等它**确实出手**（自身冷却被刷新为准）。返回出没出手。
+ *
+ * ★ 为什么认冷却而不是数毫秒：技能被 GCD / 学派锁 / 冷却静默拒绝是常态，
+ *   固定 sleep 之后的断言分不清「放了但没推进」（真判据）和「压根没放出去」
+ *   （空转的假绿）。比对**按之前**的冷却余量才算数 —— 直接看 `cd > 0` 会
+ *   把「本来就在冷却中」误当成刚放的。
+ * ★ 没出手不抛错：否定路要的是「不管出没出手都不该推进」，出没出手写进现场记录。
+ */
+const pressAndSettle = async (
+  page: Page, key: string, skillId: string, capMs: number,
+): Promise<boolean> => {
+  const before = (await castReady(page, skillId)).cd;
+  await page.keyboard.press(key);
+  const r = await pollFor(() => castReady(page, skillId), (v) => v.cd > before + 0.5, capMs, 100);
+  return r.hit;
+};
+
+/**
+ * 按一发读条技能并等它读完（起手 → 施法条消失）。
+ * ★ 「读完」也可能是「被打断」—— 这里只报事实，是读满还是被打断由调用点
+ *   按上下文解释（10a 事前已确认站在拳击射程外，那里就只能是读满）。
+ */
+const pressAndCastThrough = async (
+  page: Page, key: string, capMs: number,
+): Promise<{ started: boolean; finished: boolean }> => {
+  await page.keyboard.press(key);
+  const started = await pollFor(() => playerCasting(page), (v) => v, 900, 80);
+  if (!started.hit) return { started: false, finished: false };
+  const done = await pollFor(() => playerCasting(page), (v) => !v, capMs, 100);
+  return { started: true, finished: done.hit };
+};
 
 // ── 启动 ─────────────────────────────────────────────────────────
 
@@ -174,7 +294,7 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 const pageErrors: string[] = [];
 page.on('pageerror', (e) => pageErrors.push(e.message));
 await page.goto(URL);
-await sleep(1200);
+await waitScene(page);
 
 try {
   // ── 0：面板在场，教学从第一环开始 ──
@@ -188,11 +308,28 @@ try {
 
   // ── 1 移动（含否定：只走不跳不算）──
   {
-    await page.keyboard.down('w'); await sleep(1300); await page.keyboard.up('w');
+    // 按住 W 直到「走满 5 米」这件事**被教学看见**（moveGoals.walk 翻真）就松手。
+    // 原来固定按 1300ms 是照 7m/s 跑速倒推的 —— 一旦掉帧就走不满，1a 的
+    // `walk=true` 前提直接塌掉。上限 3.9s（原值 3 倍）。
+    await page.keyboard.down('w');
+    await pollFor(() => status(page), (s) => s.moveGoals.walk, 3900, 120);
+    await page.keyboard.up('w');
     const half = await status(page);
     check('1a', '★ 否定：走满 5 米但没跳 → 环不亮', half.current === 'move' && half.moveGoals.walk,
       `walk=${half.moveGoals.walk}，仍在 ${half.current}`);
-    await page.keyboard.press('Space');
+    /**
+     * ★ 跳一次 —— 按了要**看结果**，没跳成就再按。
+     *   跳跃的信号是 `TutorialDirector` 在渲染帧上采的「着地→离地」沿，
+     *   而 SwiftShader 一帧要 50~100ms：`press('Space')` 的 down/up 相隔不到
+     *   10ms，整个落在同一帧里就被吃掉，教学一个沿也采不到。原来是赌一次
+     *   按中（实测会偶发赌输，整脚本崩在第 1b 条）。
+     */
+    let jumped = false;
+    for (let i = 0; i < 6 && !jumped; i++) {
+      await page.keyboard.press('Space');
+      jumped = (await pollFor(
+        () => status(page), (st) => st.moveGoals.jump || st.current !== 'move', 700, 100)).hit;
+    }
     const s = await waitCurrent(page, 'camera', 4000);
     check('1b', '走 5 米 + 跳一次 → 过「移动」环', s.done.includes('move'), `done=${s.done.join(',')}`);
   }
@@ -200,11 +337,26 @@ try {
   // ── 2 镜头（顺带否定：这时候放技能/选目标都不算数）──
   {
     await page.keyboard.press('Tab');
-    await page.keyboard.press('Digit2'); // 火冲糊出去
-    await sleep(600);
+    /**
+     * ★★ 这里放的是**霜甲护盾**（9 号键）而不是火冲 —— 换键是这一批查出来的
+     *   bug 修复，不是口味问题：
+     *     · 火冲 8 秒冷却。这一环烧掉它之后，4a「用瞬发火冲糊脸」那一按落在
+     *       冷却里被静默拒绝 —— 4a 从来没真的糊出去过，是条**空转的假绿**
+     *       （面包屑：把「已出手」打进现场记录后，4a 稳定打印 false；而第 5 环
+     *       等火冲转好只花 0.4 秒，说明冷却是 2a 起的、不是 4a 起的）。
+     *     · 霜甲护盾是自我瞬发、不需要目标、25 秒冷却后面再没人用，
+     *       8 秒护盾到第 6 环就过期了，对后续任何一环都没有副作用。
+     *   两条否定路各用各的技能，才都是真的。
+     *
+     * ★ 等待也从「数 600ms」改成「等这一发**确实打出去了**」：技能一旦被接受
+     *   就当帧起 GCD/进冷却，探到这个信号说明 sim 已经完整处理过这次施法 ——
+     *   教学要错误推进也该在同一拍推进了，此时再断言「还在 camera」比睡满
+     *   600ms 更强。
+     */
+    const fired2 = await pressAndSettle(page, 'Digit9', 'mage.ice_barrier', 1500);
     const noSkip = await status(page);
     check('2a', '★ 否定：镜头环里选目标+放技能 → 不推进（顺序门控）',
-      noSkip.current === 'camera', `仍在 ${noSkip.current}`);
+      noSkip.current === 'camera' && fired2, `仍在 ${noSkip.current}（护盾已出手=${fired2}）`);
 
     await page.mouse.move(640, 400);
     await page.mouse.down();
@@ -221,20 +373,41 @@ try {
     const s = await waitCurrent(page, 'firstCast', 4000);
     check('3', '选中目标 → 过「选中」环', s.done.includes('target'), `done=${s.done.join(',')}`);
 
-    // ★ 否定：瞬发火冲过不了「第一发读条」环
-    await page.keyboard.press('Digit2'); await sleep(700);
+    // ★ 否定：瞬发火冲过不了「第一发读条」环（等它确实出手再断言，原固定 700ms）
+    const fired4 = await pressAndSettle(page, 'Digit2', 'mage.fire_blast', 1500);
     const neg = await status(page);
     check('4a', '★ 否定：用瞬发火冲糊脸 → 「第一发读条」不亮', neg.current === 'firstCast',
-      `仍在 ${neg.current}`);
+      `仍在 ${neg.current}（火冲已出手=${fired4}）`);
 
-    await page.keyboard.press('Digit1'); // 寒冰箭 1.4s —— 站着读完
-    const s2 = await waitCurrent(page, 'instant', 6000);
+    /**
+     * ★ 先等 GCD 再读寒冰箭：4a 的火冲刚起了 1.5 秒公共冷却，紧接着按 1 号键
+     *   会被静默拒绝。此前这一按之所以「不用等」，是因为 4a 那一发压根没放
+     *   出去（见 2a 的注释）—— 把 4a 修真之后，这条隐藏依赖就露出来了。
+     */
+    let firstDone = false;
+    for (let i = 0; i < 3 && !firstDone; i++) {
+      await pollFor(() => castReady(page, 'mage.frostbolt'), readyNow, 3000, 100);
+      await pressAndCastThrough(page, 'Digit1', 5000); // 寒冰箭 1.4s —— 站着读完
+      firstDone = (await pollFor(
+        () => status(page), (s) => s.done.includes('firstCast'), 800, 120)).hit;
+    }
+    const s2 = await waitCurrent(page, 'instant', 4000);
     check('4b', '读完一发寒冰箭 → 过「第一发」环', s2.done.includes('firstCast'), `done=${s2.done.length} 环`);
 
-    // 火冲可能还在冷却（上面否定路刚用过，8s）——等它转好
-    await sleep(6500);
-    await page.keyboard.press('Digit2');
-    const s3 = await waitCurrent(page, 'ground', 6000);
+    /**
+     * 火冲还在冷却（上面否定路刚用过，8s）—— 原来固定睡 6500ms，是拿「大概
+     * 还剩多少」估的：估多了每跑一次白等一次，估少了这一按直接被拒、后面
+     * `waitCurrent` 干等 6 秒再红。改成**盯冷却表**，转好就按。
+     * 按完 1.5 秒内没推进就再按一遍（残余 GCD 吞按键是常态，重按不改判据）。
+     */
+    let instantDone = false;
+    for (let i = 0; i < 4 && !instantDone; i++) {
+      await pollFor(() => castReady(page, 'mage.fire_blast'), readyNow, 12000, 150);
+      await page.keyboard.press('Digit2');
+      instantDone = (await pollFor(
+        () => status(page), (s) => s.done.includes('instant'), 1500, 120)).hit;
+    }
+    const s3 = await waitCurrent(page, 'ground', 4000);
     check('5', '瞬发火冲 → 过「瞬发与冷却」环', s3.done.includes('instant'), `done=${s3.done.length} 环`);
   }
 
@@ -250,17 +423,22 @@ try {
       await steerTo(page, { x: w0.x + (dx / len) * 8, z: w0.z + (dz / len) * 8 }, 2, 15000)
         .catch(() => undefined);
     }
-    await sleep(1600); // 让 GCD 转完，预览起手才不会被拒
+    // 等 GCD/上一发读条走完，预览起手才不会被拒（原固定 1600ms）
+    await pollFor(() => castReady(page, 'mage.blizzard'), readyNow, 5000, 120);
     for (let i = 0; i < 4; i++) {
       await page.keyboard.press('Digit6'); // 暴风雪进入预览
-      await sleep(300);
+      // 等落点预览真的挂上（原固定 300ms）—— 没挂上就点，那一下会被当成普通点击
+      await pollFor(
+        () => page.evaluate('globalThis.__scene.aim?.pendingSkill?.id ?? null')
+          .catch(() => null) as Promise<string | null>,
+        (v) => v !== null, 900, 100);
       await page.mouse.move(640, 560); // 靠下的屏幕点 = 脚边的地面（不会指到天上/超距）
-      await sleep(200);
+      await sleep(200); // 语义等待：落点射线跟着鼠标走，得让它渲染一帧
       await page.mouse.click(640, 560); // 确认落点
       // ★ 暴风雪 = 0.8s 起手 + 4s 引导，而引导在**结束时**才结算 ——
       //   这里必须站着等满（第一版等 2.4s 就按 Esc 重试，等于亲手取消自己的引导）
       const doneBy = Date.now() + 7000;
-      while (Date.now() < doneBy && (await status(page)).current === 'ground') await sleep(300);
+      while (Date.now() < doneBy && (await status(page)).current === 'ground') await sleep(150);
       if ((await status(page)).current !== 'ground') break;
       const why = await page.evaluate(`(() => {
         const s = globalThis.__scene;
@@ -289,9 +467,19 @@ try {
      * 过环即空闲 —— 那是错时序的巧合，不是本脚本的功劳。
      */
     await page.keyboard.press('Escape');
-    await sleep(400);
-    await page.keyboard.press('Digit5'); // 冰霜新星
-    const s = await waitCurrent(page, 'interrupt', 6000);
+    /**
+     * 等引导真的停下、GCD 也转完再按新星（原固定 400ms —— 那是「猜 Esc 多久
+     * 生效」）。按完 1.5 秒不亮就重按：这一环此前是单发按键，被拒一次就得
+     * 靠下面的 `waitCurrent` 干等 6 秒才红。
+     */
+    let defenseDone = false;
+    for (let i = 0; i < 3 && !defenseDone; i++) {
+      await pollFor(() => castReady(page, 'mage.frost_nova'), readyNow, 3000, 100);
+      await page.keyboard.press('Digit5'); // 冰霜新星
+      defenseDone = (await pollFor(
+        () => status(page), (st) => st.done.includes('defense'), 1500, 120)).hit;
+    }
+    const s = await waitCurrent(page, 'interrupt', 4000);
     check('7', '放出冰霜新星 → 过「自保」环', s.done.includes('defense'), `done=${s.done.length} 环`);
   }
 
@@ -308,18 +496,39 @@ try {
      *   所以只需要选一次。这也更像真人的打法：先锁人，再等他起手。
      */
     await targetClass(page, 'mage');
-    // 等它开始读条再按打断
-    const end = Date.now() + 15000;
+    /**
+     * 等它开始读条再按打断。
+     *
+     * ★★ 三处收紧（G6 这一批实测到的偶发红：`等步骤 locked 超时`）：
+     *   · **只在真能按出去的时候按**。法术反制 20 秒冷却 —— 一次被公共冷却
+     *     静默拒绝的按键不要紧，但一次「按出去了、法师那一发正好同帧读完」
+     *     就白吃 20 秒，原来 15 秒的预算里再没有第二次机会，直接红。
+     *     所以按之前先确认 GCD 与自身冷却都是空的。
+     *   · **每轮确认目标还在**。丢了就重扫（选中是持续的，正常一轮都不用扫，
+     *     `targetClass` 里那句「已经选中就别按」保证这不是白花钱）。
+     *   · 预算 15s → 32s：容得下**一整轮**法术反制冷却。这不是放松判据
+     *     （判据是「打断法师读条 → 过打断环」，从来不含「必须 15 秒内」），
+     *     是把「第一次没赶上就判死」的人为死线拿掉。
+     */
+    const end = Date.now() + 32000;
     let landed = false;
-    while (Date.now() < end) {
-      const casting = await evalWorld<boolean>(page, `combat.store.has(${mageDummy.id})`);
-      if (casting) {
+    while (Date.now() < end && !landed) {
+      const st = await evalWorld<{ casting: boolean; gcd: number; cd: number; targeted: boolean }>(
+        page, `{
+          casting: combat.store.has(${mageDummy.id}),
+          gcd: Math.max(0, combat.player.gcdUntil - combat.world.time),
+          cd: Math.max(0, (combat.player.cooldowns.get('mage.counterspell') ?? 0) - combat.world.time),
+          targeted: combat.player.targets.hard === ${mageDummy.id},
+        }`);
+      if (!st.targeted) { await targetClass(page, 'mage').catch(() => undefined); continue; }
+      if (st.casting && st.gcd <= 0.05 && st.cd <= 0.05) {
         await page.keyboard.press('Digit3');
-        await sleep(400);
-        const s = await status(page);
-        if (s.done.includes('interrupt')) { landed = true; break; }
+        // 打断落地是同帧结算的 —— 环一亮就走（原固定 400ms）
+        const got = await pollFor(
+          () => status(page), (s) => s.done.includes('interrupt'), 600, 100);
+        if (got.hit) { landed = true; break; }
       }
-      await sleep(150);
+      await sleep(120);
     }
     const s = await waitCurrent(page, 'locked', 3000);
     check('8', '★ 打断法师读条 → 过「打断」环', landed && s.done.includes('interrupt'),
@@ -328,12 +537,22 @@ try {
 
   // ── 9 被打断的代价（走到战士身边故意挨拳，再用火焰还手）──
   {
-    // ★ 否定：还没被打断就放火冲 —— 不算
-    await sleep(400);
-    await page.keyboard.press('Digit2'); await sleep(500);
+    /**
+     * ★ 否定：还没被打断就放火冲 —— 不算。
+     *   2026-08-11 收口：这条否定路此前是**空转的假绿** —— 走到这里时火冲
+     *   还在第 5 环烧掉的 8 秒冷却里，那一按被静默拒绝，「代价环不亮」
+     *   验的是「什么都没发生」。现在等真冷却（≤8s）再按 —— 多花的这几秒
+     *   买的是断言第一次真的成立；9b 自带 CD 等待环（60s 预算），
+     *   不为此多付第二轮。
+     */
+    await pollFor(() => castReady(page, 'mage.fire_blast'),
+      (r) => !r.casting && r.gcd <= 0.05 && r.cd <= 0.05, 9000, 150);
+    await targetClass(page, 'warrior'); // 火冲要有合法目标 —— 没目标的「没出手」同样是空转
+    const fired9 = await pressAndSettle(page, 'Digit2', 'mage.fire_blast', 1200);
     const neg = await status(page);
-    check('9a', '★ 否定：没被打断直接放火冲 → 「代价」环不亮', neg.current === 'locked',
-      `仍在 ${neg.current}`);
+    // ★ fired9 进判据：火冲没真出手时这条否定路验的是「什么都没发生」——宁红勿假绿
+    check('9a', '★ 否定：没被打断直接放火冲 → 「代价」环不亮', neg.current === 'locked' && fired9,
+      `仍在 ${neg.current}（火冲已出手=${fired9}）`);
 
     const w = await dummyByClass(page, 'warrior');
     if (!w) throw new Error('找不到假人·战士');
@@ -416,11 +635,22 @@ try {
       await steerTo(page, { x: w!.x + (dx / len) * 8 + (i % 2 ? 3 : -3), z: w!.z + (dz / len) * 8 }, 2.5, 8000)
         .catch(() => undefined);
     }
-    await page.keyboard.press('Digit1');
-    await sleep(2000); // 读完
+    /**
+     * 等这一发**真的读完**：探到起手 → 等施法条消失（原固定 2000ms ≈ 1.4s
+     * 读条 + 余量）。上面已确认站在拳击射程外，所以「消失」只能是读满。
+     * ★ 顺带把「到底起没起手」写进现场记录：起手被 GCD/学派锁吃掉时，
+     *   这条判据原文级的否定路是空转的假绿 —— 睡 2 秒的写法看不出来。
+     */
+    let read10 = { started: false, finished: false };
+    for (let i = 0; i < 3 && !read10.finished; i++) {
+      read10 = await pressAndCastThrough(page, 'Digit1', 6000);
+      if (!read10.started) await pollFor(() => castReady(page, 'mage.frostbolt'),
+        (r) => !r.casting && r.gcd <= 0.05, 2000, 100);
+    }
     const neg = await status(page);
     check('10a', '★★ 否定（判据原文）：不按 Esc 直接读完 → 任务不亮',
-      neg.current === 'feint', `仍在 ${neg.current}（读完时距战士 ${(await distToWarrior()).toFixed(1)}m）`);
+      neg.current === 'feint' && read10.finished,
+      `仍在 ${neg.current}（读完=${read10.finished}，读完时距战士 ${(await distToWarrior()).toFixed(1)}m）`);
 
     // 正路：回到战士身边假读条。
     // ★ 时序是本环的全部难点：拳击在它看见读条后 0.45s 落下，Esc 必须落在
@@ -466,9 +696,21 @@ try {
     while (Date.now() < firstImpact) {
       const s = await status(page);
       if (s.current !== 'sidestep') break;
-      const pending = await evalWorld<boolean>(
-        page, `combat.projectiles.items.some((p) => p.kind === 'delayedImpact')`);
-      if (pending) { sawZone = true; await sleep(3200); break; } // 站到落地
+      const pendingId = await evalWorld<number | null>(
+        page,
+        `(() => { const p = combat.projectiles.items.find((x) => x.kind === 'delayedImpact'); return p ? p.id : null; })()`);
+      if (pendingId !== null) {
+        sawZone = true;
+        /**
+         * 站着不动，等**这一颗**结算掉（原固定 3200ms ≈ 1.5s 延迟 + 余量）。
+         * ★ 认 id 不认种类：教学是一颗接一颗地丢，认「还有没有 delayedImpact」
+         *   会把下一颗当成这一颗还没落地，白等满整个预算。
+         */
+        await pollFor(
+          () => evalWorld<boolean>(page, `combat.projectiles.items.some((p) => p.id === ${pendingId})`),
+          (v) => !v, 9600, 150);
+        break;
+      }
       await sleep(200);
     }
     const negS = await status(page);
@@ -479,8 +721,8 @@ try {
     const end = Date.now() + 25000;
     let dodged = false;
     while (Date.now() < end) {
-      const imp = await evalWorld<{ x: number; z: number } | null>(
-        page, `(() => { const p = combat.projectiles.items.find((x) => x.kind === 'delayedImpact'); return p ? { x: p.center.x, z: p.center.z } : null; })()`);
+      const imp = await evalWorld<{ id: number; x: number; z: number } | null>(
+        page, `(() => { const p = combat.projectiles.items.find((x) => x.kind === 'delayedImpact'); return p ? { id: p.id, x: p.center.x, z: p.center.z } : null; })()`);
       if (imp) {
         const p = await playerPos(page);
         // 单位化外撤方向 —— 陨石就砸在脚下时 p-imp≈0，直接乘系数会算出圈内点
@@ -489,9 +731,28 @@ try {
         const dir = len > 0.3 ? { x: dx / len, z: dz / len } : { x: 1, z: 0 };
         const out = { x: imp.x + dir.x * 9, z: imp.z + dir.z * 9 };
         await steerTo(page, out, 2, 4000).catch(() => undefined);
-        await sleep(800);
-        const s = await status(page);
-        if (s.done.includes('sidestep')) { dodged = true; break; }
+        /**
+         * 走出去之后等**这一颗**落地结算（原固定 800ms）。
+         * ★ 出口有两个：环亮了（躲开了，立刻走）、或者这颗已经结算但环没亮
+         *   （这次没躲干净，立刻去追下一颗）—— 都比睡满 800ms 快。
+         *   一颗陨石从出现到落地 1.5 秒，25 秒预算里能试的轮数就是这一环
+         *   的全部余量：每轮多花 0.8 秒，少试一轮（实测 25s 预算被吃满而
+         *   偶发红，就是这么来的）。
+         */
+        const r = await pollFor(
+          () => page.evaluate(`(() => {
+            const s = globalThis.__scene;
+            return {
+              done: s.tutorial.status.done.includes('sidestep'),
+              pending: s.combat.projectiles.items.some((p) => p.id === ${imp.id}),
+            };
+          })()`) as Promise<{ done: boolean; pending: boolean }>,
+          (v) => v.done || !v.pending, 4000, 120);
+        // 结算与教学推进可能差一拍 —— 落地后再补看一眼，别把刚躲开的当没躲开
+        if (r.last.done
+          || (await pollFor(() => status(page), (s) => s.done.includes('sidestep'), 400, 120)).hit) {
+          dodged = true; break;
+        }
       }
       await sleep(200);
     }
@@ -529,9 +790,22 @@ try {
         }
         // 两发霜矢背靠背，霜矢间隙搭火冲（转好了就接受，没转好被拒不亏）
         for (let i = 0; i < 3; i++) {
-          await page.keyboard.press('Digit1');
-          await sleep(1750); // 1.4s 读条 + GCD 缓冲
-          await page.keyboard.press('Digit2');
+          /**
+           * ★★ 全脚本最贵的一处固定 sleep（毕业环占全程四分之一，这一句要跑十几遍）。
+           *
+           *   原来是「按 Digit1 → 睡 1750ms → 按 Digit2 → 睡 120ms」，问题不在
+           *   1750 猜得准不准，而在**节拍对不上**：火冲起的 1.5 秒 GCD 要到
+           *   t≈3.25s 才走完，可下一圈在 t≈1.87s 就按霜矢 —— 必被静默拒绝，
+           *   然后老老实实再睡 1750ms 什么也没干。实测三圈只打得出两发。
+           *
+           *   改成「等能按了再按 → 等它读完再走下一手」：每一步都由事实驱动，
+           *   同样三圈稳打三发（吞吐 ×1.5），慢机器上也不会因为读条超过 1750ms
+           *   就把下一发按空。
+           */
+          await pollFor(() => castReady(page, 'mage.frostbolt'),
+            (r) => !r.casting && r.gcd <= 0.05, 2500, 100);
+          await pressAndCastThrough(page, 'Digit1', 4000);
+          await page.keyboard.press('Digit2'); // 残余 GCD 由 X21 的 0.4 秒施法排队窗接住
           await sleep(120);
           const s = await status(page);
           if (s.killedDummies > s0.killedDummies || s.current === null) return;
@@ -549,20 +823,20 @@ try {
   // ── 13 持久化（可重进）+ 跳过/重开按钮 ──
   {
     await page.reload();
-    await sleep(1200);
+    await waitScene(page);
     const s = await status(page);
     check('13a', '★ 刷新后进度还在（localStorage 持久化）',
       s.current === null && s.done.length === 12, `done=${s.done.length}，current=${s.current}`);
 
+    // 按钮的效果是同帧生效的，等状态翻过来就走（原两处固定 300ms）
     await page.click('[data-tutorial-action="restart"]');
-    await sleep(300);
-    const s2 = await status(page);
+    const s2 = (await pollFor(
+      () => status(page), (v) => v.current === 'move' && v.done.length === 0, 900, 100)).last;
     check('13b', '★ 「重新开始」→ 回到第一环', s2.current === 'move' && s2.done.length === 0,
       `current=${s2.current}`);
 
     await page.click('[data-tutorial-action="skip"]');
-    await sleep(300);
-    const s3 = await status(page);
+    const s3 = (await pollFor(() => status(page), (v) => v.skipped, 900, 100)).last;
     const collapsed = await page.textContent('#tutorial-hud');
     check('13c', '★ 「跳过教学」→ 面板收起，可再进', s3.skipped && (collapsed ?? '').includes('重新开始'),
       `skipped=${s3.skipped}`);

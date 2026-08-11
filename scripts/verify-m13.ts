@@ -155,7 +155,17 @@ try {
     const slot = mage.skills.findIndex((s) => (s.id as string) === 'mage.fire_blast');
     if (slot < 0 || slot > 7) throw new Error('法师技能表里找不到 1–8 槽内的火焰冲击');
 
-    await sleep(400); // 让传送随快照到达两端
+    /**
+     * ⚠️ 这两处是**语义等待**，G6 去 sleep 时试过换条件轮询，实测**不能换**：
+     *   · 400ms —— 等传送随快照到两端（tick → 广播 → 客户端解析一整条链）。
+     *   · 150ms —— Tab 由渲染帧消费，按完立刻放技能时还没有目标。
+     *   试过的写法：整段改「连按 Tab + 技能，按到 A 看见 Damage 为止」。
+     *   跑起来**更糟**：够不着时那一轮要 750ms，最坏 12 轮 ≈ 10 秒，而这
+     *   10 秒里 B（战士）就贴在 A 脸上普攻 —— 实测把结局打反了（第 6 条
+     *   断言抓到「蓝方获胜」，连带 14/24 一起塌）。这里的等待长度不是懒惰，
+     *   是**在别人也在出手的对局里，多站一秒就多挨一秒**。
+     */
+    await sleep(400);
     await pageA.keyboard.press('Tab');
     await sleep(150);
     await pageA.keyboard.press(`Digit${slot + 1}`);
@@ -179,10 +189,21 @@ try {
      */
     const castSlot = mage.skills.findIndex((s) => (s.id as string) === 'mage.frostbolt');
     if (castSlot < 0 || castSlot > 7) throw new Error('法师技能表里找不到 1–8 槽内的霜矢');
-    await sleep(1700); // 等火焰冲击的 GCD 过去
-    await pageA.keyboard.press(`Digit${castSlot + 1}`);
-    const casting = await waitStatus(
-      pageA, 'A 进入施法状态', 'st.net && st.net.casting.self === true', 4000,
+    /**
+     * ★ G6 去 sleep：火焰冲击刚起了 1.5 秒公共冷却，原来固定睡 1700ms 猜它过没过
+     *   （猜多了每跑一次白等，猜少了这一按被静默拒绝、下面干等 4 秒再红）。
+     *   同样换成**连按 + 事后验证**：被 GCD 拒绝的按键没有副作用，
+     *   按到「施法状态真的写进注册表」为止。
+     */
+    let casting: Record<string, unknown> | null = null;
+    for (let i = 0; i < 10 && !casting; i++) {
+      await pageA.keyboard.press(`Digit${castSlot + 1}`);
+      casting = await waitStatus(
+        pageA, 'A 进入施法状态', 'st.net && st.net.casting.self === true', 500,
+      ).catch(() => null);
+    }
+    casting ??= await waitStatus(
+      pageA, 'A 进入施法状态', 'st.net && st.net.casting.self === true', 2000,
     );
     const netCast = (casting.net as { casting?: { self: boolean; total: number } } | null)?.casting;
     check('10', '★★ 联网侧自己的施法状态真的被写进注册表（playerCast 不再是死字段）',
