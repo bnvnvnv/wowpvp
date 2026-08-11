@@ -19,13 +19,21 @@ import {
   MAP_BY_ID,
   asMapId,
   SwapKind,
+  admitToMatch,
   canStart,
   createMatch,
   encodeServerMessage,
   entityOfPlayer,
+  freeSeatsOn,
+  isLegalSpectateFollow,
   isVisibleTo,
   joinRoom,
+  leaveSpectator,
+  seatSpectator,
+  unseatToSpectator,
   spectatableFor,
+  spectatableForSpectator,
+  takeOverSeat,
   createRoom,
   leaveMatch,
   markDisconnected,
@@ -33,6 +41,7 @@ import {
   resetForRematch,
   ALL_CLASSES,
   FFA,
+  NO_ENTITY,
   botSeatsNeeded,
   selectClass,
   selectSlot,
@@ -45,8 +54,12 @@ import {
   setReady,
   startMatch,
   teamSizeOf,
+  teamWiped,
+  TEAM_BLUE,
+  TEAM_RED,
   SIM,
   Slot,
+  type ClassId,
   type ClientMessage,
   type Room,
   type RoomPlayerView,
@@ -195,6 +208,34 @@ export class RoomServer {
     if (!sr) return;
     sr.sessions.delete(session);
 
+    /**
+     * ★★ W24：**观战席掉线与选手掉线是两件事。**
+     *
+     *   观战者在世界里没有实体 —— 也就没有「角色留在原地可被攻击」（11.5）、
+     *   没有死亡统计、没有可被人机接管的席位。照选手那条路走会连做三件
+     *   错事：给一个没有身体的席位登记人机（BotDriver 每 tick 为它查一次空）、
+     *   给全场广播一条「队友掉线中（还剩 42 秒）」（他不是任何人的队友）、
+     *   把他留在名单里堵住 `resetForRematch`。
+     *   所以观战席这条只做三件事：**登记宽限**（凭同一个令牌重连回来仍是
+     *   观战席，见 `onReconnect`）、标记断线、把新名单广播出去。
+     *   到期没回来由 `eliminate` 收尾 —— 那里对没有身体的人是「从名单里
+     *   删掉」而不是「判死」（他没有可规避的死亡统计）。
+     */
+    if (sr.room.started && !sr.match?.entityOf.has(session.playerId)) {
+      const now = sr.match?.world.time ?? 0;
+      const token = sr.tokenByPlayer.get(session.playerId);
+      registerDisconnect(sr.reconnects, session.playerId, now, {
+        graceSeconds: sr.room.config.mode === GameMode.Ffa
+          ? FFA.DISCONNECT_GRACE_SECONDS
+          : TAKEOVER_GRACE_SECONDS,
+        ...(token ? { tokenFactory: () => token } : {}),
+      });
+      markDisconnected(sr.room, session.playerId);
+      if (!this.dropIfEmpty(sr)) this.broadcastRoomState(sr);
+      if (this.humanSessionCount(sr) === 0) this.scheduleAbandon(sr);
+      return;
+    }
+
     if (sr.room.started) {
       const now = sr.match?.world.time ?? 0;
       // ★ 用开局时已经发给他的那个令牌登记，两边才是同一个字符串
@@ -313,6 +354,8 @@ export class RoomServer {
     switch (msg.t) {
       case 'JoinRoom': return this.onJoin(session, msg.roomId, msg.name);
       case 'ListRooms': return this.onListRooms(session);
+      // W24 中途加入。★ 「只有观战席能发」由 Session 的阶段白名单挡在门外
+      case 'JoinOngoing': return this.onJoinOngoing(session, msg.team, msg.classId);
       case 'Reconnect': return this.onReconnect(session, msg.token);
       case 'SelectTeam': return this.onRoomMutation(
         session, (sr) => selectSlot(sr.room, session.playerId, msg.team as Slot), 'SelectTeam');
@@ -437,6 +480,28 @@ export class RoomServer {
   private onSpectateFollow(session: Session, entityId: EntityId): void {
     const sr = this.roomOf(session);
     if (!sr?.match) { session.reject('SpectateFollow', '比赛未进行'); return; }
+
+    /**
+     * ★★ W24：**同一条消息，两条判据** —— 因为「谁能看谁」的理由不同：
+     *   · 死亡观战（11.4）：跟随者是场上的一名选手，只能跟**己方存活**队友，
+     *     否则等于给他一个能飞到敌方后排的镜头；
+     *   · 观战席：没有「己方」可言，约束换成**观战段本身**
+     *     （`isLegalSpectateFollow` —— 跟不到一个连观战段都进不去的人，
+     *     所以未被发现的潜行者对观战者既看不见也跟不了）。
+     * ★ 两条判据都住在 `net/visibility.ts`，服务器这里只做分派 ——
+     *   在这儿手写「同队且活着」正是那两个函数的注释点名要防的。
+     */
+    if (session.isSpectator) {
+      const target = sr.match.world.entities.get(entityId);
+      const ctx = sr.match.ctf ? { ctf: sr.match.ctf.state } : undefined;
+      if (!target || !isLegalSpectateFollow(target, ctx)) {
+        session.reject('SpectateFollow', '不能跟随该目标');
+        return;
+      }
+      session.following = entityId;
+      return;
+    }
+
     const viewer = entityOfPlayer(sr.match, session.playerId);
     if (!viewer) { session.reject('SpectateFollow', '不在这局里'); return; }
 
@@ -477,9 +542,33 @@ export class RoomServer {
       return;
     }
     const sr = existing ?? this.createRoomFor(roomId, session.playerId);
+
+    /**
+     * ★★ W24（用户拍板 2026-08-10）：**对局中的房间可以进 —— 先坐观战席。**
+     *
+     *   在此之前这里是一句 `reject('比赛已开始')`，于是「单机房永远只有开局
+     *   那批人」（W24 行的原话）：想看一眼进不去，想补位也进不去。
+     *
+     *   现在 `JoinRoom` 对 `started` 房间的语义是**入场观战**：名单上他就是
+     *   一个观战席成员（`joinRoom` 的默认席位正是观战席），会话进
+     *   `SessionPhase.Spectate`，下一份快照起收观战段。想上场再发一条
+     *   `JoinOngoing` —— 两步而不是一步，是因为「哪一队还坐得下、有几个人机
+     *   可以顶」要**先看见房间状态**才选得出来（RoomState 就是那份状态）。
+     *
+     * ⚠️ 想拿回**自己原来的角色**仍然只有 `Reconnect` + 令牌那一条路：
+     *   从这里进来的人是一个全新的 playerId，拿不到任何既有实体。
+     */
     if (sr.room.started) {
-      // ★ 开局后不能加入。想回来要用 Reconnect + 令牌
-      session.reject('JoinRoom', '比赛已开始');
+      if (!sr.match) {
+        // 理论上不可达（started 与 match 同生同灭）；诚实拒绝比进一个空局好
+        session.reject('JoinRoom', '这局比赛正在收尾，请稍后再试');
+        return;
+      }
+      joinRoom(sr.room, session.playerId, name);
+      sr.sessions.add(session);
+      session.roomId = roomId;
+      this.enterAsSpectator(sr, session);
+      this.broadcastRoomState(sr);
       return;
     }
 
@@ -488,6 +577,254 @@ export class RoomServer {
     session.roomId = roomId;
     session.phase = SessionPhase.Room;
     this.broadcastRoomState(sr);
+  }
+
+  /**
+   * W24：让一条会话以**观战席**身份入场（两条入口共用）：
+   *   a) 房间阶段就选了观战席的人 —— 开局时随队发（`beginMatch`）；
+   *   b) 对局中从大厅加入 `started` 房间的人 —— 立即入场（`onJoin`）。
+   *
+   * ★ 观战席**照样发 `MatchStart`**：它是客户端「从大厅页切到 3D 场景」的
+   *   唯一信号（M13 那条「观战席开局停在房间页」的边界就此关闭）。带
+   *   `spectating: true`，客户端据此不预测、不发输入 —— `you` 是**看谁**，
+   *   不是「我是谁」。
+   * ★ 令牌照发：形状不随席位变形，重连回来仍是观战席（`onReconnect` 按
+   *   「这个 playerId 在这局里有没有实体」决定给哪一种）。
+   */
+  private enterAsSpectator(sr: ServerRoom, session: Session): void {
+    const match = sr.match;
+    if (!match) return;
+    session.phase = SessionPhase.Spectate;
+    const token = this.issueToken(sr, session.playerId);
+    const ctx = match.ctf ? { ctf: match.ctf.state } : undefined;
+    session.send({
+      t: 'MatchStart',
+      mapId: match.map.id,
+      // ★ 默认跟随取列表第一个（按 id 序，确定性）；一个可跟的都没有时是哨兵 0
+      you: spectatableForSpectator(match.world, ctx)[0]?.id ?? NO_ENTITY,
+      startsAt: match.world.time,
+      reconnectToken: token,
+      spectating: true,
+    });
+  }
+
+  /**
+   * 拿到（或现发）这个玩家在本局的重连令牌。
+   * ★ 幂等：一个 playerId 在一局里只有一个令牌 —— 中途加入者顶替人机席位时
+   *   直接沿用那个席位开局时发出去的那一个（它当时发给了一个 BotSocket，
+   *   也就是发进了垃圾桶），不另发一个让 `tokens` 里出现两条指向同一个人的记录。
+   */
+  private issueToken(sr: ServerRoom, playerId: string): string {
+    const existing = sr.tokenByPlayer.get(playerId);
+    if (existing) return existing;
+    const token = randomUUID();
+    sr.tokens.set(token, playerId);
+    sr.tokenByPlayer.set(playerId, token);
+    return token;
+  }
+
+  /**
+   * W24 中途加入：从观战席坐上一个战斗席。
+   *
+   * ★★ **两条路，顺序有语义**（拍板口径「根据房间当前队伍情况」）：
+   *   1. 那一队**还坐得下** → 新建实体入场（`admitToMatch`）。选的职业
+   *      **当场生效** —— 他是个全新的角色，没有任何可占的便宜。
+   *      大乱斗永远走这条（P12：全员独立阵营，加人就是加实体）。
+   *   2. 队伍满了、但席位上坐着**补位人机** → 顶替它（断线接管的反向操作）。
+   *      当场**沿用被顶替人机的职业**，选的那个等下一次复活/回合重置
+   *      （`MatchLoop.requestRespec`，理由见 docs/08 §8.7）。
+   *   3. 两条都不成 → **诚实拒绝，并说清另一队还有没有位置**
+   *      （「红队满了，那就只能加入蓝队」这句话得由服务器说得出来）。
+   *
+   * ⚠️ **只顶替 `fill` 人机，绝不顶替 `disconnect` 接管的席位** ——
+   *   后者是某个真人的角色，他手里攥着重连令牌随时会回来。顶替它等于
+   *   把别人的角色送给路人，而且是**无声**的（他重连时会发现自己没了）。
+   *   判据读 `BotDriver` 的席位原因，不看名字（名字是玩家可控字符串）。
+   */
+  private onJoinOngoing(session: Session, team: 'red' | 'blue', classId: ClassId): void {
+    const sr = this.roomOf(session);
+    if (!sr?.match || !sr.loop || !sr.room.started) {
+      session.reject('JoinOngoing', '比赛未进行');
+      return;
+    }
+    // ★ 纵深：阶段白名单已经挡过一次（SPECTATE_ONLY），这里是第二道
+    if (session.phase !== SessionPhase.Spectate) {
+      session.reject('JoinOngoing', '你不在观战席上');
+      return;
+    }
+
+    const slot = team === 'red' ? Slot.Red : Slot.Blue;
+    /**
+     * ★ 大乱斗把两个取值都读作「参战」（P12：没有两队，`freeSeatsOn` 的
+     *   FFA 分支红蓝合并计数）—— 客户端发哪个都行，语义只有一个。
+     */
+    if (freeSeatsOn(sr.room, slot) > 0) {
+      const r = seatSpectator(sr.room, session.playerId, slot, classId);
+      if (!r.ok) { session.reject('JoinOngoing', r.reason ?? '被拒绝'); return; }
+      const admitted = admitToMatch(sr.match, {
+        playerId: session.playerId,
+        name: sr.room.players.find((p) => p.id === session.playerId)?.name ?? '玩家',
+        classId,
+        slot,
+      });
+      if (!admitted.ok) {
+        // ★ sim 拒了（已全灭/满员/职业非法）：把名单**改回观战席**，
+        //   否则名单上多一个没有身体的「战斗席」——canStart 与结算面板都会被它绊倒
+        unseatToSpectator(sr.room, session.playerId);
+        session.reject('JoinOngoing', admitted.reason);
+        this.broadcastRoomState(sr);
+        return;
+      }
+      this.finishSeating(sr, session, session.playerId);
+      return;
+    }
+
+    /**
+     * ★★ W24 收口：**全灭守卫两条路都要有。** 上面那条（`admitToMatch`）
+     *   自带 `teamWiped` 拒绝，顶替这条此前一条都没有 —— 而「队伍被人机补满」
+     *   恰恰是这条 reason 最该出现的场景（有空位的队伍反而更少被清台）。
+     *   两条路给**同一句话**，玩家看到的口径才一致。
+     * ★ 大乱斗没有红蓝两队，`rosterCount(TEAM_RED) === 0` ⇒ `teamWiped` 恒假，
+     *   这道判据对它自然空转（P12 全员独立阵营）。
+     */
+    const teamId = slot === Slot.Red ? TEAM_RED : TEAM_BLUE;
+    if (teamWiped(sr.match.world, teamId)) {
+      session.reject('JoinOngoing', '该队本回合已全灭，不能中途加入');
+      return;
+    }
+
+    const seat = this.takeableBotSeat(sr, slot);
+    if (!seat) {
+      const other = slot === Slot.Red ? Slot.Blue : Slot.Red;
+      const otherFree = freeSeatsOn(sr.room, other) + this.takeableBotSeats(sr, other).length;
+      session.reject(
+        'JoinOngoing',
+        `${slot === Slot.Red ? '红方' : '蓝方'}没有可加入的席位` +
+          (otherFree > 0
+            ? `——${other === Slot.Red ? '红方' : '蓝方'}还有 ${otherFree} 个，换一边试试`
+            : '（双方都满，且没有人机席位可顶替）'),
+      );
+      return;
+    }
+
+    /**
+     * ★★ 顶替 = **接过那个席位的 playerId**（与 `onReconnect` 换回原 id
+     *   逐字同构）。这样实体、统计行、令牌、房间名单条目**一个都不用搬** ——
+     *   `entityOf` / `playerOf` / `stats` 全是按 playerId/实体 id 记的，
+     *   而两者都没变。搬家式的实现（新建映射、迁统计）会有五张表要对齐，
+     *   漏一张就是一个静默的半身不遂。
+     */
+    const takenName = sr.room.players.find((p) => p.id === session.playerId)?.name ?? '玩家';
+    /**
+     * ★ 顺序：**先做可能失败的那一步**（`takeOverSeat` 的三道守卫），
+     *   通过了再动会话与人机 —— 反过来写的话，失败路径会留下一个
+     *   「观战席已删、人机已下台、真人还没坐上」的空席位。
+     *   与 `beginMatch` 的「先查地图再改状态」是同一条规矩。
+     */
+    const r = takeOverSeat(sr.room, seat, takenName);
+    if (!r.ok) { session.reject('JoinOngoing', r.reason ?? '被拒绝'); return; }
+    // 观战席那条名单记录删掉 —— 他从此**就是**那个席位
+    leaveSpectator(sr.room, session.playerId);
+    this.handBackFromBot(sr, seat);
+
+    /**
+     * ★ 观战期间发给他的那个令牌作废：换了身份之后它指向一个不再有会话的
+     *   幽灵 playerId。留着不会出错（`redeemReconnect` 找不到登记会拒），
+     *   但 `tokens` 会每来一个中途加入者就多一条死映射 —— 这类残留不报错，
+     *   只会慢慢变脏（与 `detachBossSeat` 清映射同一条理由）。
+     */
+    const staleToken = sr.tokenByPlayer.get(session.playerId);
+    if (staleToken !== undefined) {
+      sr.tokens.delete(staleToken);
+      sr.tokenByPlayer.delete(session.playerId);
+    }
+
+    session.playerId = seat;
+    /**
+     * ★ 身份换了必须**告诉客户端**（W6 那个真 bug 的同一课）：大厅按
+     *   playerId 找「自己」，不改的话他回到房间页就点不动任何按钮。
+     */
+    session.send({
+      t: 'Welcome', playerId: seat,
+      tickRate: SIM.TICK_RATE, interpDelay: SIM.INTERP_DELAY,
+    });
+    // 世界里那具身体也换个名字 —— 姓名板/结算面板不该继续写「人机3」
+    const e = entityOfPlayer(sr.match, seat);
+    if (e) {
+      e.name = takenName;
+      const row = sr.match.stats.players.get(e.id);
+      if (row) row.name = takenName;
+    }
+    /**
+     * ★ 选的职业**不当场换**：当场换等于满血 + 满资源 + 冷却清空 + 光环全清，
+     *   而这条路径是可以反复触发的（下一个观战者再顶一次）。登记，等他
+     *   下一次复活/回合重置（`MatchLoop.applyPendingRespecs`）。
+     * ⚠️ 竞技场默认单回合制 → 那一刻在本局**不会到来**，他整局用被顶替者的
+     *   职业。文案要如实说（docs/15 W24 行）。
+     */
+    sr.loop.requestRespec(seat, classId);
+    this.finishSeating(sr, session, seat);
+  }
+
+  /** 中途加入成功后的收尾：进战斗阶段、发 MatchStart、广播新名单 */
+  private finishSeating(sr: ServerRoom, session: Session, playerId: string): void {
+    const match = sr.match;
+    if (!match) return;
+    const entityId = match.entityOf.get(playerId);
+    if (entityId === undefined) return;
+    session.phase = SessionPhase.Match;
+    session.following = undefined;
+    /**
+     * ★★ 席位变了 → 上一份 P11 记账整个作废（理由见 `MatchLoop.resetSnapshotAccount`）。
+     *   同一个 Session 对象从观战席坐到战斗席，不清的话观战期定下的
+     *   **敌人视图**会被冻结在客户端：新队友的备用武器/消耗品整局不下发。
+     *   必须在 `MatchStart` **之前**：客户端在 MatchStart 分支清缓存，
+     *   服务器这边也要从零重发，两边的「首见」才对得上。
+     */
+    sr.loop?.resetSnapshotAccount(session);
+    session.send({
+      t: 'MatchStart',
+      mapId: match.map.id,
+      you: entityId,
+      startsAt: match.world.time,
+      reconnectToken: this.issueToken(sr, playerId),
+    });
+    // P13：大乱斗中途加入的人也要一份货架（余额 0），理由见 sendShopTo
+    sr.loop?.sendShopTo(playerId);
+    this.broadcastRoomState(sr);
+  }
+
+  /**
+   * 这一队当前**可被顶替**的人机席位（`playerId` 列表）。
+   *
+   * ★ 三道筛，每道都有理由：
+   *   · 有一条人机会话 —— 席位现在真的由 AI 在开；
+   *   · 席位原因是 `fill`（补位）—— `disconnect` 是别人的角色，见 `onJoinOngoing` 的 ⚠️；
+   *   · 在 `room.players` 名单里且在这一队 —— 顺带把**大 BOSS** 筛掉
+   *     （它有人机会话、原因也是 fill，但它从来不在房间名单里）。
+   *     按 `boss#` 前缀筛是同样的效果、更差的判据：那是一个字符串约定。
+   *   · **那具身体还活着**（W24 收口补的第四道）—— 顶替一具尸体换来的是
+   *     一个躺到比赛结束的角色：竞技场默认单回合制（`roundsToWin: 1`，
+   *     服务器不调 `resetRound`），「死 → 活」的跳变本局不会到来，所以他
+   *     既不会复活、也永远等不到自己选的职业。`admitToMatch` 那条路上有
+   *     `teamWiped` 挡着，顶替这条路此前**一条存活性判据都没有**。
+   *     ★ 顺带让 `RoomList.joinableSeats` 变诚实：尸体席位不再被算成「坐得下」。
+   */
+  private takeableBotSeats(sr: ServerRoom, slot: Slot): string[] {
+    const out: string[] = [];
+    for (const playerId of sr.botSessions.keys()) {
+      if (sr.bots?.seatOf(playerId)?.reason !== 'fill') continue;
+      const p = sr.room.players.find((x) => x.id === playerId);
+      if (!p || p.slot !== slot) continue;
+      // 比赛还没开的房间没有身体可查 —— 那时席位当然可顶替（判据只对局中有意义）
+      if (sr.match && entityOfPlayer(sr.match, playerId)?.alive !== true) continue;
+      out.push(playerId);
+    }
+    return out;
+  }
+
+  private takeableBotSeat(sr: ServerRoom, slot: Slot): string | undefined {
+    return this.takeableBotSeats(sr, slot)[0];
   }
 
   private createRoomFor(roomId: string, hostId: string): ServerRoom {
@@ -553,6 +890,19 @@ export class RoomServer {
           : teamSizeOf(sr.room.config.mode) * 2,
         started: sr.room.started,
         fillWithBots: sr.room.config.fillWithBots === true,
+        /**
+         * W24：**现在坐得下几个人**。空位（`freeSeatsOn`，规则在 sim）
+         * 加上可顶替的人机席位（只有服务器知道谁是人机）。
+         * ★ 未开局的房间自然只有前一项 —— 那时一个人机都还没建
+         *   （补位发生在 `beginMatch`）。
+         * ★ 大乱斗红蓝合并计数，所以只取一次 Red 就够（见 `freeSeatsOn`）。
+         */
+        joinableSeats: sr.room.config.mode === GameMode.Ffa
+          ? freeSeatsOn(sr.room, Slot.Red)
+          : ([Slot.Red, Slot.Blue] as const).reduce(
+            (n, slot) => n + freeSeatsOn(sr.room, slot) + this.takeableBotSeats(sr, slot).length,
+            0,
+          ),
       }))
       .sort((a, b) => b.players - a.players)
       .slice(0, 50);
@@ -613,6 +963,16 @@ export class RoomServer {
       onPostTick: (events) => sr.bots?.observe(events),
       onBossSpawned: (entityId) => this.attachBossSeat(sr, entityId),
       onBossDespawned: (entityId) => this.detachBossSeat(sr, entityId),
+      /**
+       * W24：中途加入者选的职业**真的换过来了**（下一次复活/回合重置那一刻）。
+       * 循环只报告事实 —— 改名单与广播是这里的活（它才持有 Room）。
+       */
+      onClassChanged: (playerId, classId) => {
+        const p = sr.room.players.find((x) => x.id === playerId);
+        if (!p) return;
+        p.classId = classId;
+        this.broadcastRoomState(sr);
+      },
     });
 
     // 补位的人机现在有身体了，接管它们（与掉线接管走同一条路径）
@@ -620,14 +980,22 @@ export class RoomServer {
 
     for (const s of sr.sessions) {
       const entityId = match.entityOf.get(s.playerId);
-      if (entityId === undefined) continue; // 观战者
+      /**
+       * ★★ W24：观战席**随队入场**，不再被 `continue` 掉。
+       *   在此之前这一行是 `continue; // 观战者` —— 于是 3.1 的观战席
+       *   在联网局里等于「按了准备也什么都不会发生」：选手切进 3D 场景，
+       *   观战者留在房间页看着一个再也不会变的名单（M13 登记的那条边界）。
+       *   现在他收到一份带 `spectating` 的 MatchStart，下一份快照起收观战段。
+       */
+      if (entityId === undefined) {
+        this.enterAsSpectator(sr, s);
+        continue;
+      }
       s.phase = SessionPhase.Match;
 
       // ★ 令牌现在就发（见 ServerRoom.tokens 的注释）。此刻**还没有**断线，
       //   所以不登记到 reconnects —— 登记是断线那一刻的事。
-      const token = randomUUID();
-      sr.tokens.set(token, s.playerId);
-      sr.tokenByPlayer.set(s.playerId, token);
+      const token = this.issueToken(sr, s.playerId);
 
       s.send({
         t: 'MatchStart',
@@ -666,7 +1034,18 @@ export class RoomServer {
    *     走全新的 JoinRoom
    */
   private resetAfterMatch(sr: ServerRoom): void {
-    resetForRematch(sr.room);
+    /**
+     * ★★ 人机**赛后一并遣散**（W24 收口）：名单里留着它们的话，一个开着
+     *   补位的房间打完一局就再也开不出第二局（它们永远不会 ready），而
+     *   观战者赛后想选阵营会发现两队都「已满」。判据用 `botSessions` 的键
+     *   （服务器侧唯一权威，与 `RoomPlayerView.bot` 同源），不按名字前缀猜。
+     * ★ 先算再 reset：`resetForRematch` 把它们从名单里剔掉之后，下面那个
+     *   会话循环会把假会话一并从 `sessions` 里扫掉（走「不在名单里」那一支）；
+     *   `sr.bots` 的席位登记在这里显式收掉，两张表不留残页。
+     */
+    const botIds = new Set(sr.botSessions.keys());
+    resetForRematch(sr.room, botIds);
+    for (const playerId of botIds) sr.bots?.remove(playerId);
     sr.match = undefined;
     sr.loop = undefined;
     sr.tokens.clear();
@@ -696,6 +1075,18 @@ export class RoomServer {
   }
 
   private eliminate(sr: ServerRoom, playerId: string, reason: 'timeout' | 'left'): void {
+    /**
+     * ★ W24：**没有身体的人没什么可淘汰的。** 观战席的宽限到期（或主动退出）
+     *   就是「他不看了」—— 从名单里删掉即可。走下面那条会做三件没意义的事：
+     *   给一个不存在的实体排弃权判死、把已经不在的人再标一次断线、
+     *   给全场广播一条 `PeerEliminated`（HUD 会把它读成「有选手被淘汰了」）。
+     */
+    if (!sr.match?.entityOf.has(playerId)) {
+      if (leaveSpectator(sr.room, playerId) && !this.dropIfEmpty(sr)) {
+        this.broadcastRoomState(sr);
+      }
+      return;
+    }
     /**
      * ★ 淘汰 = 判定死亡。11.5：「主动退出立即按淘汰处理，**不能通过退出
      *   规避死亡统计**」—— 所以是把他打死，而不是把他从世界里删掉。
@@ -891,6 +1282,17 @@ export class RoomServer {
     this.handBackFromBot(sr, r.playerId);
 
     const entityId = sr.match.entityOf.get(r.playerId);
+    /**
+     * ★ W24：**没有实体 = 观战席回来了**（他的令牌是入场时发的，见
+     *   `enterAsSpectator`）。给他一份带 `spectating` 的 MatchStart 并回到
+     *   观战阶段 —— 上面那句无条件 `phase = Match` 对他是错的：
+     *   Match 阶段会放行 `CastRequest` 这类需要身体的消息。
+     */
+    if (entityId === undefined) {
+      this.enterAsSpectator(sr, session);
+      this.broadcastRoomState(sr);
+      return;
+    }
     if (entityId !== undefined) {
       session.send({
         t: 'MatchStart',
@@ -917,6 +1319,20 @@ export class RoomServer {
   private onLeave(session: Session): void {
     const sr = this.roomOf(session);
     if (!sr) return;
+    /**
+     * ★ W24：观战席主动退出 —— 与掉线同一条路（见 `disconnect` 的 ★★）。
+     *   11.5「主动退出立即按淘汰处理」管的是**有角色的人**：观战者没有角色，
+     *   也就没有可规避的死亡统计。他回到大厅，会话回 Lobby 阶段。
+     */
+    if (sr.room.started && !sr.match?.entityOf.has(session.playerId)) {
+      leaveSpectator(sr.room, session.playerId);
+      sr.sessions.delete(session);
+      session.roomId = undefined;
+      session.phase = SessionPhase.Lobby;
+      session.following = undefined;
+      if (!this.dropIfEmpty(sr)) this.broadcastRoomState(sr);
+      return;
+    }
     if (sr.room.started) {
       leaveImmediately(sr.reconnects, session.playerId);
       this.eliminate(sr, session.playerId, 'left');
@@ -971,6 +1387,12 @@ export class RoomServer {
       ...(p.classId !== undefined ? { classId: p.classId } : {}),
       ready: p.ready,
       connected: p.connected,
+      /**
+       * W24：这个席位现在由人机在开。★ 判据是**有没有一条人机会话**，
+       *   不是名字前缀 —— 一个自称「人机7」的真人骗不过它。省略 = 真人
+       *   （P11 的「可选即事实」同规矩，房间阶段的名单里通常一个都没有）。
+       */
+      ...(sr.botSessions.has(p.id) ? { bot: true } : {}),
     }));
     this.broadcast(sr, {
       t: 'RoomState',

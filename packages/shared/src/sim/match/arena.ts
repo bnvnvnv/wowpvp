@@ -21,11 +21,13 @@
 
 import { ARENA } from '../../constants/combat.js';
 import { GameMode } from '../../types/enums.js';
-import { TEAM_BLUE, TEAM_RED, type TeamId } from '../../types/ids.js';
+import { TEAM_BLUE, TEAM_RED, type EntityId, type TeamId } from '../../types/ids.js';
 import { clearAuras, type AuraStore } from '../aura.js';
 import { clearDr, type DrStore } from '../dr.js';
 import { clearGround, type GroundStore } from '../groundArea.js';
+import type { MovementState } from '../movement.js';
 import type { ProjectileStore } from '../projectile.js';
+import { stopWander } from '../wander.js';
 import { listEntities, type World } from '../world.js';
 import { dampeningAt, type DampeningSnapshot } from './dampening.js';
 
@@ -127,6 +129,16 @@ export interface ArenaDeps {
    *   而漏掉它的代价写在 `resetRound` 的注释里。
    */
   projectiles: ProjectileStore;
+  /**
+   * 第**五个**旁挂仓（X29 余账，随 W24 清）：每实体的移动状态。
+   * `resetRound` 只从里面拔一样东西 —— 化形游走的**锚点**（`wander`）。
+   *
+   * ★★ **必填而不是可选**，与 `projectiles` 同一条理由：漏传的代价是
+   *   「第二回合带着上一回合的旧锚开局」，而那正是 `teleportTo` 注释里
+   *   点名要防的「小鸡穿过半张地图往中招点走回去」。必填让漏传在**编译期**
+   *   变红，可选会让它在多回合赛的第二回合才现形。
+   */
+  movement: Map<EntityId, MovementState>;
 }
 
 /**
@@ -264,6 +276,17 @@ export const resetRound = (state: ArenaState, deps: ArenaDeps): void => {
    *   这里取对表现层无歧义的那一种。
    */
   deps.projectiles.items.length = 0;
+  /**
+   * ★★ **化形游走的锚点也必须随回合作废**（X29 余账，随 W24 清）。
+   *   `MovementState.wander` 记着「在哪里中的招」，而下一回合所有人会被
+   *   摆回准备室 —— 不拔锚的话，第二回合一开局，上一回合被变形的那个人
+   *   就会朝着半张地图外的旧中招点走回去（`teleportTo` 的注释点名要防的
+   *   正是这一幕），而且**不会有任何断言变红**：他确实在走，只是走错了地方。
+   * ★ 走 `stopWander` 而不是 `delete state.wander`：拔锚 + 抹掉水平动量是
+   *   同一件事的两半，那个函数是它唯一的实现（见 wander.ts）。
+   * ★ 没在游走的实体：`stopWander` 原样返回同一个对象，零分配、零行为变化。
+   */
+  for (const [id, st] of deps.movement) deps.movement.set(id, stopWander(st));
 
   state.phase = RoundPhase.Prep;
   state.phaseElapsed = 0;

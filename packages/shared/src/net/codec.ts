@@ -184,6 +184,25 @@ export const parseClientMessage = (raw: string): ParseResult => {
       return { ok: true, msg: { t, ready } };
     }
 
+    /**
+     * W24 中途加入。
+     *
+     * ★ `team` 只有两个取值 —— **没有 'spectator'**（进观战席走 `JoinRoom`，
+     *   见协议里那条消息的注释）。与 `SelectTeam` 的三值白名单刻意不同构，
+     *   所以不复用它的校验：复用会让 `'spectator'` 在 codec 这一层被放行，
+     *   然后在业务层多一条「其实不支持」的分支。
+     * ★ `classId` 只验「非空字符串」，「这个职业存不存在 / 玩家能不能选」
+     *   留给 sim 的 `isPlayableClass` —— 与 `SelectClass` 同一条分工
+     *   （codec 不 import 数据注册表）。
+     */
+    case 'JoinOngoing': {
+      const team = v['team'];
+      if (team !== 'red' && team !== 'blue') return bad('team 无效（red / blue）');
+      const classId = v['classId'];
+      if (typeof classId !== 'string' || classId.length === 0) return bad('classId 无效');
+      return { ok: true, msg: { t, team, classId: asClassId(classId) } };
+    }
+
     case 'SetFillWithBots': {
       const enabled = v['enabled'];
       if (typeof enabled !== 'boolean') return bad('enabled 必须是布尔值');

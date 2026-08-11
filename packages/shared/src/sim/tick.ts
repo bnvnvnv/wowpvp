@@ -84,7 +84,7 @@ import {
 import { driveWander, isWanderIncapacitated, stopWander } from './wander.js';
 import { pruneInvalidTargets } from './targeting.js';
 import { tickSwings, type SwingResult, type SwingStore } from './autoAttack.js';
-import { tickProjectiles, type ProjectileStore } from './projectile.js';
+import { tickProjectiles, type HitSnapshot, type ProjectileStore } from './projectile.js';
 import {
   ingestCombatEvents, ingestFlagEvents, ingestPickupEvents, ingestSwapEvents,
   recordItemBuff, sampleTick, type StatsStore,
@@ -357,7 +357,7 @@ export const tickWorld = (
     effects: Parameters<typeof resolveEffects>[1],
     targetIds: readonly EntityId[],
     groundPoint?: Vec3,
-    opts?: { periodic?: boolean },
+    opts?: { periodic?: boolean; hitSnapshot?: HitSnapshot },
   ): void => {
     const source = getEntity(deps.world, sourceId);
     if (!source) return;
@@ -375,6 +375,7 @@ export const tickWorld = (
         source, skillId,
         ...(groundPoint ? { groundPoint } : {}),
         ...(opts?.periodic ? { periodic: true } : {}),
+        ...(opts?.hitSnapshot ? { hitSnapshot: opts.hitSnapshot } : {}),
       },
       effects, targets,
     );
@@ -554,7 +555,21 @@ export const tickWorld = (
   const separationOthers: Vec3[] = [];
   for (const [id, state] of deps.movement) {
     const e = getEntity(deps.world, id);
-    if (!e || !e.alive) continue;
+    if (!e || !e.alive) {
+      /**
+       * ★ X29 余账（随 W24 清）：**死亡拔锚。** 在此之前这里是光秃秃的
+       *   `continue`，于是游走中被打死的实体把 `MovementState.wander` 原样
+       *   留在仓里（实测死后再跑 20 tick 锚与段号一字未变）。生产路径上
+       *   `teleportTo`（复活）会置空它，所以今天无害 —— 但「无害」靠的是
+       *   另一个函数记得擦，而不是这里不脏。多回合/中途加入把这条路径变宽
+       *   之后，脏状态迟早会从某个没走 teleportTo 的复活口子里冒出来。
+       * ★ 顺序：**先拔锚再 continue**。反过来写就是原样。
+       * ★ 迭代中对**已存在的键**赋值是安全的（不会重访），行为逐位不变：
+       *   本步骤对死者本来就什么都不做。
+       */
+      if (state.wander !== undefined) deps.movement.set(id, stopWander(state));
+      continue;
+    }
     /**
      * ★★ **8.2 化形游走**（用户口径 2026-08-11：「被变形宠物了也应该是在
      *   一个小范围内走来走去的」）。规则、参数与判据全在 `sim/wander.ts`。
@@ -670,6 +685,17 @@ export const tickWorld = (
       String(hit.projectile.skillId),
       hit.effects,
       hit.targets.map((t) => t.id),
+      undefined,
+      /**
+       * ★★ W25 收口：**锁定**投射物把释放瞬间的朝向/可行动事实一路带到这里，
+       *   `dealDamage` 的规避与背刺加成读它而不是读实时朝向 —— 否则「箭在飞
+       *   的 0.47 秒里转个身」就能改变一发已经锁定的箭的结果（违反 6.6）。
+       *   碰撞投射物与延迟落点**不带**：前者本来就是实时轨迹实时命中，
+       *   后者是落地那一刻重新圈人，两者的空间事实就该现读。
+       */
+      hit.projectile.kind === 'homing'
+        ? { hitSnapshot: hit.projectile.hitSnapshot }
+        : undefined,
     );
   }
 
@@ -829,8 +855,9 @@ export const tickWorld = (
       deps.arena,
       {
         world: deps.world, auras: deps.auras, dr: deps.dr, ground: deps.ground,
-        // 回合重置要清弹体仓 —— 见 arena.ts 的 resetRound
+        // 回合重置要清弹体仓与化形游走的锚 —— 见 arena.ts 的 resetRound
         projectiles: deps.projectiles,
+        movement: deps.movement,
       },
       dt,
       sinks.arena ?? {},

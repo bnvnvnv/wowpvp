@@ -60,7 +60,13 @@ const makeMatch = (opts = {}) => {
       }),
     );
 
-  return { map, world, auras, dr, ground, projectiles, arena, add };
+  /**
+   * ★ X29（随 W24）：`resetRound` 现在还要拔化形游走的锚，`movement` 是它的
+   *   第五个旁挂仓。本夹具不驱动移动（位置直接写实体），空 Map 即可 ——
+   *   必填字段，漏传会当场炸而不是悄悄不清。
+   */
+  const movement = new Map();
+  return { map, world, auras, dr, ground, projectiles, movement, arena, add };
 };
 
 const advance = (m, seconds, step = 0.05, events = {}) => {

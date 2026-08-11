@@ -43,11 +43,17 @@ import {
   distance2D,
   equipmentViewFor,
   isLegalFollow,
+  isLegalSpectateFollow,
+  spectatableForSpectator,
+  respecCombatant,
   staticsOf,
   getClass,
   getEntity,
   isVisibleTo,
+  isVisibleToAudience,
   listEntities,
+  NO_ENTITY,
+  SPECTATOR,
   openArmory,
   pickAwards,
   setHardTarget,
@@ -62,6 +68,7 @@ import {
   withinSelectRange,
   type ArsenalChoice,
   type CastIntent,
+  type ClassId,
   type CombatEntity,
   type CombatEvent,
   type EffectDef,
@@ -69,6 +76,7 @@ import {
   type InteractTarget,
   type Match,
   type Snapshot,
+  type SnapshotAudience,
   type MovementInput,
   type ServerMessage,
   type TeamId,
@@ -161,6 +169,15 @@ export interface MatchLoopDeps {
    */
   onBossSpawned?: (entityId: EntityId) => void;
   onBossDespawned?: (entityId: EntityId) => void;
+  /**
+   * W24：某个席位的职业**真的换过来了**（中途加入者顶替人机时选的那个，
+   * 在他下一次复活/回合重置那一刻生效 —— 见 `applyPendingRespecs`）。
+   *
+   * ★ 与 `onEliminate` / `onBossSpawned` 同一个手法：循环只报告事实，
+   *   后果（改房间名单里的 classId、广播一条 RoomState）留在持有房间的
+   *   调用点上 —— MatchLoop 手里没有 Room，也就编不出「顺手改一下名单」。
+   */
+  onClassChanged?: (playerId: string, classId: ClassId) => void;
 }
 
 export class MatchLoop {
@@ -245,8 +262,20 @@ export class MatchLoop {
    */
   private readonly snapAccounts = new WeakMap<
     Session,
-    { seen: Set<EntityId>; equipFp: Map<EntityId, string>; hpFp: Map<EntityId, number> }
+    { seen: Set<EntityId>; equipFp: Map<EntityId, string>; staticsFp: Map<EntityId, string> }
   >();
+
+  /**
+   * W24：等着换职业的席位（中途加入顶替人机时选的那个）。
+   *
+   * ★★ **不是「收到就换」** —— 活着换职业等于满血 + 满资源 + 冷却清空 +
+   *   光环全清，那是一个可以反复触发的免费复活（docs/08 §8.7 的拍板理由）。
+   *   所以这里只登记意图，由 `applyPendingRespecs` 在**「死 → 活」的跳变**
+   *   那一刻兑现：夺旗/大乱斗是复活波次，竞技场是回合重置，两条都是干净的换类点。
+   * ★ `armed` = 「已经观察到他死了」。登记时若人已经躺着就直接 armed ——
+   *   否则要等他再死一次，而他可能正好是那种一整局不死的人。
+   */
+  private readonly pendingRespec = new Map<EntityId, { classId: ClassId; armed: boolean }>();
 
   /**
    * P11 波2：自上一份快照以来瞬移过的实体（见 SnapshotDeps.teleportedSince）。
@@ -467,6 +496,13 @@ export class MatchLoop {
     // ★ AI 层的观察窗口（BotDriver 仇恨表）：事件流原样递出，只读折叠
     this.deps.onPostTick?.(result.events);
 
+    /**
+     * ★ W24：在 tickWorld **之后**兑现待换的职业 —— 复活（波次）与回合重置
+     *   都发生在 tickWorld 里面，所以这一拍看到的 `alive` 已经是本 tick 的结论，
+     *   换类与复活落在同一 tick，玩家不会先以旧职业站起来一帧。
+     */
+    this.applyPendingRespecs(result.events);
+
     for (const ev of result.flags) {
       const flag = this.match.ctf?.state.flags[ev.flagTeam as number];
       if (!flag) continue;
@@ -634,6 +670,81 @@ export class MatchLoop {
     const entityId = this.match.entityOf.get(playerId);
     if (entityId === undefined) return;
     this.pendingTrinkets.add(entityId);
+  }
+
+  /**
+   * W24：中途加入者顶替人机席位时选的职业 —— **登记，不是立刻换**。
+   * 兑现时机与理由见 `pendingRespec` 的 ★★。由 `RoomServer.onJoinOngoing` 调。
+   *
+   * ★ 幂等：同一个席位再选一次覆盖上一次（还没兑现的那个），`armed` 沿用 ——
+   *   否则「趁死着改主意」会把已经攒好的那次兑现推迟到下一次死亡。
+   */
+  requestRespec(playerId: string, classId: ClassId): void {
+    const entityId = this.match.entityOf.get(playerId);
+    if (entityId === undefined) return;
+    const e = this.match.world.entities.get(entityId);
+    const armed = this.pendingRespec.get(entityId)?.armed ?? (e !== undefined && !e.alive);
+    this.pendingRespec.set(entityId, { classId, armed });
+  }
+
+  /**
+   * W24 收口：把这条会话的 P11 快照记账**整个作废**，下一份快照全量重发
+   * EntityMeta（静态块 + 装备视图）。由 `RoomServer.finishSeating` 在
+   * **席位变更**那一刻调。
+   *
+   * ★★ 存在的理由是一个真的错型泄露：`snapAccounts` 以 **Session 对象**为键，
+   *   而中途加入是**同一个 Session** 从观战席坐到战斗席（只改 `phase`/
+   *   `playerId`）。不作废的话 `seen` / `equipFp` / `staticsFp` 原样命中，
+   *   EntityMeta 一条都不重发 —— 观战期按 `SPECTATOR` 定下的**敌人视图**
+   *   被永久冻结：他的新队友整局拿不到 ally 视图（换装/消耗品面板空着），
+   *   而如果这条记账是别的口径定下的，反向就是整局透视对面的备用装备。
+   * ★ 重连不需要这一步：那走的是**新** Session 对象，天然拿到空记账
+   *   （见 `snapAccounts` 的注释）。
+   */
+  resetSnapshotAccount(session: Session): void {
+    this.snapAccounts.delete(session);
+  }
+
+  /**
+   * 把攒着的换职业请求在**「死 → 活」的那一刻**兑现。每 tick 跑一次。
+   *
+   * ★★ 判据是**状态跳变**而不是「监听复活事件」：复活有两个出口
+   *   （夺旗/大乱斗的 `tickRespawn`、竞技场的 `resetRound`），监听事件就得
+   *   监听两处，而漏一处的表现是「换了职业的人永远换不过来」——
+   *   静默、且只在某一个模式里发生。跳变对两条出口一视同仁。
+   * ⚠️ **竞技场默认单回合制**（`roundsToWin: 1`，服务器不调 `resetRound`），
+   *   于是「下一次复活」在一局竞技场里**不会到来** —— 顶替人机的玩家整局
+   *   用被顶替者的职业。这是如实的后果，不是漏做：客户端的文案要照实说
+   *   （见 docs/15 W24 行与 api 清单）。
+   */
+  private applyPendingRespecs(events: readonly CombatEvent[]): void {
+    if (this.pendingRespec.size === 0) return;
+    /**
+     * ★ 本 tick 的死讯也算「见过他死」—— 光看 `alive` 会漏掉**同一 tick 内
+     *   死亡又复活**的情况（死亡漏斗与复活波次都在 tickWorld 里面，波次恰好
+     *   在死亡入队之后到点时就是这一幕）。漏了不会报错，只会让他的换职业
+     *   一直等到**下一次**死亡 —— 又一个静默的迟到。
+     */
+    for (const ev of events) {
+      if (ev.t !== 'death') continue;
+      const entry = this.pendingRespec.get(ev.targetId);
+      if (entry) entry.armed = true;
+    }
+    for (const [entityId, entry] of this.pendingRespec) {
+      const e = this.match.world.entities.get(entityId);
+      if (!e) { this.pendingRespec.delete(entityId); continue; }
+      if (!e.alive) { entry.armed = true; continue; }
+      if (!entry.armed) continue;
+
+      const cls = getClass(entry.classId);
+      this.pendingRespec.delete(entityId);
+      // 职业合法性在 `JoinOngoing` 那一层已经验过（isPlayableClass）；
+      // 查不到只可能是数据包在两次之间变了 —— 什么都不做比换成一个空职业好
+      if (!cls) continue;
+      respecCombatant(this.match, e, cls);
+      const playerId = this.match.playerOf.get(entityId);
+      if (playerId !== undefined) this.deps.onClassChanged?.(playerId, entry.classId);
+    }
   }
 
   /**
@@ -1035,10 +1146,16 @@ export class MatchLoop {
        *   从不消费事件消息 —— 跳的是浪费，不是语义。
        */
       if (s.isBot) continue;
-      const viewer = this.viewerOf(s.playerId);
-      if (!viewer) continue;
+      /**
+       * ★ W24：观战席也要收事件流 —— 没有它，观战画面上没有伤害数字、
+       *   没有死亡反馈、没有施法表现（14.1 那一整套对观战者全丢）。
+       *   裁剪走**同一个** `redactFor`，只是受众换成 `SPECTATOR`：
+       *   观战段的判据比任何一队都窄，所以这不是放宽，是接线。
+       */
+      const audience = this.audienceOf(s);
+      if (!audience) continue;
       for (const msg of messages) {
-        const safe = this.redactFor(msg, viewer);
+        const safe = this.redactFor(msg, audience);
         if (!safe) continue;
         let raw = encoded.get(safe);
         if (raw === undefined) {
@@ -1063,13 +1180,13 @@ export class MatchLoop {
    *
    * @returns 可发送的消息；返回 undefined 表示这条对他必须完全隐藏
    */
-  private redactFor(msg: ServerMessage, viewer: CombatEntity): ServerMessage | undefined {
+  private redactFor(msg: ServerMessage, viewer: SnapshotAudience): ServerMessage | undefined {
     const ctx = this.match.ctf ? { ctf: this.match.ctf.state } : undefined;
     const visible = (id: EntityId | undefined): boolean => {
       if (id === undefined) return true;
       const e = this.match.world.entities.get(id);
       if (!e) return true; // 已离场的实体不构成泄露
-      return isVisibleTo(e, viewer, ctx);
+      return isVisibleToAudience(e, viewer, ctx);
     };
 
     switch (msg.t) {
@@ -1218,10 +1335,25 @@ export class MatchLoop {
      *   `sharedByTeam` 以 TeamId 为键 —— 「把红队的帧发给蓝队」要先把
      *   错误的队伍号递进 Map，而队伍号直接取自接收者实体，写不出来。
      */
+    /**
+     * ★★ W24：观战席是**第三个共享段**（键 `SPECTATOR`）。
+     *
+     *   它的可见集是「两队可见集的交集」（判据与裁决理由见
+     *   `isVisibleToSpectator`），所以既不能拿红队那份糊弄他（那会把红队自己
+     *   的潜行者送出去），也不能给他一份全量（那是透视）。
+     * ★ **有观战者才建**：`sharedFor` 是惰性的，零观战者的房间里
+     *   `SPECTATOR` 这个键从来不会被创建 —— 观战功能对既有对局零成本。
+     */
     const time = Math.round(m.world.time * 1000) / 1000;
-    const sharedByTeam = new Map<TeamId, { fragment: string; entities: Snapshot['entities'] }>();
-    const sharedFor = (rep: CombatEntity): { fragment: string; entities: Snapshot['entities'] } => {
-      let shared = sharedByTeam.get(rep.team);
+    const sharedByTeam = new Map<
+      TeamId | typeof SPECTATOR,
+      { fragment: string; entities: Snapshot['entities'] }
+    >();
+    const sharedFor = (
+      rep: SnapshotAudience,
+    ): { fragment: string; entities: Snapshot['entities'] } => {
+      const key = rep === SPECTATOR ? SPECTATOR : rep.team;
+      let shared = sharedByTeam.get(key);
       if (!shared) {
         const snap = buildSnapshot(snapDeps, rep);
         assertNoHiddenEntities(snap, m.world, rep, m.ctf ? { ctf: m.ctf.state } : undefined);
@@ -1236,7 +1368,7 @@ export class MatchLoop {
           match: snap.match,
         }).slice(1, -1);
         shared = { fragment, entities: snap.entities };
-        sharedByTeam.set(rep.team, shared);
+        sharedByTeam.set(key, shared);
       }
       return shared;
     };
@@ -1249,12 +1381,13 @@ export class MatchLoop {
        */
       if (s.isBot) continue;
       const viewer = this.viewerOf(s.playerId);
-      if (!viewer) continue;
+      // ★ W24：观战席没有实体 —— 「查不到实体」不再等于「跳过这条会话」
+      if (!viewer && !s.isSpectator) continue;
 
       // P11 每会话记账（seen/装备指纹），生命周期见 snapAccounts 的注释
       let account = this.snapAccounts.get(s);
       if (!account) {
-        account = { seen: new Set(), equipFp: new Map(), hpFp: new Map() };
+        account = { seen: new Set(), equipFp: new Map(), staticsFp: new Map() };
         this.snapAccounts.set(s, account);
       }
 
@@ -1264,14 +1397,33 @@ export class MatchLoop {
        *   退回自己的视角，而不是降级成自由镜头（11.4 明确不允许）。
        *   跟随只能是队友 ⇒ 共享段同一份；you 与 self 段换成被跟随者 ——
        *   与此前 buildSpectatorSnapshot 复用队友视角的语义逐字相同。
+       *
+       * ★★ W24 观战席走**另一条**判据（`isLegalSpectateFollow`：没有「己方」，
+       *   换成「进得了观战段」），而且跟随对象只决定 `you`（镜头看谁），
+       *   **不决定共享段** —— 观战段永远是那一份交集，跟到谁身上都不会
+       *   因此多看见一个人。跟随目标不合法/没选时退到列表里的第一个
+       *   （`spectatableForSpectator` 按 id 序，确定性）；一个可跟的都没有时
+       *   `you` 落在 `NO_ENTITY`（0）哨兵上。
        */
-      const following = !viewer.alive && s.following !== undefined
-        ? m.world.entities.get(s.following)
-        : undefined;
-      const effectiveViewer =
-        following && isLegalFollow(following, viewer) ? following : viewer;
+      const followed = s.following !== undefined ? m.world.entities.get(s.following) : undefined;
+      const ctx = m.ctf ? { ctf: m.ctf.state } : undefined;
 
-      const shared = sharedFor(effectiveViewer);
+      let audience: SnapshotAudience;
+      /** 快照里的 `you` / EntityMeta 的装备视角所用的那个「人」。观战席可能没有 */
+      let effectiveViewer: CombatEntity | undefined;
+      if (s.isSpectator) {
+        audience = SPECTATOR;
+        effectiveViewer = followed && isLegalSpectateFollow(followed, ctx)
+          ? followed
+          : spectatableForSpectator(m.world, ctx)[0];
+      } else {
+        const me = viewer!;
+        audience = me;
+        const following = !me.alive && followed ? followed : undefined;
+        effectiveViewer = following && isLegalFollow(following, me) ? following : me;
+      }
+
+      const shared = sharedFor(audience);
 
       /**
        * ★ P11 EntityMeta 通道：首见带静态块 + 装备，之后只在装备指纹变了时
@@ -1302,24 +1454,68 @@ export class MatchLoop {
          *   一局里这条路径只在变身时走几次，为省几十字节把静态块拆成两条通道
          *   反而给客户端多一个「合了一半」的状态。
          */
-        const hpChanged = !firstSeen && account.hpFp.get(se.id) !== e.maxHealth;
-        if (!firstSeen && !equipChanged && !hpChanged) continue;
+        /**
+         * ★★ W24 把这条从「只盯 maxHealth」扩成**整块静态块的指纹**。
+         *   多出来的两个变化源都是本批带来的，而且都不是数字：
+         *     · `name` —— 中途加入者顶替人机席位后，姓名板要从「人机3」
+         *       变成他的名字（`takeOverSeat`）；
+         *     · `classId` / `maxResources` —— 下一次复活换职业时整块都变
+         *       （`respecCombatant`）。
+         *   只比 maxHealth 的话，换成同样血量的职业就**一个字节都不会重发**，
+         *   客户端会顶着旧职业的图标和旧名字画一个新职业的人 —— 而快照里的
+         *   血量/资源是对的，所以没有任何一层会报错（与 W26 那次同一种静默）。
+         * ★ 指纹法而不是 sim 挂钩，理由与装备那条逐字相同：挂钩会有
+         *   「新增一条改静态块的路径忘了通知」的静默失效。
+         */
+        const staticsFp = staticsFingerprint(e);
+        const staticsChanged = !firstSeen && account.staticsFp.get(se.id) !== staticsFp;
+        if (!firstSeen && !equipChanged && !staticsChanged) continue;
         account.seen.add(se.id);
         if (fp !== undefined) account.equipFp.set(se.id, fp);
-        account.hpFp.set(se.id, e.maxHealth);
+        account.staticsFp.set(se.id, staticsFp);
         (metaItems ??= []).push({
           entityId: se.id,
-          ...(firstSeen || hpChanged ? { statics: staticsOf(e) } : {}),
+          ...(firstSeen || staticsChanged ? { statics: staticsOf(e) } : {}),
           // ★ 只有首见/指纹变了才构建视图（含数组拷贝）—— 稀有路径
-          equipment: equipmentViewFor(e, effectiveViewer, m),
+          /**
+           * ★★ 传的是 `audience` 而**不是** `effectiveViewer`（W24 收口修正）。
+           *   两者对参战者是同一个答案（死亡观战跟的是**队友**，而装备视图
+           *   只按阵营分岔），对观战席却天差地别：`effectiveViewer` 是他
+           *   正在看的那个**真实实体**，`isFriendly` 对那一队判真 → 被跟随者
+           *   全队都发 `allyEquipment`（备用武器/护甲/消耗品/精确护甲 id）。
+           *   按 V 换一遍视角就能把双方的备用装备栏收齐 —— 正是「给敌队
+           *   第二双眼睛」。`audience` 对观战席是 `SPECTATOR`：他不是任何人
+           *   的队友，一律敌人视图（10.6 / 验收 #36，`CULLING_RULES` 4.4-spectator）。
+           * ★ 顺带让 `equipFingerprint` 那句「敌我关系对每个 (会话,实体) 对
+           *   是常量」重新成立 —— 视图不再随跟随对象变，缓存才不会顶着
+           *   上一次的错型视图。
+           */
+          equipment: equipmentViewFor(e, audience, m),
         });
       }
       if (metaItems) s.send({ t: 'EntityMeta', items: metaItems });
 
-      const self = buildSelfState(snapDeps, effectiveViewer);
+      /**
+       * ★★ W24：**观战席不发 `self` 段。**
+       *
+       *   `SelfStateSnapshot` 装的是冷却、GCD、焦点、重放状态 —— 而
+       *   docs/08 §4.3 明明白白写着「敌方技能冷却与公共冷却不发」
+       *   （`CULLING_RULES` 的 4.3-cooldown）。观战席对场上双方都不是队友，
+       *   把跟随对象的冷却发给他，就是用一条产品功能把那条裁剪规则挖穿
+       *   （而且是任何人开第二个窗口就能用的那种）。
+       *   观战者没有身体、按不出任何技能，也就不需要冷却条 —— 少发这一段
+       *   既是安全的那一侧，也不少任何东西。
+       * ★ `you` 对观战席是「现在在看谁」；一个可看的都没有时是 `NO_ENTITY`（0）。
+       *   客户端凭 `MatchStart.spectating` 知道这不是自己的角色（不预测、不发输入）。
+       */
+      const you = effectiveViewer?.id ?? NO_ENTITY;
+      const self = s.isSpectator || !effectiveViewer
+        ? undefined
+        : buildSelfState(snapDeps, effectiveViewer);
       s.sendRaw(
-        `{"t":"Snapshot","ackSeq":${s.ackSeq},"you":${effectiveViewer.id},` +
-        `"self":${JSON.stringify(self)},${shared.fragment}}`,
+        `{"t":"Snapshot","ackSeq":${s.ackSeq},"you":${you},` +
+        (self ? `"self":${JSON.stringify(self)},` : '') +
+        `${shared.fragment}}`,
       );
     }
   }
@@ -1414,6 +1610,15 @@ export class MatchLoop {
     return id === undefined ? undefined : this.match.world.entities.get(id);
   }
 
+  /**
+   * 这条会话的**受众**：他自己的实体，或（W24）观战席。
+   * `undefined` = 他既没有实体也不是观战席（还没入场 / 已离场）—— 不发。
+   */
+  private audienceOf(s: Session): SnapshotAudience | undefined {
+    if (s.isSpectator) return SPECTATOR;
+    return this.viewerOf(s.playerId);
+  }
+
   private sessionOf(playerId: string): Session | undefined {
     for (const s of this.deps.sessions()) if (s.playerId === playerId) return s;
     return undefined;
@@ -1442,6 +1647,20 @@ const equipFingerprint = (
   `|${l ? l.spareWeapons.join(',') : ''}|${l ? l.spareArmors.join(',') : ''}` +
   `|${l ? l.consumables.join(',') : ''}` +
   `|${swap ? `${swap.kind},${swap.endsAt}` : ''}`;
+
+/**
+ * 实体**静态块**的指纹（W24，扩自 W26 那条只盯 maxHealth 的判据）。
+ *
+ * 覆盖 `staticsOf()` 投影出去的每一项 —— 名字（顶替人机后要改）、队伍、
+ * 职业与资源上限（下一次复活换职业时整块变）、生命上限（熊形态）。
+ * ★ 字段全列：漏一个就等于那一项的变化**永远不下发**，而快照里的
+ *   动态量仍然是对的，所以不会有任何一层报错（W26 的教训）。
+ * ★ `|` 分隔即可：名字来自 `JoinRoom`（codec 限 1–24 字符），撞不出歧义 ——
+ *   就算撞了，最坏是少发一次同内容的静态块，不是发错。
+ */
+const staticsFingerprint = (e: CombatEntity): string =>
+  `${e.name}|${e.team}|${e.classId}|${e.maxHealth}|` +
+  [...e.maxResources].map(([r, v]) => `${r}:${v}`).join(',');
 
 /**
  * 10.5 的中断原因转成给玩家看的话。

@@ -26,6 +26,10 @@ import {
   assertNoHiddenEntities,
   buildSnapshot,
   buildSpectatorSnapshot,
+  isLegalSpectateFollow,
+  spectatableForSpectator,
+  NO_ENTITY,
+  SPECTATOR,
   displayFlagsOf,
   buildSelfState,
   equipmentViewFor,
@@ -494,6 +498,8 @@ describe('14.3 / 14.4 投射物与地面区域进快照', () => {
             kind: 'homing', id: 1, skillId: asSkillId('mage.frostbolt'),
             sourceId: me.id, targetId: foe.id,
             position: vec3(1, 1.2, 2), speed: 30, impactAt: 5, onHit: [],
+            // W25 收口：释放瞬间的朝向/可行动快照（快照面不发它，见 ProjectileSnapshot）
+            hitSnapshot: { fromBehind: false, canAvoid: true },
           },
           {
             kind: 'delayedImpact', id: 2, skillId: asSkillId('mage.meteor'),
@@ -520,6 +526,7 @@ describe('14.3 / 14.4 投射物与地面区域进快照', () => {
           kind: 'homing', id: 1, skillId: asSkillId('mage.frostbolt'),
           sourceId: sneak.id, targetId: me.id, // 来源甚至是个潜行者
           position: vec3(0, 1, 0), speed: 30, impactAt: 5, onHit: [],
+          hitSnapshot: { fromBehind: false, canAvoid: true },
         }],
       },
     }), me);
@@ -656,10 +663,126 @@ describe('S7：隐身施加者的光环 id 掩码', () => {
   });
 });
 
+// ════════════════════════════════════════════════════════════════
+//  W24 观战段（运行中房间可观战）
+// ════════════════════════════════════════════════════════════════
+
+describe('W24 观战席的可见集', () => {
+  const specIds = (over: Partial<SnapshotDeps> = {}): number[] =>
+    buildSnapshot(deps(over), SPECTATOR).entities.map((e) => e.id as number);
+
+  it('没人潜行时观战段就是全场', () => {
+    expect(specIds().sort()).toEqual([me, mate, foe, sneak].map((e) => e.id as number).sort());
+  });
+
+  /**
+   * ★★ **判据三条的第一条**：两队都没发现 → 观战者也看不见。
+   *   这一条同时否掉了「观战 = 全量快照」那种最省事的实现。
+   */
+  it('★★ 未被任何敌人发现的潜行者不进观战段，且名字也不出现在字节里', () => {
+    sneak.flags.stealthed = true;
+    const snap = buildSnapshot(deps(), SPECTATOR);
+    expect(snap.entities.map((e) => e.id as number)).not.toContain(sneak.id as number);
+    expect(JSON.stringify(snap)).not.toContain(sneak.name);
+  });
+
+  it('★★ 被敌方发现之后进观战段（单队发现即可）', () => {
+    sneak.flags.stealthed = true;
+    sneak.flags.stealthRevealed = true;
+    expect(specIds()).toContain(sneak.id as number);
+  });
+
+  /**
+   * ★★ **判据三条的第三条，也是本批的设计裁决**：
+   *   字面的「两队可见集**并集**」会把潜行者自己那一队的可见性算进来
+   *   （红队永远看得见自己的盗贼），于是任何人开第二个窗口坐观战席就能
+   *   给全场潜行者点名。实装口径取的是**交集**。
+   */
+  it('★★ 潜行的红队队友对红队可见，但同样不进观战段（并集口径会漏这条）', () => {
+    const mine = spawn(rogue, TEAM_RED, 3, 3);
+    loadouts.set(mine.id, createLoadout(mine.classId));
+    mine.flags.stealthed = true;
+
+    // 红队自己看得见他（isFriendly 直接放行）
+    expect(idsIn(me)).toContain(mine.id as number);
+    // 观战席看不见
+    expect(specIds()).not.toContain(mine.id as number);
+  });
+
+  /**
+   * 对抗性等价验证：观战段 = 红队可见集 ∩ 蓝队可见集。
+   * ★ 逐实体比对而不是只看那个潜行者 —— 这条钉的是**口径本身**，
+   *   将来有人给 `isVisibleToSpectator` 加一条特例就会红。
+   */
+  it('★★ 观战段恰好是两队可见集的交集（逐实体比对，含双方各一个潜行者）', () => {
+    const mine = spawn(rogue, TEAM_RED, 3, 3);
+    loadouts.set(mine.id, createLoadout(mine.classId));
+    mine.flags.stealthed = true;
+    sneak.flags.stealthed = true;
+    sneak.flags.stealthRevealed = true; // 蓝队盗贼已暴露，红队盗贼没有
+
+    const red = new Set(idsIn(me));
+    const blue = new Set(idsIn(foe));
+    const expected = [...red].filter((id) => blue.has(id)).sort();
+    expect(specIds().sort()).toEqual(expected);
+  });
+
+  it('12.2 旗手对观战席也持续可见（与两队同口径）', () => {
+    const ctf = createCtf(vec3(0, 0, -20), vec3(0, 0, 20), 3);
+    ctf.flags[TEAM_RED as number]!.carrierId = sneak.id;
+    sneak.flags.stealthed = true;
+    expect(specIds({ ctf })).toContain(sneak.id as number);
+  });
+
+  /**
+   * ★★ 10.6 / 验收 #36 对观战席没有豁免：他不是任何人的队友。
+   *   给全场发完整装备栏等于把「开第二个窗口」做成一条侦察通道。
+   */
+  it('★★ 观战席拿到的装备一律是敌人视图（没有备用槽位）', () => {
+    const l = loadouts.get(mate.id)!;
+    addWeapon(l, priest.weapons.find((w) => !w.isDefault)!.id);
+    const view = equipmentViewFor(mate, SPECTATOR, { loadouts, swaps });
+    expect('spareWeaponIds' in view).toBe(false);
+    // 同一个人对队友仍然是完整视图 —— 观战席拿到的是**更少**的那一份
+    expect('spareWeaponIds' in equipmentViewFor(mate, me, { loadouts, swaps })).toBe(true);
+  });
+
+  it('观战段的 you 落在 NO_ENTITY 哨兵上（观战席没有实体）', () => {
+    expect(buildSnapshot(deps(), SPECTATOR).you).toBe(NO_ENTITY);
+    expect(NO_ENTITY as number).toBe(0);
+  });
+
+  it('★★ 兜底断言认识观战口径：合法观战段不报警，塞一个未发现的潜行者就抛', () => {
+    sneak.flags.stealthed = true;
+    const snap = buildSnapshot(deps(), SPECTATOR);
+    expect(() => assertNoHiddenEntities(snap, world, SPECTATOR)).not.toThrow();
+
+    const leaked = {
+      ...snap,
+      entities: [...snap.entities, { ...snap.entities[0]!, id: sneak.id }],
+    };
+    expect(() => assertNoHiddenEntities(leaked, world, SPECTATOR)).toThrow(/快照泄露/);
+  });
+
+  it('观战席能跟随的对象 = 观战段里活着的非宠物；未被发现的潜行者跟不了', () => {
+    sneak.flags.stealthed = true;
+    foe.alive = false;
+    const targets = spectatableForSpectator(world).map((e) => e.id as number);
+    expect(targets).toContain(me.id as number);
+    expect(targets).toContain(mate.id as number);   // ★ 没有「己方」之分
+    expect(targets).not.toContain(foe.id as number);   // 死的不跟
+    expect(targets).not.toContain(sneak.id as number); // 进不了观战段就跟不了
+    expect(isLegalSpectateFollow(sneak)).toBe(false);
+  });
+});
+
 describe('裁剪规则清单', () => {
-  it('七条按接收者裁剪的规则都有登记（供文档与 review 对照）', () => {
+  it('八条按接收者裁剪的规则都有登记（供文档与 review 对照）', () => {
     expect(CULLING_RULES.map((r) => r.id)).toEqual([
-      '4.1', '4.2', '4.3-cooldown', '4.3-focus', '4.3-spectate', '8.5', '12.2',
+      '4.1', '4.2', '4.3-cooldown', '4.3-focus', '4.3-spectate',
+      // W24 观战席：口径与理由见 `isVisibleToSpectator`
+      '4.4-spectator',
+      '8.5', '12.2',
     ]);
   });
 });

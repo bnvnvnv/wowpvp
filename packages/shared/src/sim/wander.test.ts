@@ -413,6 +413,43 @@ describe('8.2 化形游走：边界', () => {
   });
 });
 
+describe('8.2 化形游走：死亡拔锚（X29 余账，随 W24 清）', () => {
+  /**
+   * ★★ 在此之前 `tick.ts` 第 2 步那句「取不到实体或 `!alive` 就 continue」
+   *   排在拔锚**之前**，于是游走中被打死的实体把 `MovementState.wander`
+   *   原样留在仓里（实测死后再跑 20 tick，锚与段号一字未变）。
+   *
+   *   生产路径今天无害 —— 复活走 `teleportTo`，它会置空 wander。但「无害」
+   *   靠的是另一个函数记得擦：W24 的中途加入/多回合把复活口子开宽之后，
+   *   脏锚迟早会从某条没走 teleportTo 的路上冒出来，表现是
+   *   「复活后自己往半张地图外的中招点走回去」（`teleportTo` 的注释里
+   *   点名要防的正是这一幕）。
+   */
+  it('★★ 游走中被打死：锚当场拔掉，不留在移动仓里', () => {
+    const f = makeFixture();
+    f.cast(POLYMORPH());
+    f.run(20);
+    expect(f.movement.get(f.victim.id)?.wander, '没游走起来，这条测试没在测东西').toBeDefined();
+
+    f.victim.alive = false;
+    f.run(1);
+    expect(
+      f.movement.get(f.victim.id)?.wander,
+      '死了还留着中招点的锚 —— tick 第 2 步的 !alive 分支没有先 stopWander',
+    ).toBeUndefined();
+  });
+
+  it('★ 拔锚顺带抹掉水平动量（与 stopWander 同一条语义）', () => {
+    const f = makeFixture();
+    f.cast(POLYMORPH());
+    f.run(20);
+    f.victim.alive = false;
+    f.run(1);
+    const v = f.movement.get(f.victim.id)!.velocity;
+    expect(Math.hypot(v.x, v.z)).toBe(0);
+  });
+});
+
 describe('8.2 化形游走：谁不走', () => {
   /** 跑一段，返回相对出生点的位移 */
   const driftUnder = (effects: readonly EffectDef[], input?: MovementInput): number => {

@@ -149,6 +149,26 @@ export type ClientMessage =
    * ★ 只读、无参数、任何阶段可发 —— 大厅刷新列表用。
    */
   | { t: 'ListRooms' }
+  /**
+   * W24 **中途加入**：从观战席坐上一个战斗席（用户拍板 2026-08-10：
+   * 「运行中房间可以观战，也可以中途加入…红队满了那就只能加入蓝队，
+   * 可以自己选择职业」）。
+   *
+   * ★★ **只有观战席能发**（`SPECTATE_ONLY` 阶段白名单）。「进观战席」这一步
+   *   本身没有消息 —— 对 `started` 房间发 `JoinRoom` 就是入场观战，所以这条
+   *   消息刻意**没有** `seat:'spectator'` 这个取值：那会是一条什么都不做的
+   *   死分支，而本仓库对死分支的容忍度是零。反方向（战斗席退回观战席）同样
+   *   不给：中途退出战斗是 `LeaveMatch`，按 11.5 淘汰结算，不能靠「改坐观战席」
+   *   规避死亡统计。
+   *
+   * ★ `team` 在**组队模式**里是「顶替哪一队的人机席位」；大乱斗（FFA）没有
+   *   两队，两个取值都读作「参战」，服务器按 P12 的独立阵营分配队号。
+   * ★ `classId` **必填**：玩家总要选一个职业。⚠️ 组队模式下顶替人机时它
+   *   **不会当场生效** —— 当场沿用被顶替人机的职业，从下一次复活/回合重置
+   *   起才换成这个（理由见 docs/08 §8.7：当场换职业等于一次免费的满血 +
+   *   冷却清空，那是个可被反复触发的经济漏洞）。大乱斗是新建实体，当场生效。
+   */
+  | { t: 'JoinOngoing'; team: 'red' | 'blue'; classId: ClassId }
 
   // ── 战斗阶段 ──
   | InputMessage
@@ -204,7 +224,7 @@ export type ClientMessageKind = ClientMessage['t'];
 export const ALL_CLIENT_MESSAGE_KINDS: readonly ClientMessageKind[] = [
   'JoinRoom', 'SelectTeam', 'SelectClass', 'SetReady', 'SetRoomPreset',
   'SetRoomMode', 'SetRoomMap', 'SetFillWithBots', 'SetRoomBotDifficulty', 'SetRoomBoss',
-  'LeaveMatch', 'Reconnect', 'ListRooms',
+  'LeaveMatch', 'Reconnect', 'ListRooms', 'JoinOngoing',
   'Input', 'SetTarget', 'TabTarget', 'CastRequest', 'CancelCast', 'UseTrinket',
   'InteractStart', 'InteractCancel', 'SwapWeapon', 'SwapArmor', 'UseConsumable',
   'OpenArmory', 'ChooseArsenal', 'FfaBuy',
@@ -289,6 +309,18 @@ export interface RoomPlayerView {
   ready: boolean;
   /** 11.5：断线的人**仍然留在名单里**（死亡统计需要他）*/
   connected: boolean;
+  /**
+   * W24：这个席位当前由人机驱动（补位或掉线接管）。**省略 = 真人**。
+   *
+   * ★★ 加它的理由是**中途加入的可达性**：客户端要画出「哪些席位能顶替」，
+   *   而在此之前名单里的人机与真人长得一模一样（人机是真正的房间成员，
+   *   走 joinRoom/selectSlot/selectClass 四件套 —— 见 `fillBotSeats`）。
+   * ★ 判据是服务器侧「这个 playerId 有没有一条人机会话」，不是名字前缀 ——
+   *   名字是玩家可控的字符串，靠它认人机迟早会被一个叫「人机7」的真人骗过。
+   * ★ **能不能顶替**由服务器说了算（`JoinOngoing` 的规则），这个字段只为
+   *   显示：把按钮画成可点也顶替不了掉线接管的席位（那是别人的角色）。
+   */
+  bot?: boolean;
 }
 
 /**
@@ -304,6 +336,12 @@ export interface SnapshotMessage {
   time: number;
   /** 已确认到第几号输入（docs/08 §5 第 4 步）*/
   ackSeq: number;
+  /**
+   * 接收者「是谁」。
+   * ★ 参战者 = 自己的实体；死亡观战跟随时 = 被跟随的队友（11.4 语义原样）；
+   *   W24 观战席 = 当前跟随的对象，**没有可跟随对象时是 0**（`NO_ENTITY`）——
+   *   见 `MatchStart.spectating`，客户端凭那面旗子知道「这不是我操控的角色」。
+   */
   you: EntityId;
   /**
    * P11 波3：每人私有段（cooldowns/gcd/焦点/重放状态/可拾取列表）。
@@ -347,7 +385,19 @@ export type ServerMessage =
    */
   | { t: 'RoomList'
       rooms: readonly { roomId: string; mode: GameMode; players: number
-        capacity: number; started: boolean; fillWithBots: boolean }[] }
+        capacity: number; started: boolean; fillWithBots: boolean
+        /**
+         * W24：**现在**坐得下几个战斗席。未开局 = 空位数；已开局（`started`）=
+         * 可顶替的人机席位数（组队）或剩余参战位（大乱斗）。
+         *
+         * ★ 与 `capacity - players` **不等价**，所以它是一个独立字段而不是
+         *   客户端算的差：开局后队伍是满的（人机补齐了），差值恒为 0，
+         *   而真正能坐下的正是那些人机席位。没有这个字段，大厅只能画出
+         *   「已开始 · 满员」，中途加入这条路在 UI 上不存在。
+         * ★ `started && joinableSeats === 0` 的房间**仍然可以观战** ——
+         *   观战不占战斗席，所以没有为它单开一个字段（`started` 就是它的判据）。
+         */
+        joinableSeats: number }[] }
   /**
    * P12 连接排队：服务器满员时不再一关了之（原 1013），连接进等待队列，
    * 这条消息告知前面还有几个人；有人下线即按序接纳（收到 Welcome 为准）。
@@ -357,7 +407,19 @@ export type ServerMessage =
   | { t: 'QueueStatus'; ahead: number }
   | { t: 'MatchStart'; mapId: MapId; you: EntityId; startsAt: number
       /** 17.3 重连令牌。★ 断线后凭它恢复，见 server/room/reconnect.ts */
-      reconnectToken: string }
+      reconnectToken: string
+      /**
+       * W24：**这一份是观战席的入场**（房间阶段选了观战席的人、对局中加入的人、
+       * 以及他们重连后的那一份）。省略 = 参战。
+       *
+       * ★★ 客户端**必须**读它：`you` 对观战者是「当前跟随的对象」而不是
+       *   「我操控的角色」—— 不区分的话，观战者的客户端会对着别人的角色做
+       *   本地预测并把 `Input` 发上来（服务器丢弃，但画面会与快照打架）。
+       * ★ 没有可跟随对象时 `you` 是 **0**（`NO_ENTITY` 哨兵，实体 id 从 1 起）。
+       * ★ 观战席**照样发 `reconnectToken`**：形状不随席位变形，重连回来仍是
+       *   观战席（服务器按「这个 playerId 在这局里有没有实体」决定给哪一种）。
+       */
+      spectating?: boolean }
   | SnapshotMessage
   /**
    * P11：实体元数据的每会话通道 —— 装备与一局不变的静态块**不再每 tick

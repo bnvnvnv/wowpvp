@@ -54,6 +54,18 @@ export const SessionPhase = {
   Room: 'room',
   /** 比赛进行中 */
   Match: 'match',
+  /**
+   * W24：**在局，但没有身体。** 观战席的两条入口都落在这里 ——
+   * 房间阶段就选了观战席的人（开局随队入场），以及对局中从大厅加入
+   * 一个 `started` 房间的人。
+   *
+   * ★★ 单开一个阶段而不是在 `Match` 上挂一个 `isSpectator` 布尔：
+   *   消息鉴权是**白名单**驱动的（见 MATCH_ONLY 的注释），而观战席能发的
+   *   东西是 Match 的一个**真子集**（只有换观战目标）。用布尔的话，
+   *   每加一条战斗消息都要有人记得问一句「观战者能发吗」——
+   *   而忘了问的后果是一条越权路径，正是白名单要消灭的那一类。
+   */
+  Spectate: 'spectate',
 } as const;
 export type SessionPhase = (typeof SessionPhase)[keyof typeof SessionPhase];
 
@@ -88,7 +100,36 @@ const MATCH_ONLY: ReadonlySet<ClientMessage['t']> = new Set([
   'OpenArmory', 'ChooseArsenal',
   // P13 大乱斗积分商店：兑换只在对局中有意义（房间阶段既没有积分也没有装备栏）
   'FfaBuy',
+]);
+
+/**
+ * W24：**战斗阶段与观战阶段都合法**的消息。目前只有一条 —— 换观战目标。
+ *
+ * ★★ 这张表是 W24 逐条过完 MATCH_ONLY 之后的结果，判据是「**没有身体的人
+ *   发它有没有意义**」：
+ *   · `Input` / `CastRequest` / `CancelCast` / `UseTrinket` / `TabTarget` /
+ *     `Swap*` / `UseConsumable` / `Interact*` / `OpenArmory` / `ChooseArsenal` /
+ *     `FfaBuy` —— 全部作用在「自己的实体」上，观战者没有，**拒**。
+ *     （它们今天走到下游也只会静默 no-op，但那是「碰巧无害」，
+ *     不是「不被允许」—— A8 的教训：纵深防御不该只剩一层。）
+ *   · `SetTarget` —— 尤其**拒**：它是一道安全边界（验收 #5 的探测通道，
+ *     见 RoomServer.onSetTarget 的 ★★），观战者手里没有可以「选中」的东西，
+ *     放行等于白送一个不需要身体就能用的可见性探针。观战席换看谁走
+ *     `SpectateFollow`，那条有它自己的合法性判据（`isLegalSpectateFollow`）。
+ *   · `SpectateFollow` —— **准**：它对死亡观战与观战席是同一个动作，
+ *     两边各自有一条不同的合法性判据，都在服务器侧判。
+ */
+const MATCH_OR_SPECTATE: ReadonlySet<ClientMessage['t']> = new Set([
   'SpectateFollow',
+]);
+
+/**
+ * W24：**只有观战席**能发的消息 —— 从观战席坐上战斗席。
+ * ★ 战斗阶段发它要被拒：「换到别的队伍/顶替一个人机」在对局中对一个
+ *   已经有身体的人没有意义，而放行等于开一条「换队规避战况」的路。
+ */
+const SPECTATE_ONLY: ReadonlySet<ClientMessage['t']> = new Set([
+  'JoinOngoing',
 ]);
 
 /** 本层需要的 socket 能力。★ 只要这几样 —— 便于测试注入假 socket */
@@ -112,8 +153,11 @@ export class Session {
   /** 所在房间。未加入时为 undefined */
   roomId?: string;
   /**
-   * 11.4 死亡观战正在跟随谁。合法性由 RoomServer 用 `spectatableFor()` 校验过。
-   * ★ 只在**自己已死**时生效 —— 活着的人跟随别人就是透视。
+   * 正在跟随谁。合法性由 RoomServer 校验过 —— 两种受众各一条判据：
+   *   · 11.4 死亡观战：`spectatableFor()`（只能跟**己方存活**队友），
+   *     且只在**自己已死**时生效 —— 活着的人跟随别人就是透视；
+   *   · W24 观战席：`isLegalSpectateFollow()`（没有「己方」，换成
+   *     「进得了观战段」）。
    */
   following?: EntityId;
 
@@ -263,8 +307,17 @@ export class Session {
   private isAllowedInPhase(kind: ClientMessage['t']): boolean {
     if (ROOM_ONLY.has(kind)) return this.phase === SessionPhase.Room;
     if (MATCH_ONLY.has(kind)) return this.phase === SessionPhase.Match;
-    // JoinRoom / Reconnect / LeaveMatch 任何阶段都可以发
+    if (SPECTATE_ONLY.has(kind)) return this.phase === SessionPhase.Spectate;
+    if (MATCH_OR_SPECTATE.has(kind)) {
+      return this.phase === SessionPhase.Match || this.phase === SessionPhase.Spectate;
+    }
+    // JoinRoom / Reconnect / LeaveMatch / ListRooms 任何阶段都可以发
     return true;
+  }
+
+  /** W24：这条会话是不是观战席（在局、无实体）。快照与事件按它走观战段 */
+  get isSpectator(): boolean {
+    return this.phase === SessionPhase.Spectate;
   }
 
   /**

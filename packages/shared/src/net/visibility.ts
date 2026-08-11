@@ -47,6 +47,29 @@ export interface VisibilityContext {
 }
 
 /**
+ * W24 观战席的「视角」。**它不是任何人** —— 没有实体、没有队伍、没有 id。
+ *
+ * ★★ 用一个字面量而不是「传 undefined 表示观战」：`SnapshotAudience` 是个
+ *   可辨识联合，调用点必须**显式**说出自己在给谁建快照。写 `undefined`
+ *   的那种写法里，「忘了传 viewer」和「这是观战段」长得一模一样，
+ *   而这两件事一个是 bug、一个是功能。
+ */
+export const SPECTATOR = 'spectator' as const;
+
+/**
+ * 一份快照是给谁建的：某个参战实体，或观战席。
+ * ★ 见 `isVisibleToAudience` —— 两种受众各有一条判据，没有第三条。
+ */
+export type SnapshotAudience = CombatEntity | typeof SPECTATOR;
+
+/**
+ * 观战席没有实体，`Snapshot.you` 用这个哨兵。
+ * ★ 实体 id 从 1 开始（`allocEntityId`），所以 0 不可能与任何实体撞。
+ *   客户端据此显示「暂无可观战目标」，而不是去查一个不存在的实体。
+ */
+export const NO_ENTITY = 0 as EntityId;
+
+/**
  * S7：来源不可见时，光环 id 被掩成这个中性 token。
  * ★ 客户端所有按 auraId 分派的逻辑（护盾/控制/化形/复活保护）都不匹配它，
  *   于是自然回落到「一个不知来历的 debuff」的中性显示 —— 正是要的效果。
@@ -92,6 +115,49 @@ export const isVisibleTo = (
 
 const isFlagCarrier = (e: CombatEntity, ctf: CtfState): boolean =>
   Object.values(ctf.flags).some((f) => f.carrierId === e.id);
+
+/**
+ * W24：实体 `target` 是否进入**观战席**的快照。
+ *
+ * ★★ **口径：不是一个「尚未被任何敌人发现的潜行者」，就进观战段。** 一行判据，
+ *   等价于「至少一个**敌方**观察者看得见他」—— `stealthRevealed` 是全局标志
+ *   而不是按队记录（见 `isHiddenFromViewer` 的注释：本作己方永远看得见自己人
+ *   潜行，「被发现」就等于「被敌方那一队发现」），所以这里不需要 O(N²) 地
+ *   两两扫一遍，一个布尔就是那个并集。等价性有对抗性用例逐实体钉着。
+ *
+ * ★★ **与「两队可见集的并集」这个说法的出入，在这里说清楚**（W24 设计裁决）：
+ *   字面的并集会把**自己那一队看得见的潜行者**也算进来 —— 红队永远看得见
+ *   自己的盗贼，于是任何人开第二个窗口坐进观战席，就能给全场潜行者点名。
+ *   那正是 docs/08 §4.1 / 验收 #5 要防的透视，只是换了个入口。所以实装口径是
+ *   **两队可见集的交集**：观战段 ⊆ 任意一队的可见集（严格更少），
+ *   「未被发现 = 不进快照」这条不变量对观战席原样成立。
+ *   —— 判据三条（两队都没发现→看不见、任一敌方发现→看得见、队友潜行也不给）
+ *   说的都是这一条。
+ *
+ * ★ 12.2 旗手照样优先可见：理由与 `isVisibleTo` 里那段逐字相同 ——
+ *   掉旗那条链哪天断了，「旗手隐身」也不该同时变成「旗手消失」。
+ */
+export const isVisibleToSpectator = (
+  target: CombatEntity,
+  ctx: VisibilityContext = {},
+): boolean => {
+  if (ctx.ctf && isFlagCarrier(target, ctx.ctf)) return true;
+  return !(target.flags.stealthed && !target.flags.stealthRevealed);
+};
+
+/**
+ * 按受众分派可见性判定。**快照层与事件裁剪层唯一的入口**。
+ * ★ 两个分支各自只有一条判据，第三种受众不存在 —— 想加就得先改
+ *   `SnapshotAudience` 这个联合，那是一次显眼的改动。
+ */
+export const isVisibleToAudience = (
+  target: CombatEntity,
+  audience: SnapshotAudience,
+  ctx: VisibilityContext = {},
+): boolean =>
+  audience === SPECTATOR
+    ? isVisibleToSpectator(target, ctx)
+    : isVisibleTo(target, audience, ctx);
 
 /**
  * P11 数字量化（有损）。`world.time += dt` 的浮点累加让几乎每个数都拖着
@@ -688,13 +754,19 @@ export interface SnapshotDeps {
  *   「先建一份全量快照再按人过滤」这种写法在这里根本没有入口。
  *   那种写法的危险在于：全量快照一旦存在，就迟早会有人为了省一次遍历
  *   而把它直接广播出去。
+ *
+ * ★ W24：`viewer` 现在是 `SnapshotAudience` —— 传 `SPECTATOR` 得到**观战段**
+ *   （判据见 `isVisibleToSpectator`，它比任何一队的可见集都窄）。这**不是**
+ *   上面说的那个「全量快照」后门：观战段本身也是裁过的，而且裁得更狠。
+ *   观战席没有实体，所以 `you` 落在 `NO_ENTITY` 哨兵上 —— 服务器发给观战者的
+ *   那份会把 `you` 换成当前跟随的对象（见 `MatchLoop.broadcastSnapshots`）。
  */
-export const buildSnapshot = (deps: SnapshotDeps, viewer: CombatEntity): Snapshot => {
+export const buildSnapshot = (deps: SnapshotDeps, viewer: SnapshotAudience): Snapshot => {
   const ctx: VisibilityContext = deps.ctf ? { ctf: deps.ctf } : {};
 
   const entities: EntitySnapshot[] = [];
   for (const e of listEntities(deps.world)) {
-    if (!isVisibleTo(e, viewer, ctx)) continue;
+    if (!isVisibleToAudience(e, viewer, ctx)) continue;
     entities.push(snapshotEntity(e, viewer, deps));
   }
 
@@ -771,12 +843,16 @@ export const buildSnapshot = (deps: SnapshotDeps, viewer: CombatEntity): Snapsho
     match.respawnIn = secondsToNextWave(deps.respawn, deps.world.time);
   }
 
-  return { tick: deps.tick, you: viewer.id, entities, projectiles, grounds, drops, armories, match };
+  return {
+    tick: deps.tick,
+    you: viewer === SPECTATOR ? NO_ENTITY : viewer.id,
+    entities, projectiles, grounds, drops, armories, match,
+  };
 };
 
 const snapshotEntity = (
   e: CombatEntity,
-  viewer: CombatEntity,
+  viewer: SnapshotAudience,
   deps: SnapshotDeps,
 ): EntitySnapshot => {
   const ctx: VisibilityContext = deps.ctf ? { ctf: deps.ctf } : {};
@@ -790,7 +866,7 @@ const snapshotEntity = (
    */
   const auraSourceVisible = (a: { sourceId: EntityId }): boolean => {
     const src = deps.world.entities.get(a.sourceId);
-    return !src || isVisibleTo(src, viewer, ctx);
+    return !src || isVisibleToAudience(src, viewer, ctx);
   };
 
   /**
@@ -920,13 +996,18 @@ export const buildSelfState = (deps: SnapshotDeps, viewer: CombatEntity): SelfSt
  *   只能跟队友（11.4）—— 所以按会话缓存指纹不会因视角切换而错型。
  * ★ 裁剪语义原样：敌人走 `enemyLoadoutView()`（10.6 / 验收 #36），
  *   这里只是换了投递通道，不改任何可见性判定。
+ *
+ * ★★ W24 观战席一律吃**敌人视图**：观战者不是任何人的队友，
+ *   10.6「敌人看不到备用装备」对他没有豁免理由。给全场都发完整装备栏
+ *   等于把「开第二个窗口坐观战席」做成一条侦察通道 —— 与
+ *   `isVisibleToSpectator` 取交集而不是并集是同一条裁决。
  */
 export const equipmentViewFor = (
   e: CombatEntity,
-  viewer: CombatEntity,
+  viewer: SnapshotAudience,
   deps: Pick<SnapshotDeps, 'loadouts' | 'swaps'>,
 ): AllyEquipmentSnapshot | EnemyEquipmentSnapshot =>
-  isFriendly(e, viewer) ? allyEquipment(e, deps) : enemyEquipment(e, deps);
+  viewer !== SPECTATOR && isFriendly(e, viewer) ? allyEquipment(e, deps) : enemyEquipment(e, deps);
 
 const allyEquipment = (
   e: CombatEntity,
@@ -1011,6 +1092,29 @@ export const spectatableFor = (world: World, viewer: CombatEntity): CombatEntity
 export const isLegalFollow = (following: CombatEntity, viewer: CombatEntity): boolean =>
   isFriendly(following, viewer) && following.alive && !following.isPet;
 
+/**
+ * W24 观战席能跟随谁 —— **唯一实现**（服务器的 `SpectateFollow` 校验与
+ * 默认跟随目标的挑选都用它）。
+ *
+ * ★ 与 11.4 的死亡观战（`isLegalFollow`）**刻意不是同一条**：那条要求
+ *   「己方」，因为跟随者是场上的一名选手，跟到敌人身上就是透视；
+ *   观战席没有「己方」，它的约束换成**观战段可见性**本身 ——
+ *   跟不到一个连观战段都没有的人（未被发现的潜行者）。
+ * ★ 仍然只给「跟随某个人」，不给坐标：与 `spectatableFor` 同一个理由，
+ *   镜头自由度必须被活人的位置约束住（11.4 不允许自由镜头）。
+ */
+export const isLegalSpectateFollow = (
+  following: CombatEntity,
+  ctx: VisibilityContext = {},
+): boolean =>
+  following.alive && !following.isPet && isVisibleToSpectator(following, ctx);
+
+/** W24：观战席此刻可以跟随的对象。★ 顺序即 `listEntities` 的 id 序 —— 默认跟随取第一个，确定性 */
+export const spectatableForSpectator = (
+  world: World,
+  ctx: VisibilityContext = {},
+): CombatEntity[] => listEntities(world).filter((e) => isLegalSpectateFollow(e, ctx));
+
 export const buildSpectatorSnapshot = (
   deps: SnapshotDeps,
   viewer: CombatEntity,
@@ -1037,18 +1141,23 @@ export const buildSpectatorSnapshot = (
 export const assertNoHiddenEntities = (
   snapshot: Snapshot,
   world: World,
-  viewer: CombatEntity,
+  viewer: SnapshotAudience,
   ctx: VisibilityContext = {},
 ): void => {
   for (const s of snapshot.entities) {
     const e = world.entities.get(s.id);
     if (!e) continue;
-    if (!isVisibleTo(e, viewer, ctx)) {
+    /**
+     * ★ W24：判据跟着受众走（`isVisibleToAudience`）。观战段用的是**更窄**的
+     *   那条判据，所以这里既不会把观战段误报成泄露，也不会因为「它是观战段」
+     *   就把兜底放宽 —— 一个未被发现的潜行者混进观战段，照样在这里炸。
+     */
+    if (!isVisibleToAudience(e, viewer, ctx)) {
       // ★ P11 后 name 是首见才带的可选字段 —— 报错只用 id，别让兜底断言
       //   在最不该出二次故障的时刻踩 undefined
       throw new Error(
-        `快照泄露：实体 ${s.id} 对接收者 ${viewer.id} 不可见却进了快照。` +
-          `见 docs/08 §4.1 与验收 #5。`,
+        `快照泄露：实体 ${s.id} 对接收者 ${viewer === SPECTATOR ? '观战席' : viewer.id}` +
+          `不可见却进了快照。见 docs/08 §4.1 与验收 #5。`,
       );
     }
   }
@@ -1061,6 +1170,11 @@ export const CULLING_RULES = [
   { id: '4.3-cooldown', what: '敌方技能冷却与公共冷却不发', acceptance: 'docs/08 §4.3' },
   { id: '4.3-focus', what: '焦点目标只回读给自己，且焦点不可见时不发', acceptance: '#5 + 5.1' },
   { id: '4.3-spectate', what: '观战只能跟随己方存活玩家', acceptance: '11.4' },
+  {
+    id: '4.4-spectator',
+    what: 'W24 观战席只看两队可见集的**交集** —— 未被任何敌人发现的潜行者不进观战段，装备一律敌人视图',
+    acceptance: '#5 + #36',
+  },
   { id: '8.5', what: '决胜阶段发无 id 的粗略位置标记，不使潜行者变为可选中', acceptance: '#5 + 8.5' },
   { id: '12.2', what: '旗手位置始终对双方可见', acceptance: '12.2' },
 ] as const;

@@ -23,11 +23,16 @@
  */
 
 import { CTF, FFA } from '../../constants/combat.js';
-import { getClass, getSkill } from '../../data/index.js';
+import { getClass, getSkill, isPlayableClass } from '../../data/index.js';
+import type { ClassDef } from '../../data/schema.js';
+import { GameMode } from '../../types/enums.js';
 import type { MapDef, SpawnPoint } from '../../data/maps/schema.js';
 import type { Vec3 } from '../../math/vec3.js';
-import { TEAM_BLUE, TEAM_NEUTRAL, TEAM_RED, type EntityId, type TeamId } from '../../types/ids.js';
-import { createAuraStore, type AuraStore } from '../aura.js';
+import {
+  TEAM_BLUE, TEAM_NEUTRAL, TEAM_RED,
+  type ClassId, type EntityId, type TeamId,
+} from '../../types/ids.js';
+import { clearAuras, createAuraStore, type AuraStore } from '../aura.js';
 import { createBossState, type BossState } from '../boss.js';
 import {
   createArsenalStore, createPickupStore, setupArmories, setupPartyDrops,
@@ -49,8 +54,8 @@ import { createProjectileStore, type ProjectileStore } from '../projectile.js';
 import { createSwingStore, type SwingStore } from '../autoAttack.js';
 import { createStats, registerPlayer, type StatsStore } from '../stats.js';
 import type { CastIntent, TickDeps } from '../tick.js';
-import { addEntity, allocEntityId, createWorld, type World } from '../world.js';
-import { createArena, type ArenaState } from './arena.js';
+import { addEntity, allocEntityId, createWorld, listEntities, type World } from '../world.js';
+import { createArena, teamSizeOf, teamWiped, type ArenaState } from './arena.js';
 import { createFfa, type FfaState } from './ffa.js';
 import { createCtf, type CtfDeps, type CtfState } from './flag.js';
 import { createRespawn, type RespawnState } from './respawn.js';
@@ -162,6 +167,59 @@ const spawnPointsFor = (map: MapDef, team: TeamId): readonly SpawnPoint[] => {
  *    「能不能开」是**房间规则**，「怎么摆」是**模拟装配**，
  *    混在一起会让「加一条阵容限制」有两个下手的地方。
  */
+/**
+ * 一局比赛里**与花名册有关**的那几张表。`Match` 结构上就满足它 ——
+ * 所以开局装配（`createMatch`）与中途加入（`admitToMatch`）共用同一个
+ * `spawnCombatant`，而不是各写一遍「建实体 + 建装备栏 + 建移动状态 + 登记统计」。
+ *
+ * ★★ 各写一遍的代价很具体：漏 `movement.set` 的那个人**动不了且不报错**
+ *   （见下面的 ★★），漏 `registerPlayer` 的那个人整场没有统计行。
+ *   本仓库栽过的「装配漂移」（本文件头 ★★）就是这一族。
+ */
+interface RosterDeps {
+  world: World;
+  loadouts: LoadoutStore;
+  movement: Map<EntityId, MovementState>;
+  stats: StatsStore;
+  entityOf: Map<string, EntityId>;
+  playerOf: Map<EntityId, string>;
+}
+
+/**
+ * 把一个人放进世界：实体 + 装备栏 + 移动状态 + 统计行 + 双向映射。
+ * ★ 五件事一次做完，缺一件都是静默故障 —— 见 `RosterDeps` 的 ★★。
+ */
+const spawnCombatant = (
+  d: RosterDeps,
+  playerId: string,
+  name: string,
+  cls: ClassDef,
+  team: TeamId,
+  point: SpawnPoint | undefined,
+): CombatEntity => {
+  const position: Vec3 = point?.position ?? { x: 0, y: 0, z: 0 };
+  const e = addEntity(
+    d.world,
+    createEntity(allocEntityId(d.world), cls, team, position, {
+      name,
+      yaw: point?.yaw ?? 0,
+    }),
+  );
+  d.loadouts.set(e.id, createLoadout(e.classId));
+  /**
+   * ★★ **每个玩家都必须有移动状态条目。**
+   *   `tick.ts` 明确写着「没有条目的实体不参与移动」—— 那条规则是给
+   *   假人和「位置由别处驱动」的实体用的。服务器这边如果漏了这一步，
+   *   表现是**所有人都动不了**，而且不会有任何报错。
+   */
+  d.movement.set(e.id, createMovementState(position, point?.yaw ?? 0));
+  registerPlayer(d.stats, e);
+
+  d.entityOf.set(playerId, e.id);
+  d.playerOf.set(e.id, playerId);
+  return e;
+};
+
 export const createMatch = (room: Room, map: MapDef): Match => {
   const world = createWorld(map.geometry);
   const auras = createAuraStore();
@@ -170,6 +228,7 @@ export const createMatch = (room: Room, map: MapDef): Match => {
   const stats = createStats();
   const entityOf = new Map<string, EntityId>();
   const playerOf = new Map<EntityId, string>();
+  const roster: RosterDeps = { world, loadouts, movement, stats, entityOf, playerOf };
 
   /** 每队各自的出生点游标 —— 同队的人依次占位，不叠在同一个点上 */
   const nextSpawnIndex = new Map<TeamId, number>();
@@ -189,27 +248,7 @@ export const createMatch = (room: Room, map: MapDef): Match => {
       //   名单多一个人就崩）
       point = points[idx % Math.max(1, points.length)];
     }
-    const position: Vec3 = point?.position ?? { x: 0, y: 0, z: 0 };
-
-    const e = addEntity(
-      world,
-      createEntity(allocEntityId(world), cls, team, position, {
-        name: p.name,
-        yaw: point?.yaw ?? 0,
-      }),
-    );
-    loadouts.set(e.id, createLoadout(e.classId));
-    /**
-     * ★★ **每个玩家都必须有移动状态条目。**
-     *   `tick.ts` 明确写着「没有条目的实体不参与移动」—— 那条规则是给
-     *   假人和「位置由别处驱动」的实体用的。服务器这边如果漏了这一步，
-     *   表现是**所有人都动不了**，而且不会有任何报错。
-     */
-    movement.set(e.id, createMovementState(position, point?.yaw ?? 0));
-    registerPlayer(stats, e);
-
-    entityOf.set(p.id, e.id);
-    playerOf.set(e.id, p.id);
+    spawnCombatant(roster, p.id, p.name, cls, team, point);
   };
 
   if (map.family === 'ffa') {
@@ -424,4 +463,148 @@ export const tickDepsOf = (
 export const entityOfPlayer = (m: Match, playerId: string): CombatEntity | undefined => {
   const id = m.entityOf.get(playerId);
   return id === undefined ? undefined : m.world.entities.get(id);
+};
+
+// ════════════════════════════════════════════════════════════════
+//  W24 中途加入
+// ════════════════════════════════════════════════════════════════
+
+export type AdmitResult =
+  | { ok: true; entityId: EntityId; team: TeamId }
+  | { ok: false; reason: string };
+
+/**
+ * W24：**给一局进行中的比赛加一个新实体**（用户拍板 2026-08-10 的中途加入）。
+ *
+ * ★★ **与顶替人机席位是两条不同的路**，别混：
+ *   · 队伍**还有空位**（组队模式没开人机补位、或有人退出）→ 走这里，新建实体，
+ *     职业**当场生效**（他是一个全新的角色，没有「免费满血」可言）；
+ *   · 队伍**满了但有人机在打** → 走顶替（服务器的 `JoinOngoing`），
+ *     沿用被顶替者的身体，选的职业等下一次复活/回合重置才换
+ *     （当场换 = 一次免费满血 + 冷却清空，见 docs/08 §8.7）。
+ *
+ * ★ 开局装配与这里共用 `spawnCombatant` —— 「装配漂移」是本文件头点名的
+ *   那一族 bug（漏一张表不报错，只是那个人动不了 / 没有统计行）。
+ *
+ * ⚠️ **每队人数上限不在这里判**：档位（`teamSizeOf(mode)`）在 `RoomConfig` 里，
+ *    而 `Match` 刻意不持有房间配置。判在调用方（服务器 `JoinOngoing`，
+ *    「红满只能蓝」那条有测试盯着）。这里只判**它自己看得见**的两件事：
+ *    职业合法性，以及「不能给一个已经全灭的队伍续命」。
+ */
+export const admitToMatch = (
+  m: Match,
+  opts: { playerId: string; name: string; classId: ClassId; slot: Slot },
+): AdmitResult => {
+  if (m.entityOf.has(opts.playerId)) return { ok: false, reason: '你已经在这局比赛里了' };
+  /**
+   * ★ 判据是 `isPlayableClass` 而不是 `getClass` —— 与 `selectClass` 逐字同源：
+   *   注册表里有玩家选不到的特殊职业（大 BOSS），放行就等于让一条手写消息
+   *   顶着 15000 生命中途入场。
+   */
+  if (!isPlayableClass(opts.classId)) return { ok: false, reason: `未知职业：${opts.classId}` };
+  const cls = getClass(opts.classId);
+  if (!cls) return { ok: false, reason: `未知职业：${opts.classId}` };
+
+  /**
+   * P12 大乱斗：**每人一个独立队号**（createMatch 里那一行的原样延续）。
+   * 新队号取「当前最大 + 1」，中立（-1，BOSS）不参与。
+   */
+  if (m.map.family === 'ffa') {
+    const combatants = [...m.playerOf.keys()]
+      .map((id) => m.world.entities.get(id))
+      .filter((e): e is CombatEntity => e !== undefined && e.team !== TEAM_NEUTRAL);
+    if (combatants.length >= teamSizeOf(GameMode.Ffa)) {
+      return { ok: false, reason: '这局大乱斗已经满员了' };
+    }
+    const team = (combatants.reduce((max, e) => Math.max(max, e.team as number), -1) + 1) as TeamId;
+
+    const pool = (m.map.graveyards ?? []).flatMap((g) => g.spawns);
+    const point = pool[combatants.length % Math.max(1, pool.length)];
+    const e = spawnCombatant(m, opts.playerId, opts.name, cls, team, point);
+    /**
+     * ★★ **新队号必须登记复活出口**，否则他一死就在原点 (0,0,0) 复活 ——
+     *   `createRespawn` 建表时只认识开局那批队号，`nextExitFor` 查不到就
+     *   返回零向量，而零向量在任何一张图上都不会报错，只是很奇怪。
+     */
+    if (m.respawn) {
+      m.respawn.exits.set(team as number, (m.map.graveyards ?? []).flatMap((g) => g.exits));
+    }
+    return { ok: true, entityId: e.id, team };
+  }
+
+  const team = TEAM_OF_SLOT[opts.slot];
+  if (team === undefined) return { ok: false, reason: '观战席不是战斗席位' };
+  /**
+   * ⚠️ **不给已全灭的队伍续命。** 竞技场靠「一方全灭」判负（2.1 / 验收 #26），
+   *   而 `teamWiped` 是每 tick 现算的 —— 往一个刚被清台的队伍里塞一个满血的人，
+   *   会让已经进入结算窗口的回合活过来。那不是「中途加入」，那是免费续命。
+   */
+  if (teamWiped(m.world, team)) {
+    return { ok: false, reason: '该队本回合已全灭，不能中途加入' };
+  }
+
+  const points = spawnPointsFor(m.map, team);
+  // 出生点按**该队现有人数**轮转 —— 与开局那条游标同一个意思，确定性
+  const idx = listEntities(m.world).filter((e) => e.team === team && !e.isPet).length;
+  const e = spawnCombatant(m, opts.playerId, opts.name, cls, team, points[idx % Math.max(1, points.length)]);
+  return { ok: true, entityId: e.id, team };
+};
+
+/**
+ * W24：把一个**已有实体**换成另一个职业（顶替人机席位的人「下一次复活/回合
+ * 重置起换成自己选的职业」那一步）。
+ *
+ * ★★ **只能在他刚活过来的那一刻调用。** 活着的时候换 = 满血 + 满资源 +
+ *   冷却清空 + 光环全清，那是一个可以反复触发的免费复活（docs/08 §8.7 的
+ *   拍板理由）。调用时机的守卫在调用方（服务器只在「死 → 活」的跳变上调它），
+ *   本函数只负责换得**干净**。
+ *
+ * ★ 职业相关的字段一个都不能漏 —— 所以这里先用 `createEntity` 造一个同职业的
+ *   全新实体当**参照物**，再逐项抄过来。漏抄一项会被 `respec` 的等价性用例
+ *   抓住（它把结果与一个新建实体逐字段比对）。
+ *
+ * ★ **不动的四样**：id / 位置朝向 / 队伍 / 名字（他还是他，只是换了个职业），
+ *   外加 `rng`（按实体分流的随机流，见 `CombatEntity.rng`）——
+ *   重置它等于让同一个实体的闪避序列在换职业时跳一下。
+ * ★ 统计行**保留累计值**：这个席位在被顶替之前由人机打出的伤害仍记在这一行上
+ *   （统计是按**实体**记的，而实体没换）。只把 `classId`/`name` 更新成新的，
+ *   否则战后面板会用旧职业解释他整场的表现。这条如实记在 docs/15 W24 行。
+ */
+export const respecCombatant = (m: Match, e: CombatEntity, cls: ClassDef): void => {
+  const fresh = createEntity(e.id, cls, e.team, e.position, { name: e.name, yaw: e.yaw });
+
+  e.classId = fresh.classId;
+  e.health = fresh.health;
+  e.maxHealth = fresh.maxHealth;
+  e.baseMaxHealth = fresh.baseMaxHealth;
+  e.resources = fresh.resources;
+  e.maxResources = fresh.maxResources;
+  e.resourceRegen = fresh.resourceRegen;
+  e.weaponId = fresh.weaponId;
+  e.armorId = fresh.armorId;
+  e.availableSkills = fresh.availableSkills;
+  e.cooldowns = fresh.cooldowns;
+  e.gcdUntil = fresh.gcdUntil;
+  e.schoolLocks = fresh.schoolLocks;
+  e.nextSwingAt = fresh.nextSwingAt;
+  e.swingRecoveryUntil = fresh.swingRecoveryUntil;
+  e.targets = fresh.targets;
+  // 大乱斗借来的身份跟着旧职业一起还回去（与 `onDeath` 同一条收口）
+  delete e.borrowedClassId;
+
+  // 装备栏整个换成新职业的默认套 —— 上一个职业的备用武器对他毫无意义
+  m.loadouts.set(e.id, createLoadout(cls.id));
+  m.swaps.delete(e.id);
+  /**
+   * ★ 光环清干净：换职业前挂着的战斗怒吼/形态光环属于上一个职业，
+   *   留着会让一个法师顶着熊形态的生命上限跑（`applyMaxHealthMultiplier`
+   *   每 tick 从光环重算 —— 它不认识「这人已经不是德鲁伊了」）。
+   */
+  clearAuras(m.auras, e.id);
+
+  const row = m.stats.players.get(e.id);
+  if (row) {
+    row.classId = cls.id;
+    row.name = e.name;
+  }
 };

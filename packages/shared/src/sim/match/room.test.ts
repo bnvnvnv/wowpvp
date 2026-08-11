@@ -22,6 +22,11 @@ import {
   playersOn,
   resetForRematch,
   botSeatsNeeded,
+  freeSeatsOn,
+  leaveSpectator,
+  seatSpectator,
+  takeOverSeat,
+  unseatToSpectator,
   selectClass,
   selectSlot,
   setBossEnabled,
@@ -326,6 +331,36 @@ describe('M13 赛后复位（docs/14 §M13：MatchEnd 后回房间可再开一�
     setReady(room, 'b', true);
     expect(canStart(room).ok).toBe(true);
     expect(startMatch(room).ok).toBe(true); // 第二局
+  });
+
+  /**
+   * ★★ W24 收口：**补位人机赛后一并遣散**。它们的 `connected` 恒为真，
+   *   上面那条「剔除已断线者」筛不掉；而被清成 `ready=false` 之后没有任何人
+   *   会替它们准备 —— `canStart` 的「每个战斗席都要 ready」永远不满足，
+   *   补位又要等下一次开局才跑，于是一个开着补位的房间打完一局就**再也
+   *   开不出第二局**（静默：房主按准备只回一条 RoomState）。
+   * ★ 判据是调用方给的 id 集合（服务器的 `botSessions` 键），不在这里按
+   *   名字前缀猜 —— 名字是玩家可控字符串。
+   */
+  it('★★ 遣散补位人机：名单只剩真人，房主一个人也能再开一局', () => {
+    room.config.fillWithBots = true; // 人机补位房 —— 这条规则只对它有意义
+    addReady('a', Slot.Red, 'mage');
+    addReady('bot1', Slot.Blue, 'warrior');
+    expect(startMatch(room).ok).toBe(true);
+
+    resetForRematch(room, new Set(['bot1']));
+    expect(room.players.map((p) => p.id)).toEqual(['a']);
+    // 补位在下一次开局重新算（botSeatsNeeded 是幂等的），所以这里就该只剩真人
+    setReady(room, 'a', true);
+    expect(canStart(room).ok, '人机留在名单里时这一步永远开不出第二局').toBe(true);
+  });
+
+  it('★ 不传 botIds 时行为逐字不变（老调用点一个都不用改）', () => {
+    addReady('a', Slot.Red, 'mage');
+    addReady('bot1', Slot.Blue, 'warrior');
+    expect(startMatch(room).ok).toBe(true);
+    resetForRematch(room);
+    expect(room.players.map((p) => p.id)).toEqual(['a', 'bot1']);
   });
 });
 
@@ -653,5 +688,108 @@ describe('P5 换人数档时的地图回落（setMode 的后半句）', () => {
     setMap(room, 'host', asMapId('arena_ruins_colosseum'));
     expect(setMode(room, 'host', GameMode.Ctf8v8).ok).toBe(true);
     expect(room.config.mapId as string).toBe('ctf_twin_bridges');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+//  W24 中途加入的名单侧规则
+// ════════════════════════════════════════════════════════════════
+
+describe('W24 中途加入（名单侧）', () => {
+  /** 开一局 3v3：红 3 蓝 2，然后开打 */
+  const startWith = (red: number, blue: number) => {
+    for (let i = 0; i < red; i++) addReady(`r${i}`, Slot.Red, 'warrior');
+    for (let i = 0; i < blue; i++) addReady(`b${i}`, Slot.Blue, 'mage');
+    room.started = true;
+  };
+
+  it('freeSeatsOn：按 teamSizeOf 算，满了是 0，观战席不设限（3.2）', () => {
+    startWith(3, 2);
+    expect(freeSeatsOn(room, Slot.Red)).toBe(0);
+    expect(freeSeatsOn(room, Slot.Blue)).toBe(1);
+    expect(freeSeatsOn(room, Slot.Spectator)).toBe(Infinity);
+  });
+
+  it('★★ 大乱斗红蓝合并计数（没有「两队」）', () => {
+    room = createRoom('r2', 'host', config({ mode: GameMode.Ffa }));
+    addReady('a', Slot.Red, 'warrior');
+    addReady('b', Slot.Blue, 'mage');
+    room.started = true;
+    const cap = freeSeatsOn(room, Slot.Red);
+    expect(cap).toBe(freeSeatsOn(room, Slot.Blue));
+    expect(cap).toBe(100 - 2);
+  });
+
+  it('★★ 观战席 → 有空位的队伍：席位与职业当场写进名单', () => {
+    startWith(3, 2);
+    joinRoom(room, 'late', '迟到的人');
+    expect(seatSpectator(room, 'late', Slot.Blue, asClassId('priest')).ok).toBe(true);
+    const p = room.players.find((x) => x.id === 'late')!;
+    expect(p.slot).toBe(Slot.Blue);
+    expect(p.classId as string).toBe('priest');
+  });
+
+  it('★★ 红方满了就只能进蓝方 —— 诚实拒绝，不静默塞进去', () => {
+    startWith(3, 2);
+    joinRoom(room, 'late', '迟到的人');
+    const r = seatSpectator(room, 'late', Slot.Red, asClassId('priest'));
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.reason).toContain('红方已满');
+    expect(room.players.find((x) => x.id === 'late')!.slot).toBe(Slot.Spectator);
+  });
+
+  it('★ 未开局的房间走不了这条路（该走 selectSlot）', () => {
+    joinRoom(room, 'late', '迟到的人');
+    expect(seatSpectator(room, 'late', Slot.Blue, asClassId('priest')).ok).toBe(false);
+  });
+
+  it('★ 战斗席不能靠它换队/退回观战席（11.5 不给这条路）', () => {
+    startWith(3, 2);
+    expect(seatSpectator(room, 'r0', Slot.Blue, asClassId('priest')).ok).toBe(false);
+  });
+
+  it('★ 职业非法一律拒（isPlayableClass，与 selectClass 同源）', () => {
+    startWith(3, 2);
+    joinRoom(room, 'late', '迟到的人');
+    expect(seatSpectator(room, 'late', Slot.Blue, asClassId('boss')).ok).toBe(false);
+  });
+
+  it('★★ takeOverSeat：顶替人机只换名字，阵营与职业原样（当场换职业 = 免费满血）', () => {
+    startWith(3, 2);
+    const seat = room.players.find((p) => p.id === 'r1')!;
+    const before = { slot: seat.slot, classId: seat.classId, ready: seat.ready };
+    expect(takeOverSeat(room, 'r1', '真人甲').ok).toBe(true);
+    expect(seat.name).toBe('真人甲');
+    expect(seat.slot).toBe(before.slot);
+    expect(seat.classId).toBe(before.classId);
+    expect(seat.ready).toBe(before.ready);
+  });
+
+  it('★ takeOverSeat 三道守卫：未开局 / 席位不存在 / 观战席', () => {
+    joinRoom(room, 'x', 'x');
+    expect(takeOverSeat(room, 'x', '甲').ok).toBe(false); // 未开局
+    room.started = true;
+    expect(takeOverSeat(room, '不存在', '甲').ok).toBe(false);
+    expect(takeOverSeat(room, 'x', '甲').ok).toBe(false); // 观战席不是战斗席
+  });
+
+  it('★★ leaveSpectator 只删观战席 —— 拿它删战斗席会被拒（不能规避死亡统计）', () => {
+    startWith(3, 2);
+    joinRoom(room, 'watcher', '观众');
+    expect(leaveSpectator(room, 'watcher')).toBe(true);
+    expect(room.players.some((p) => p.id === 'watcher')).toBe(false);
+    expect(leaveSpectator(room, 'r0')).toBe(false);
+    expect(room.players.some((p) => p.id === 'r0')).toBe(true);
+  });
+
+  it('★ unseatToSpectator：回滚那一步把席位与职业一起收回', () => {
+    startWith(3, 2);
+    joinRoom(room, 'late', '迟到的人');
+    seatSpectator(room, 'late', Slot.Blue, asClassId('priest'));
+    unseatToSpectator(room, 'late');
+    const p = room.players.find((x) => x.id === 'late')!;
+    expect(p.slot).toBe(Slot.Spectator);
+    expect(p.classId).toBeUndefined();
+    expect(p.ready).toBe(false);
   });
 });

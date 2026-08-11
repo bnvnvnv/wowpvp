@@ -345,6 +345,127 @@ export const setReady = (room: Room, playerId: string, ready: boolean): SelectRe
   return { ok: true };
 };
 
+// ── W24 中途加入 ────────────────────────────────────────────────
+
+/**
+ * W24：一个**人机补位席位**被真人顶替 —— 名单上把它改记成这个真人。
+ *
+ * ★★ 顶替是**断线接管的反向操作**：那边是「真人走了，人机坐下」，
+ *   这边是「人机让位，真人坐下」。两边共用同一个 `playerId` 与同一个实体，
+ *   所以名单条目**不新建也不删除**，只换一个名字 —— 阵营、职业、准备状态
+ *   全部原样（职业尤其重要：当场换职业等于一次免费满血，见 docs/08 §8.7）。
+ *
+ * ★ 为什么必须放在 sim 而不是服务器里：这是一次**名单变更**，
+ *   与 `joinRoom` / `selectSlot` 同族。服务器只做传输（RoomServer 文件头），
+ *   名单规则写在这里才有测试盯着。
+ *
+ * ⚠️ 三条守卫，一条都不能少：
+ *   · 必须**已开局** —— 没开局的房间该走正常的 `joinRoom`
+ *   · 席位必须**在名单里**
+ *   · 席位**不能是观战席** —— 观战席上没有战斗席可顶替
+ *  「这个席位现在是不是人机、是补位还是掉线接管」由服务器判（只有它持有
+ *   人机会话表）；那条判据是本函数**故意不复述**的 —— 复述就会有两份。
+ */
+export const takeOverSeat = (room: Room, seatPlayerId: string, name: string): SelectResult => {
+  if (!room.started) return { ok: false, reason: '比赛尚未开始，直接加入即可' };
+  const p = room.players.find((x) => x.id === seatPlayerId);
+  if (!p) return { ok: false, reason: '席位不存在' };
+  if (p.slot === Slot.Spectator) return { ok: false, reason: '观战席不是战斗席位' };
+  p.name = name;
+  p.connected = true;
+  return { ok: true };
+};
+
+/**
+ * W24：`slot` 这一队**现在还坐得下几个人**（0 = 满）。
+ *
+ * ★★ 「每队几个人」这条规则在本仓库只有一处（`teamSizeOf`），中途加入
+ *   不能在服务器里再判一遍 —— 那就是本文件头警告的第二份实现。服务器读它
+ *   来决定走哪条路（还有空位 → 新实体；满了 → 顶替人机），并把它填进
+ *   `RoomList.joinableSeats` 让大厅画出来。
+ * ★ 大乱斗没有「两队」：容量是**参战槽位总数**，红蓝合并计数
+ *   （与 `botSeatsNeeded` / `canStart` 的 FFA 分支同一口径）。
+ * ★ 观战席不设限（3.2）—— 传观战席返回 `Infinity` 是如实的，不是兜底。
+ */
+export const freeSeatsOn = (room: Room, slot: Slot): number => {
+  if (slot === Slot.Spectator) return Infinity;
+  const size = teamSizeOf(room.config.mode);
+  if (room.config.mode === GameMode.Ffa) {
+    const combatants = playersOn(room, Slot.Red).length + playersOn(room, Slot.Blue).length;
+    return Math.max(0, size - combatants);
+  }
+  return Math.max(0, size - playersOn(room, slot).length);
+};
+
+/**
+ * W24：**观战席 → 战斗席**（队伍还有空位的那条路；满员那条走 `takeOverSeat`）。
+ *
+ * ★ 与 `selectSlot` 的分工：那条是**开赛前**换阵营，开局即锁死（3.1 第 7 步）。
+ *   这条只在**开局后**用，而且只允许「观战席 → 有空位的队伍」这一个方向 ——
+ *   战斗席之间换队、或者战斗席退回观战席，都不给（后者是靠改席位规避
+ *   死亡统计，11.5 明确禁止；退出请走 `LeaveMatch`）。
+ * ★ 职业**当场写进名单**：这条路会新建一个实体，选的职业立刻生效
+ *   （没有「免费满血」的问题 —— 他本来就是新来的）。
+ */
+export const seatSpectator = (
+  room: Room,
+  playerId: string,
+  slot: Slot,
+  classId: ClassId,
+): SelectResult => {
+  if (!room.started) return { ok: false, reason: '比赛尚未开始，直接选阵营即可' };
+  if (slot === Slot.Spectator) return { ok: false, reason: '观战席不是战斗席位' };
+  const p = room.players.find((x) => x.id === playerId);
+  if (!p) return { ok: false, reason: '玩家不在房间中' };
+  if (p.slot !== Slot.Spectator) return { ok: false, reason: '你已经在战斗席上了' };
+  if (!isPlayableClass(classId)) return { ok: false, reason: `未知职业：${classId}` };
+  if (freeSeatsOn(room, slot) <= 0) {
+    return { ok: false, reason: `${slot === Slot.Red ? '红方' : '蓝方'}已满` };
+  }
+  p.slot = slot;
+  p.classId = classId;
+  // ★ 中途加入不需要「准备」—— 比赛已经在打了。置 true 是为了让名单口径一致
+  //   （战斗席上的人都是 ready），赛后 `resetForRematch` 会统一清掉。
+  p.ready = true;
+  return { ok: true };
+};
+
+/**
+ * W24：把刚坐上战斗席的人**放回观战席**。
+ *
+ * ★★ 存在的唯一理由是 `seatSpectator` 与 `admitToMatch`（名单侧与模拟侧）
+ *   之间那一步的**回滚**：名单答应了、世界那边却拒绝了（例如该队在这一拍
+ *   刚好被清台），不放回去的话名单上就多一个**没有身体的战斗席** ——
+ *   `canStart` 会把他算进人数、结算面板会给他留一行，而他不在世界里。
+ *   这类「半个状态」比直接失败难查得多。
+ * ★ 只对**没有身体**的人有意义，所以调用点只有那一处。它不是「换回观战席」
+ *   的通用入口（那条路 11.5 不给，见 `seatSpectator` 的 ★）。
+ */
+export const unseatToSpectator = (room: Room, playerId: string): void => {
+  const p = room.players.find((x) => x.id === playerId);
+  if (!p) return;
+  p.slot = Slot.Spectator;
+  p.ready = false;
+  delete p.classId;
+};
+
+/**
+ * W24：观战席退出（主动离开或断线）。**把人从名单里删掉**，返回是否删了。
+ *
+ * ★★ 与 `leaveMatch` 在开局后**只标记断线**的差别，是一条规则而不是优化：
+ *   11.5 那条「不能通过退出规避死亡统计」管的是**有角色的人** ——
+ *   观战者在世界里没有实体、没有死亡、没有统计行，留着他只会让
+ *   `resetForRematch` 的名单和 `dropIfEmpty` 的计数各带一个幽灵。
+ * ★ 只对观战席生效：拿它删一个战斗席会返回 false 而不是照删 ——
+ *   规避死亡统计的那条路不能从这里开。
+ */
+export const leaveSpectator = (room: Room, playerId: string): boolean => {
+  const p = room.players.find((x) => x.id === playerId);
+  if (!p || p.slot !== Slot.Spectator) return false;
+  room.players = room.players.filter((x) => x.id !== playerId);
+  return true;
+};
+
 // ── 3.2 阵容提示（只提示，不阻止）────────────────────────────────
 
 export interface CompositionHint {
@@ -474,13 +595,26 @@ export const startMatch = (room: Room): SelectResult => {
  *   · 剔除已断线者 —— 掉线超时/主动退出的人不会回到这条连接上，
  *     留着只会永远堵住 canStart（一个永不准备的名额）。他们想回来
  *     走的是全新的 JoinRoom，不是这份名单
+ *   · **遣散补位人机**（`botIds`，W24 收口补）—— 人机的 `connected` 恒为真，
+ *     所以上面那条筛不掉它们，而它们赛后被清成 `ready=false` 之后**没有
+ *     任何人会替它们准备**：`canStart` 的「每个战斗席都要 ready」永远
+ *     不满足，`fillBotSeats` 又要等 `beginMatch` 才跑 —— 一个开着人机补位
+ *     的房间打完一局就再也开不出第二局（静默：房主按准备只回一条 RoomState）。
+ *     顺带把席位让出来：观战者赛后想选阵营，两队都被人机占满时一个都选不到。
+ *     ★ 补位在下一次 `beginMatch` 重新算即可，`botSeatsNeeded` 本来就是幂等的。
  *
  * ★ 阵营与职业**保留** —— 「再来一局」的常见语义就是原班人马原阵容，
  *   想换的人在房间页里换（此刻已解锁）。
+ *
+ * ★ `botIds` 由**服务器**给（`sr.botSessions` 的键，与 `RoomPlayerView.bot`
+ *   同源）。不在这里按名字前缀猜：名字是玩家可控字符串，而「谁是人机」
+ *   只有开着人机会话的那一层知道。不传 = 老行为逐字不变。
  */
-export const resetForRematch = (room: Room): void => {
+export const resetForRematch = (room: Room, botIds?: ReadonlySet<string>): void => {
   room.started = false;
-  room.players = room.players.filter((p) => p.connected);
+  room.players = room.players.filter(
+    (p) => p.connected && !(botIds?.has(p.id) ?? false),
+  );
   for (const p of room.players) p.ready = false;
 };
 

@@ -9,11 +9,12 @@ import { hunter, mage, priest, warrior } from '../../data/index.js';
 import { box } from '../../data/maps/schema.js';
 import { vec3 } from '../../math/vec3.js';
 import { DispelType, GameMode, Resource, School } from '../../types/enums.js';
-import { TEAM_BLUE, TEAM_RED } from '../../types/ids.js';
+import { TEAM_BLUE, TEAM_RED, type EntityId } from '../../types/ids.js';
 import { aurasOf, createAuraStore, type AuraStore } from '../aura.js';
 import { applyDr, createDrStore, drFactor, type DrStore } from '../dr.js';
 import { createEntity } from '../entity.js';
 import { createGroundStore, type GroundStore } from '../groundArea.js';
+import { createMovementState, type MovementState } from '../movement.js';
 import { createProjectileStore } from '../projectile.js';
 import { dealDamage, resolveEffects, type CombatEvent } from '../effects/index.js';
 import { addEntity, allocEntityId, createWorld, type World } from '../world.js';
@@ -54,7 +55,11 @@ beforeEach(() => {
   auras = createAuraStore();
   dr = createDrStore();
   groundStore = createGroundStore();
-  deps = { world, auras, dr, ground: groundStore, projectiles: createProjectileStore() };
+  deps = {
+    world, auras, dr, ground: groundStore, projectiles: createProjectileStore(),
+    // X29（随 W24）：resetRound 要拔化形游走的锚，movement 是它的第五个旁挂仓
+    movement: new Map<EntityId, MovementState>(),
+  };
   arena = createArena({ mode: GameMode.Arena3v3, roundsToWin: 1 });
 });
 
@@ -377,6 +382,29 @@ describe('2.1 / 验收 #37 回合重置', () => {
 
     expect(w.resources.get(Resource.Rage)).toBe(0);
     expect(m.resources.get(Resource.Mana)).toBe(m.maxResources.get(Resource.Mana));
+  });
+
+  /**
+   * ★★ X29 余账（随 W24 清）：**化形游走的锚也是回合级的旁挂状态。**
+   *   `MovementState.wander` 记着「在哪里中的招」，而下一回合所有人会被摆回
+   *   准备室 —— 不拔锚的话，第二回合一开局那个人就朝着半张地图外的旧中招点
+   *   走回去（`teleportTo` 的注释点名要防的正是这一幕），而且**不会有任何
+   *   断言变红**：他确实在走，只是走错了地方。
+   */
+  it('★★ 化形游走的锚随回合作废（第二回合不带旧锚开局）', () => {
+    const e = spawn(mage, TEAM_RED);
+    deps.movement.set(e.id, {
+      ...createMovementState(vec3(9, 0, 9), 0),
+      wander: { anchorX: 9, anchorZ: 9, segment: 3, nextTurnAt: 99 },
+      velocity: vec3(1, 0, 1),
+    });
+
+    resetRound(arena, deps);
+
+    const st = deps.movement.get(e.id)!;
+    expect(st.wander, '第二回合带着上一回合的中招点开局').toBeUndefined();
+    // 拔锚顺带抹掉水平动量（stopWander 的语义），竖直分量不动
+    expect(Math.hypot(st.velocity.x, st.velocity.z)).toBe(0);
   });
 
   it('目标槽位也要清 —— 否则上回合的硬目标会渗进新回合', () => {
