@@ -107,6 +107,10 @@ import { takeExpired, type ReconnectRegistry } from './room/reconnect.js';
 import type { Session } from './room/Session.js';
 import { LIMITS } from './limits.js';
 import { log } from './log.js';
+import {
+  TURN_BURST_SERVER_RAD, admitYaw, clampYaw, createTurnBudget, refillTurnBudget,
+  type TurnBudget,
+} from './turnRate.js';
 
 /**
  * 一次 `pump()` 最多补几个 tick。
@@ -208,6 +212,34 @@ export class MatchLoop {
 
   /** 本 tick 收到的技能请求。每 tick 消费后清空 */
   private readonly pendingCasts = new Map<EntityId, CastIntent>();
+
+  /**
+   * A5：每个席位的**转身账本**（上次被采信的朝向 + 桶里还剩多少令牌）。
+   * 规则与取值理由全在 `shared/net/turnBudget.ts`，接线理由在 `turnRate.ts`。
+   *
+   * ★★ **它记的是「客户端上次说了什么」，不是 `entity.yaw`。** 两者会分开，
+   *   而分开的时候按前者才对：死亡之握把人拽过来、影袭把人挪到背后
+   *   （`effects/displacement.ts` 会直接写 `source.yaw`）、化形游走替他走路 ——
+   *   这些都是 **sim 自己**在改朝向，不是客户端的主张。拿 `entity.yaw` 当基准
+   *   的话，玩家下一 tick 的正常输入会被判成「转太快」，于是他要花 250ms
+   *   转回自己本来就朝着的方向 —— 白白为服务器自己的位移道歉。
+   *
+   * ★ 账本里的 `yaw` 为 `undefined` = 还没采信过任何朝向（开局第一条 /
+   *   中途加入 / 重连后的第一条 / 人机把席位交还给真人），此时**原样采信**。
+   * ★ 不需要清理：键是 `EntityId`，一局之内单调分配且上限就是花名册人数，
+   *   而这张表随 `MatchLoop` 一起随比赛结束被丢掉。
+   */
+  private readonly turnBudgets = new Map<EntityId, TurnBudget>();
+
+  /** 取（或开）一个席位的转身账本。★ 服务器口径的桶容量，见 `turnRate.ts` 的 ★★ */
+  private budgetOf(entityId: EntityId): TurnBudget {
+    let b = this.turnBudgets.get(entityId);
+    if (b === undefined) {
+      b = createTurnBudget(TURN_BURST_SERVER_RAD);
+      this.turnBudgets.set(entityId, b);
+    }
+    return b;
+  }
   /** S1：每玩家本 tick 已入队的指令数（enqueue 的上限判据），applyCommands 清零 */
   private readonly pendingCommandCounts = new Map<string, number>();
 
@@ -597,6 +629,63 @@ export class MatchLoop {
       if (entityId === undefined) continue;
       const taken = s.takeInputs();
       const latest = taken[taken.length - 1];
+
+      /**
+       * ★★ **A5 人机豁免（S1 限流「人机会话跳过」的同款先例）。**
+       *
+       *   人机的 `Input` 是服务器自产自销的（`BotDriver` → `BotSocket` →
+       *   同一条协议栈），**不在威胁模型里**：没有一个不受信任的对端能伪造它。
+       *   而不豁免的代价是实打实的 —— `BotDriver` 每 tick 直接把 yaw 设成
+       *   「朝向当前目标」，追人时的瞬间转身会被钳成 5 个 tick 的缓转，
+       *   于是朝向门禁（`requiresFacing`）、背刺判定、自动攻击的正面弧
+       *   全部改口径，**配平基线当场漂移**。这是本批次的红线。
+       *
+       * ★ 豁免是**双向**的：人机既不过闸，也**不留下基准**。于是一个从头到尾
+       *   由人机开的席位在 `turnBudgets` 里根本没有条目 —— W24 中途加入的人
+       *   顶替它时，他的第一条朝向按「原样采信」进来（账本里的 `yaw` 还是
+       *   `undefined`），不会被人机转出来的角度拖着慢慢转回去。
+       * ⚠️ 如实：**真人 → 掉线托管 → 重连**这条路上基准是留着的（他断线前
+       *   自己那次主张）。回来时镜头若在反方向，服务器最多用 250ms 追齐 ——
+       *   没为它开豁免，因为那是他自己的旧主张，不是人机的。
+       */
+      const fromClient = !s.isBot;
+
+      /**
+       * ★★ **A5：令牌注入在这里，在「有没有输入」之前。**
+       *
+       *   预算的时钟是**服务器 tick**，不是消息到达。放在 `if (!latest)` 之后
+       *   （旧版的写法）就变成「按收到 Input 的 tick 数发预算」：客户端一帧补
+       *   两个固定步会把两条 `Input` 挤进同一个 tick、留下一个空 tick，于是
+       *   有效上限被腰斩 —— 实测 600°/s 的成对投递每秒拉开 270° 且永远追不齐。
+       *   `turnRate.ts` 的 ★★ 记着这条实测。
+       */
+      const budget = fromClient ? this.budgetOf(entityId) : undefined;
+      /** 本 tick 被采信的移动 yaw。人机不过闸 ⇒ 原样 */
+      let yaw = latest?.characterYaw ?? 0;
+      if (budget) {
+        if (latest) {
+          yaw = admitYaw(budget, latest.characterYaw);
+        } else {
+          /**
+           * 这一 tick 没有 `Input`，但可能有一条带 `facing` 的 `CastRequest`
+           * （它在 `requestCast` 里已经按**同一个基准、同一个桶**钳过了）。
+           * 基准与扣费要跟着它走 —— 否则「停发 Input、只发 facing」就变成了
+           * 一条免费的转身通道：基准冻在原地，而他每 tick 都能再要一份令牌。
+           */
+          const facing = this.pendingCasts.get(entityId)?.facing;
+          if (facing !== undefined) admitYaw(budget, facing);
+        }
+        /**
+         * ★★ **注入放在采信之后 = 「下一 tick 的令牌在消息到达之前就已经在桶里」。**
+         *   `CastRequest` 是在两次 `advance()` 之间到达的，`requestCast` 当场
+         *   就要拿桶里的令牌钳它一次（那条路不能等到 tick 里再钳：`pendingCasts`
+         *   只留最后一条，钳晚了就等于没钳）。注入若放在采信之前，这条请求读到的
+         *   就是**上一 tick 用剩的**令牌 —— 持续转身的玩家永远是 0，一条合法的
+         *   方向技能会被钳成「原地不动」。放在之后，两条路读到的是同一桶。
+         * ★ 无论这一 tick 有没有输入都注入恰好一次 —— 时钟是 tick，不是消息。
+         */
+        refillTurnBudget(budget);
+      }
       if (!latest) continue;
       /**
        * 按契约每 tick 恰好一条（见 `Session.inputQueue`）。客户端偶尔跑快
@@ -608,12 +697,18 @@ export class MatchLoop {
        *   「客户端发 dt=100 就能瞬移」在这里**写不出来** —— 服务器的步长
        *   根本不来自客户端。codec 里对 dt 的范围校验是第二道防线，
        *   不是唯一一道。`verify:m10` 第 5 条验的就是这件事。
+       *
+       * ★★ **A5：朝向也不是照单全收的** —— 转身令牌桶在这里落地，
+       *   `turnRate.ts` 写了为什么是「钳到令牌用尽为止」而不是拒绝整条输入。
+       *   移动 yaw 与 `CastRequest.facing` 那把尺**共用同一个账本**（同一个
+       *   基准、同一个桶）：一 tick 之内两条路加起来也只花得动一桶令牌。
+       *   采信本身发生在上面那段（注入与采信的先后有讲究，见那里的 ★★）。
        */
       inputs.set(entityId, {
         forward: latest.forward,
         strafe: latest.strafe,
         jump: latest.jump,
-        yaw: latest.characterYaw,
+        yaw,
       });
     }
     return inputs;
@@ -635,9 +730,39 @@ export class MatchLoop {
      *   请求），宁可这样也不要「查不到就当人机」那种会把红线判反的兜底。
      */
     const isBot = this.sessionOf(playerId)?.isBot === true;
+    /**
+     * ★★ **A5：`facing` 与移动 yaw 是同一把尺。**
+     *
+     *   方向技能（`shape` 为锥/线）在 `tickWorld` 第 1 步会拿 `intent.facing`
+     *   直接写 `caster.yaw`，**赶在 `validateCast` 的朝向门禁之前** ——
+     *   不钳的话，「一条 CastRequest 就能瞬间瞄向任意方向」是比移动 yaw
+     *   更短的一条路：第 2 步的移动积分马上把 `caster.yaw` 覆盖回去，
+     *   于是**对手的屏幕上他一帧都没转过身**，而那一发已经打在脸上了。
+     *
+     * ★ 这里用 `clampYaw`：只**读**账本不动它（基准与扣费都写在
+     *   `collectInputs`，每 tick 恰好一次）。于是同一 tick 内连发 20 条
+     *   `CastRequest` 也没用：每条都拿同一个起始基准、同一桶令牌钳一遍，
+     *   谁也累加不了谁 —— 而 `pendingCasts` 本来就只留最后那一条。
+     * ★ 人机豁免的理由与红线同 `collectInputs` 的 ★★（`BotDriver` 每 tick
+     *   发的 `facing: self.yaw` 是服务器自己算出来的，不在威胁模型里）。
+     *
+     * ⚠️ **如实登记一处残余**：两条路各拿本 tick 起始的账本钳一次，于是同一
+     *   tick 里「身体往左转满、瞄准往右转满」能让**瞄准与身体差出两桶令牌**。
+     *   没有再往下收（改成拿本 tick 采信过的移动 yaw 当基准）的理由：那要把
+     *   这道闸挪进 `collectInputs`，而挪进去之后「发完 CastRequest 就断开」
+     *   的那一瞬（会话已不在 `sessions()` 里）就没人钳它了 —— 用一个结构性的
+     *   缺口换这点收紧，不划算。
+     * ⚠️ 另一处如实：桶满时一条 `CastRequest` 能瞄向任意方向（180° 就是
+     *   「任意」的上限）。这是令牌桶的取舍本身，`turnBudget.ts` 的 ⚠️ 写了
+     *   为什么不能靠收紧它来挡 aimbot。
+     */
+    const budget = isBot ? undefined : this.turnBudgets.get(entityId);
+    const admitted: CastIntent = intent.facing !== undefined && budget !== undefined
+      ? { ...intent, facing: clampYaw(budget.yaw, budget.tokens, intent.facing) }
+      : intent;
     // ★ 一个实体一 tick 只有一个请求（后一个覆盖前一个）——
     //   与客户端 CombatDirector.requestCast 同语义
-    this.pendingCasts.set(entityId, isBot ? intent : { ...intent, queue: true });
+    this.pendingCasts.set(entityId, isBot ? admitted : { ...admitted, queue: true });
   }
 
   /**
