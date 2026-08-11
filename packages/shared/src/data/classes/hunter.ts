@@ -63,8 +63,24 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Focus, amount: 35 },
     counters:
       '1.6 秒物理准备条全程可见：可被专用打断、缴械、硬控制、移动和强制位移终止（7.1 / 7.3）；**沉默无效**，沉默只禁止魔法技能（7.3 / 验收 #17）；被打断只取消本次射击，不封锁任何系，猎人可以立刻改用其他技能（7.2 / 验收 #16）；完成瞬间会重新检查距离与视线，拉开 35 米或断视线即失败。',
+    /**
+     * W25：箭也要飞到才结算（6.6）。速度取 `ARROW_SPEED`（75）而不是法术的 55 ——
+     * 最远 35 米飞 0.47 秒。
+     *
+     * ★★ **弹道是结算段，与 1.6 秒物理准备条没有交叉。** 准备条被打断时
+     *   一发箭都还没射出去（`lockedProjectile` 是读条**完成**时才跑的效果），
+     *   所以「被打断只取消本次射击、不封锁任何系」的语义（7.2 / 验收 #16、#17）
+     *   一个字都不变；反过来，箭已经在飞之后再打断猎人也追不回它 ——
+     *   与法术侧「施法者死了弹体照飞」是同一条。
+     */
     // M14：2.6→3.0 —— 1.6s 站桩准备 + 可被打断的风险溢价
-    effects: [{ kind: 'damage', school: School.Physical, amount: { weaponPercent: 3 } }],
+    effects: [
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.ARROW_SPEED,
+        onHit: [{ kind: 'damage', school: School.Physical, amount: { weaponPercent: 3 } }],
+      },
+    ],
     description: '经过 1.6 秒瞄准后射出一发重箭，造成 300% 武器伤害。准备期间不能移动。',
   },
   {
@@ -85,10 +101,14 @@ const skills: SkillDef[] = [
     counters:
       '瞬发，不能被专用打断；但属于奥术系，沉默、奥术系被封锁和法术免疫都能挡住（7.3 / 8.2）；仍受视线、距离和公共冷却限制。',
     /**
-     * W23：秘法箭要飞到才结算（6.6）。
-     * ★ 迁移口径按**学派**而不是按「它长得像不像箭」：秘法箭是奥术法术
-     *   （沉默/奥术锁定挡得住它），与霜矢同族。猎人的**物理**远程
-     *   （瞄准射击/震慑箭/反制射击/穿透重弩箭）另立一批 —— 见 docs/15 的 W25。
+     * W23：秘法箭要飞到才结算（6.6）。W25 已经把猎人的物理远程
+     * （瞄准射击 / 震慑箭）一起迁了，口径里的「学派非 physical」那一条已删。
+     *
+     * ⚠️ **速度仍是法术档的 55，而瞄准射击/震慑箭是 75** —— 同一张弓射出去的
+     *   三支箭有两种速度，这是如实的余账不是遗漏：W25 拍板「法术 55 不动」，
+     *   而秘法箭与毒蛇钉刺属于 W23 那批（奥术/自然学派，沉默与学派锁定
+     *   挡得住它们，机制上确实是法术）。要统一就把这两条也抬到
+     *   `ARROW_SPEED` 并单独归因 —— 别当成没人看见（docs/15 W25 行已入册）。
      */
     // M14：1.1→1.3 —— 焦点主要出口，机动填充
     effects: [
@@ -117,19 +137,30 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Focus, amount: 15 },
     counters:
       '普通减速不能被「战斗意志」解除（8.3），但自由祝福、消失、逃脱、死亡脚步和驱散移动限制都能摆脱；减速不叠乘，只取最强的一个；不参与控制递减，所以也不会因为递减而变短。',
+    /**
+     * W25：箭要飞到才减速（6.6），30 米 / 75 m·s⁻¹ ≈ 0.4 秒。
+     * ★ 这一条的迟到是**有代价**的：震慑箭是猎人拉开距离的唯一手牌，
+     *   对手贴脸时那 0.4 秒里他还在挨打。如实记着，别在归因时忘了这笔。
+     */
     effects: [
       {
-        kind: 'applyAura',
-        aura: {
-          id: 'hunter.concussive_shot',
-          name: '震慑箭',
-          kind: 'debuff',
-          duration: 5,
-          dispelType: DispelType.Movement,
-          clearableByTrinket: false,
-          modifiers: { moveSpeed: 0.6 },
-          description: '移动速度降低 40%。',
-        },
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.ARROW_SPEED,
+        onHit: [
+          {
+            kind: 'applyAura',
+            aura: {
+              id: 'hunter.concussive_shot',
+              name: '震慑箭',
+              kind: 'debuff',
+              duration: 5,
+              dispelType: DispelType.Movement,
+              clearableByTrinket: false,
+              modifiers: { moveSpeed: 0.6 },
+              description: '移动速度降低 40%。',
+            },
+          },
+        ],
       },
     ],
     description: '使目标移动速度降低 40%，持续 5 秒。',
@@ -228,6 +259,12 @@ const skills: SkillDef[] = [
     requiresLos: true,
     counters:
       '打断法术或引导时封锁该系魔法技能 3 秒；打断物理射击准备条（瞄准射击、装填）时只取消本次动作，**不锁武器、不封锁任何系**（7.2 / 验收 #16）；目标未在施法、或施法带盾牌标记（不可打断）时仍然进入冷却；假读条可以骗掉（7.5）；本身是物理技能，不受沉默限制但会被缴械禁用。',
+    /**
+     * ⚠️ **W25 迁移物理远程时这一条维持排除** —— 与 W23 排除①同一条理由，
+     *   而且那条理由**优先于「同组一起迁」**：断法迟到 0.4 秒等于没断，
+     *   打断的是「正在读的那条」，箭飞到时那条早读完了。
+     *   广度锁的反向断言钉着它（`sim/lockedProjectile.test.ts`）。
+     */
     effects: [{ kind: 'interrupt', schoolLockSeconds: 3 }],
     description: '射出一箭打断法术、引导或射击准备。打断魔法时封锁该系技能 3 秒。',
   },

@@ -1048,13 +1048,14 @@ describe('P1a 工具函数', () => {
 });
 
 // ════════════════════════════════════════════════════════════════
-//  W23：法术弹道迁移前后，bot 对同一技能的判断必须逐位不变
+//  W23 / W25：弹道迁移前后，bot 对同一技能的判断必须逐位不变
 // ════════════════════════════════════════════════════════════════
 
 /**
  * ★★ **这组测试守的是一条结构红线，不是一个数值。**
  *
- *   W23 把 21 个法术的载荷从技能顶层挪进了 `lockedProjectile.onHit`。
+ *   W23 把 21 个法术的载荷从技能顶层挪进了 `lockedProjectile.onHit`，
+ *   W25 又把 4 条物理远程（瞄准射击/震慑箭/掷锤/致盲）挪了进去。
  *   bot 的三个判据（`hasDamage` / `burstDamageOf` / `ccCategoryOf`）
  *   全部是**顶层扫描**出身 —— 不跟着下探的话：
  *     · `hasDamage` 全假 → 法师/牧师/德鲁伊/圣骑士的选招池只剩杂项
@@ -1091,18 +1092,47 @@ const MIGRATED_SKILLS: readonly SkillDef[] = ALL_SKILLS.filter((sk) =>
   sk.effects.some((e) => e.kind === 'lockedProjectile'),
 );
 
-describe('★★ W23：bot 估值在弹道迁移前后逐位不变', () => {
+describe('★★ W23/W25：bot 估值在弹道迁移前后逐位不变', () => {
   it('★★ 夹具前提：全花名册的迁移技能一个不漏（漏抓职业本身要红）', () => {
     expect(MIGRATED_SKILLS.length, '一个迁移技能都没抓到 —— 夹具或数据出问题了').
-      toBeGreaterThanOrEqual(21);
+      toBeGreaterThanOrEqual(25);
     // 手写职业名的老夹具漏掉的就是这两家 —— 逐条点名，别再靠计数兜
     const ids = MIGRATED_SKILLS.map((sk) => sk.id as string);
     for (const id of [
       'paladin.judgement', 'paladin.hammer_of_justice', 'paladin.holy_bolt',
       'deathknight.chains_of_ice', 'deathknight.strangulate',
+      /**
+       * ★★ W25 的四条物理远程。**瞄准射击是猎人 bot 的主力输出** ——
+       *   `burstDamageOf` 认不出它，猎人的 argmax 会从 300% 武器伤害的
+       *   那一发退化成随便按一个填充键，而猎人已经是基线最低的一档。
+       *   掷锤与致盲进的是 `ccCategoryOf` 那条（控制步骤），漏了等于
+       *   战士/盗贼各少一个控制键。
+       */
+      'hunter.aimed_shot', 'hunter.concussive_shot',
+      'warrior.storm_bolt', 'rogue.blind',
     ]) {
       expect(ids, `${id} 没进夹具 —— 它的 bot 判据没有任何断言站在断点上`).toContain(id);
     }
+  });
+
+  it('★★ W25：猎人/战士/盗贼手上仍然有 bot 认得出来的伤害与控制键', () => {
+    /**
+     * ★★ 上面那三条等价断言是「迁移前后一致」，**两边同时坏掉时它们照样绿**
+     *   （`hasDamage` 恒假 = 恒假）。这条是正面断言，与法师那条同族 ——
+     *   W23 当时只写了法系三家，物理远程这批要自己站一条。
+     */
+    expect(hunter.skills.filter(hasDamage).length, '猎人的伤害技能 bot 全认不出来了').
+      toBeGreaterThan(2);
+    const aimed = hunter.skills.find((sk) => (sk.id as string) === 'hunter.aimed_shot')!;
+    expect(hasDamage(aimed), '瞄准射击不再算伤害技能 —— 猎人 bot 的主力输出哑火').toBe(true);
+    const s = setup();
+    expect(burstDamageOf(aimed, s.self), '瞄准射击的单发威力归零了').toBeGreaterThan(0);
+
+    // 控制侧：掷锤仍是昏迷链、致盲仍是迷惑链
+    const stormBolt = warrior.skills.find((sk) => (sk.id as string) === 'warrior.storm_bolt')!;
+    expect(ccCategoryOf(stormBolt), '掷锤不再被当控制键').toBe(DrCategory.Stun);
+    const blind = rogue.skills.find((sk) => (sk.id as string) === 'rogue.blind')!;
+    expect(ccCategoryOf(blind), '致盲不再被当控制键').toBe(DrCategory.Incapacitate);
   });
 
   it('★★ hasDamage：迁移前后一致（漏了它法系 bot 直接哑火）', () => {

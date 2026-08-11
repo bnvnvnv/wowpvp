@@ -6,7 +6,13 @@
  *   锁定投射物  释放瞬间确认命中资格，飞行只是表现。
  *               目标释放后移动不会使其自然落空；免疫、吸收、反射仍可生效。
  *               例：火球、审判、风暴之锤、普通箭矢
+ *               ★ 这四个例子直到 **W25** 才全部为真：M4~W22 期间本模块
+ *                 零生产调用方（举着范例、没人调用）；W23 迁了法术那批
+ *                 （火球/审判）；风暴之锤与普通箭矢是 W25 补上的最后两个。
+ *               ★★ 「命中资格」**包含闪避/招架/格挡**（W25 收口的裁决）——
+ *                 它们赖以成立的两个事实冻结在 `HitSnapshot` 里，见下面。
  *
+
  *   碰撞投射物  沿真实方向飞行并碰撞，可以被躲避、被墙体阻挡、命中第一个目标。
  *               例：穿透箭、直线魔法弹
  *
@@ -15,7 +21,7 @@
  *               例：陨石、箭雨
  */
 
-import { firstProjectileHit, segmentClipT } from '../math/geometry.js';
+import { firstProjectileHit, isBehind, segmentClipT } from '../math/geometry.js';
 import { addScaled, distance2D, normalize, sub, vec3, type Vec3 } from '../math/vec3.js';
 import type { EffectDef } from '../data/schema.js';
 import { TargetFilter } from '../types/enums.js';
@@ -24,6 +30,42 @@ import { hitCircleOf, isFriendly, isHostile, isSelectableBy, type CombatEntity }
 import { listEntities, type World } from './world.js';
 
 // ── 锁定投射物 ───────────────────────────────────────────────────
+
+/**
+ * ★★ **释放瞬间的空间快照**（W25 收口）。
+ *
+ * 6.6 那句「释放瞬间确认命中资格，飞行只是表现」在 W23 只迁法术时是**自动**
+ * 成立的：`rollAvoidance` 第一行就是「学派非物理直接放行」，闪避/招架/格挡
+ * 那一段对法术压根不执行。W25 把物理远程送进这条路之后，那两条**读实时状态**
+ * 的判据就暴露了 —— 规避判定读的是**抵达那一刻**的朝向与可行动状态，于是：
+ *
+ *   · 目标在箭飞行途中转身 180° → 射手「变成」在他背后 → 20% 格挡、
+ *     匕首招架、盗贼闪避**整条跳过**，一发已经锁定的箭凭空多打满伤害；
+ *   · 目标在飞行途中被**队友**控住 → 同样跳过规避；
+ *   · 反过来，释放瞬间背对射手（本该吃背刺、无规避）的人，
+ *     只要在 0.47 秒里转回正面就能把箭闪掉。
+ *
+ * 三者都是「**走位/转身改变了一发已经锁定的箭的结果**」，正是 6.6 要禁掉的
+ * 那件事。裁决（W25 收口）：**命中资格包含规避**，所以规避赖以成立的那两个
+ * **事实**在这里冻结；至于「掷不掷得中」，仍然在抵达那一刻掷。
+ *
+ * ★ 冻结的是**事实**（朝向、能不能做动作），不是**几率**：
+ *   闪避/招架/格挡的**数值**仍由抵达那一刻的光环决定 —— 盗贼在箭飞行途中
+ *   开闪避（「5 秒内正面闪避提高 50%」）**应该**有用，那与免疫/吸收/反射
+ *   同族，是 6.6 明文允许的反制方式。分界线是「按了一个键」与「转了个身」。
+ */
+export interface HitSnapshot {
+  /**
+   * 释放瞬间射手是否位于目标背后（6.5 的 120° 弧）。
+   * 同时决定两件事：规避能不能掷（背后绕过闪避/格挡）、背刺加成算不算。
+   */
+  fromBehind: boolean;
+  /**
+   * 释放瞬间目标能不能做出闪避/招架这类**动作**（7.3：昏迷/恐惧时谈不上）。
+   * ★ 不含 `alive`：目标死了根本不会产生命中事件，那由 `tickProjectiles` 管。
+   */
+  canAvoid: boolean;
+}
 
 /**
  * 锁定投射物。
@@ -43,6 +85,8 @@ export interface HomingProjectile {
   speed: number;
   /** 到达并结算的绝对时间。到点即结算，与视觉位置无关 */
   impactAt: number;
+  /** 释放瞬间的朝向/可行动事实。见 `HitSnapshot` 的长注释 */
+  hitSnapshot: HitSnapshot;
   onHit: readonly EffectDef[];
 }
 
@@ -138,6 +182,11 @@ export const spawnHoming = (
     speed: o.speed,
     // 命中时间由释放瞬间的距离决定，目标之后跑多远都不改变它
     impactAt: world.time + Math.max(0.05, dist / o.speed),
+    // 规避赖以成立的两个事实同样在这一刻冻结（见 HitSnapshot）
+    hitSnapshot: {
+      fromBehind: isBehind(o.source.position, o.target.position, o.target.yaw),
+      canAvoid: !o.target.flags.stunned && !o.target.flags.feared,
+    },
     onHit: o.onHit,
   };
   store.items.push(p);

@@ -6,7 +6,7 @@
  * 保持「一个技能一个对象、附录A#3 九项全填、counters 写人话」的写法。
  */
 
-import { RANGE } from '../../constants/combat.js';
+import { RANGE, SPELL_PROJECTILE } from '../../constants/combat.js';
 import {
   CastKind,
   DispelType,
@@ -129,9 +129,26 @@ const skills: SkillDef[] = [
     requiresLos: true,
     cost: { resource: Resource.Rage, amount: 15 },
     counters: '受昏迷递减；免疫、吸收、反射仍然生效（6.6）；释放瞬间失去视线或超距会直接失败。',
+    /**
+     * W25：锤要飞到才晕（6.6）。20 米 / 55 m·s⁻¹ ≈ 0.36 秒。
+     *
+     * ★ 速度取法术档的 55 而不是箭矢的 75：**掷出去的钝器不该比箭快**。
+     *   风暴之锤本来就是 `projectile.ts` 文件头举的锁定投射物范例 ——
+     *   W25 之前那句范例是**空头支票**（举着它，代码里却是瞬间落账）。
+     * ★★ 昏迷进 `onHit` 之后递减链一个字不动：`applyControl` 在弹体抵达时
+     *   由同一条 `resolve()` 调用，DR 类别、`clearableByTrinket`、
+     *   从 skillId 反查学派全部照走。变的只是**递减计数从哪一刻开始**
+     *   —— 现在是命中那一刻，比按下键晚 0.36 秒。
+     */
     effects: [
-      { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.4 } },
-      { kind: 'stun', duration: 2 },
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [
+          { kind: 'damage', school: School.Physical, amount: { weaponPercent: 0.4 } },
+          { kind: 'stun', duration: 2 },
+        ],
+      },
     ],
     description: '投出战锤造成少量伤害并昏迷 2 秒。释放后目标移动不会自然躲开。',
   },

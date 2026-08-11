@@ -9,7 +9,7 @@
  * 消失属于「先掉旗再播表现」（8.4 / 12.3 / 验收 #40），下面逐条落到字段上。
  */
 
-import { RANGE } from '../../constants/combat.js';
+import { RANGE, SPELL_PROJECTILE } from '../../constants/combat.js';
 import {
   CastKind,
   DispelType,
@@ -514,7 +514,24 @@ const skills: SkillDef[] = [
     cost: { resource: Resource.Energy, amount: 30 },
     counters:
       '走「迷惑」递减链（8.2），与变形术、寒霜陷阱**共用一条链** —— 队伍里控制重复时会被砍到不足 1 秒；**受到任意伤害立即解除**，队友的持续伤害经常自己把它拆掉；「战斗意志」可解（8.3）；45 秒冷却是盗贼最贵的一个键。',
-    effects: [{ kind: 'incapacitate', duration: 4, breakDamage: 1 }],
+    /**
+     * W25：致盲粉要飞到才生效（6.6）。10 米 / 55 m·s⁻¹ ≈ 0.18 秒。
+     *
+     * ★ 速度取法术档的 55 而不是箭矢的 75：**撒出去的粉末不该比箭快**。
+     * ★★ 这 0.18 秒是**真实的削弱**，如实记着：致盲的用法是「对手抬手爆发的
+     *   那一瞬掐掉它」，晚 0.18 秒就可能吃满第一发。它同时是盗贼 45 秒
+     *   冷却里最贵的一个键 —— 归因时这条与掷锤分开看（两条都是近战职业的
+     *   远程手牌，但一个是开团起手、一个是救命）。
+     * ★ 「受到任意伤害立即解除」（`breakDamage: 1`）与递减链照旧：载荷下沉
+     *   一层不改变 `applyControl` 的任何参数。
+     */
+    effects: [
+      {
+        kind: 'lockedProjectile',
+        speed: SPELL_PROJECTILE.SPEED,
+        onHit: [{ kind: 'incapacitate', duration: 4, breakDamage: 1 }],
+      },
+    ],
     description: '致盲目标 4 秒，期间无法行动，受到任何伤害立即解除。用来脱身或掐断对手的爆发。',
   },
 

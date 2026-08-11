@@ -180,8 +180,17 @@ export const dealDamage = (
     attackerMods.damageDealt *
     damageTakenFor(targetMods, school);
 
-  // 背刺加成（6.5：攻击者位于目标背后约 120 度）
-  if (opts.behindBonus && isBehind(ctx.source.position, target.position, target.yaw)) {
+  /**
+   * 背刺加成（6.5：攻击者位于目标背后约 120 度）。
+   * ★ W25：与上面的规避读**同一个**空间事实 —— 一次结算里「他背对我」
+   *   只能有一个答案。今天没有任何锁定投射物带 `behindBonus`
+   *   （唯一的使用方是盗贼背刺，3.8 米近战），所以这一行的行为逐位不变；
+   *   写成这样是为了将来真有一发「背后飞行体」时不必再想一遍。
+   */
+  const behind = ctx.hitSnapshot
+    ? ctx.hitSnapshot.fromBehind
+    : isBehind(ctx.source.position, target.position, target.yaw);
+  if (opts.behindBonus && behind) {
     amount *= 1 + opts.behindBonus;
   }
   amount = Math.max(0, Math.round(amount));
@@ -276,6 +285,16 @@ export type Avoidance = 'dodge' | 'parry' | 'block';
  * ⚠️ 用 `nextRandom(target)` 而不是 `Math.random()`：
  *   随机流挂在**被攻击者**身上 —— 闪避/招架/格挡都是**他**的能力，
  *   掷骰归他管。这样攻击方新增任何随机判定都不会扰动他的序列。
+ *
+ * ★★ **W25 收口：这一段读的两个「事实」可能来自 0.47 秒前。**
+ *   `ctx.hitSnapshot` 有值 = 这是一发锁定投射物抵达时的结算，那么
+ *   「射手在不在背后」「目标当时能不能做动作」按**释放瞬间**算 ——
+ *   6.6 的「释放瞬间确认命中资格」把规避也算在命中资格里。
+ *   W23 只迁法术时这条压根不执行（下面第一行就放行了），
+ *   W25 把物理远程送进来才第一次成为问题。详见 `projectile.ts` 的
+ *   `HitSnapshot`。**没有快照时（近战/普攻/DoT/直接施放）一切照旧现读。**
+ *   ⚠️ 冻结的只有「事实」：`mods` 仍是抵达那一刻的光环聚合值，
+ *   所以盗贼在箭飞行途中开闪避**照样有用**（那是免疫/吸收同族的反制）。
  */
 const rollAvoidance = (
   ctx: EffectContext,
@@ -285,11 +304,17 @@ const rollAvoidance = (
 ): Avoidance | undefined => {
   // 9.x 闪避原话：「法术不受影响」。招架与格挡同理，都是物理动作
   if (school !== School.Physical) return undefined;
-  // 无法行动时谈不上闪避/招架（7.3）
-  if (target.flags.stunned || target.flags.feared || !target.alive) return undefined;
+  if (!target.alive) return undefined;
+  // 无法行动时谈不上闪避/招架（7.3）。弹体：按**射出去那一刻**他能不能动
+  const canAvoid = ctx.hitSnapshot
+    ? ctx.hitSnapshot.canAvoid
+    : !target.flags.stunned && !target.flags.feared;
+  if (!canAvoid) return undefined;
 
   // ★ 正面才闪避/格挡：背后攻击绕过它们（6.5 的空间逻辑）
-  const fromBehind = isBehind(ctx.source.position, target.position, target.yaw);
+  const fromBehind = ctx.hitSnapshot
+    ? ctx.hitSnapshot.fromBehind
+    : isBehind(ctx.source.position, target.position, target.yaw);
 
   if (!fromBehind && mods.dodgeFront > 0 && nextRandom(target) < mods.dodgeFront) return 'dodge';
   if (mods.parry > 0 && nextRandom(target) < mods.parry) return 'parry';

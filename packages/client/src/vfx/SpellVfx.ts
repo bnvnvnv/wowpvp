@@ -143,15 +143,43 @@ const NEUTRAL: AttributeVisual = {
 };
 
 /**
- * 表现用弹体的飞行速度（米/秒）。
+ * 表现用弹体的**兜底**飞行速度（米/秒）。
  *
  * ★★ **W23 起这个数不再住在客户端** —— 它与 sim 的锁定投射物速度
- *   （`SPELL_PROJECTILE.SPEED`）必须**逐位相同**：迁移后的法术在
- *   `距离 / 速度` 秒后落账，客户端弹体也在同一时刻抵达。
- *   两边各写一个 55 就是「同一个数字有两处定义」，而本仓库这类漂移
- *   已经付过四次学费。这里保留本地别名只为可读性。
+ *   必须**逐位相同**：迁移后的法术在 `距离 / 速度` 秒后落账，
+ *   客户端弹体也在同一时刻抵达。两边各写一个 55 就是「同一个数字有两处
+ *   定义」，而本仓库这类漂移已经付过四次学费。
+ * ★ W25：速度不再是一个数（箭 75 / 法术与投掷物 55），所以真正的取值
+ *   走 `boltSpeedOf()` —— **按技能读它自己那一档**。这个常量退居兜底：
+ *   没迁移的技能（客户端照旧画装饰弹道，sim 侧瞬时落账）用它，
+ *   数值仍然只有 `constants/combat.ts` 一个来源。
  */
 const BOLT_SPEED = SPELL_PROJECTILE.SPEED;
+
+/**
+ * 这个技能的装饰弹道该飞多快 —— **从技能数据的 `lockedProjectile.speed` 读**。
+ *
+ * ★★ W25 起 sim 的弹速按技能分档（`SPELL_PROJECTILE.ARROW_SPEED` = 75 的箭、
+ *   `SPEED` = 55 的法术与投掷物）。装饰弹道的寿命公式是
+ *   `距离 / 速度`，与 sim 的 `impactAt` 同一条 —— 速度这一项要是继续统一取 55，
+ *   猎人的瞄准射击就会**每一发都晚到 0.17 秒**：伤害先落、箭后到，
+ *   正好是 W23 修掉的那个错拍在物理远程上原样复发。
+ * ★ 查不到 `lockedProjectile` 的技能（没迁移的、纯装饰弹道的）回落
+ *   `BOLT_SPEED` —— 它们在 sim 里本来就是瞬时结算，没有要对齐的时刻，
+ *   55 只是一个好看的观感值。
+ * ★ 结果按技能 id 记一次：`onCast` 是每次施放都走的路，而技能定义
+ *   在一局里不会变。
+ */
+const boltSpeedCache = new Map<string, number>();
+const boltSpeedOf = (skill: SkillDef): number => {
+  const key = skill.id as string;
+  const hit = boltSpeedCache.get(key);
+  if (hit !== undefined) return hit;
+  const locked = skill.effects.find((e) => e.kind === 'lockedProjectile');
+  const speed = locked?.speed ?? BOLT_SPEED;
+  boltSpeedCache.set(key, speed);
+  return speed;
+};
 
 /** 近战技能不该有弹体。6.1 的近战档最长 3.8 米，取 8 米作为「这是远程」的判据 */
 const BOLT_MIN_RANGE = SPELL_PROJECTILE.MIN_RANGE;
@@ -610,7 +638,8 @@ interface VisualBolt {
    * 这一发的**寿命**，秒：到点强制抵达并爆开。
    *
    * ★★ **必须与 sim 的 `HomingProjectile.impactAt` 是同一条公式**
-   *   （`max(0.05, 释放瞬间的水平距离 / SPELL_PROJECTILE.SPEED)`）——
+   *   （`max(0.05, 释放瞬间的水平距离 / 这个技能的弹速)`，弹速见
+   *   `boltSpeedOf` —— W25 起按技能分档，不再是一个全局常量）——
    *   W23 之后伤害就落在那一刻。此前这里只有一个「age < 2」的兜底上限，
    *   弹体靠**追**目标当前位置来决定何时抵达：目标狂奔时弹体越追越久，
    *   于是视觉抵达晚于伤害落账，玩家看到的是「血条先掉、特效后到」——
@@ -1081,11 +1110,14 @@ export class SpellVfx {
          * ★★ 寿命用**施法者到目标的水平距离**算，不是手到躯干的那条斜线 ——
          *   sim 的 `spawnHoming` 用的正是 `distance2D(source.position,
          *   target.position)`，两边必须是同一条公式（见 VisualBolt.life）。
+         * ★★ W25：速度也按**这个技能自己那一档**取（`boltSpeedOf`）——
+         *   箭 75、法术与投掷物 55。同屏两种时序自此是**设计**而不是 bug：
+         *   猎人的箭确实比法师的火球早到，sim 与视觉一起早到。
          */
         const flat = Math.hypot(
           t.position.x - caster.position.x, t.position.z - caster.position.z,
         );
-        const life = Math.max(0.05, flat / BOLT_SPEED);
+        const life = Math.max(0.05, flat / boltSpeedOf(skill));
         this.spawnBolt(hand, to, av, sig, t.position.y, skill.id as string, life, t.track);
       }
       return;

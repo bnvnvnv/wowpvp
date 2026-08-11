@@ -46,7 +46,7 @@
 | **突进**<br/>`warrior.charge` | 直接目标 | 敌方 | 8–20m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 14s | 需视线 | chargeTo, stun, gainResource |
 | **重创斩**<br/>`warrior.mortal_strike` | 直接目标 | 敌方 | 3.3m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 6s | 需朝向/需视线 | damage, applyAura |
 | **断腿斩**<br/>`warrior.hamstring` | 直接目标 | 敌方 | 3m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 8s | 需朝向/需视线 | applyAura |
-| **掷锤**<br/>`warrior.storm_bolt` | 直接目标 | 敌方 | 20m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 25s | 需视线 | damage, stun |
+| **掷锤**<br/>`warrior.storm_bolt` | 直接目标 | 敌方 | 20m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 25s | 需视线 | lockedProjectile, damage, stun |
 | **猛击**<br/>`warrior.pummel` | 直接目标 | 敌方 | 3m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 15s | 脱离GCD/需朝向/需视线 | interrupt |
 | **挡援**<br/>`warrior.intervene` | 直接目标 | 友方 | 20m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 20s | 需视线 | chargeToAlly, interveneGuard |
 | **防御架势**<br/>`warrior.defensive_stance` | 自身 | 自身 | 自身 | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 30s | — | applyAura |
@@ -197,7 +197,7 @@
 | **反刺**<br/>`rogue.riposte` | 直接目标 | 敌方 | 2.5m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 6s | 需朝向/需视线 | damage, gainResource |
 | **偷袭**<br/>`rogue.cheap_shot` | 直接目标 | 敌方 | 2.4m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 20s | 需朝向/需视线 | stun, gainResource |
 | **割裂**<br/>`rogue.rupture` | 直接目标 | 敌方 | 2.4m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | — | 需朝向/需视线 | applyAura, damage |
-| **致盲**<br/>`rogue.blind` | 直接目标 | 敌方 | 10m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 45s | 需视线 | incapacitate |
+| **致盲**<br/>`rogue.blind` | 直接目标 | 敌方 | 10m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 45s | 需视线 | lockedProjectile, incapacitate |
 | **疾跑**<br/>`rogue.sprint` | 自身 | 自身 | 自身 | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 120s | — | applyAura |
 | **暗影斗篷**<br/>`rogue.cloak_of_shadows` | 自身 | 自身 | 自身 | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 120s | 昏迷可用 | dispel, applyAura |
 
@@ -233,9 +233,9 @@
 
 | 技能 | 瞄准 | 目标 | 距离 | 形状 | 施放 | 可移动 | 可打断 | 学派 | 冷却 | 标记 | 效果 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| **瞄准射击**<br/>`hunter.aimed_shot` | 直接目标 | 敌方 | 35m | 单体 | 瞄准射击 1.6s | ✗ | ✓ | 物理 | 8s | 需朝向/需视线 | damage |
+| **瞄准射击**<br/>`hunter.aimed_shot` | 直接目标 | 敌方 | 35m | 单体 | 瞄准射击 1.6s | ✗ | ✓ | 物理 | 8s | 需朝向/需视线 | lockedProjectile, damage |
 | **秘法箭**<br/>`hunter.arcane_shot` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 奥术 | 4s | 需朝向/需视线 | lockedProjectile, damage |
-| **震慑箭**<br/>`hunter.concussive_shot` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 10s | 需朝向/需视线 | applyAura |
+| **震慑箭**<br/>`hunter.concussive_shot` | 直接目标 | 敌方 | 30m | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 10s | 需朝向/需视线 | lockedProjectile, applyAura |
 | **寒霜陷阱**<br/>`hunter.freezing_trap` | 地面目标 | 敌方 | 20m | 圆形 r=1.5 | 读条 0.4s | ✗ | ✗（盾牌标记） | 寒冰 | 20s | 需视线 | spawnTrap, incapacitate |
 | **照明弹**<br/>`hunter.flare` | 地面目标 | 敌方 | 30m | 圆形 r=6 | 瞬发 | ✓ | ✗（盾牌标记） | 火焰 | 20s | 需视线 | spawnGroundArea |
 | **后撤跃**<br/>`hunter.disengage` | 自身 | 自身 | 自身 | 单体 | 瞬发 | ✓ | ✗（盾牌标记） | 物理 | 15s | — | leapBackward |

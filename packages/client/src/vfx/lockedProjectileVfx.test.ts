@@ -12,7 +12,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { SPELL_PROJECTILE, mage, type SkillDef } from '@wowpvp/shared';
+import { SPELL_PROJECTILE, hunter, mage, warrior, type SkillDef } from '@wowpvp/shared';
 import { QualityTier } from '../render/quality.js';
 import { SpellVfx } from './SpellVfx.js';
 
@@ -95,10 +95,15 @@ describe('★★ W23：锁定投射物不双重渲染', () => {
 
 /**
  * ★ 与 sim 的 `spawnHoming` 同公式：
- *   `impactAt = now + max(0.05, distance2D(source, target) / SPEED)`。
+ *   `impactAt = now + max(0.05, distance2D(source, target) / 这个技能的弹速)`。
  *   两边差一点点，玩家看到的就是「血条先掉 / 特效后到」。
+ * ★ W25：弹速按技能分档，所以这里也得能收第二个参数（缺省仍是法术档 55，
+ *   既有用例逐位不变）。
  */
-const flightSeconds = (distance: number): number => distance / SPELL_PROJECTILE.SPEED;
+// ★ `speed` 显式标 number：`SPELL_PROJECTILE` 是 `as const`，缺省值会把
+//   形参收窄成字面量类型 55，传 75 进来 typecheck 直接红
+const flightSeconds = (distance: number, speed: number = SPELL_PROJECTILE.SPEED): number =>
+  distance / speed;
 
 describe('★★ W23：装饰弹道的抵达时刻 = 释放瞬间距离 / 速度', () => {
   it('★★ 目标原地不动：在预期时刻前后各推一帧，抵达就在那一刻附近', () => {
@@ -325,6 +330,107 @@ describe('★★ W23：命中表现不因载荷下沉而翻倍', () => {
       vfx.status().activeBursts,
       '纯控制技能的到位爆发被误伤了 —— 被变羊的人身上什么都不亮',
     ).toBeGreaterThan(0);
+    vfx.dispose();
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+//  W25：装饰弹道的速度**按技能读**，不再是一个全局常量
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * ★★ W25 给 sim 的弹速分了两档（箭 75 / 法术与投掷物 55）。装饰弹道的寿命
+ *   公式是 `距离 / 速度` —— 速度这一项要是继续统一取 55，猎人的每一发箭
+ *   都会**晚到 0.17 秒**（35 米：0.636 秒 vs 伤害落账的 0.467 秒），
+ *   正是 W23 修掉的那个错拍在物理远程上原样复发。
+ *
+ * 手法与 W23 那组一致：只推帧、只看 `visualBolts` 从 1 变 0 的时刻。
+ * ★ 每条都用**两个断点**（早于预期时刻还在飞、晚于预期时刻已回收），
+ *   单看一个断点的话「速度取错但取得更快」这一半会漏过去。
+ */
+const skillOf = (cls: { skills: readonly SkillDef[] }, id: string): SkillDef =>
+  cls.skills.find((s) => (s.id as string) === id)!;
+
+/** 推到 `until` 秒，返回此刻还在飞的装饰弹道数 */
+const boltsAt = (vfx: SpellVfx, from: number, until: number): number => {
+  let t = from;
+  while (t < until) {
+    vfx.frame(0.016, frameCtx(t, []));
+    t += 0.016;
+  }
+  return vfx.status().visualBolts;
+};
+
+describe('★★ W25：装饰弹道按技能取弹速（箭 75 / 法术与投掷物 55）', () => {
+  it('★★ 瞄准射击 35 米在 0.47 秒抵达 —— 用 55 算会拖到 0.64 秒', () => {
+    const vfx = new SpellVfx();
+    const aimed = skillOf(hunter, 'hunter.aimed_shot');
+    vfx.onCast('resolved', caster, aimed, targetAt(-35));
+    expect(vfx.status().visualBolts, '瞄准射击没画弹道').toBe(1);
+
+    const arrowLife = flightSeconds(35, SPELL_PROJECTILE.ARROW_SPEED);
+    expect(arrowLife).toBeCloseTo(0.4667, 3); // 判据里写的那个 0.47 秒
+
+    // 早于预期时刻：还在飞
+    expect(boltsAt(vfx, 0, arrowLife - 0.05), '还没到点就爆了').toBe(1);
+    // 晚于预期时刻一点点：必须已经抵达
+    expect(
+      boltsAt(vfx, arrowLife - 0.05, arrowLife + 0.03),
+      '箭还在飞 —— 弹速仍按法术档 55 算，视觉晚于伤害 0.17 秒',
+    ).toBe(0);
+    vfx.dispose();
+  });
+
+  it('★★ 同距离的法术仍走 55 —— 0.47 秒时它**还在飞**（两档确实分开了）', () => {
+    /**
+     * ★★ 这条是上一条的对照组。少了它，「按技能读」与「全局改成 75」
+     *   两种实现都会绿 —— 而后者会让 21 个法术全部提前 0.17 秒抵达，
+     *   把 W23 的对齐反向打破。
+     */
+    const vfx = new SpellVfx();
+    vfx.onCast('resolved', caster, skill('mage.frostbolt'), targetAt(-35));
+
+    const arrowLife = flightSeconds(35, SPELL_PROJECTILE.ARROW_SPEED);
+    const spellLife = flightSeconds(35);
+    expect(
+      boltsAt(vfx, 0, arrowLife + 0.03),
+      '法术弹道跟着箭一起提速了 —— 全局改成 75，W23 的对齐被反向打破',
+    ).toBe(1);
+    expect(boltsAt(vfx, arrowLife + 0.03, spellLife + 0.03), '法术到点了还没抵达').toBe(0);
+    vfx.dispose();
+  });
+
+  it('★★ 掷锤走 55（掷出去的钝器不该比箭快）', () => {
+    const vfx = new SpellVfx();
+    const stormBolt = skillOf(warrior, 'warrior.storm_bolt');
+    vfx.onCast('resolved', caster, stormBolt, targetAt(-20));
+    expect(vfx.status().visualBolts, '掷锤没画弹道').toBe(1);
+
+    const life = flightSeconds(20);
+    expect(boltsAt(vfx, 0, life - 0.05), '还没到点就爆了').toBe(1);
+    expect(boltsAt(vfx, life - 0.05, life + 0.03), '掷锤到点了还没抵达').toBe(0);
+    vfx.dispose();
+  });
+
+  it('★ 没迁移的技能回落 BOLT_SPEED —— 装饰弹道不因查不到 lockedProjectile 而消失', () => {
+    /**
+     * 断法箭是 W25 明确**维持排除**的那一条（打断迟到等于没断）：sim 里它
+     * 仍然瞬时结算，客户端照旧画一条纯装饰的弹道。这条钉的是回落分支
+     * 还在 —— 查表查不到时返回 `undefined / 0` 会让寿命变成 Infinity 或 0，
+     * 前者弹道永不消失、后者一帧就爆。
+     */
+    const vfx = new SpellVfx();
+    const counterShot = skillOf(hunter, 'hunter.counter_shot');
+    expect(
+      counterShot.effects.some((e) => e.kind === 'lockedProjectile'),
+      '断法箭被迁移了 —— 这条测试的前提没了（见 sim/lockedProjectile.test.ts 反向①）',
+    ).toBe(false);
+
+    vfx.onCast('resolved', caster, counterShot, targetAt(-30));
+    expect(vfx.status().visualBolts, '没迁移的技能连装饰弹道都不画了').toBe(1);
+    const life = flightSeconds(30);
+    expect(boltsAt(vfx, 0, life - 0.05), '回落速度不是 BOLT_SPEED（提前爆了）').toBe(1);
+    expect(boltsAt(vfx, life - 0.05, life + 0.03), '回落速度不是 BOLT_SPEED（还没抵达）').toBe(0);
     vfx.dispose();
   });
 });

@@ -354,8 +354,21 @@ describe('★★ 顺序约束（每条都有出处，见 tick.ts 头部表格）
 
     // ★ 走 tickWorld 的**技能请求**，而不是自己调 beginCast ——
     //   瞬发技能在 beginCast 内部就完成，效果结算必须由 tick 的统一完成入口负责
-    foe.position = vec3(0, 0, 1);
-    const stunSkill = pickCastable(foe, player, (sk) => sk.effects.some((e) => e.kind === 'stun'));
+    /**
+     * ★★ 探针必须是一条**本 tick 就落地**的昏迷，所以这里刻意只认**顶层**
+     *   `stun`，不下探 `lockedProjectile.onHit` —— 这与 `skillSmoke` /
+     *   `botController` 那批「载荷沉了一层，扫描要跟着下探」是**相反**的取舍，
+     *   理由在于本用例测的是**顺序**（约束 6+7），锁定投射物的昏迷天然要
+     *   飞 `max(0.05, 距离/速度)` 秒、下一 tick 才落账，拿它当探针测不出顺序。
+     *
+     * ★ W25 之前这里在 1 米处随手抓到的是**掷锤**（当时 `[damage, stun]` 全在
+     *   顶层）。掷锤迁成锁定投射物后战士只剩**突进**这一条顶层昏迷，而它的
+     *   最小射程是 8 米 —— 所以站位跟着改到 10 米。改之前这条是红的
+     *   （`找不到一个此刻能放的瞬发技能（warrior）`）。
+     */
+    foe.position = vec3(0, 0, 10);
+    const stunSkill = pickCastable(foe, player, (sk) =>
+      sk.effects.some((e) => e.kind === 'stun'));
 
     const result = tickWorld(
       deps({ castRequests: new Map([[foe.id, { skillId: stunSkill.id, targetId: player.id }]]) }),

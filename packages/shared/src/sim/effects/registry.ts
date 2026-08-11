@@ -20,7 +20,7 @@ import type { CastingStore } from '../casting.js';
 import type { DrStore } from '../dr.js';
 import type { GroundArea, Trap } from '../groundArea.js';
 import type { MovementState } from '../movement.js';
-import type { ProjectileStore } from '../projectile.js';
+import type { HitSnapshot, ProjectileStore } from '../projectile.js';
 
 /**
  * 一次效果结算产生的可观测结果，供网络层广播、HUD 播特效、战后统计记账。
@@ -125,6 +125,19 @@ export interface EffectContext {
    *   区别在**谁调的**，不在效果本身。
    */
   periodic?: boolean;
+  /**
+   * ★★ 这次结算是一发**锁定投射物抵达**时的结算，附带释放瞬间的空间快照
+   * （W25 收口）。有值时 `dealDamage` 的规避与背刺加成读它、**不读实时朝向**，
+   * 否则「飞行途中转个身」就能改变一发已经锁定的箭的结果（违反 6.6）。
+   *
+   * ★ 与 `periodic` 同一条道理放在 ctx 而不是 `EffectDef` 上：同一个
+   *   `{kind:'damage'}` 既会被直接施放、也会被弹体抵达结算 ——
+   *   区别在**谁调的**，不在效果本身。
+   *
+   * 不传（近战、普攻、DoT、地面区域、直接施放）时一切照旧读实时状态，
+   * 与 W25 之前逐位一致。
+   */
+  hitSnapshot?: HitSnapshot;
   /** 本次结算产生的事件，处理器往里 push */
   events: CombatEvent[];
   /**

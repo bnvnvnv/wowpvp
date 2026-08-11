@@ -10,7 +10,7 @@ import type { CombatEntity } from '../entity.js';
 import type { AuraStore } from '../aura.js';
 import type { DrStore } from '../dr.js';
 import type { GroundStore } from '../groundArea.js';
-import type { ProjectileStore } from '../projectile.js';
+import type { HitSnapshot, ProjectileStore } from '../projectile.js';
 import type { CastingStore } from '../casting.js';
 import type { MovementState } from '../movement.js';
 import type { World } from '../world.js';
@@ -55,6 +55,8 @@ export interface ResolveOptions {
   movement?: Map<EntityId, MovementState>;
   /** 周期跳结算（DoT/HoT/地面 tick）。见 EffectContext.periodic */
   periodic?: boolean;
+  /** 锁定投射物抵达时的释放瞬间空间快照。见 EffectContext.hitSnapshot */
+  hitSnapshot?: HitSnapshot;
 }
 
 /**
@@ -83,6 +85,7 @@ export const resolveEffects = (
     groundPoint: opts.groundPoint,
     skillId: opts.skillId,
     periodic: opts.periodic,
+    hitSnapshot: opts.hitSnapshot,
     events,
     resolve: (sub, subTargets) => {
       for (const e of sub) dispatchEffect(ctx, e, subTargets);

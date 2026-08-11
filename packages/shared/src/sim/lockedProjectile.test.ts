@@ -14,11 +14,17 @@
  *      统计事件流，抵达时结算与直接施放**逐项一致**，一条都不旁路。
  *   3. **飞行中的边界**：施法者死、目标死、目标开无敌/吸收、目标进潜行、
  *      对局结束时仓里还有弹体。
+ *
+ * ★ **W25 补账**：物理远程（猎人的瞄准射击/震慑箭、战士掷锤、盗贼致盲）
+ *   跟着迁了，口径里的「学派非 physical」那一条随之删除 —— 它本来就是
+ *   分批的开关而不是一条道理。同批引入的两件事写在下面：
+ *   **速度不再是一个数**（箭 75、法术与投掷物 55，见 `SPELL_PROJECTILE`），
+ *   以及**三条排除的反向断言**（断法箭 / 碰撞型 / 施法者自身位移）。
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { SPELL_PROJECTILE } from '../constants/combat.js';
-import { ALL_CLASSES, getSkill, mage, paladin, priest, warrior } from '../data/index.js';
+import { ALL_CLASSES, getSkill, hunter, mage, paladin, priest, rogue, warrior } from '../data/index.js';
 import { PARTY_SKILLS } from '../data/party.js';
 import type { EffectDef, SkillDef } from '../data/schema.js';
 import { box } from '../data/maps/schema.js';
@@ -74,25 +80,53 @@ const isCombatPayload = (effects: readonly EffectDef[]): boolean =>
   );
 
 /**
- * **W23 的迁移口径**（用户拍板：客户端画了弹道的技能必须到达才结算）。
+ * 施法者**自己**飞过去的效果。见下面 `shouldMigrate` 的排除③。
+ * ★ `pullTarget` / `knockback`（把**目标**搬走）不在这里 —— 那是另一条
+ *   排除（W23 已如实入册，见 `isCombatPayload` 头部）。
+ */
+const CASTER_MOVES = new Set(['chargeTo', 'chargeToAlly', 'blinkForward', 'teleportBehindTarget', 'leapBackward']);
+
+/**
+ * **迁移口径**（用户拍板：客户端画了弹道的技能必须到达才结算）。
  *
- * 五条全中才迁移：
+ * 四条全中才迁移：
  *   · `Direct` 瞄准 —— 地面技能已经是 `delayedGroundImpact`，
  *     `SelfCenter` 没有可飞的一段
- *   · `TargetFilter.Enemy` —— 治疗/友方法术 WoW 口径瞬时，客户端也不画
- *     治疗弹道，迁移它们只会凭空给奶量加半秒延迟
+ *   · `TargetFilter.Enemy` —— 治疗/友方法术 WoW 口径瞬时（真实理由是
+ *     「给奶量加半秒延迟比视觉早到更伤玩法」，不是「客户端不画治疗弹道」
+ *     —— `flies()` 里没有 targetFilter 这一项，14 个友方技能今天就在画）
  *   · `range.max ≥ 8` —— 近战不该有弹道（6.1 近战档最长 3.8 米）
- *   · 学派非 `physical` —— 猎人/盗贼的物理远程另立一批（docs/15 W25）
  *   · 载荷含伤害或控制
- * 外加一条**排除**：带 `interrupt` 的不迁移 —— 断法迟到 0.5 秒等于没断，
- *   打断的是「正在读的那条」，飞到时那条早读完了。
+ *
+ * 外加三条**排除**：
+ *   ① 带 `interrupt` 的不迁移 —— 断法迟到 0.4 秒等于没断，打断的是
+ *     「正在读的那条」，飞到时那条早读完了。**这条优先于「同组一起迁」**：
+ *     W25 迁了猎人的瞄准射击与震慑箭，断法箭仍然排除。
+ *   ② 已经是**碰撞型**（带 `spawnProjectile`）的不迁移 —— 穿透重弩箭、
+ *     飞去来斧走的是真实轨迹（能被墙挡、能靠横向走位躲开），那是 6.6 的
+ *     另一类，不是「锁定」的慢速版本。今天它们都是 `Targeting.Projectile`
+ *     因而已被第一条挡下，但**那是巧合不是不变式**：谁把一条 `Direct`
+ *     技能配上 `spawnProjectile`，广度锁就会要求它同时长出两发弹体。
+ *   ③ 载荷是**施法者自身位移**的不迁移 —— 飞过去的是人不是弹体。
+ *
+ * ★★ **W25 删掉了原来的第五条「学派非 `physical`」。** 那条是 W23 分批的
+ *   开关（猎人最脆，箭矢延迟单独归因），不是一条道理 —— 客户端对物理远程
+ *   同样在画弹道，割裂一模一样。删它的**代价**是：物理近战里有一批
+ *   `Direct + ≥8 米 + 带控制` 的技能此前被学派这一条顺手挡在门外，
+ *   现在要逐条给出真正的理由。查出来的正是排除③的原案：
+ *   **战士的突进**（20 米、`[chargeTo, stun, gainResource]`）—— 它满足
+ *   其余全部判据，而它的语义是「我冲过去撞晕你」，飞的是**施法者**。
+ *   把它迁了等于「人已经贴脸、晕 0.36 秒后才生效」。
+ *   ⚠️ 别让下一个人以为「没写进来 = 想清楚了」：这条排除是 W25 放宽口径时
+ *   **被广度锁当场红出来**的，不是事先想到的。
  */
 const shouldMigrate = (s: SkillDef): boolean =>
   s.targeting === Targeting.Direct &&
   s.targetFilter === TargetFilter.Enemy &&
   s.range.max >= SPELL_PROJECTILE.MIN_RANGE &&
-  s.school !== School.Physical &&
   !s.effects.some((e) => e.kind === 'interrupt') &&
+  !s.effects.some((e) => e.kind === 'spawnProjectile') &&
+  !s.effects.some((e) => CASTER_MOVES.has(e.kind)) &&
   // 已经迁移的技能：载荷在 onHit 里，摊开一层再判
   isCombatPayload(s.effects.flatMap((e) => (e.kind === 'lockedProjectile' ? e.onHit : [e])));
 
@@ -104,14 +138,14 @@ const ALL_SKILLS: readonly SkillDef[] = [
 const lockedOf = (s: SkillDef): Extract<EffectDef, { kind: 'lockedProjectile' }> | undefined =>
   s.effects.find((e) => e.kind === 'lockedProjectile');
 
-describe('★★ W23 广度锁：迁移口径与数据必须一致', () => {
+describe('★★ W23/W25 广度锁：迁移口径与数据必须一致', () => {
   it('★★ 全部满足口径的技能都走 lockedProjectile —— 新增技能忘迁移会红', () => {
     const missed = ALL_SKILLS.filter((s) => shouldMigrate(s) && !lockedOf(s)).map(
       (s) => s.id as string,
     );
     expect(
       missed,
-      '这些技能满足 W23 迁移口径却仍在读条结束瞬间落账（用户实测的那个 bug）',
+      '这些技能满足迁移口径却仍在读条结束瞬间落账（用户实测的那个 bug）',
     ).toEqual([]);
   });
 
@@ -122,17 +156,53 @@ describe('★★ W23 广度锁：迁移口径与数据必须一致', () => {
     expect(extra, '口径之外的技能挂了弹道 —— 要么改口径，要么改数据').toEqual([]);
   });
 
-  it('★ 迁移清单就是这 21 个（数量下限，加技能时随实际抬高）', () => {
+  it('★ 迁移清单：W23 的 21 个 + W25 的 4 个 = 25（数量下限，加技能时随实际抬高）', () => {
     const migrated = ALL_SKILLS.filter((s) => lockedOf(s));
-    expect(migrated.length).toBeGreaterThanOrEqual(21);
+    expect(migrated.length).toBeGreaterThanOrEqual(25);
   });
 
-  it('★★ 速度统一取 SPELL_PROJECTILE.SPEED —— 与客户端 BOLT_SPEED 同一个数', () => {
+  it('★★ W25 这四条确实迁了（逐条点名，别靠计数兜）', () => {
+    const ids = ALL_SKILLS.filter((s) => lockedOf(s)).map((s) => s.id as string);
+    for (const id of [
+      'hunter.aimed_shot', 'hunter.concussive_shot', 'warrior.storm_bolt', 'rogue.blind',
+    ]) {
+      expect(ids, `${id} 没迁 —— W25 的清单是 4 迁 3 不迁`).toContain(id);
+    }
+  });
+
+  it('★★ 速度只能取 SPELL_PROJECTILE 里的档位 —— 客户端按技能读的就是这个数', () => {
+    /**
+     * ★★ W23 时这条断言的是「统一 55」。W25 之后速度分了两档
+     *   （箭 75 / 法术与投掷物 55），但**单一来源的纪律没变**：
+     *   数字仍然只住在 `constants/combat.ts`，技能里写的是对它的引用，
+     *   客户端 `SpellVfx` 从技能数据读同一个字段。
+     *   写死一个字面量 60 会在这里红 —— 那正是要拦的东西。
+     */
+    const ALLOWED = [SPELL_PROJECTILE.SPEED, SPELL_PROJECTILE.ARROW_SPEED];
     for (const s of ALL_SKILLS) {
       const lp = lockedOf(s);
       if (!lp) continue;
-      expect(lp.speed, `${s.id as string} 的弹速偏离统一值`).toBe(SPELL_PROJECTILE.SPEED);
+      expect(ALLOWED, `${s.id as string} 的弹速不是 SPELL_PROJECTILE 里的任何一档`).toContain(
+        lp.speed,
+      );
     }
+  });
+
+  it('★★ 箭走 ARROW_SPEED、掷出去的钝器和粉末走 SPEED（「箭该有箭的样子」）', () => {
+    /**
+     * ★ 分档的边界是**投出去的是什么**，不是学派：掷锤（物理）与致盲粉
+     *   （物理）都走 55，因为钝器和粉末不该比箭快。
+     * ⚠️ 秘法箭与毒蛇钉刺**也是箭**，却仍在 55 —— 它们属于 W23 那批
+     *   （奥术/自然学派，机制上是法术），W25 拍板「法术 55 不动」。
+     *   这是如实的余账，docs/15 W25 行已入册；这里只钉住 W25 动过的那四条。
+     */
+    const speedOf = (id: string): number => lockedOf(ALL_SKILLS.find((s) => (s.id as string) === id)!)!.speed;
+    expect(speedOf('hunter.aimed_shot')).toBe(SPELL_PROJECTILE.ARROW_SPEED);
+    expect(speedOf('hunter.concussive_shot')).toBe(SPELL_PROJECTILE.ARROW_SPEED);
+    expect(speedOf('warrior.storm_bolt')).toBe(SPELL_PROJECTILE.SPEED);
+    expect(speedOf('rogue.blind')).toBe(SPELL_PROJECTILE.SPEED);
+    // 箭确实比法术快 —— 否则上面四条在两个常量相等时也全绿
+    expect(SPELL_PROJECTILE.ARROW_SPEED).toBeGreaterThan(SPELL_PROJECTILE.SPEED);
   });
 
   it('★★ 施法者自身的效果留在弹体外 —— onHit 里不该有 gainResource / target:self', () => {
@@ -165,11 +235,60 @@ describe('★★ W23 广度锁：迁移口径与数据必须一致', () => {
     expect(wrong).toEqual([]);
   });
 
-  it('★ 物理学派远程一个都没被迁移（猎人箭矢单独一批 —— docs/15 W25）', () => {
-    const wrong = ALL_SKILLS.filter((s) => s.school === School.Physical && lockedOf(s)).map(
-      (s) => s.id as string,
-    );
-    expect(wrong).toEqual([]);
+  /**
+   * ★★ **W25 的三条反向断言。** 放宽口径最危险的地方不是「漏迁」（上面那条
+   *   广度锁会红），而是「**多迁**」—— 多迁的技能在单测里静悄悄地绿，
+   *   只在对局里表现成一个迟到的打断、一发画了两遍的箭、或一个先撞人
+   *   后生效的晕。三条排除各钉一条正面点名的用例。
+   */
+  it('★★ 反向①：断法箭仍然不迁（W25 迁了同组的另外两条，它不跟）', () => {
+    const counterShot = ALL_SKILLS.find((s) => (s.id as string) === 'hunter.counter_shot')!;
+    expect(counterShot, '断法箭不见了 —— 这条测试不再测任何东西').toBeDefined();
+    expect(lockedOf(counterShot), '断法箭被一起迁了：断法迟到 0.4 秒等于没断').toBeUndefined();
+    expect(shouldMigrate(counterShot), '口径把断法箭放进来了').toBe(false);
+  });
+
+  it('★★ 反向②：已是碰撞型的两条不迁（穿透重弩箭 / 飞去来斧）', () => {
+    /**
+     * 它们能被墙挡、能靠横向走位躲开 —— 那是 6.6 的**另一类**，
+     * 不是「锁定投射物的慢速版本」。迁了等于同时生成两发弹体，
+     * 客户端也会画两条（一条真轨迹 + 一条装饰弹道）。
+     */
+    for (const id of ['hunter.piercing_bolt', 'ffa.boomerang_throw']) {
+      const s = ALL_SKILLS.find((x) => (x.id as string) === id)!;
+      expect(s, `${id} 不见了`).toBeDefined();
+      expect(s.effects.some((e) => e.kind === 'spawnProjectile'), `${id} 不再是碰撞型`).toBe(true);
+      expect(lockedOf(s), `${id} 同时挂了锁定投射物 —— 一次施放两发弹体`).toBeUndefined();
+      expect(shouldMigrate(s), `口径把 ${id} 放进来了`).toBe(false);
+    }
+  });
+
+  it('★★ 反向③：施法者自身位移不迁（战士突进 —— 飞过去的是人不是弹体）', () => {
+    /**
+     * ★★ 这一条是 W25 删掉「学派非 physical」时**被广度锁当场红出来**的：
+     *   突进是 20 米、`Direct`、`Enemy`、载荷带 `stun` —— 其余判据全中，
+     *   此前纯靠学派那一条被顺手挡住。迁了它就是「人已经撞到脸上，
+     *   0.36 秒后才晕」。
+     */
+    const charge = ALL_SKILLS.find((s) => (s.id as string) === 'warrior.charge')!;
+    expect(charge, '突进不见了').toBeDefined();
+    expect(charge.effects.some((e) => e.kind === 'chargeTo'), '突进不再是位移技能').toBe(true);
+    expect(charge.effects.some((e) => e.kind === 'stun'), '突进的晕没了').toBe(true);
+    expect(lockedOf(charge), '突进被迁成了投射物 —— 撞完人才晕').toBeUndefined();
+    expect(shouldMigrate(charge), '口径把突进放进来了').toBe(false);
+  });
+
+  it('★ 物理学派**不再**是排除项（W25 之后 physical 迁了 4 条）', () => {
+    /**
+     * ★ 正面断言口径确实放宽了：只留一条「physical 一个都没迁」的空数组
+     *   断言在 W25 之后仍然会绿（如果谁又把物理挡回去），所以反过来钉。
+     */
+    const physicalMigrated = ALL_SKILLS.filter(
+      (s) => s.school === School.Physical && lockedOf(s),
+    ).map((s) => s.id as string);
+    expect(physicalMigrated.sort()).toEqual([
+      'hunter.aimed_shot', 'hunter.concussive_shot', 'rogue.blind', 'warrior.storm_bolt',
+    ]);
   });
 
   it('★★ 迁移的技能全部满足客户端 flies() 的三条判据 —— 否则会变成看不见的弹道', () => {
@@ -215,8 +334,13 @@ interface Rig {
   events: CombatEvent[];
 }
 
-/** 一个「法师 vs 战士」的最小对局，走生产管线（castRequests → tickWorld）*/
-const makeRig = (distance = 20): Rig => {
+/**
+ * 一个「法师 vs 战士」的最小对局，走生产管线（castRequests → tickWorld）。
+ * ★ W25：施法者职业开成参数（缺省仍是法师，既有用例逐位不变）——
+ *   物理远程那批要拿**猎人自己**开弓，借法师的身体射箭测不出焦点消耗
+ *   与准备条这两件与它有关的事。
+ */
+const makeRig = (distance = 20, casterClass: typeof mage = mage): Rig => {
   const world = createWorld([FLOOR]);
   const auras = createAuraStore();
   const dr = createDrStore();
@@ -234,7 +358,7 @@ const makeRig = (distance = 20): Rig => {
     for (const [r, max] of e.maxResources) e.resources.set(r, max);
     return e;
   };
-  const caster = spawn(mage, RED, 0);
+  const caster = spawn(casterClass, RED, 0);
   const foe = spawn(warrior, BLUE, distance);
   caster.yaw = dirToYaw(sub(foe.position, caster.position));
   foe.yaw = caster.yaw + Math.PI;
@@ -466,12 +590,256 @@ describe('★★ 飞行中的边界用例', () => {
       dr: rig.dr,
       ground: rig.ground,
       projectiles: rig.projectiles,
+      // X29（随 W24）：回合重置也要拔化形游走的锚 —— 本夹具没有游走中的实体，
+      // 传一份空的 movement 就够（必填字段，漏传编译不过 = 这条约束的执行方式）
+      movement: new Map<EntityId, MovementState>(),
     });
     expect(rig.projectiles.items.length, '回合重置没有清空弹体仓').toBe(0);
 
     const before = rig.foe.health;
     advance(rig, 30);
     expect(rig.foe.health, '上一回合的弹体打到了新回合满血的人').toBe(before);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+//  4. W25：物理远程 —— 箭有箭的速度，控制在抵达那一刻才落
+// ════════════════════════════════════════════════════════════════
+
+/** 一直推到仓里出现弹体为止（瞄准射击要先读 1.6 秒的准备条）*/
+const advanceUntilBolt = (rig: Rig, maxTicks: number, req: TickDeps['castRequests']): void => {
+  advance(rig, 1, req);
+  for (let i = 1; i < maxTicks && rig.projectiles.items.length === 0; i++) advance(rig, 1);
+};
+
+describe('★★ W25：物理远程的弹道', () => {
+  it('★★ 瞄准射击 30 米 / 75 m·s⁻¹ = 0.4 秒 —— 箭比同距离的法术早到 0.145 秒', () => {
+    /**
+     * ★★ 这条同时钉两件事：**速度确实按技能读**（不是全局 55），
+     *   以及 `impactAt` 的公式没变（距离 / 速度）。
+     * ★ 用 30 米而不是 35 米（射程上限）是为了离边界远一点 ——
+     *   这条用例要测的是飞行时间，不是距离判据；35 米那个数在
+     *   `vfx/lockedProjectileVfx.test.ts` 里由同公式钉着。
+     */
+    const rig = makeRig(30, hunter);
+    const aimed = hunter.skills.find((s) => (s.id as string) === 'hunter.aimed_shot')!;
+    const before = rig.foe.health;
+
+    advanceUntilBolt(rig, 60, cast(rig, aimed));
+    const p = homingOf(rig);
+    expect(p.speed, '弹速没按技能读').toBe(SPELL_PROJECTILE.ARROW_SPEED);
+    expect(p.impactAt - rig.world.time).toBeCloseTo(30 / SPELL_PROJECTILE.ARROW_SPEED, 5);
+    // 与法术档的差额就是这批的全部意义
+    expect(30 / SPELL_PROJECTILE.SPEED - 30 / SPELL_PROJECTILE.ARROW_SPEED).toBeCloseTo(0.145, 3);
+
+    // 准备条读完那一瞬不掉血，飞到才掉
+    expect(rig.foe.health, '读条一结束伤害就落账了 —— W25 白做').toBe(before);
+    advance(rig, 12);
+    expect(rig.foe.health, '箭到了却没结算').toBeLessThan(before);
+  });
+
+  it('★★ 掷锤：晕在**抵达**那一刻才亮（20 米 ≈ 0.36 秒）', () => {
+    /**
+     * ★★ 控制载荷下沉进 `onHit` 之后，`applyControl` 仍由同一条 `resolve()`
+     *   调用 —— 递减类别、`clearableByTrinket`、从 skillId 反查学派全部照走。
+     *   变的只是**递减计数从哪一刻开始**。这里断言的正是那个「哪一刻」。
+     */
+    const rig = makeRig(20, warrior);
+    const bolt = warrior.skills.find((s) => (s.id as string) === 'warrior.storm_bolt')!;
+    advance(rig, 1, cast(rig, bolt));
+    expect(rig.projectiles.items.length, '锤没掷出去').toBe(1);
+    expect(homingOf(rig).speed, '掷出去的钝器比箭还快').toBe(SPELL_PROJECTILE.SPEED);
+    expect(rig.foe.flags.stunned, '锤还在飞，人已经晕了').toBe(false);
+
+    advance(rig, 10); // 0.5 秒 > 0.36 秒
+    expect(rig.foe.flags.stunned, '锤到了却没晕').toBe(true);
+    const applied = rig.events.find((e) => e.t === 'auraApplied');
+    expect(applied, '没有发出控制光环事件（表现层要用它）').toBeDefined();
+  });
+
+  it('★★ 致盲：10 米 ≈ 0.18 秒，粉末撒到才睁不开眼', () => {
+    const rig = makeRig(10, rogue);
+    const blind = rogue.skills.find((s) => (s.id as string) === 'rogue.blind')!;
+    advance(rig, 1, cast(rig, blind));
+    expect(rig.projectiles.items.length, '粉末没撒出去').toBe(1);
+    expect(homingOf(rig).impactAt - rig.world.time).toBeCloseTo(
+      10 / SPELL_PROJECTILE.SPEED, 5,
+    );
+    // 迷惑共用 stunned 旗（CONTROL_SPECS）
+    expect(rig.foe.flags.stunned, '粉末还在飞，人已经瞎了').toBe(false);
+
+    advance(rig, 6);
+    expect(rig.foe.flags.stunned, '粉末到了却没生效').toBe(true);
+  });
+
+  it('★★ 掷锤走位躲不掉，但**免疫**挡得住 —— 与法术那批同一条语义', () => {
+    /**
+     * ★ 物理远程迁移后拿到的不只是延迟，还有 6.6 的整套反制语义：
+     *   走位躲不掉（锁定），免疫/吸收/反射挡得住。这条只验前半 +
+     *   免疫（后者是它唯一的反制方式）。
+     */
+    const rig = makeRig(20, warrior);
+    const bolt = warrior.skills.find((s) => (s.id as string) === 'warrior.storm_bolt')!;
+    advance(rig, 1, cast(rig, bolt));
+    applyAura(
+      rig.auras, rig.foe,
+      {
+        id: 'test.immune', name: '测试无敌', kind: 'buff', duration: 99,
+        dispelType: DispelType.None, flags: { immuneAll: true },
+        description: '测试用完全免疫',
+      },
+      rig.foe.id, rig.world.time,
+    );
+    for (let i = 0; i < 10; i++) {
+      rig.foe.position = vec3(0, 0, rig.foe.position.z + 2); // 一路狂奔
+      advance(rig, 1);
+    }
+    const dmg = rig.events.find((e) => e.t === 'damage');
+    expect(dmg, '跑开就没结算了 —— 那是碰撞型的语义').toBeDefined();
+    expect(dmg && dmg.t === 'damage' && dmg.immune, '无敌没挡住掷锤').toBe(true);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+//  5. W25 收口：物理规避的时点
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * ★★ **本批是第一次让闪避/招架/格挡跟着弹体推迟**，所以这一组必须存在。
+ *
+ *   W23 迁的 21 条全是魔法学派，`rollAvoidance` 第一行「学派非 physical
+ *   直接放行」让整段规避**压根不执行**；上面第 2/3 组的「走位躲不掉」
+ *   用例也各自绕开了这一面（法师是魔法学派、掷锤那条被 `immuneAll`
+ *   在规避之前就短路了）。W25 把物理送进这条路之后才第一次暴露：
+ *   规避读的是**抵达那一刻**的朝向与可行动状态。
+ *
+ * ★★ **裁决（W25 收口）：6.6 的「命中资格」包含规避。**
+ *   6.6 给锁定投射物列的反制方式是**免疫、吸收、反射**三样，闪避不在其中；
+ *   而「飞行途中转个身」「飞行途中被队友控住」都属于它明文禁掉的
+ *   「目标释放后移动不会使其自然落空」。于是规避赖以成立的两个**事实**
+ *   （射手在不在背后、目标能不能做动作）在 `spawnHoming` 冻结成
+ *   `HitSnapshot`，抵达时用快照值掷骰。
+ *
+ * ★ **分界线是「按了一个键」与「转了个身」**：几率（`mods`）仍然现读，
+ *   所以飞行途中开闪避类保命键**照样有用** —— 那与免疫/吸收同族。
+ *   最后一条用例专门钉这一半，否则「一律冻结」也会让前三条全绿。
+ */
+const AIMED_SHOT = hunter.skills.find((s) => (s.id as string) === 'hunter.aimed_shot')!;
+
+/** 必定正面闪避的探针光环 —— 用 1.0 而不是靠种子，规避与否才是可读的信号 */
+const ALWAYS_DODGE = {
+  id: 'test.always_dodge', name: '测试闪避', kind: 'buff' as const, duration: 99,
+  dispelType: DispelType.None, modifiers: { dodgeFront: 1 },
+  description: '测试用必定正面闪避',
+};
+
+describe('★★ W25 收口：规避判定按释放瞬间的朝向与可行动状态', () => {
+  /** 30 米开一发瞄准射击（1.6 秒准备条 + 0.4 秒飞行），返回抵达后的伤害事件 */
+  const shoot = (rig: Rig): Extract<CombatEvent, { t: 'damage' }> | undefined => {
+    advanceUntilBolt(rig, 60, cast(rig, AIMED_SHOT));
+    advance(rig, 15);
+    const e = rig.events.find((x) => x.t === 'damage');
+    return e && e.t === 'damage' ? e : undefined;
+  };
+
+  it('★ 对照组：全程正面 → 箭被闪掉（下面三条的信号靠它才可读）', () => {
+    const rig = makeRig(30, hunter);
+    applyAura(rig.auras, rig.foe, ALWAYS_DODGE, rig.foe.id, rig.world.time);
+    const before = rig.foe.health;
+    const dmg = shoot(rig);
+    expect(dmg?.avoided, '正面挂着必定闪避却没闪掉').toBe('dodge');
+    expect(rig.foe.health, '闪掉了还掉血').toBe(before);
+  });
+
+  it('★★ 飞行途中转身 180°：规避照掷 —— 转身不是 6.6 认的反制方式', () => {
+    /**
+     * ★ 改之前这条是红的：`isBehind` 现读实时 `yaw`，转身后射手「变成」
+     *   在背后，闪避/格挡整条跳过，一发**已经锁定**的箭凭空打满 300% 武器伤害。
+     *   同一个洞对战士的 20% 格挡、匕首招架一视同仁。
+     */
+    const rig = makeRig(30, hunter);
+    applyAura(rig.auras, rig.foe, ALWAYS_DODGE, rig.foe.id, rig.world.time);
+    const before = rig.foe.health;
+    advanceUntilBolt(rig, 60, cast(rig, AIMED_SHOT));
+    rig.foe.yaw += Math.PI; // 箭在飞，人转过去背对射手
+    advance(rig, 15);
+    const dmg = rig.events.find((e) => e.t === 'damage');
+    expect(dmg && dmg.t === 'damage' && dmg.avoided, '转个身就把规避转没了').toBe('dodge');
+    expect(rig.foe.health, '转身让一发锁定的箭多打了一轮伤害').toBe(before);
+  });
+
+  it('★★ 飞行途中被控住：规避照掷 —— 第三方的控制不该给这一发开路', () => {
+    /**
+     * ★ 「队友的掷锤先落、我的箭随后到」不该让那一发无视格挡：
+     *   射出去的时候他站得好好的。改之前 `target.flags.stunned` 现读，
+     *   这条组合技能静默地把规避整条摘掉。
+     */
+    const rig = makeRig(30, hunter);
+    applyAura(rig.auras, rig.foe, ALWAYS_DODGE, rig.foe.id, rig.world.time);
+    const before = rig.foe.health;
+    advanceUntilBolt(rig, 60, cast(rig, AIMED_SHOT));
+    applyAura(
+      rig.auras, rig.foe,
+      {
+        id: 'test.mid_flight_stun', name: '测试昏迷', kind: 'debuff', duration: 99,
+        dispelType: DispelType.None, flags: { stunned: true }, description: '飞行途中的昏迷',
+      },
+      rig.foe.id, rig.world.time,
+    );
+    advance(rig, 15);
+    const dmg = rig.events.find((e) => e.t === 'damage');
+    expect(dmg && dmg.t === 'damage' && dmg.avoided, '飞行途中被控住就不能闪了').toBe('dodge');
+    expect(rig.foe.health, '被队友控住让这一发无视了格挡').toBe(before);
+  });
+
+  it('★★ 反向：释放瞬间就背对射手 → 转回正面也躲不掉（不是「一律都闪」）', () => {
+    /**
+     * ★★ 没有这条，上面三条用「永远返回 dodge」的实现也会全绿。
+     *   快照是**双向**的：射手赚到的那个背身位同样不该被 0.47 秒里的
+     *   一次转身抹掉。warrior 默认 `sword_shield` 只有 `block: 0.2`
+     *   （无 `parry`），而闪避与格挡都被背身位绕过 → 这里没有随机流参与。
+     */
+    const rig = makeRig(30, hunter);
+    applyAura(rig.auras, rig.foe, ALWAYS_DODGE, rig.foe.id, rig.world.time);
+    const before = rig.foe.health;
+    rig.foe.yaw = rig.caster.yaw; // 释放瞬间背对射手
+    advanceUntilBolt(rig, 60, cast(rig, AIMED_SHOT));
+    rig.foe.yaw = rig.caster.yaw + Math.PI; // 箭在飞的时候转回正面
+    advance(rig, 15);
+    const dmg = rig.events.find((e) => e.t === 'damage');
+    expect(dmg && dmg.t === 'damage' && dmg.avoided, '转回正面就把背身位抹掉了').toBeUndefined();
+    expect(rig.foe.health, '背对射手射出的箭没落账').toBeLessThan(before);
+  });
+
+  it('★★ 冻结的是事实不是几率：飞行途中开闪避键**照样**有用', () => {
+    /**
+     * ★★ 这条钉的是裁决的另一半。把「规避资格」整个在释放瞬间掷完
+     *   （而不是只冻结朝向与可行动状态）会让这条红 —— 那样盗贼的闪避、
+     *   任何「5 秒内正面闪避提高」类保命键对飞行中的箭就完全失效，
+     *   与 6.6 允许免疫/吸收在抵达时生效自相矛盾。
+     */
+    const rig = makeRig(30, hunter);
+    const before = rig.foe.health;
+    advanceUntilBolt(rig, 60, cast(rig, AIMED_SHOT));
+    // 箭已经在飞了，这时候才按下保命键
+    applyAura(rig.auras, rig.foe, ALWAYS_DODGE, rig.foe.id, rig.world.time);
+    advance(rig, 15);
+    const dmg = rig.events.find((e) => e.t === 'damage');
+    expect(dmg && dmg.t === 'damage' && dmg.avoided, '飞行途中开的闪避没生效').toBe('dodge');
+    expect(rig.foe.health, '闪掉了还掉血').toBe(before);
+  });
+
+  it('★ 快照住在弹体上，且只有锁定投射物有（碰撞型/延迟落点现读空间事实）', () => {
+    /**
+     * ★ 结构性断言：`HitSnapshot` 是 `HomingProjectile` 的**必填**字段
+     *   （漏填编译不过 = 这条约束的执行方式），这里只验它确实按
+     *   释放瞬间的朝向填对了 —— 上面四条验的是它被谁消费。
+     */
+    const rig = makeRig(30, hunter);
+    advanceUntilBolt(rig, 60, cast(rig, AIMED_SHOT));
+    const p = homingOf(rig);
+    expect(p.hitSnapshot.fromBehind, '靶子面朝射手，却记成了背身位').toBe(false);
+    expect(p.hitSnapshot.canAvoid, '靶子没被控，却记成了不能规避').toBe(true);
   });
 });
 
