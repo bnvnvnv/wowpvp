@@ -108,22 +108,64 @@ console.log('\n── 规格书 8.2 / 验收 #23：控制递减 ──');
   await page.keyboard.press('KeyB');
   await page.waitForTimeout(3600); // 10.7 换装 3 秒读条 + 余量
 
-  const durations = [];
   const immuneSeen = [];
+  /**
+   * ★ 整段可重试一次（2026-08-11）：梯子的**规则**由 dr 单测钉死，这里验的是
+   *   端到端接线；而观测本身吃 SwiftShader 的 GC 停顿（单次 0.5~1s 卡帧就把
+   *   施加间隔吹出 17s 窗）。重试是对**观测环境**的宽容，不是对规则的 ——
+   *   出现「窗口过期」签名（4→2→4）时等窗清零重来一轮，仍不成再红。
+   */
+  const captureLadder = async () => {
+  const durations = [];
+  /**
+   * ★★ 连按而不是「等 usable 再按」（2026-08-11，与换魔杖同一笔账的另一半）：
+   *   SwiftShader 下每次 $$eval 探槽位要 ~300ms，「等到 usable 再按」让按键
+   *   比冷却好晚 0.4~0.9 秒 —— 施加间隔被推到递减窗（时长+15s）的沿上，
+   *   红绿由轮询抖动决定（实测间隔 16.89~17.20 骑 17.0 窗沿）。
+   *   连按走的是 P10/X21 的 **0.4 秒施法排队窗**：冷却剩 ≤0.4s 时的那一次
+   *   按键被排队、在 CD 归零的那一拍精确起手 —— 间隔变成确定的
+   *   冷却 15 + 读条 1.32（魔杖）+ 飞行 ≈ 16.5s，余量 0.5s 且不吃轮询延迟。
+   *   顺带给排队窗第一条 e2e 覆盖（此前只有单测）。多余按键在冷却中被
+   *   静默拒绝/过期，无副作用。
+   */
   for (let i = 0; i < 4; i++) {
-    const ok = await waitSlotUsable(3); // 化形术
-    if (!ok) break;
-    await page.keyboard.press('Digit4');
-    await page.waitForTimeout(2200); // 读条 1.5s + 结算
+    // 离冷却好还远的 ~11.5s 纯睡（省得连按刷一屏失败日志，把旧「迷惑」行挤出窗口）
+    if (i > 0) await page.waitForTimeout(10000); // 10s 而非 11.5s：迭代尾部自带 ~3.6s 开销，
+    // 睡过头会让连按段整个错过 CD 归零点（排队窗白搭，回到晚 0.3s 起手的老病）
+    // 末段连按：排队窗把第一次「冷却剩 ≤0.4s」的按键钉在 CD 归零那一拍起手。
+    // 「起手成功」的信号 = 自身施法条（#player-cast）出现 —— 不数日志行。
+    // ⚠️ 探测不能放进每次按键之间：SwiftShader 下一次 $eval 要 300~500ms，
+    //   探测本身把按键节奏拖到 ~550ms/次，δ（起手晚于 CD 归零的量）又骑回窗沿。
+    //   改「盲按 3 次（150ms 节奏）+ 探 1 次」：起手精度只由按键节奏决定（δ ≤ ~0.23s），
+    //   探测只负责按到了就停手（限制失败日志噪音，别把旧「迷惑」行挤出日志窗）。
+    let started = false;
+    for (let b = 0; b < 12 && !started; b++) {
+      for (let k = 0; k < 3; k++) {
+        await page.keyboard.press('Digit4');
+        await page.waitForTimeout(150);
+      }
+      started = await page.$eval('#player-cast', (el) => el.offsetParent !== null && el.innerText.length > 0).catch(() => false);
+    }
+    if (!started) break;
+    await page.waitForTimeout(1900); // 读条 1.32（魔杖）+ 飞行 ~0.2 + 渲染余量
     const lines = await logLines();
     // ★ P10 起战斗日志打**显示名**（「迷惑」），不再裸露内部 id
     //   `control.incapacitate` —— 那正是审计点名、这一批修掉的问题。
     //   断言跟着玩家看到的口径走，显示名来源见 CONTROL_SPECS.incapacitate。
-    const applied = lines.find((l) => /获得 迷惑 ([\d.]+)s/.test(l));
-    if (applied) durations.push(parseFloat(applied.match(/([\d.]+)s/)[1]));
+    const newest = lines.find((l) => /获得 迷惑 ([\d.]+)s/.test(l));
+    if (newest) durations.push(parseFloat(newest.match(/([\d.]+)s/)[1]));
     if (lines.some((l) => l.includes('控制递减已满'))) immuneSeen.push(i);
     // 等控制自然结束但不超出 15 秒递减窗口
     await page.waitForTimeout(1500);
+  }
+  return durations;
+  };
+
+  let durations = await captureLadder();
+  const expirySignature = durations.length >= 3 && durations[2] >= durations[1];
+  if (!(durations.length >= 4 && durations[2] < durations[1]) && expirySignature) {
+    await page.waitForTimeout(21000); // 等递减窗彻底清零（最长 4+15+余量）
+    durations = await captureLadder();
   }
 
   // 只检查**递减前缀**：化形术 15 秒冷却 ≈ 15 秒递减窗口，
