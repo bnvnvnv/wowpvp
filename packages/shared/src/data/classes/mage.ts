@@ -90,7 +90,7 @@ const skills: SkillDef[] = [
     requiresLos: true,
     cost: { resource: Resource.Mana, amount: 30 },
     counters:
-      '原地读条：任何主动移动都会自行终止（7.3）；可被专用打断并锁定冰霜学派 3 秒、被沉默、硬控制或击退终止；减速属于魔法效果，可被驱散魔法或自由祝福解除，且不与其他减速叠乘。',
+      '原地读条：任何主动移动都会自行终止（7.3）；可被专用打断并封锁冰霜系 3 秒、被沉默、硬控制或击退终止；减速属于魔法效果，可被驱散魔法或自由祝福解除，且不与其他减速叠乘。',
     /**
      * ★★ W23：**冰矛飞到才结算**（6.6 锁定投射物）。此前伤害在读条结束的
      *   那一瞬间就落账，客户端的冰矛纯属装饰 —— 玩家实测「法术还没到，
@@ -127,7 +127,7 @@ const skills: SkillDef[] = [
     requiresLos: true,
     cost: { resource: Resource.Mana, amount: 40 },
     counters:
-      '瞬发不能被专用打断，但沉默、火焰学派锁定和硬控制仍会封住它；距离只有 25 米，是法师技能里最容易被拉开的；8 秒冷却，被计时后可以预判躲视线。',
+      '瞬发不能被专用打断，但沉默、火焰系被封锁和硬控制仍会封住它；距离只有 25 米，是法师技能里最容易被拉开的；8 秒冷却，被计时后可以预判躲视线。',
     // M14：150→225 —— 瞬发爆发件，8s 冷却
     // W23：瞬发≠瞬中 —— 火球仍要飞过去（6.6），到达才结算
     effects: [
@@ -224,7 +224,7 @@ const skills: SkillDef[] = [
     requiresLos: true,
     cost: { resource: Resource.Mana, amount: 20 },
     counters:
-      '目标未在施法、或施法带盾牌标记（不可打断）时仍然进入 20 秒冷却（7.2）；可取消物理射击准备但不锁武器，被打断的猎人下一秒就能重新开弓；假读条可以骗掉；自身被沉默或奥术学派锁定时用不出来。',
+      '目标未在施法、或施法带盾牌标记（不可打断）时仍然进入 20 秒冷却（7.2）；可取消物理射击准备但不锁武器，被打断的猎人下一秒就能重新开弓；假读条可以骗掉；自身被沉默或奥术系被封锁时用不出来。',
     effects: [
       // 7.2：法师是唯一 4 秒学派锁定的职业，见 constants/combat.ts 的 INTERRUPT.SCHOOL_LOCK_COUNTERSPELL
       { kind: 'interrupt', schoolLockSeconds: 4 },
@@ -523,7 +523,7 @@ const skills: SkillDef[] = [
     requiresLos: true,
     cost: { resource: Resource.Mana, amount: 22 },
     counters:
-      '伤害低于烈焰爆，3 秒冷却决定它只能当填充；火焰学派被锁（断法命中火系技能）时不可用，此时要换冰霜键；25 米射程在法师技能里偏短，被拉开就够不到。',
+      '伤害低于烈焰爆，3 秒冷却决定它只能当填充；火焰系被封锁（断法命中火系技能）时不可用，此时要换冰霜键；25 米射程在法师技能里偏短，被拉开就够不到。',
     // W23：飞到才结算（6.6）
     effects: [
       {
@@ -553,7 +553,7 @@ const skills: SkillDef[] = [
     triggersGcd: true,
     cost: { resource: Resource.Mana, amount: 40 },
     counters:
-      '只有 8 米半径且以自己为中心：站远就完全无效，而法师本来就不该让人靠近；不造成任何控制，打不断近战的连招；奥术学派被锁时不可用；对单个目标的伤害低于烈焰爆，围殴时才划算。',
+      '只有 8 米半径且以自己为中心：站远就完全无效，而法师本来就不该让人靠近；不造成任何控制，打不断近战的连招；奥术系被封锁时不可用；对单个目标的伤害低于烈焰爆，围殴时才划算。',
     effects: [{ kind: 'damage', school: School.Arcane, amount: { flat: 130 } }],
     description: '以自身为中心爆发奥术能量，对周围 8 米内所有敌人造成伤害。被围住时的清场手段。',
   },
@@ -574,7 +574,7 @@ const skills: SkillDef[] = [
     requiresLos: true,
     cost: { resource: Resource.Mana, amount: 25 },
     counters:
-      '仅「法刃 + 元素焦点」方案可用；要求贴身并面向目标，被风筝就完全打不到；属于魔法技能，沉默和奥术学派锁定都能封住（8.2）。',
+      '仅「法刃 + 元素焦点」方案可用；要求贴身并面向目标，被风筝就完全打不到；属于魔法技能，沉默和奥术系封锁都能封住（8.2）。',
     effects: [{ kind: 'damage', school: School.Arcane, amount: { weaponPercent: 1.1 } }],
     description: '以附着元素能量的法刃劈砍目标，造成 110% 武器伤害。仅法刃方案可用。',
   },
