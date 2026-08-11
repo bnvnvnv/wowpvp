@@ -3897,6 +3897,8 @@ X22）；联网 CastResolved 不响施法音的两场景不对称（X24，本批
 `castSpeed` / `attackSpeed` / `absorbDone` 五个修正字段**只被聚合、没有任何消费方**。
 本批**绕开**它们（修 = 一次性改八职业五护甲的实际数值，属于配平），
 并加断言钉住「派对道具只用真生效的字段」。
+（★ 那条债后来由 **W26 / Wave4（2026-08-11）** 清偿，五条接线全部落地；
+本包的数值刻意没有跟着改回去 —— 见 `data/party.ts` 头注。）
 
 ### 4. 中立大 BOSS（`38b8674`）—— 一条新玩法，零条新通道
 
@@ -3978,7 +3980,7 @@ describe 加真 socket 集成（白盒给分 → `FfaBuy` → 装备进 loadout 
 - **全部数值是占位值，未经配平实测** —— `FFA_SCORE` / `FFA_SHOP_PRICE` /
   `PARTY_DROP` / `BOSS` 四组常量每一条都写了取值理由，但没有一条跑过配平
 - BOSS 倒计时未进 HUD（见上文 §4 的 ⚠️）
-- `AuraModifiers` 五个死字段仍未接线（本文「技术债 §9」）
+- ~~`AuraModifiers` 五个死字段仍未接线（本文「技术债 §9」）~~ —— 已清（W26，2026-08-11）
 - `dcb662c` 的测试自身踩到一个坑并记档：1830 个同步 tick 堵死事件循环会触发
   S2 背压误踢在线者 —— 分块推进让 socket 排空（G6 口径的又一个数据点）
 
@@ -4461,6 +4463,35 @@ M15 红线（不动 sim 一行）之内不修，**动手前记得补「重叠时
 （6.2 的边缘语义此前没有负值用例）。优先级：低（需要主动钻进模型里才触发）。
 
 ### 9. ★★ 五个 `AuraModifiers` 字段「只聚合、没有消费方」（大乱斗派对道具批发现）
+
+> **已清（W26，2026-08-11）。** 五条接线全部落地，明细与取舍理由见
+> [15-debt-registry.md](15-debt-registry.md) 的 W26 行。以下原文保留不删 ——
+> 它记的是这条债当初是怎么被发现的，以及「绕开而不是修」当时为什么是对的。
+> ⚠️ 本批**动 balance**，归因待主循环重出基线。
+> **方向预判已作废，换成可证伪的断言**（收口批对抗校验推翻了原预判的两条前提）：
+> balance 口径（`ArenaPreset.Classic` + 全程默认装备 + 无 BOSS）下真实入口只有
+> **两个** —— 两件**默认**法杖的 `castSpeed`（`mage.staff` 1.1 / `priest.two_hand_staff`
+> 1.08，纯削弱）与德鲁伊熊形态的 `maxHealth 1.2`；`attackSpeed`（唯一数据源守护甲
+> 是非默认护甲）、`knockbackTaken`（八职业零个击退效果）、`absorbDone`（零数据源）
+> 三条**逐位为零**。⚠️ 两条广为流传的说法在这里被证伪：① 「bot 从不变熊」不成立 ——
+> 七个分类器确实都排除 `shapeshift`，但最终 argmax 的 fallback 池
+> （`damaging` 为空时退到 `offensive.filter(castableNow)`）**不筛 `hasDamage`**，
+> 全员威力为 0 时 `reduce` 返回 `pool[0]`，而 `TargetFilter.Self` 不被敌方目标拒绝，
+> 熊形态（技能表下标 7）在前 6 个可用位全不可用时就是 `pool[0]`；对抗构造实测
+> 「除熊形态外全进冷却 → `decideBotAction` 返回 `druid.bear_form`」。② 「其余职业
+> 逐位不变」不成立 —— 报告是 round-robin 的每职业**总**胜率，priest/mage 变慢会
+> 改掉所有与它们对局的那 7 列。**因此断言按对写**：`--matrix` 下不含
+> priest / mage / druid 的那 10 对（warrior/paladin/deathknight/rogue/hunter 两两组合）
+> 必须逐位不变，任何一对动了才说明还有一条没被识别的路径。方向：priest（90.5）与
+> mage（16.7）同向下行，mage 有跌破 hunter（14.3）成为新下界的风险，**极差大概率
+> 恶化而非收窄**。详见 [15-debt-registry.md](15-debt-registry.md) 的 W26 行。
+>
+> ★ **同族的下一条已立账：W27** —— `WeaponDef.skillModifiers` 整族 8 个字段
+> （`damageMultiplier` / `castTimeMultiplier` / `cooldownMultiplier` …）同样零消费方，
+> 且规模比本条更大：**18 处数据源**，docs/05 还把它们当装备规格逐行公示。
+> 讽刺的是本条 `castSpeed` 的降级注释（`classes/priest.ts` 那段「skillModifiers
+> 也只支持 damageMultiplier / cooldownMultiplier」）正是**误以为那两个是活的**
+> 才那么写的 —— 下表这张「玩家看到的承诺 vs 实际发生」再抄一遍就是 W27。
 
 `sim/modifiers.ts` 的 `aggregate()` 把它们乘进了 `Modifiers`，然后**没有任何
 下游读它们**：

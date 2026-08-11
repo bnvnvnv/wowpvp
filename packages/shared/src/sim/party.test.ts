@@ -101,9 +101,16 @@ describe('派对道具目录', () => {
    *
    * ⚠️ 将来谁把这些字段接通了，把它从下面的清单里删掉即可 —— 断言会
    *   自动放行，不需要改别的。
+   *
+   * ★★ **W26（2026-08-11）：五个字段全部接线，清单因此清空。**
+   *   `maxHealth`→`tickWorld` 第 7 步的上限写回、`attackSpeed`→`swingIntervalOf`、
+   *   `castSpeed`→`castTimeOf`、`knockbackTaken`→`knockback` 处理器、
+   *   `absorbDone`→`applyAura` 的护盾发放量。**断言本身刻意保留**：
+   *   它现在的职责变成「下一个死字段出现时这里有个现成的挂点」——
+   *   删掉它等于把这条纪律一起删了，而这条纪律正是 party.ts 当初没写谎话的原因。
    */
   it('★★ 不使用任何「只聚合、没有消费方」的死修正字段', () => {
-    const DEAD_FIELDS = ['maxHealth', 'knockbackTaken', 'castSpeed', 'attackSpeed', 'absorbDone'];
+    const DEAD_FIELDS: string[] = [];
     const offenders: string[] = [];
     const check = (where: string, mods: Record<string, unknown> | undefined): void => {
       for (const f of DEAD_FIELDS) {

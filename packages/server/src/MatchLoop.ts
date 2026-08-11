@@ -46,7 +46,6 @@ import {
   staticsOf,
   getClass,
   getEntity,
-  getWeapon,
   isVisibleTo,
   listEntities,
   openArmory,
@@ -55,6 +54,7 @@ import {
   settleFfaKill,
   statsRows,
   stopSwing,
+  swingIntervalOf,
   tabTarget,
   tickDepsOf,
   tickWorld,
@@ -236,6 +236,7 @@ export class MatchLoop {
    * P11 快照瘦身的每会话记账：
    *   · `seen` —— 该会话见过哪些实体（静态块首见即发，见 SnapshotDeps.seen）
    *   · `equipFp` —— 每实体上次发出的装备视图指纹（变了才发 EntityLoadouts）
+   *   · `hpFp` —— 每实体上次发出的生命上限（W26：熊形态会改它，见下）
    *
    * ★ 键是 **Session 对象身份**：重连建的是新 Session（RoomServer.connect），
    *   自动拿到空记账 → 静态块与装备全量重发，恰好配合客户端在 MatchStart
@@ -243,7 +244,8 @@ export class MatchLoop {
    *   「再来一局」的实体 id 复用也不会撞上旧记账。
    */
   private readonly snapAccounts = new WeakMap<
-    Session, { seen: Set<EntityId>; equipFp: Map<EntityId, string> }
+    Session,
+    { seen: Set<EntityId>; equipFp: Map<EntityId, string>; hpFp: Map<EntityId, number> }
   >();
 
   /**
@@ -837,7 +839,9 @@ export class MatchLoop {
       const engaged =
         e.alive && target !== undefined && target.alive && target.team !== e.team;
       if (engaged) {
-        beginSwing(this.match.swings, e.id, now, getWeapon(e.weaponId)?.swingInterval ?? 2);
+        // ★ W26：第一刀的时刻也要吃 attackSpeed（守护甲 1.08 慢 8%）——
+        //   与 tickSwings 共用 swingIntervalOf，两处各写一遍迟早漂移
+        beginSwing(this.match.swings, e.id, now, swingIntervalOf(this.match.auras, e, now));
       } else {
         stopSwing(this.match.swings, e.id);
       }
@@ -1250,7 +1254,7 @@ export class MatchLoop {
       // P11 每会话记账（seen/装备指纹），生命周期见 snapAccounts 的注释
       let account = this.snapAccounts.get(s);
       if (!account) {
-        account = { seen: new Set(), equipFp: new Map() };
+        account = { seen: new Set(), equipFp: new Map(), hpFp: new Map() };
         this.snapAccounts.set(s, account);
       }
 
@@ -1282,17 +1286,30 @@ export class MatchLoop {
           equipment?: ReturnType<typeof equipmentViewFor>;
         }[] | undefined;
       for (const se of shared.entities) {
+        const e = m.world.entities.get(se.id);
+        if (!e) continue;
         const fp = fpOf.get(se.id);
         const firstSeen = !account.seen.has(se.id);
         const equipChanged = fp !== undefined && account.equipFp.get(se.id) !== fp;
-        if (!firstSeen && !equipChanged) continue;
-        const e = m.world.entities.get(se.id);
-        if (!e) continue;
+        /**
+         * ★★ W26：生命上限**不再是一局不变的**（德鲁伊熊形态 `maxHealth: 1.2`
+         *   接线之后，变身进出会改 `entity.maxHealth`）。不补发的后果很具体：
+         *   客户端血条按首见那份 1050 画 1260 的血，熊满血显示成 120% ——
+         *   而快照里的 `health` 是对的，所以没有任何一层会报错。
+         * ★ 用与装备完全同一套指纹法，理由也同一条：挂钩「谁改了上限」会有
+         *   「新增一条改上限的路径忘了通知」的静默失效，比一个数字的比较贵得多。
+         * ★ 补发的是整块 statics（name/team/classId/maxResources 顺带重发）——
+         *   一局里这条路径只在变身时走几次，为省几十字节把静态块拆成两条通道
+         *   反而给客户端多一个「合了一半」的状态。
+         */
+        const hpChanged = !firstSeen && account.hpFp.get(se.id) !== e.maxHealth;
+        if (!firstSeen && !equipChanged && !hpChanged) continue;
         account.seen.add(se.id);
         if (fp !== undefined) account.equipFp.set(se.id, fp);
+        account.hpFp.set(se.id, e.maxHealth);
         (metaItems ??= []).push({
           entityId: se.id,
-          ...(firstSeen ? { statics: staticsOf(e) } : {}),
+          ...(firstSeen || hpChanged ? { statics: staticsOf(e) } : {}),
           // ★ 只有首见/指纹变了才构建视图（含数组拷贝）—— 稀有路径
           equipment: equipmentViewFor(e, effectiveViewer, m),
         });

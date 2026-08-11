@@ -380,8 +380,14 @@ export class TutorialDirector {
     // 毕业环：把三个假人的血量上限压低（速胜局，见常量注释）。
     // 试验场的假复活按 maxHealth 拉满 —— 压的是上限，复活后仍是小血池；
     // 击杀去重在规约里，同一假人复活再倒不重复计数
+    //
+    // ★★ W26 起改的是 **`baseMaxHealth`**：`tickWorld` 第 7 步每 tick 都用
+    //   `baseMaxHealth × 聚合 maxHealth` 重算 `maxHealth`，只压后者的话
+    //   下一 tick（50ms 后）就被打回职业原值 —— 毕业环会变成一场打不完的
+    //   满血局，而且没有任何断言会红（教学的验收看的是「击杀三个」，不看血池）。
     if (current === 'graduate' && !this.graduateStaged) {
       for (const d of this.dummies()) {
+        d.baseMaxHealth = GRADUATE_DUMMY_MAX_HEALTH;
         d.maxHealth = GRADUATE_DUMMY_MAX_HEALTH;
         d.health = Math.min(d.health, d.maxHealth);
       }
@@ -443,6 +449,8 @@ export class TutorialDirector {
       for (const d of this.dummies()) {
         const cls = getClass(d.classId);
         if (cls) {
+          // ★ W26：恢复的是基础上限（写回的源头），maxHealth 同步一份让本帧就对
+          d.baseMaxHealth = cls.baseHealth;
           d.maxHealth = cls.baseHealth;
           d.health = Math.min(d.health, d.maxHealth);
         }

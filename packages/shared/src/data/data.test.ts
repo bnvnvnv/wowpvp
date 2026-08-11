@@ -10,6 +10,7 @@ import {
   ALL_CLASSES,
   ALL_SKILLS,
   ALL_WEAPONS,
+  BOSS_ENRAGE_AURA,
   hasInterruptOrSilence,
   isDedicatedInterrupt,
   validateData,
@@ -171,5 +172,42 @@ describe('规格书 6.1 — 距离基准', () => {
   it('没有技能超过 45 米最大选中距离', () => {
     const bad = ALL_SKILLS.filter((s) => s.range.max > 45);
     expect(bad.map((s) => `${s.id}:${s.range.max}`)).toEqual([]);
+  });
+});
+
+/**
+ * BOSS 狂暴：description 里的百分比 ↔ modifiers 的方向与幅度。
+ *
+ * W26 把 `attackSpeed` 接上消费方之前，「攻击速度提高 25%」配 `0.75` 是一句
+ * **死的**谎话（没人读那个字段，BOSS 挥多快都一样）；接线之后同一句话变成
+ * **活的**超发 —— 0.75 是攻速 +33.3%，比承诺多发 8.3pp。两边各写一个数、
+ * 谁也不看谁，正是本仓最难查的那类缺陷。
+ *
+ * 这条断言不重抄 40/25，而是**从 description 里把数字抠出来反推** ——
+ * 单改数值不改文案（或反过来）都会红。方向按 `sim/autoAttack.ts`
+ * `swingIntervalOf` 的口径：`attackSpeed` 乘的是**间隔**，攻速提高 p ⇒ 乘 1/(1+p)。
+ */
+describe('BOSS 狂暴 — 文案与 modifiers 不许各说各话', () => {
+  const text = BOSS_ENRAGE_AURA.description ?? '';
+  const pctOf = (re: RegExp): number => Number(re.exec(text)?.[1]);
+
+  it('description 仍是断言认得的句式（改写句式必须同步改这条，否则断言会静默失效）', () => {
+    expect(Number.isFinite(pctOf(/造成的伤害提高 (\d+)%/)), text).toBe(true);
+    expect(Number.isFinite(pctOf(/攻击速度提高 (\d+)%/)), text).toBe(true);
+  });
+
+  it('伤害提高的百分比与 damageDealt 一致', () => {
+    expect(BOSS_ENRAGE_AURA.modifiers?.damageDealt).toBeCloseTo(
+      1 + pctOf(/造成的伤害提高 (\d+)%/) / 100, 10);
+  });
+
+  it('攻速提高的百分比与 attackSpeed 一致（间隔口径，> 1 更慢）', () => {
+    const speedUp = pctOf(/攻击速度提高 (\d+)%/) / 100;
+    expect(
+      BOSS_ENRAGE_AURA.modifiers?.attackSpeed,
+      `attackSpeed 乘的是间隔：承诺攻速 +${speedUp * 100}% 应写 ${1 / (1 + speedUp)}`,
+    ).toBeCloseTo(1 / (1 + speedUp), 10);
+    // 方向兜底：狂暴必须让间隔变短，接反了上面那条也可能凑巧通过
+    expect(BOSS_ENRAGE_AURA.modifiers?.attackSpeed).toBeLessThan(1);
   });
 });

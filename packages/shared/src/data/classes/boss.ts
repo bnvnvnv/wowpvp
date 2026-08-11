@@ -111,6 +111,14 @@ const skills: SkillDef[] = [
  *   而且时机可预测（玩家能学会「压到三成要准备收尾」）。
  *
  * ★ `persistent`：狂暴到死为止，`duration` 只作 HUD 兜底显示。
+ *
+ * ★★ **`attackSpeed` 乘的是「间隔」不是「速度」**（`sim/autoAttack.ts`
+ *   `swingIntervalOf` 的口径：> 1 更慢）。所以「攻击速度提高 25%」对应
+ *   `1 / 1.25 = 0.8`，**不是** 0.75 —— 0.75 是 +33.3%，比文案多发 8.3pp。
+ *   W26 接线之前这句话是无害的（字段死着，BOSS 挥多快都一样），接线之后
+ *   它会变成一句**生效中的**超发；改成 0.8 兑现文案（docs/06 §BOSS 表里
+ *   写的也是「攻速 +25%」，两处同时为真）。`data.test.ts` 里有一条断言
+ *   从 description 抠百分比反推 modifiers，单改一边就会红。
  */
 export const BOSS_ENRAGE_AURA: AuraDef = {
   id: 'boss.enrage',
@@ -121,7 +129,7 @@ export const BOSS_ENRAGE_AURA: AuraDef = {
   dispelType: DispelType.None,
   clearableByTrinket: false,
   school: School.Fire,
-  modifiers: { damageDealt: 1.4, attackSpeed: 0.75 },
+  modifiers: { damageDealt: 1.4, attackSpeed: 0.8 },
   description: '生命低于 30% 后暴怒：造成的伤害提高 40%，攻击速度提高 25%。',
 };
 

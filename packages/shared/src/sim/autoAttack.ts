@@ -32,7 +32,7 @@ import type { EffectDef } from '../data/schema.js';
 import { COMBAT_SWING } from '../constants/combat.js';
 import { Resource, School } from '../types/enums.js';
 import type { EntityId } from '../types/ids.js';
-import { type AuraStore } from './aura.js';
+import { effectiveModifiersOf, type AuraStore } from './aura.js';
 import { hitCircleOf, isSelectableBy, type CombatEntity } from './entity.js';
 import { getEntity, listEntities, type World } from './world.js';
 
@@ -52,6 +52,26 @@ export interface SwingState {
 }
 
 export const createSwingStore = (): SwingStore => new Map();
+
+/**
+ * 这个实体**此刻**的挥击间隔，秒。
+ *
+ * ★★ **`AuraModifiers.attackSpeed` 的唯一消费方（W26）。** 在此之前守护型
+ *   护甲的 `attackSpeed: 1.08` 只写在 `advantage/cost` 文案里 ——「攻速降低」
+ *   是一句谎话，五种护甲的横向取舍（10.8 / 验收 #32）因此少了一条真实代价。
+ *
+ * ★★ **方向：这个字段乘的是「间隔」，不是「速度」**（schema 原文：
+ *   「攻击间隔乘算，0.9 = 攻速快 10%」）。所以 `> 1 = 更慢`：
+ *   守护甲 1.08 = 每刀多花 8% 时间；BOSS 狂暴 0.75 = 每刀少花 25% 时间。
+ *   接反了就是「守护甲攻速加快 8%」—— 文案与实现双重说谎，且没有断言会红。
+ *
+ * ★ 单列成函数而不是写在 `tickSwings` 里：登记侧（`MatchLoop.syncSwings` /
+ *   `CombatDirector.syncBotSwings`）算**第一刀**的时刻时用的必须是同一个数，
+ *   两处各写一遍 `swingInterval × attackSpeed` 迟早漂移成「开打第一刀不吃
+ *   护甲代价」。
+ */
+export const swingIntervalOf = (auras: AuraStore, e: CombatEntity, now: number): number =>
+  (getWeapon(e.weaponId)?.swingInterval ?? 2) * effectiveModifiersOf(auras, e, now).attackSpeed;
 
 /**
  * 开始自动攻击（4.x 右键目标）。
@@ -168,8 +188,13 @@ export const tickSwings = (deps: SwingDeps, now: number): SwingResult[] => {
     if (!state) continue;              // 没登记 = 不自动攻击
     if (now < state.nextSwingAt) continue;
 
-    const weapon = getWeapon(attacker.weaponId);
-    const interval = weapon?.swingInterval ?? 2;
+    /**
+     * ★ W26：间隔吃 `attackSpeed` 聚合值（守护甲 1.08 = 慢 8%、BOSS 狂暴
+     *   0.75 = 快 25%）。**按挥出这一刀的时刻取值** —— 与「计时是绝对时刻」
+     *   同一条纪律：下一刀的时间在这一刀落下时就定死，中途掉了 buff 也不会
+     *   把已经走过的间隔追溯重算。
+     */
+    const interval = swingIntervalOf(deps.auras, attacker, now);
     /**
      * ★★ 7.6：「不满足时本次挥击落空，但**攻击计时不会被换装刷新**。」
      *   所以无论命中还是落空，计时都在这里推进 —— 落空不惩罚、也不奖励。

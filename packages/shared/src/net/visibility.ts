@@ -835,11 +835,18 @@ const snapshotEntity = (
 };
 
 /**
- * P11 波3：一局不变的静态块投影。MatchLoop 在该会话**首见**这个实体时
+ * P11 波3：一局基本不变的静态块投影。MatchLoop 在该会话**首见**这个实体时
  * 随 `EntityMeta` 消息发一次（潜行者现身、宠物召出、重连都自动覆盖 ——
  * 判据是「进没进过这条会话的可见集合」，记账在服务器的每会话 seen）。
  * ★ 从快照里搬出来的动机：它曾是快照实体里**唯一**逐会话不同的部分，
  *   留在里面就没法做「同队共享同一份实体段字节」。
+ *
+ * ⚠️★ **W26 起 `maxHealth` 不再是「一局不变」的** —— 熊形态的
+ *   `maxHealth: 1.2` 接线之后它会在变身进出时跳变。补发走的是与装备完全
+ *   同一套「指纹变了才发」的路（`MatchLoop.snapAccounts.hpFp`），而不是
+ *   塞回每 tick 的实体段：变身是稀有事件，为它给 24 人 × 10Hz 的每份快照
+ *   都加一个字段是 P11 刚砍掉的那种浪费（实测 306KB/s/客户端）。
+ *   客户端零改动 —— `SnapshotHydrator.setMeta` 本来就是「带 statics 就覆盖」。
  */
 export const staticsOf = (e: CombatEntity): EntityStaticsSnapshot => ({
   name: e.name,

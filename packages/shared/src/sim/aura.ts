@@ -58,6 +58,21 @@ export interface ApplyAuraOptions {
   duration?: number;
   /** 吸收量。absorbPercentMaxHealth 由调用方换算好 */
   absorb?: number;
+  /**
+   * **施加者**的 `absorbDone` 聚合值（W26）。乘在算出来的护盾初值上。
+   *
+   * ★★ 这个字段接的是本仓库**唯一一个零数据源**的修正
+   *   （PROGRESS 技术债 §9 的第五条：`absorbDone` 连一个使用者都没有）。
+   *   零数据源 = 聚合恒为 1 = **零行为变化**，接它的理由不是「现在需要」，
+   *   而是「它不能继续半死着」：一个只被聚合、没有消费方的字段，
+   *   下一个往数据里写它的人会得到一句静默失效的承诺 ——
+   *   `data/party.ts` 的两处 ⚠️ 注释记的正是这件事发生过。
+   *
+   * ★ 缩放的是**发放量**，不是消耗量：`absorbInitial` 记的仍然是这枚护盾
+   *   实际发出来的量，14.3 的「强度衰减」（盾壳按 remaining/initial 收缩）
+   *   与 16.1 的吸收记账（按真实吃掉的伤害记给下盾的人）都不受影响。
+   */
+  absorbScale?: number;
   stacks?: number;
 }
 
@@ -79,10 +94,10 @@ export const applyAura = (
   const list = store.get(target.id) ?? [];
   const duration = opts.duration ?? def.duration;
   const absorb =
-    opts.absorb ??
-    (def.absorbPercentMaxHealth !== undefined
-      ? target.maxHealth * def.absorbPercentMaxHealth
-      : (def.absorb ?? 0));
+    (opts.absorb ??
+      (def.absorbPercentMaxHealth !== undefined
+        ? target.maxHealth * def.absorbPercentMaxHealth
+        : (def.absorb ?? 0))) * (opts.absorbScale ?? 1);
 
   const existing = list.find((a) => a.def.id === def.id && a.sourceId === sourceId);
   if (existing) {

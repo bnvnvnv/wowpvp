@@ -106,7 +106,21 @@ export interface CombatEntity {
   height: number;
 
   health: number;
+  /**
+   * 当前生命上限。**每 tick 由 `applyMaxHealthMultiplier()` 重算写回**
+   * （`tickWorld` 第 7 步），来源是 `baseMaxHealth × 聚合 maxHealth`。
+   * ⚠️ 想改一个实体的上限请改 `baseMaxHealth` —— 直接写这里会在下一 tick 被覆盖。
+   */
   maxHealth: number;
+  /**
+   * **基础**生命上限，来自职业的 `baseHealth`。
+   *
+   * ★★ 它存在的唯一理由是让上限的写回**幂等**：`maxHealth` 每 tick 从
+   *   `base × 聚合值` 重算，所以熊形态的 1.2 无论重算多少次都还是 1.2 倍。
+   *   把「当前上限」自乘的写法（`maxHealth *= 1.2`）在 20Hz 下 3 秒就能
+   *   把熊撑到 1500 倍血 —— 而且没有任何断言会红。
+   */
+  baseMaxHealth: number;
   alive: boolean;
   /** 资源池当前值 */
   resources: Map<Resource, number>;
@@ -254,6 +268,7 @@ export const createEntity = (
     height: GEOMETRY.HITBOX_HEIGHT,
     health: cls.baseHealth,
     maxHealth: cls.baseHealth,
+    baseMaxHealth: cls.baseHealth,
     alive: true,
     resources,
     maxResources,
@@ -307,6 +322,36 @@ export const isSelectableBy = (target: CombatEntity, viewer: CombatEntity): bool
   if (target.flags.untargetable) return false;
   if (isHiddenFromViewer(target, viewer)) return false;
   return true;
+};
+
+/**
+ * 把聚合出来的 `maxHealth` 乘算写回实体，**血量百分比守恒**。
+ *
+ * ★★ **这是 `AuraModifiers.maxHealth` 的唯一消费方。** 在 W26 之前它只被
+ *   `aggregateModifiers` 乘进 `EffectiveModifiers`，然后没有任何下游读它 ——
+ *   德鲁伊熊形态说明里那句「最大生命提高 20%」从落地起就是一句谎话。
+ *
+ * ★ **纯函数、幂等**：`base × 倍率` 而不是 `当前 × 倍率`，所以 `tickWorld`
+ *   每 tick 无脑调用是安全的（每 tick 自乘 1.2 的写法会在 3 秒内把熊撑爆，
+ *   而且不会有任何断言变红 —— 见 `baseMaxHealth` 的注释）。
+ *
+ * ★★ **百分比守恒是这条接线最容易写错的地方**（PROGRESS 技术债 §9 的原话：
+ *   「写回时机错了会让变身瞬间掉血」）。80% 血变熊，看到的必须还是 80% ——
+ *   上限从 1050 涨到 1260，当前血跟着从 840 涨到 1008。
+ *   · 只涨上限不涨当前血 = 变熊瞬间「掉」了一格血条，玩家会以为被偷了一刀；
+ *   · 变回时只降上限不降当前血 = 当前血溢出上限，血条画到 120%。
+ *   所以两个方向共用同一条比例式，`Math.min` 只是浮点兜底。
+ *
+ * ★ 死人不动：`health === 0` 时比例为 0，写回后仍是 0 —— 不会因为变身
+ *   而复活，也不会在尸体上留一个奇怪的血量。
+ */
+export const applyMaxHealthMultiplier = (e: CombatEntity, multiplier: number): void => {
+  const next = e.baseMaxHealth * multiplier;
+  // 没变就一个字节都不动 —— 省掉每 tick 的浮点往返（反复乘除会慢慢啃掉尾数）
+  if (next === e.maxHealth) return;
+  const pct = e.maxHealth > 0 ? e.health / e.maxHealth : 0;
+  e.maxHealth = next;
+  e.health = Math.min(next, pct * next);
 };
 
 export const getResource = (e: CombatEntity, r: Resource): number => e.resources.get(r) ?? 0;

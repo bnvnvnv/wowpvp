@@ -54,12 +54,12 @@ import {
   allocEntityId,
   beginSwing,
   createSwingStore,
+  swingIntervalOf,
   createThreatStore,
   decayThreat,
   pickByThreat,
   recordThreat,
   stopSwing,
-  getWeapon,
   distance2D,
   asSkillId,
   asTeamId,
@@ -954,7 +954,8 @@ export class CombatDirector {
       const engaged =
         e.alive && target !== undefined && target.alive && target.team !== e.team;
       if (engaged) {
-        beginSwing(this.swings, e.id, now, getWeapon(e.weaponId)?.swingInterval ?? 2);
+        // ★ W26：与服务器 syncSwings 同一个函数 —— 第一刀也吃 attackSpeed
+        beginSwing(this.swings, e.id, now, swingIntervalOf(this.auras, e, now));
       } else {
         stopSwing(this.swings, e.id);
       }

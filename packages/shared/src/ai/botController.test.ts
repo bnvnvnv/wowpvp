@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { ALL_CLASSES, druid, hunter, mage, priest, rogue, warrior } from '../data/index.js';
 import { PARTY_SKILLS } from '../data/party.js';
 import type { AuraDef, SkillDef } from '../data/schema.js';
-import { CastKind, DispelType, DrCategory, School } from '../types/enums.js';
+import { CastKind, DispelType, DrCategory, School, TargetFilter } from '../types/enums.js';
 import { asSkillId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
 import { dirToYaw, sub, vec3 } from '../math/vec3.js';
 import { createEntity, type CombatEntity } from '../sim/entity.js';
@@ -270,7 +270,7 @@ describe('P1b 躲圈：站在敌方伤害区域里就往外走', () => {
     const impact = {
       kind: 'delayedImpact' as const, id: 1, skillId: asSkillId('mage.meteor'),
       sourceId: s.foe.id, center: vec3(0, 0, 3), radius: 6,
-      createdAt: 0, impactAt: 2, onImpact: [],
+      createdAt: 0, impactAt: 2, targetFilter: TargetFilter.Enemy, onImpact: [],
     };
     s.world.time = 1; // 还没落
     expect(decideBotAction(perceive(s, {

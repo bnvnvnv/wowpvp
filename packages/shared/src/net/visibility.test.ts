@@ -8,7 +8,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mage, priest, rogue, warrior } from '../data/index.js';
-import { DispelType } from '../types/enums.js';
+import { DispelType, TargetFilter } from '../types/enums.js';
 import { vec3 } from '../math/vec3.js';
 import { asEntityId, asSkillId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
 import { applyAura, createAuraStore, type AuraStore } from '../sim/aura.js';
@@ -498,7 +498,7 @@ describe('14.3 / 14.4 投射物与地面区域进快照', () => {
           {
             kind: 'delayedImpact', id: 2, skillId: asSkillId('mage.meteor'),
             sourceId: me.id, center: vec3(3, 0, 4), radius: 5,
-            createdAt: 1, impactAt: 3, onImpact: [],
+            createdAt: 1, impactAt: 3, targetFilter: TargetFilter.Enemy, onImpact: [],
           },
         ],
       },

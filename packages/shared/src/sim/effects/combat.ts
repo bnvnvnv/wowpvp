@@ -554,7 +554,21 @@ registerEffect('applyAura', (ctx, e, targets) => {
       duration = r.duration;
       drFactor = r.factor;
     }
-    applyAura(ctx.auras, t, e.aura, ctx.source.id, ctx.world.time, { duration });
+    /**
+     * ★ W26：护盾发放量吃施加者的 `absorbDone`（真言术盾、寒冰护体、骨盾…）。
+     *   **只在这枚光环真的是护盾时才算** —— 聚合一次要遍历施加者全部光环 +
+     *   查两件装备，而 91 个技能里带 absorb 的是少数，无条件算等于给每一次
+     *   上 buff 都付一次聚合的钱。
+     * ⚠️ 当前全仓**没有任何数据写 `absorbDone`**，所以聚合恒为 1、行为逐位
+     *   不变；接线的意义是「从此有人喂就生效」，见 `ApplyAuraOptions.absorbScale`。
+     */
+    const shields = e.aura.absorb !== undefined || e.aura.absorbPercentMaxHealth !== undefined;
+    applyAura(ctx.auras, t, e.aura, ctx.source.id, ctx.world.time, {
+      duration,
+      ...(shields
+        ? { absorbScale: effectiveModifiersOf(ctx.auras, ctx.source, ctx.world.time).absorbDone }
+        : {}),
+    });
     ctx.events.push({
       t: 'auraApplied', sourceId: ctx.source.id, targetId: t.id,
       auraId: e.aura.id, duration, drFactor,

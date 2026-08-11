@@ -11,6 +11,7 @@ import { clampDisplacement } from '../../math/geometry.js';
 import { addScaled, normalize2D, sub, yawToDir, type Vec3 } from '../../math/vec3.js';
 import { getSkill } from '../../data/index.js';
 import { TargetFilter } from '../../types/enums.js';
+import { effectiveModifiersOf } from '../aura.js';
 import { teleportTo } from '../movement.js';
 import { spawnColliding, spawnDelayedImpact, spawnHoming } from '../projectile.js';
 import { asSkillId } from '../../types/ids.js';
@@ -106,9 +107,22 @@ registerEffect('teleportBehindTarget', (ctx, e, targets) => {
 
 registerEffect('knockback', (ctx, e, targets) => {
   for (const t of targets) {
-    // 抗控型护甲降低击退距离（10.8），这里读聚合后的修正
+    /**
+     * ★★ **`AuraModifiers.knockbackTaken` 的唯一消费方（W26）。**
+     *   这一行的上方原本写着「抗控型护甲降低击退距离（10.8），这里读聚合后的
+     *   修正」—— 而它下面那行**没有读**任何修正。注释描述的是一件不发生的事，
+     *   正是本仓库最怕的那类缺陷（PROGRESS 技术债 §9）。
+     *
+     * ★ 方向按 schema 原文「受到击退距离乘算」：机动甲 1.25 = 被推得**更远**
+     *   （换来 12% 移速的代价），抗控甲 0.6 = 被推得**更近**，死骑骨盾 0.5 同理。
+     * ★ 读的是**被推的人**的聚合值，不是施法者的 —— 「击退抵抗」是承受方的属性。
+     * ⚠️ 只作用于 `knockback`，不碰 `pullTarget`：10.8 的护甲文案说的是
+     *   「击退距离」，拉拽（死亡之握/信仰飞跃）落点由施法者位置决定，
+     *   按承受方的抵抗缩放会把人拽到半路上悬着，语义不通。
+     */
     const dir = normalize2D(sub(t.position, ctx.source.position));
-    moveTo(ctx, t, addScaled(t.position, dir, e.distance), 'knockback');
+    const taken = effectiveModifiersOf(ctx.auras, t, ctx.world.time).knockbackTaken;
+    moveTo(ctx, t, addScaled(t.position, dir, e.distance * taken), 'knockback');
   }
 });
 

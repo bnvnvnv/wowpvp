@@ -338,6 +338,52 @@ export const isWeaponSkill = (skill: SkillDef): boolean =>
 
 // ── 生命周期 ─────────────────────────────────────────────────────
 
+/**
+ * 施法者**此刻**的读条时间乘算（`EffectiveModifiers.castSpeed`）。
+ *
+ * ★★ **由调用方注入，不在本文件里算。** 聚合要读武器与护甲
+ *   （`modifiers.equipmentModifiersOf`），而 casting.ts 的纪律是**零数据
+ *   注册表依赖**（见 `validateCast` 里 `availableSkills` 那段的理由）。
+ *   注入一个纯数字函数就不会把 data 拖进来。
+ *
+ * ★ 缺省不传 = 倍率 1 = 与 W26 之前逐位相同的行为。生产路径只有
+ *   `tickWorld` 一处，它一定传（三个入口共用同一个闭包）；
+ *   试验场/验收脚本走的也是 `tickWorld`。
+ */
+export type CastTimeScaleFn = (caster: CombatEntity) => number;
+
+/**
+ * 一次读条实际要花的秒数。
+ *
+ * ★★ **只缩放读条段，不碰引导时长**（`channelDuration`）。理由不是省事：
+ *   引导时长是**效果本身**的时长 —— 暴风雪的引导 4 秒对应
+ *   `spawnGroundArea.duration` 的 4 秒，两个数字必须相等，
+ *   `tickWorld` 的打断分支正是靠这一点掐掉已经生成的地面区域。
+ *   只把 `channelEndsAt` 缩 15% 会得到「引导条走完了、雪还在下 0.6 秒」，
+ *   而缩地面区域是在改技能的**效果强度**，那属于配平不属于接线。
+ *   schema 对这个字段的原文也只说「**读条**时间乘算」。
+ *
+ * ★ **瞄准射击（`AimedShot`）一并吃**：它的 `cast.time` 就是「准备」那一段，
+ *   7.6 与读条走的是同一条推进路径（`tickCasting` 的 `endsAt`）。守护型护甲
+ *   的「施法速度降低」因此也压猎人的瞄准 —— 与它压读条是同一件事，
+ *   把射击豁免掉反而要在这里凭空立一条规格书没有的例外。
+ * ★ **GCD 不吃**：schema 对这个字段的原文限定在「读条时间」，而 `GCD.BASE`
+ *   是 7.4 步骤 2 的固定值。与 WoW「急速同时压 GCD」的差异是**有意**的 ——
+ *   动 GCD 等于动全部瞬发技能的节奏，那是配平不是接线。
+ *
+ * ★★ **取值时刻：读条开始的那一瞬，之后锁死。**
+ *   · WoW 口径：施法时间在起手时确定，中途获得/失去急速不改变当前这一条；
+ *   · 结构理由：`endsAt` 是写在 `CastState` 上的**绝对时刻**，HUD 与特效层
+ *     按 `(now - startedAt) / (endsAt - startedAt)` 线性插值（`CombatHud`
+ *     的施法条、`castVfx` 的相位）—— 每 tick 重算会让掉一个 buff 表现为
+ *     读条条当场跳一下，玩家只会读作卡顿；
+ *   · 联网侧同源：服务器 `CastStarted` 发的是 `endsAt - startedAt`，
+ *     客户端读条条自动跟随，**零协议改动**。
+ */
+export const castTimeOf = (
+  skill: SkillDef, caster: CombatEntity, scale?: CastTimeScaleFn,
+): number => skill.cast.time * (scale?.(caster) ?? 1);
+
 export type CastResult =
   | { ok: true; state: CastState | null }
   /**
@@ -398,7 +444,11 @@ export const beginCast = (
   store: CastingStore,
   caster: CombatEntity,
   skill: SkillDef,
-  opts: { target?: CombatEntity; groundPoint?: Vec3; events?: CastEvents } = {},
+  opts: {
+    target?: CombatEntity; groundPoint?: Vec3; events?: CastEvents;
+    /** W26：读条时间乘算。不传 = 1，与接线前逐位相同 —— 见 `castTimeOf` */
+    castTimeScale?: CastTimeScaleFn;
+  } = {},
 ): CastResult => {
   // 已在施法时按新技能：7.5 允许主动取消，但不允许叠加两个读条
   if (store.has(caster.id)) return { ok: false, reason: CastFailure.AlreadyCasting };
@@ -430,7 +480,8 @@ export const beginCast = (
     skillId: skill.id,
     kind: skill.cast.kind,
     startedAt: world.time,
-    endsAt: world.time + skill.cast.time,
+    // ★ W26：读条时长在这里、而且**只在这里**吃 castSpeed（见 castTimeOf）
+    endsAt: world.time + castTimeOf(skill, caster, opts.castTimeScale),
     targetId: opts.target?.id,
     groundPoint: opts.groundPoint ? { ...opts.groundPoint } : undefined,
     facing: caster.yaw,
@@ -726,7 +777,10 @@ export const beginCastOrQueue = (
   queue: CastQueueStore,
   caster: CombatEntity,
   skill: SkillDef,
-  opts: { target?: CombatEntity; groundPoint?: Vec3; events?: CastEvents } = {},
+  opts: {
+    target?: CombatEntity; groundPoint?: Vec3; events?: CastEvents;
+    castTimeScale?: CastTimeScaleFn;
+  } = {},
 ): CastResult => {
   const { quiet, report } = withoutFailureReport(opts.events);
   const r = beginCast(world, store, caster, skill, { ...opts, events: quiet });
@@ -751,6 +805,11 @@ export const beginCastOrQueue = (
 export interface CastQueueTickOptions {
   getSkill: (id: SkillId) => SkillDef | undefined;
   events?: CastEvents;
+  /**
+   * W26：读条时间乘算。★ 这里必须是**函数**而不是一个数 —— 排队窗是逐实体
+   * 遍历的，一个数就变成「谁排队都按同一个人的护甲算读条」。
+   */
+  castTimeScale?: CastTimeScaleFn;
 }
 
 /**
@@ -802,6 +861,7 @@ export const tickCastQueue = (
     const r = beginCast(world, store, caster, skill, {
       ...(q.targetId !== undefined ? { target: getEntity(world, q.targetId) } : {}),
       ...(q.groundPoint ? { groundPoint: q.groundPoint } : {}),
+      ...(opts.castTimeScale ? { castTimeScale: opts.castTimeScale } : {}),
       events: quiet,
     });
     if (r.ok) {

@@ -26,13 +26,16 @@
  * ★★ **只用引擎真的会执行的修正字段。**
  *   落地时逐个核过 `sim/modifiers.ts` 的下游：`maxHealth`、`knockbackTaken`、
  *   `castSpeed`、`attackSpeed`、`absorbDone` 这几个**只被聚合、没有任何消费方** ——
- *   写上去不会报错，只会让 `advantage` / `description` 变成一句谎话
- *   （德鲁伊熊形态的 `maxHealth: 1.2`、机动护甲的 `knockbackTaken: 1.25`
- *   目前就都是死数据）。⚠️ 这是**既有缺口**，不在本批修复范围
- *   —— 修它等于改八个职业与五套护甲的实际数值。本文件的选择是
- *   **绕开它们**：本包用到的每一个字段（moveSpeed / damageTaken /
- *   damageDealt / healingTaken / critChance / resourceGain /
- *   ccDurationTaken / absorb / periodic）都在 sim 里有真实读者。
+ *   写上去不会报错，只会让 `advantage` / `description` 变成一句谎话。
+ *   本文件当时的选择是**绕开它们**，并由 `sim/party.test.ts` 的
+ *   「不使用死修正字段」断言钉住这条纪律。
+ *
+ *   ✅ **W26（2026-08-11）：五个字段全部接线，这条限制已经解除。**
+ *   下面几处标着「本来想写 X，但那个字段是死的」的降级注释因此都过期了 ——
+ *   它们保留在原地是为了记住那次取舍，**但数值刻意没有跟着改回去**：
+ *   现在的 `moveSpeed 0.88 + damageTaken 1.18`（巨杖）与
+ *   `absorb + ccDurationTaken`（变大药水）是**已经调过一轮**的数字，
+ *   换回 `castSpeed` / `maxHealth` 是一次配平改动，该单独一批、单独归因。
  */
 
 import { RANGE } from '../constants/combat.js';
@@ -284,8 +287,9 @@ const partyWeapons: WeaponDef[] = [
       /**
        * 代价：扛着一根比人还高的杖，走不快也躲不掉。
        * ⚠️ 这里**本来想写** `castSpeed: 1.2`（「读条 +20%」才是巨杖最贴切的
-       *   代价），但那个字段在 sim 里没有消费方（见文件头）——
+       *   代价），但那个字段当时在 sim 里没有消费方 ——
        *   写上去等于在 cost 文案里承诺一件不会发生的事。改用两个真生效的。
+       * ✅ W26 已把 `castSpeed` 接进读条；换回去是配平改动，另立一批（见文件头）。
        */
       moveSpeed: 0.88,
       damageTaken: 1.18,
@@ -412,11 +416,13 @@ const partyConsumables: ConsumableDef[] = [
            * ⚠️ 「被击面变大」在本引擎里**表达不了**：碰撞体是 `GEOMETRY`
            *   常量，验收 #10 明令模型大小不改变碰撞体。用承受伤害 +25%
            *   近似 —— 如实记在这里，而不是偷偷去改碰撞体。
-           * ⚠️ 「更能扛」本来该写 `maxHealth: 1.35`，但那个字段在 sim 里
-           *   没有消费方（见文件头）。改用 `absorb` —— 一层实打实的护盾，
+           * ⚠️ 「更能扛」本来该写 `maxHealth: 1.35`，但那个字段当时在 sim 里
+           *   没有消费方。改用 `absorb` —— 一层实打实的护盾，
            *   而且它有「破裂」表现（14.3），比一条看不见的血条上限更好读。
-           * ⚠️ 「推不动」同理不写 `knockbackTaken` —— 那个字段也是死的。
+           * ⚠️ 「推不动」同理不写 `knockbackTaken` —— 那个字段当时也是死的。
            *   抗控只保留真生效的 `ccDurationTaken`。
+           * ✅ W26 已把两个字段都接上；这里的数值**有意维持原样**（护盾的
+           *   破裂反馈这条理由今天仍然成立），换回去属配平，见文件头。
            */
           modifiers: {
             damageDealt: 1.3,

@@ -27,6 +27,7 @@
  * | 4 | projectiles | | |
  * | 5 | groundAreas | | |
  * | 6 | deriveStatusFlags | **必须在全部光环变动之后**，否则本 tick 新加的控制要等下一 tick 才生效 | `aura.ts` / M4 |
+ * | 6' | 生命上限写回 | 与 deriveStatusFlags 同址同理：**必须在全部光环变动之后**，否则变熊要等下一 tick 才涨血。幂等（base × 倍率）且血量百分比守恒 | `entity.ts` 的 `applyMaxHealthMultiplier` / W26 |
  * | 7 | swaps + pickups | **必须在 deriveStatusFlags 之后**：它们读 `flags.stunned` 判断硬控制中断 | `loadout.ts` / `arsenal.ts` |
  * | 8 | stats 折叠 | **必须在 matchRules 之前**：`carrierKills` 读 `flags.carryingFlag`，而 `tickFlags()` 会在死亡后把旗掉下来并清掉那个标志 | `stats.ts` 的 `ingestCombatEvents` 头部 |
  * | 9 | matchRules | **必须在 movement 与死亡之后**：`tickFlags` 要知道这一 tick 有没有位移；`tickArena` 读 `alive` 判胜负，顺序反了胜负慢一个 tick | `flag.ts` / `arena.ts` 头部 |
@@ -51,9 +52,9 @@ import type { MapDef } from '../data/maps/schema.js';
 import { asSkillId, type ClassId, type EntityId, type SkillId } from '../types/ids.js';
 import { PVP_TRINKET } from '../constants/combat.js';
 import type { Vec3 } from '../math/vec3.js';
-import { gainResource, type CombatEntity } from './entity.js';
+import { applyMaxHealthMultiplier, gainResource, type CombatEntity } from './entity.js';
 import {
-  deriveStatusFlags, moveSpeedMultiplierOf, tickAuras, type AuraStore,
+  deriveStatusFlags, effectiveModifiersOf, moveSpeedMultiplierOf, tickAuras, type AuraStore,
 } from './aura.js';
 import {
   beginCast, beginCastOrQueue, tickCasting, tickCastQueue,
@@ -381,6 +382,16 @@ export const tickWorld = (
   };
 
   /**
+   * ★★ **统一的读条时长乘算（W26）。**
+   *   三个施法入口（第 1 步的 `beginCast` / `beginCastOrQueue`、第 3b 步的
+   *   `tickCastQueue`）共用**同一个**闭包 —— 与 `castEvents` 同一条纪律：
+   *   分头各传各的迟早出现「直接放吃护甲代价、排队放不吃」这种没人会发现的分歧。
+   *   算法住在 `casting.ts` 的 `castTimeOf`，这里只负责喂当前的聚合值。
+   */
+  const castTimeScale = (c: CombatEntity): number =>
+    effectiveModifiersOf(deps.auras, c, deps.world.time).castSpeed;
+
+  /**
    * ★★ **统一的施法完成入口。**
    *   同时传给 `beginCast`（瞬发走这条）与 `tickCasting`（读条走这条）——
    *   见 `TickDeps.castRequests` 的注释，只接一个出口是 M4 踩过的坑。
@@ -450,6 +461,7 @@ export const tickWorld = (
         : {}),
       ...(intent.groundPoint ? { groundPoint: intent.groundPoint } : {}),
       events: castEvents,
+      castTimeScale,
     };
     /**
      * ★ 分叉只有这一处，而且是**显式开关**驱动的：没带 `queue` 的请求
@@ -605,7 +617,7 @@ export const tickWorld = (
    */
   if (deps.castQueue) {
     tickCastQueue(deps.world, deps.casting, deps.castQueue, {
-      getSkill: deps.getSkill, events: castEvents,
+      getSkill: deps.getSkill, events: castEvents, castTimeScale,
     });
   }
 
@@ -667,11 +679,26 @@ export const tickWorld = (
     for (const [r, rate] of e.resourceRegen) gainResource(e, r, rate * dt);
   }
 
-  // ── 7. deriveStatusFlags ────────────────────────────────────
+  // ── 7. deriveStatusFlags + 生命上限写回 ─────────────────────
   // ★ 必须在全部光环变动之后，否则本 tick 新加的控制要等下一 tick 才生效。
   //   也必须在第 7 步之前 —— swaps/pickups 读 flags.stunned
   for (const e of settledEntities) {
     e.flags = deriveStatusFlags(deps.auras, e);
+    /**
+     * ★★ **W26：`AuraModifiers.maxHealth` 的写回**（熊形态 1.2 在此之前
+     *   什么都没做）。与 `deriveStatusFlags` 同一个位置、同一条理由：
+     *   **必须在本 tick 全部光环变动之后** —— 变熊的光环是第 1 步瞬发挂上的，
+     *   放在光环推进之前写回等于变身要等下一 tick 才涨血（50ms 的空窗里
+     *   有一发伤害打进来，玩家看到的就是「变熊没加血还挨了一刀」）。
+     *
+     * ★ 幂等：`applyMaxHealthMultiplier` 拿的是 `baseMaxHealth × 倍率`，
+     *   每 tick 重算不累乘（见它自己的注释）。上限没变时它一个字节都不写，
+     *   所以「没有任何 maxHealth 数据源」的常态是零开销 + 零浮点抖动。
+     * ★ 血量百分比守恒也在那里 —— 进熊 80% 出熊还是 80%，不掉血不溢出。
+     * ★ 排在死亡结算（第 11 步）之前：本 tick 被打死的人 health 已经是 0，
+     *   比例守恒把 0 原样留成 0，不会因为变身把尸体拉起来。
+     */
+    applyMaxHealthMultiplier(e, effectiveModifiersOf(deps.auras, e, deps.world.time).maxHealth);
   }
 
   // ── 8. swaps + pickups（读 flags；发 result:'death' 事件）───
