@@ -7,17 +7,21 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { RoomPlayerView } from '@wowpvp/shared';
+import {
+  GameMode, MAP_BY_ID, THEMED_ARENA_SPECS, mapsForMode, type RoomPlayerView,
+} from '@wowpvp/shared';
 import {
   ROOM_CODE_ALPHABET,
   ROOM_CODE_LENGTH,
   escapeHtml,
   isJoinableCode,
   makeRoomCode,
+  mapOptionsFor,
   normalizeRoomCode,
   readyBlocker,
   sanitizeName,
   shareLink,
+  showMapRow,
   splitRoster,
   teamLabel,
 } from './logic.js';
@@ -126,5 +130,68 @@ describe('M13 分享链接', () => {
     const url = shareLink('http://host:5173', '/', 'K7XQ', 'ws://10.0.0.2:8080');
     expect(url).toContain('lobby=K7XQ');
     expect(url).toContain('server=ws%3A%2F%2F10.0.0.2%3A8080');
+  });
+});
+
+describe('P5 选图行（mapOptionsFor / showMapRow）', () => {
+  /**
+   * ★★ 首项恒为试炼环 —— `mapsForMode` 的顺序有语义（`setMode` 换图取 [0]），
+   *   UI 若自己排序或自己拼 id，「默认路径行为不变」当场破功。
+   */
+  it('★★ 顺序照抄 mapsForMode：首项是该档的试炼环，主题图跟在后面', () => {
+    const opts = mapOptionsFor(GameMode.Arena3v3);
+    expect(opts[0]!.id).toBe(mapsForMode(GameMode.Arena3v3)[0]!.id as string);
+    expect(opts[0]!.id).toBe('arena_3v3');
+    expect(opts.map((o) => o.id)).toContain('arena_grove_altar');
+  });
+
+  it('★ 选项随人数档变（熔岩裂谷只在 6v6–9v9，密林祭坛只在 3v3–5v5）', () => {
+    expect(mapOptionsFor(GameMode.Arena3v3).map((o) => o.id)).not.toContain('arena_lava_rift');
+    expect(mapOptionsFor(GameMode.Arena6v6).map((o) => o.id)).toContain('arena_lava_rift');
+    expect(mapOptionsFor(GameMode.Arena6v6).map((o) => o.id)).not.toContain('arena_grove_altar');
+  });
+
+  /**
+   * ★★ 副标题/详情直接取地图规格的 style/terrain —— 客户端不另写一份文案。
+   *   手写那份的后果是「地图改了、界面还在说老话」，而界面撒的谎没人会红。
+   */
+  it('★★ 主题图的副标题与详情逐字来自 THEMED_ARENA_SPECS', () => {
+    const spec = THEMED_ARENA_SPECS.find((s) => s.id === 'arena_grove_altar')!;
+    const opt = mapOptionsFor(GameMode.Arena3v3).find((o) => o.id === 'arena_grove_altar')!;
+    expect(opt.name).toBe(spec.name);
+    expect(opt.subtitle).toBe(spec.style);
+    expect(opt.detail).toBe(spec.terrain);
+  });
+
+  it('★ 试炼环没有声明风格 → 如实留空，不编一句', () => {
+    const opt = mapOptionsFor(GameMode.Arena3v3)[0]!;
+    expect(opt.subtitle).toBe('');
+    expect(opt.detail).toBe('');
+    expect(opt.name).toBe(MAP_BY_ID.get('arena_3v3')!.name);
+  });
+
+  /** ★ 名字一律从注册表按 **id** 查（★ m5 #24：绝不按数组下标）*/
+  it('★ 每个选项的名字都与注册表按 id 查出来的一致', () => {
+    for (const mode of [GameMode.Arena1v1, GameMode.Arena5v5, GameMode.Arena12v12]) {
+      for (const o of mapOptionsFor(mode)) {
+        expect(o.name, `${o.id} 的名字对不上注册表`).toBe(MAP_BY_ID.get(o.id)!.name);
+      }
+    }
+  });
+
+  it('★ 大乱斗不画选图行（FFA 固定大图，P13 口径）', () => {
+    expect(showMapRow(GameMode.Ffa)).toBe(false);
+    expect(showMapRow(undefined)).toBe(false);
+  });
+
+  /**
+   * ★★ 1v1–12v12 每一档都至少两张可选 —— 这条与 shared 的「不留空档」测试
+   *   是同一件事的两端：那边保证数据有，这边保证界面画得出来。
+   */
+  it('★★ 竞技场 1v1–12v12 每一档都画得出选图行（至少两张可选）', () => {
+    for (let n = 1; n <= 12; n++) {
+      const mode = `arena${n}v${n}` as GameMode;
+      expect(showMapRow(mode), `${n}v${n} 只有一张图可选`).toBe(true);
+    }
   });
 });

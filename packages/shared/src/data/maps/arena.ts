@@ -181,8 +181,25 @@ const PILOT = {
   BRIDGE_W: 4,
   DECK_H: 0.35,
 } as const;
+/**
+ * 逐级累加出台阶顶面高度。
+ *
+ * ★★ **不能写成 `PLAT_H − (i+1)*RISE`。** `tryStepUp` 把角色抬到
+ *   `from.y + STEP_HEIGHT` 后判碰撞，而 `cylinderOverlapsAabb` 的出口是
+ *   `foot.y >= box.max.y`（**严格**）—— 差一个 ulp 就直接放弃，角色贴着
+ *   台阶原地站住。倒着算恰好会差那一个 ulp：`0.9 + 0.45` 在 IEEE754 上是
+ *   `1.3499999999999998668`，而 `2.25 − 2*0.45` 是 `1.3500000000000000888`，
+ *   于是**第三级永远上不去**（实测直走停在 y=0.90，只有会跳的人到得了台顶）。
+ *   逐级累加由构造保证 `tops[k] === tops[k-1] + RISE` 逐位相等。
+ * ★ 这条缺陷曾被复制进 P5 的三张主题图（`themed.ts` 有同款注释与同款修法）。
+ *   机检已从「比数据里的高度差」换成「跑真解算器走一遍」——
+ *   数据比对永远抓不到这类误差，它带着 `+1e-9` 容差骗过了两批人。
+ */
+const PILOT_STAIR_TOPS: readonly number[] = Array.from({ length: PILOT.STEPS }).reduce<number[]>(
+  (tops) => [...tops, (tops[tops.length - 1] ?? 0) + PILOT.RISE], [],
+);
 /** 台高 = 整部楼梯的总升程，同时是桥下净空（2.25 > HITBOX_HEIGHT 2.0） */
-const PILOT_PLAT_H = PILOT.RISE * PILOT.STEPS;
+const PILOT_PLAT_H = PILOT_STAIR_TOPS[PILOT.STEPS - 1]!;
 
 const makePilotTerrain = (half: number): MapVolume[] => {
   const px = half * 0.4; // 东翼台心（3v3 半径 56m 下 ≈ 22.4，柱环 30.8 之内）
@@ -203,7 +220,8 @@ const makePilotTerrain = (half: number): MapVolume[] => {
           y: 0,
           z: pz,
         },
-        { w: PILOT.TREAD, h: PILOT_PLAT_H - (i + 1) * PILOT.RISE, d: 4 },
+        // i=0 是紧贴台沿的最高一级，i=STEPS-2 是最外的第一级
+        { w: PILOT.TREAD, h: PILOT_STAIR_TOPS[PILOT.STEPS - 2 - i]!, d: 4 },
         { blocksSight: false }));
     }
   }

@@ -24,6 +24,7 @@ import {
   CastKind,
   MAP_BY_ID,
   TEAM_RED,
+  asMapId,
   compositionHints,
   getClass,
   teamSizeOf,
@@ -55,10 +56,12 @@ import {
   isLocalDev,
   isJoinableCode,
   makeRoomCode,
+  mapOptionsFor,
   normalizeRoomCode,
   readyBlocker,
   sanitizeName,
   shareLink,
+  showMapRow,
   splitRoster,
 } from './logic.js';
 
@@ -161,6 +164,12 @@ export class LobbyShell {
   private roomStarted = false;
   private mode: GameMode | undefined;
   private mapId: MapId | undefined;
+  /**
+   * P5 选图行当前画的是哪一组选项（`模式|id,id,…`）。
+   * ★ 纯渲染缓存，**不是权威状态** —— 高亮走的仍是 RoomState 的 `mapId`。
+   *   它只回答「这排按钮要不要重建」（见 renderRoom 里的 ⚠️）。
+   */
+  private mapRowKey = '';
   private preset: ArenaPreset = ArenaPreset.Classic;
   /** P5：人机补位状态（由 RoomState 同步，房主可改）*/
   private fillWithBots = false;
@@ -429,6 +438,18 @@ export class LobbyShell {
                 <button class="lb-btn lb-small" data-action="mode" data-mode="ctf12v12">12v12</button>
               </span>
               <span id="lb-mode-why" class="lb-fine"></span>
+            </div>
+            <!--
+              P5 选图。★ 与模式/预设是同一个存在理由：四张主题图数据全对、
+              机检全绿，但 setMode 只会落到 mapsForMode(mode)[0]（试炼环）——
+              没有这一行，玩家一张都进不去。按钮由 mapOptionsFor(mode) 现算
+              （选项随人数档变），房主可点、非房主只读，校验在 sim 的 setMap 里。
+              大乱斗房间整行隐藏（FFA 固定大图，P13 口径）。
+            -->
+            <div class="lb-row" id="lb-map-row">
+              <span class="lb-fine">地图：</span>
+              <span id="lb-maps" style="display:contents"></span>
+              <span id="lb-map-why" class="lb-fine"></span>
             </div>
             <!--
               10.1 规则预设。★ **没有这个开关，整个第 10 章不可达** ——
@@ -893,6 +914,18 @@ export class LobbyShell {
         if (mode) this.conn.send({ t: 'SetRoomMode', mode: mode as GameMode });
         break;
       }
+      case 'map': {
+        /**
+         * P5 选图。★ 同 mode：只发意图 —— 「房主吗」「开局了吗」
+         *   「这张图适配当前人数档吗」三条全由服务器的 `setMap()` 判，
+         *   被拒会回一条 Rejected 走既有 toast 路。
+         * ★ 按钮上的 id 来自 `mapOptionsFor()`（也就是 `mapsForMode`），
+         *   客户端这边不存在任何 id 字面量。
+         */
+        const mapId = btn?.dataset['map'];
+        if (mapId) this.conn.send({ t: 'SetRoomMap', mapId: asMapId(mapId) });
+        break;
+      }
       case 'open-class':
         this.page = 'class';
         this.render();
@@ -1244,6 +1277,51 @@ export class LobbyShell {
       : isFfa
         ? `大乱斗：人人为敌，先杀满目标数获胜（至多 ${FFA.MAX_PLAYERS} 人）`
         : (isHost ? '' : '由房主设置');
+
+    /**
+     * P5 选图行。★ 选项**每次渲染现算** —— 它随人数档变（密林祭坛只在
+     *   3v3–5v5 出现），缓存一份就会出现「拖完滑杆还挂着上一档的图」。
+     * ★ 高亮的是 `RoomState` 广播回来的 `mapId`（W12 那条口径：
+     *   「不是本地记的按钮」），非房主看得到、点不动。
+     * ⚠️ 整行用 style.display 控制显隐而不是 hidden 属性 —— .lb-row 的
+     *    display:flex 会压过 UA 的 [hidden]{display:none}（X10 二轮同款教训）。
+     */
+    {
+      const rowEl = this.root.querySelector('#lb-map-row') as HTMLElement | null;
+      const boxEl = this.root.querySelector('#lb-maps') as HTMLElement | null;
+      const visible = showMapRow(this.mode);
+      if (rowEl) rowEl.style.display = visible ? '' : 'none';
+      if (boxEl && visible && this.mode) {
+        const options = mapOptionsFor(this.mode);
+        /**
+         * ⚠️ **只在选项集合真的变了时才重建 innerHTML。**
+         *   render() 每来一条 RoomState 就跑一遍，而房主点完地图必然紧跟一条 ——
+         *   无条件重建会把刚点的那颗按钮连同焦点一起换掉（键盘用户从此
+         *   每选一次图就被弹回页首）。高亮与禁用是**属性**，逐颗改即可。
+         */
+        const key = `${this.mode as string}|${options.map((o) => o.id).join(',')}`;
+        if (key !== this.mapRowKey) {
+          this.mapRowKey = key;
+          boxEl.innerHTML = options.map((o) => `
+            <button class="lb-btn lb-small" data-action="map" data-map="${escapeHtml(o.id)}"
+                    title="${escapeHtml(o.detail || o.name)}">${escapeHtml(o.name)}${
+              o.subtitle ? ` <i class="lb-fine">${escapeHtml(o.subtitle)}</i>` : ''
+            }</button>`).join('');
+        }
+        for (const el of boxEl.querySelectorAll<HTMLButtonElement>('[data-action="map"]')) {
+          el.classList.toggle('lb-armed', el.dataset['map'] === (this.mapId as string | undefined));
+          el.disabled = !isHost || this.roomStarted;
+        }
+        /**
+         * ★ 说明文字取地图数据里的 `terrain`，不另写一份 —— 手写的那份
+         *   会在地图改了之后变成谎话，而界面撒的谎没有任何测试会红。
+         *   试炼环没声明地形，就退回「由房主设置」/空（不编一句）。
+         */
+        const current = options.find((o) => o.id === (this.mapId as string | undefined));
+        (this.root.querySelector('#lb-map-why') as HTMLElement).textContent =
+          current?.detail || (isHost ? '' : '由房主设置');
+      }
+    }
 
     /**
      * 10.1 规则预设。★ 非房主也**看得到**当前预设（它决定这局怎么打），

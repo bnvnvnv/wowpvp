@@ -51,6 +51,17 @@ export const GROUND_TEXTURES = {
 } as const;
 export type GroundTexture = keyof typeof GROUND_TEXTURES;
 
+/**
+ * P5：把 `MapDef.groundTexture`（自由字符串，纯表现字段）验成合法材质。
+ * ★ 不填或拼错一律回落 `stone` —— 那正是本字段出现之前**所有**地图的行为，
+ *   所以老图逐帧不变，新图拼错也只是「没换成雪地」而不是黑地面。
+ *   与 `presetOf` 同一条纪律（拼错由 `envPreset.test.ts` 那一族测试变红灯）。
+ */
+export const groundOf = (groundTexture: string | undefined): GroundTexture =>
+  groundTexture !== undefined && groundTexture in GROUND_TEXTURES
+    ? (groundTexture as GroundTexture)
+    : 'stone';
+
 export interface EnvironmentOptions {
   preset?: EnvPreset;
   /** 天空是否可见。夺旗/竞技场是室内外混合，室内图可以关掉 */

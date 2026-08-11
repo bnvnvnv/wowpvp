@@ -10,7 +10,10 @@
  *   这里判了只是省一次往返，漏判也只是多收一条 Rejected。
  */
 
-import type { RoomPlayerView } from '@wowpvp/shared';
+import {
+  GameMode, THEMED_ARENA_SPECS, mapsForMode,
+  type RoomPlayerView,
+} from '@wowpvp/shared';
 
 /**
  * 房间码字符表：去掉了易混字形（0/O、1/I/L、8/B）。
@@ -93,6 +96,51 @@ export const teamLabel = (team: RoomPlayerView['team']): string =>
  * 直接拼进 innerHTML 等于让任何进房的人在你屏幕上执行脚本。
  * HUD 的姓名板用的是 textContent 所以没这个问题；大厅用模板串拼名单，必须过这里。
  */
+// ── P5 选图 ──────────────────────────────────────────────────────
+
+/** 选图行的一颗按钮。★ 全部字段都来自地图数据，没有一句手写文案 */
+export interface MapOptionVM {
+  id: string;
+  /** 地图注册表里的名字（雪原哨站 / 试炼环·标准）*/
+  name: string;
+  /** 副标题：主题图的 `style`（雪原 / 破晓）。试炼环没有声明，就是空串 */
+  subtitle: string;
+  /** 悬停详情：主题图的 `terrain`（地形一句话）。试炼环没有声明，同样留空 */
+  detail: string;
+}
+
+/**
+ * 当前模式能选哪几张图。
+ *
+ * ★★ **`mapsForMode(mode)` 是唯一权威** —— 这里不拼任何 id 字面量，
+ *   也不按数组下标取图（★ m5 #24：地图/规格查找一律按 id，
+ *   「那个坑三个月前的尸体还热着」）。加图/改 `modes` 时这一行自动跟上。
+ *
+ * ★★ **副标题直接取地图规格的 `style`/`terrain`，不在客户端另写一份文案。**
+ *   手写一份的后果是「地图改了、界面还在说老话」—— 而界面撒的谎没人会红。
+ *   试炼环那张是参数化生成的，没有声明风格，就如实留空（不编一句）。
+ *
+ * ★ 顺序照抄 `mapsForMode`：首项恒为试炼环（默认图），主题图跟在后面。
+ */
+export const mapOptionsFor = (mode: GameMode): MapOptionVM[] =>
+  mapsForMode(mode).map((m) => {
+    const spec = THEMED_ARENA_SPECS.find((s) => s.id === (m.id as string));
+    return {
+      id: m.id as string,
+      name: m.name,
+      subtitle: spec?.style ?? '',
+      detail: spec?.terrain ?? '',
+    };
+  });
+
+/**
+ * 选图行该不该出现。
+ * ★ 大乱斗固定大图（P13 口径：FFA 只有一张 `ffa_*`），一颗按钮的「选择」
+ *   是假选择 —— 少于两张可选就整行不画，别给玩家一个点不出花样的控件。
+ */
+export const showMapRow = (mode: GameMode | undefined): boolean =>
+  mode !== undefined && mode !== GameMode.Ffa && mapOptionsFor(mode).length > 1;
+
 /**
  * P6：是不是本地开发环境。用户拍板：「自测的可以根据 IP 判断，
  * 比如本地 IP 才会展示这个窗口」—— 入口页的「验收试验场/压测台」

@@ -184,6 +184,13 @@ export interface MapDef {
    *   放 MapDef 而不是客户端表：地图长什么样是地图数据的一部分。
    */
   envPreset?: string;
+  /**
+   * 地面材质名（P5，「一张图是雪地还是草地」）。
+   * ★ 与 `decor` / `envPreset` 同属**纯表现**字段：sim 不读，客户端拿它选
+   *   地形贴图（键对应 client `GROUND_TEXTURES`，**不填或不认识一律回落
+   *   `stone`** —— 也就是本字段出现之前所有图的行为，老图逐帧不变）。
+   */
+  groundTexture?: string;
 
   prepRooms?: readonly PrepRoom[];
   gates: readonly Gate[];

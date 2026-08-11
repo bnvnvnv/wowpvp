@@ -18,7 +18,7 @@
  *     而连接**仍然活着**。
  */
 
-import { asEntityId, asSkillId, asClassId, type EntityId } from '../types/ids.js';
+import { asEntityId, asMapId, asSkillId, asClassId, type EntityId } from '../types/ids.js';
 import { ArenaPreset, ArsenalChoice, GameMode } from '../types/enums.js';
 import type { Vec3 } from '../math/vec3.js';
 
@@ -216,6 +216,25 @@ export const parseClientMessage = (raw: string): ParseResult => {
       const mode = v['mode'];
       if (!(ALL_GAME_MODES as readonly unknown[]).includes(mode)) return bad('mode 无效');
       return { ok: true, msg: { t, mode: mode as GameMode } };
+    }
+
+    case 'SetRoomMap': {
+      const mapId = v['mapId'];
+      /**
+       * ★ 与 `JoinRoom` 的 roomId **同族约束**（S2）：不受信任的字符串
+       *   一律要有长度上限。最长的合法地图 id 是 `arena_ruins_colosseum`
+       *   （21 字符），32 已是宽裕。
+       * ★ **这里不查「地图存不存在」，也不查「适不适配当前模式」** ——
+       *   前者要 import 地图注册表（codec 只认协议，不认内容数据），
+       *   后者要知道房间当前的模式，而 codec 没有 room。
+       *   两条都是调用方的活（见本函数的 ⚠️），判在 sim 的 `setMap()`，
+       *   与 `SelectClass` 只验「非空字符串」、职业合法性留给
+       *   `isPlayableClass` 是同一条分工。
+       */
+      if (typeof mapId !== 'string' || mapId.length === 0 || mapId.length > 32) {
+        return bad('mapId 无效（1–32 字符）');
+      }
+      return { ok: true, msg: { t, mapId: asMapId(mapId) } };
     }
 
     case 'Reconnect': {

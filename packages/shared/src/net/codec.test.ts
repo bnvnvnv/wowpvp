@@ -7,9 +7,11 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { asEntityId, asSkillId } from '../types/ids.js';
+import { asEntityId, asMapId, asSkillId } from '../types/ids.js';
 import { School } from '../types/enums.js';
-import { decodeServerMessage, encodeServerMessage, parseClientMessage } from './codec.js';
+import {
+  decodeServerMessage, encodeClientMessage, encodeServerMessage, parseClientMessage,
+} from './codec.js';
 import type { ServerMessage } from './protocol.js';
 import type { EntitySnapshot } from './visibility.js';
 
@@ -121,5 +123,52 @@ describe('W12 SetRoomMode 入站校验', () => {
       const r = parseClientMessage(JSON.stringify({ t: 'SetRoomMode', mode }));
       expect(r.ok, `非法 mode ${String(mode)} 被放行了`).toBe(false);
     }
+  });
+});
+
+describe('P5 SetRoomMap 入站校验与往返', () => {
+  it('★ 合法 id 原样带过（含四张主题图与试炼环）', () => {
+    for (const mapId of [
+      'arena_3v3', 'arena_frost_outpost', 'arena_grove_altar',
+      'arena_lava_rift', 'arena_ruins_colosseum',
+    ]) {
+      const r = parseClientMessage(encodeClientMessage({ t: 'SetRoomMap', mapId: asMapId(mapId) }));
+      expect(r.ok, `地图 ${mapId} 被误拒`).toBe(true);
+      if (r.ok) expect(r.msg).toEqual({ t: 'SetRoomMap', mapId });
+    }
+  });
+
+  /**
+   * ★★ 与 JoinRoom 的 roomId **同族约束**（S2）：不受信任的字符串必须有长度上限。
+   *   没有上限就等于允许一条消息塞进来一个 10MB 的字符串走一遍查表。
+   */
+  it('★★ 空串 / 超长 / 非字符串一律拒绝（roomId 同族的长度约束）', () => {
+    for (const mapId of ['', 'x'.repeat(33), 42, null, { id: 'a' }, ['arena_3v3']]) {
+      const r = parseClientMessage(JSON.stringify({ t: 'SetRoomMap', mapId }));
+      expect(r.ok, `非法 mapId ${JSON.stringify(mapId)} 被放行了`).toBe(false);
+    }
+    // 边界：32 字符仍然放行（合法 id 最长 21 字符，留了余量）
+    expect(parseClientMessage(JSON.stringify({ t: 'SetRoomMap', mapId: 'y'.repeat(32) })).ok)
+      .toBe(true);
+  });
+
+  /**
+   * ★ codec **不查地图存不存在** —— 它没有地图注册表，也不知道房间当前是什么模式。
+   *   这两条都是调用方（sim 的 `setMap`）的活，与 SelectClass 只验「非空字符串」、
+   *   职业合法性留给 `isPlayableClass` 是同一条分工。这里把分工钉住：
+   *   一个语法合法但不存在的 id 在 codec 这一层**应当通过**。
+   */
+  it('★ 存在性不在 codec 这一层判（分工钉子）', () => {
+    expect(parseClientMessage(JSON.stringify({ t: 'SetRoomMap', mapId: 'no_such_map' })).ok)
+      .toBe(true);
+  });
+
+  it('★ 不受信任的多余字段被丢弃，不进 sim', () => {
+    const r = parseClientMessage(JSON.stringify({
+      t: 'SetRoomMap', mapId: 'arena_lava_rift', teamSize: 99, spawns: [],
+    }));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(Object.keys(r.msg).sort()).toEqual(['mapId', 't']);
   });
 });

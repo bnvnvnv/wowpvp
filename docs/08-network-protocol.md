@@ -36,8 +36,8 @@
 ## 3. 消息类型
 
 > ⚠️ **本节两段代码是 M0 立的基线，不是当前的完整清单。** 此后陆续加了
-> 房间设置（`SetRoomPreset`/`SetRoomMode`/`SetFillWithBots`/`SetRoomBotDifficulty`/
-> `SetRoomBoss`）、军械箱（`OpenArmory`/`ChooseArsenal`/`ArsenalOffer`/`PickupResult`）、
+> 房间设置（`SetRoomPreset`/`SetRoomMode`/`SetRoomMap`/`SetFillWithBots`/
+> `SetRoomBotDifficulty`/`SetRoomBoss`）、军械箱（`OpenArmory`/`ChooseArsenal`/`ArsenalOffer`/`PickupResult`）、
 > 战后统计（`MatchStats`）、断线三条（`Peer*`），以及 **P11–P13 的那一批**（见 §8）。
 > 权威清单永远是 `packages/shared/src/net/protocol.ts` 的两个联合类型 +
 > 与之同步的 `ALL_CLIENT_MESSAGE_KINDS` / `ALL_SERVER_MESSAGE_KINDS`
@@ -380,10 +380,24 @@ BOSS 的**可达性**靠一条房主开关消息 `SetRoomBoss{enabled}`（与 `S
 ### 8.6 用户拍板批新增（2026-08-10）
 
 ```ts
+// 客户端 → 服务器（ROOM_ONLY，已登记进阶段白名单 —— A8 的教训）
+| { t: 'SetRoomMap'; mapId: MapId }
+
 // 服务器 → 客户端（私信，不广播）
 | { t: 'CastQueueExpired'; skillId: SkillId; waited: number }
 ```
 
+- **`SetRoomMap`**（P5 选图的可达性）：房主在房间页换一张**当前模式适配**的地图，
+  与 `SetRoomPreset` / `SetRoomMode` / `SetRoomBoss` 同一个存在理由 —— 没有它，
+  P5 那四张主题图（`mapsForMode(mode)` 里排在试炼环之后）玩家一张都进不去。
+  只带 id，不带名字/尺寸/preset：那些都在地图注册表里，两端按 id 查
+  （`MAP_BY_ID.get(id)`，绝不按数组下标 —— m5 #24）。**codec 只验「1–32 字符的字符串」**
+  （与 `JoinRoom.roomId` 同族的长度约束，S2）；「存不存在、适不适配当前人数档」
+  由 sim 的 `setMap()` 判，**不合法一律诚实拒绝，绝不静默换成一张能用的**
+  （静默改的表现是「我明明选了熔岩裂谷，开局却在试炼环」）。`RoomState.mapId`
+  本来就在广播，所以没有新的服务器消息；**降档回落**（当前图不适配新人数档时退回
+  `mapsForMode(mode)[0]`）留在 `setMode()` 里 —— 那一步玩家知道自己动了什么。
+  它是客户端消息，`referencedEntities()` 那张服务器侧的穷尽表因此不涉及。
 - **`CastQueueExpired`**（X21 的答案）：0.4s 施法排队窗过期、排入的按键作废时私发给
   施法者本人。`waited` 是从按下到作废的实际秒数，给 HUD 判「差一点」还是「早就凉了」。
   刻意**不**给 `CastFailure` 加枚举值 —— 客户端 `Record<CastFailure, string>` 会编译不过，

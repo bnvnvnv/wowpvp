@@ -18,6 +18,7 @@ import {
   TRINKET_COOLDOWN_KEY,
   applyAura,
   asClassId,
+  asMapId,
   asWeaponId,
   getEntity,
   teleportTo,
@@ -985,5 +986,157 @@ describe('P6：无人对局的回收', () => {
 
     red2.close();
     blue2.close();
+  });
+});
+
+/**
+ * P5 选图接线：`SetRoomMap` 从协议一路走到「这一局真的在那张图上打」。
+ *
+ * ★★ 这一组要证明的是**可达性**：四张主题图在 P5 那一批里数据全对、机检全绿，
+ *   但 `setMode` 只会落到 `mapsForMode(mode)[0]`（试炼环）—— 在这条消息接上
+ *   之前，玩家一张都进不去。最后一条（开局用的是新图）是本组的主线，
+ *   前面几条是它的边界。
+ * ★ 走真 socket，与本文件其余组同一条路：codec → 阶段白名单 → sim 的 setMap。
+ */
+describe('P5：房主选图（SetRoomMap）', () => {
+  /** 等到 RoomState 的 mapId 变成期望值（RoomState 会来好几条，要看最新的那条）*/
+  const waitForMap = async (c: TestClient, mapId: string, ms = 3000): Promise<void> => {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      const states = c.received.filter(
+        (m): m is Extract<ServerMessage, { t: 'RoomState' }> => m.t === 'RoomState',
+      );
+      if (states.length > 0 && (states[states.length - 1]!.mapId as string) === mapId) return;
+      if (Date.now() > deadline) {
+        throw new Error(`等 mapId=${mapId} 超时；收到过：${states.map((m) => m.mapId).join(', ')}`);
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  };
+
+  const lastRoomState = (c: TestClient): Extract<ServerMessage, { t: 'RoomState' }> => {
+    const states = c.received.filter(
+      (m): m is Extract<ServerMessage, { t: 'RoomState' }> => m.t === 'RoomState',
+    );
+    return states[states.length - 1]!;
+  };
+
+  it('★★ 房主换图 → RoomState 广播新 mapId；开局后这一局真的在那张图上', async () => {
+    const red = await TestClient.connect(server.port);
+    const blue = await TestClient.connect(server.port);
+    red.send({ t: 'JoinRoom', roomId: 'map1', name: '红方' });
+    await red.waitFor('RoomState');
+    // 默认档 3v3，密林祭坛声明 3v3/4v4/5v5 —— 不用换模式就能选上
+    red.send({ t: 'SetRoomMap', mapId: asMapId('arena_grove_altar') });
+    await waitForMap(red, 'arena_grove_altar');
+
+    red.send({ t: 'SelectTeam', team: 'red' });
+    red.send({ t: 'SelectClass', classId: asClassId('mage') });
+    await readyUp(blue, 'map1', '蓝方', 'blue', 'warrior');
+    red.send({ t: 'SetReady', ready: true });
+
+    const start = await red.waitFor('MatchStart');
+    // 三处口径必须一致：MatchStart 的 mapId、服务器持有的 match.map、房间配置
+    expect(start.mapId as string).toBe('arena_grove_altar');
+    expect(server.rooms.matchOf('map1')!.map.id as string).toBe('arena_grove_altar');
+
+    red.close();
+    blue.close();
+  });
+
+  it('★ 非房主发 SetRoomMap 被拒绝，且连接活着、地图不动', async () => {
+    const host = await TestClient.connect(server.port);
+    const guest = await TestClient.connect(server.port);
+    host.send({ t: 'JoinRoom', roomId: 'map2', name: '房主' });
+    await host.waitFor('RoomState');
+    guest.send({ t: 'JoinRoom', roomId: 'map2', name: '客人' });
+    await guest.waitFor('RoomState');
+
+    guest.send({ t: 'SetRoomMap', mapId: asMapId('arena_grove_altar') });
+    const rejected = await guest.waitFor('Rejected');
+    expect(rejected.what).toBe('SetRoomMap');
+    expect(rejected.reason).toContain('房主');
+    expect(guest.open, '一条越权消息不该拖垮连接').toBe(true);
+    expect(lastRoomState(guest).mapId as string).toBe('arena_3v3');
+
+    host.close();
+    guest.close();
+  });
+
+  /**
+   * ★★ 纵深防御：**阶段白名单**（ROOM_ONLY）先挡一层，sim 的 started 守卫是第二层。
+   *   所以这里的拒绝理由说的是「当前阶段不接受」而不是「比赛已开始」——
+   *   两条都在，A8 那条「不该只剩一层」的教训。
+   */
+  it('★★ 开局后再发 SetRoomMap → 被阶段白名单拒（第一道门，不是靠 sim 兜底）', async () => {
+    const red = await TestClient.connect(server.port);
+    const blue = await TestClient.connect(server.port);
+    await readyUp(red, 'map3', '红方', 'red', 'mage');
+    await readyUp(blue, 'map3', '蓝方', 'blue', 'warrior');
+    await red.waitFor('MatchStart');
+
+    red.received.length = 0;
+    red.send({ t: 'SetRoomMap', mapId: asMapId('arena_grove_altar') });
+    const rejected = await red.waitFor('Rejected');
+    expect(rejected.what).toBe('SetRoomMap');
+    expect(rejected.reason).toContain('阶段');
+    expect(red.open).toBe(true);
+    expect(server.rooms.matchOf('map3')!.map.id as string).toBe('arena_3v3');
+
+    red.close();
+    blue.close();
+  });
+
+  it('★★ 不适配当前人数档 → 诚实拒绝，不静默换成别的图', async () => {
+    const host = await TestClient.connect(server.port);
+    host.send({ t: 'JoinRoom', roomId: 'map4', name: '房主' });
+    await host.waitFor('RoomState');
+
+    // 熔岩裂谷最低 6v6，当前是 3v3
+    host.send({ t: 'SetRoomMap', mapId: asMapId('arena_lava_rift') });
+    const rejected = await host.waitFor('Rejected');
+    expect(rejected.what).toBe('SetRoomMap');
+    expect(rejected.reason).toContain('不适配');
+    expect(lastRoomState(host).mapId as string).toBe('arena_3v3');
+
+    // 换到 6v6 之后同一条消息就通过
+    host.send({ t: 'SetRoomMode', mode: 'arena6v6' as never });
+    host.send({ t: 'SetRoomMap', mapId: asMapId('arena_lava_rift') });
+    await waitForMap(host, 'arena_lava_rift');
+
+    host.close();
+  });
+
+  it('★ 编造的地图 id 被拒（codec 放行长度合法的串，存在性由 sim 判）', async () => {
+    const host = await TestClient.connect(server.port);
+    host.send({ t: 'JoinRoom', roomId: 'map5', name: '房主' });
+    await host.waitFor('RoomState');
+
+    host.send({ t: 'SetRoomMap', mapId: asMapId('arena_atlantis') });
+    const rejected = await host.waitFor('Rejected');
+    expect(rejected.reason).toContain('不存在');
+    expect(host.open).toBe(true);
+    expect(lastRoomState(host).mapId as string).toBe('arena_3v3');
+
+    host.close();
+  });
+
+  it('★★ 换人数档：仍适配就留着选好的图，不适配才回落默认图', async () => {
+    const host = await TestClient.connect(server.port);
+    host.send({ t: 'JoinRoom', roomId: 'map6', name: '房主' });
+    await host.waitFor('RoomState');
+
+    host.send({ t: 'SetRoomMap', mapId: asMapId('arena_grove_altar') });
+    await waitForMap(host, 'arena_grove_altar');
+
+    // 3v3 → 5v5：密林祭坛声明到 5v5，房主挑的图留着
+    host.send({ t: 'SetRoomMode', mode: 'arena5v5' as never });
+    await waitForMap(host, 'arena_grove_altar');
+
+    // 5v5 → 8v8：出了它的区间，回落到该档的首张图（试炼环）
+    host.send({ t: 'SetRoomMode', mode: 'arena8v8' as never });
+    await waitForMap(host, 'arena_8v8');
+
+    host.close();
   });
 });

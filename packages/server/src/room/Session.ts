@@ -69,6 +69,9 @@ const ROOM_ONLY: ReadonlySet<ClientMessage['t']> = new Set([
   // ★ W12：换模式只在房间阶段有意义（sim 的 started 守卫是第二道防线，
   //   但纵深防御不该只剩一层 —— A8 的教训，新消息登记时就把门装上）
   'SetRoomMode',
+  // ★ P5 换地图同理：开局后再改毫无意义（`beginMatch` 早就把地图查完了），
+  //   sim 的 `setMap()` 里那道 started 守卫是第二层，不是唯一一层
+  'SetRoomMap',
   // ★ 大 BOSS 开关同理：开局后再改毫无意义（`createMatch` 早就读完了它）
   'SetRoomBoss',
 ]);

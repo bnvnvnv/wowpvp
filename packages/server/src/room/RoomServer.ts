@@ -39,6 +39,7 @@ import {
   setBossEnabled,
   setBotDifficulty,
   setFillWithBots,
+  setMap,
   setMode,
   setPreset,
   setReady,
@@ -324,6 +325,13 @@ export class RoomServer {
       // ★ W12：换模式连带换地图与人数档，规则全在 sim 的 `setMode()`
       case 'SetRoomMode': return this.onRoomMutation(
         session, (sr) => setMode(sr.room, session.playerId, msg.mode), 'SetRoomMode');
+      /**
+       * ★ P5 选图。房主校验、地图存在性、「适不适配当前模式」全在 sim 的
+       *   `setMap()` 里 —— 本文件头那条「规则不在这里」对它同样成立：
+       *   要是在这儿再写一份「哪张图能用」，`mapsForMode` 就不再是唯一权威了。
+       */
+      case 'SetRoomMap': return this.onRoomMutation(
+        session, (sr) => setMap(sr.room, session.playerId, msg.mapId), 'SetRoomMap');
       case 'SetFillWithBots': return this.onRoomMutation(
         session, (sr) => setFillWithBots(sr.room, session.playerId, msg.enabled), 'SetFillWithBots');
       case 'SetRoomBotDifficulty': return this.onRoomMutation(

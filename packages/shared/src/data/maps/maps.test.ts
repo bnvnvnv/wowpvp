@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { GEOMETRY, MOVE } from '../../constants/combat.js';
 import { distance2D, vec3 } from '../../math/vec3.js';
+import { createMovementState, stepMovement } from '../../sim/movement.js';
 import { TEAM_BLUE, TEAM_RED } from '../../types/ids.js';
 import { ARENA_MAPS, ARENA_SPECS } from './arena.js';
 import { ctfMap } from './ctf.js';
@@ -230,19 +231,60 @@ describe('arena_3v3 试点地形（高台楼梯 + 跨桥 + 视线矮墙）', () 
     expect(cz(vol('plat_bridge'))).toBeCloseTo(0, 5);
   });
 
-  it('★ 从地面到桥顶每级升程 ≤ STEP_HEIGHT —— 谁都走得上去，高台不是位移职业专属（11.3）', () => {
-    for (const side of ['n', 's'] as const) {
-      // 由外向内的登顶阶梯：地面 → 四级楼梯 → 台顶 → 桥面
-      const ladder = [
-        0,
-        ...[3, 2, 1, 0].map((i) => vol(`plat_${side}_stair_${i}`).max.y),
-        vol(`plat_${side}`).max.y,
-        vol('plat_bridge').max.y,
-      ];
-      for (let i = 1; i < ladder.length; i++) {
-        expect(ladder[i]! - ladder[i - 1]!, `${side} 侧第 ${i} 级升程超过可跨高度`)
-          .toBeLessThanOrEqual(GEOMETRY.STEP_HEIGHT + 1e-9);
+  /**
+   * ★★ **跑真解算器，不比数据。**
+   *
+   *   这条原本比的是「相邻两级的 `max.y` 差 ≤ STEP_HEIGHT + 1e-9」，
+   *   全绿地放过了一个 blocker：级高当初写成 `PLAT_H − (i+1)*RISE` 倒着算，
+   *   IEEE754 上比「抬升后的脚底」高 1 个 ulp，`tryStepUp` 直接 `return undefined`
+   *   —— **实测直走停在 y=0.90，第三级永远上不去**，台顶只有会跳的人到得了，
+   *   而 `fairness.mobilityOnlyPlatforms` 还是空的。那个 `+1e-9` 容差
+   *   正好把差值吃掉了（见 `arena.ts` 的 `PILOT_STAIR_TOPS`）。
+   *
+   *   判定藏在解算器里，就得问解算器：从台脚起 `createMovementState` +
+   *   `stepMovement` 一路直走，断言脚底真的踩到了台顶/桥面。
+   */
+  it('★★ 直走就能登上台顶与桥面（跑真解算器）—— 高台不是位移职业专属（11.3）', () => {
+    const TICK = 1 / 60;
+    const px = (vol('plat_s').min.x + vol('plat_s').max.x) / 2;
+    /** 从 `from` 朝 `yaw` 直走，返回途中是否踩到过 `top` 的顶面 */
+    const climbs = (
+      from: { x: number; y: number; z: number }, yaw: number, topId: string,
+    ): { ok: boolean; end: { x: number; y: number; z: number } } => {
+      const top = vol(topId);
+      let s = createMovementState(vec3(from.x, from.y, from.z), yaw);
+      let ok = false;
+      for (let i = 0; i < 20 * 60 && !ok; i++) {
+        s = stepMovement(s, { forward: 1, strafe: 0, jump: false, yaw }, TICK, map.geometry).state;
+        ok = Math.abs(s.position.y - top.max.y) < 1e-3
+          && s.position.x > top.min.x - GEOMETRY.HITBOX_RADIUS
+          && s.position.x < top.max.x + GEOMETRY.HITBOX_RADIUS
+          && s.position.z > top.min.z - GEOMETRY.HITBOX_RADIUS
+          && s.position.z < top.max.z + GEOMETRY.HITBOX_RADIUS;
       }
+      return { ok, end: s.position };
+    };
+
+    for (const side of ['n', 's'] as const) {
+      const pz = (vol(`plat_${side}`).min.z + vol(`plat_${side}`).max.z) / 2;
+      // 楼梯朝东下行 → 从台东侧的地面朝西（yawToDir(π/2) = (−1, 0, 0)）直走
+      const up = climbs({ x: px + 12, y: 0, z: pz }, Math.PI / 2, `plat_${side}`);
+      expect(
+        up.ok,
+        `${side} 侧直走上不了台顶（y=${vol(`plat_${side}`).max.y}），`
+        + `停在 (${up.end.x.toFixed(2)}, ${up.end.y.toFixed(2)}, ${up.end.z.toFixed(2)})`
+        + ' —— 只有会跳的人上得去',
+      ).toBe(true);
+
+      // 台顶朝中线（yawToDir(0) = (0, 0, −1)；北台要朝 +z 所以取 π）走上桥面
+      const onto = climbs(
+        { x: px, y: vol(`plat_${side}`).max.y, z: pz }, side === 's' ? 0 : Math.PI, 'plat_bridge',
+      );
+      expect(
+        onto.ok,
+        `${side} 台顶走不上桥面（y=${vol('plat_bridge').max.y}），`
+        + `停在 (${onto.end.x.toFixed(2)}, ${onto.end.y.toFixed(2)}, ${onto.end.z.toFixed(2)}）`,
+      ).toBe(true);
     }
   });
 

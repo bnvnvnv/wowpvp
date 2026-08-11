@@ -41,7 +41,7 @@ import { partyViewOf } from '../hud/PartyFrame.js';
 import { SettingsPanel, rebindableActions, prettyKey } from '../settings/SettingsPanel.js';
 import { makeRebindController } from '../settings/keybindings.js';
 import { MusicDirector, ambientTrackFor } from '../audio/MusicDirector.js';
-import { presetOf } from '../render/Environment.js';
+import { groundOf, presetOf } from '../render/Environment.js';
 import { FAIL_TEXT } from '../combat/CombatDirector.js';
 import { Action, InputManager, type FrameInput } from '../input/InputManager.js';
 import { DecorRenderer } from '../render/DecorRenderer.js';
@@ -334,7 +334,8 @@ export class TestbedScene {
     if (this.art) {
       // W15：昼夜按地图配（试验场=day 红线不动；教学场=dawn）
       this.env.apply(this.quality.current, { preset: presetOf(this.stage.map.envPreset) });
-      void this.mapRenderer.applyGroundTexture('stone');
+      // P5：同 NetworkScene —— 试验场/教学图没配这个字段，回落 stone 后逐帧不变
+      void this.mapRenderer.applyGroundTexture(groundOf(this.stage.map.groundTexture));
       // 地图装饰摆设（纯表现，sim 不读 —— 见 DecorRenderer 文件头）
       if (stage.map.decor) {
         this.decorRenderer = new DecorRenderer(stage.map.decor);

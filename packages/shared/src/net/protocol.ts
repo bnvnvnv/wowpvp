@@ -116,6 +116,19 @@ export type ClientMessage =
    *   服务器换模式时连带换地图与人数档（sim 的 `setMode()`，校验在那边）。
    */
   | { t: 'SetRoomMode'; mode: GameMode }
+  /**
+   * P5 选图：在**当前模式适配的地图**之间换一张。**只有房主、只在开赛前。**
+   *
+   * ★ 与 `SetRoomMode` 的分工：模式决定「打什么、几个人」，地图决定
+   *   「在哪张地形上打」。此前一个模式只能落在 `mapsForMode(mode)[0]` 那一张，
+   *   于是 P5 交付的四张主题图（雪原哨站/密林祭坛/熔岩裂谷/废墟角斗场）
+   *   数据全对、机检全绿、**玩家一张都进不去** —— 又一次「写了没有路径能到」。
+   * ★ 只带 id，不带名字/尺寸/preset：那些都在地图注册表里，
+   *   客户端按 id 查（★ m5 #24：一律按 id，绝不按数组下标）。
+   * ★ 「这张图存不存在、适不适配当前人数档」是**服务器的判定**（sim 的
+   *   `setMap()`）—— 不合法诚实拒绝，不静默改成别的图。
+   */
+  | { t: 'SetRoomMap'; mapId: MapId }
   /** docs/14 §16b 人机补位开关。**只有房主、只在开赛前**，默认关 */
   | { t: 'SetFillWithBots'; enabled: boolean }
   /**
@@ -190,7 +203,7 @@ export type ClientMessageKind = ClientMessage['t'];
  */
 export const ALL_CLIENT_MESSAGE_KINDS: readonly ClientMessageKind[] = [
   'JoinRoom', 'SelectTeam', 'SelectClass', 'SetReady', 'SetRoomPreset',
-  'SetRoomMode', 'SetFillWithBots', 'SetRoomBotDifficulty', 'SetRoomBoss',
+  'SetRoomMode', 'SetRoomMap', 'SetFillWithBots', 'SetRoomBotDifficulty', 'SetRoomBoss',
   'LeaveMatch', 'Reconnect', 'ListRooms',
   'Input', 'SetTarget', 'TabTarget', 'CastRequest', 'CancelCast', 'UseTrinket',
   'InteractStart', 'InteractCancel', 'SwapWeapon', 'SwapArmor', 'UseConsumable',

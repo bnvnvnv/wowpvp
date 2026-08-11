@@ -97,7 +97,7 @@ import {
   SKILL_BAR_SLOTS, assignSlot, loadSkillBar, saveSkillBar,
 } from '../settings/skillLoadout.js';
 import { MusicDirector, ambientTrackFor } from '../audio/MusicDirector.js';
-import { presetOf } from '../render/Environment.js';
+import { groundOf, presetOf } from '../render/Environment.js';
 import { SnapshotCombatView, castStateFromStarted } from '../net/SnapshotCombatView.js';
 import { audio } from '../audio/AudioManager.js';
 import { FAIL_TEXT } from '../combat/CombatDirector.js';
@@ -1366,7 +1366,8 @@ export class NetworkScene {
       // W15：地图到手才知道该用哪个昼夜 —— 覆盖构造时的 day（A13 的
       // lastOpts 记忆让之后切画质保持这个 preset）
       this.env.apply(this.quality.current, { preset: presetOf(map.envPreset) });
-      void this.mapRenderer.applyGroundTexture('stone');
+      // P5：地面材质也归地图数据管（雪原是雪、密林是草）。不填回落 stone = 老行为
+      void this.mapRenderer.applyGroundTexture(groundOf(map.groundTexture));
       // 地图装饰摆设（纯表现，sim 不读 —— 见 DecorRenderer 文件头）
       if (map.decor) {
         this.decorRenderer = new DecorRenderer(map.decor);
