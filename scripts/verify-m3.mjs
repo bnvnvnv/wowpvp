@@ -40,6 +40,20 @@ page.on('console', (m) => {
   if (m.type() === 'error') runtimeErrors.push(m.text());
 });
 
+/**
+ * ★★ X15 播种：**关掉指针锁定**，在 `goto` 之前（口径与 verify-m1 逐字相同）。
+ *
+ *   本脚本有合成的**右键**操作（#8 的右键取消瞄准、以及左键拖动转镜头）。
+ *   指针锁定默认开着时右键按下会请求 `requestPointerLock` —— 合成事件的
+ *   `movementX` 口径此后由锁定态说了算，与这些断言成立时的口径不是一回事。
+ *   播种 `pointerLock:false` ⇒ 继续走旧拖动路径，**断言一个字没改**。
+ */
+await page.addInitScript(() => {
+  try {
+    localStorage.setItem('wowpvp.accessibility.v1', JSON.stringify({ pointerLock: false }));
+  } catch { /* 隐私模式等拿不到 storage：那种环境里本来也锁不上 */ }
+});
+
 await page.goto(URL, { waitUntil: 'networkidle' });
 await page.waitForTimeout(2500);
 

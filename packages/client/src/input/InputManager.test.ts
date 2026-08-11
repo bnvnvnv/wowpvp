@@ -36,25 +36,76 @@ const makeTarget = () => {
 };
 
 type Target = ReturnType<typeof makeTarget>;
-const g = globalThis as unknown as { window?: unknown };
+const g = globalThis as unknown as { window?: unknown; document?: unknown };
+
+/**
+ * X15：最小 document 靶子 —— 只实现 InputManager 用到的指针锁定四件事。
+ * `requestPointerLock` 挂在**元素**上（规范如此），成功时由本靶子把
+ * `pointerLockElement` 指过去并发一次 `pointerlockchange`，模拟浏览器。
+ */
+const makeDoc = (element: Target) => {
+  const t = makeTarget();
+  const doc = Object.assign(t, {
+    pointerLockElement: null as unknown,
+    exitPointerLock(): void {
+      if (doc.pointerLockElement === null) return;
+      doc.pointerLockElement = null;
+      doc.emit('pointerlockchange', {});
+    },
+    /** 浏览器授予锁定（默认行为）*/
+    grant(): void {
+      doc.pointerLockElement = element;
+      doc.emit('pointerlockchange', {});
+    },
+  });
+  return doc;
+};
+type Doc = ReturnType<typeof makeDoc>;
+
+/** 元素上的 requestPointerLock 记录：每次调用记下参数 */
+type LockCall = { unadjusted: boolean };
 
 let win: Target;
 let el: Target;
+let doc: Doc;
 let im: InputManager;
 let savedWindow: unknown;
+let savedDocument: unknown;
+let lockCalls: LockCall[];
+/** 用例可改：返回 'grant' | 'reject' | 'throw' */
+let lockOutcome: (call: LockCall) => 'grant' | 'reject' | 'throw';
 
 beforeEach(() => {
   savedWindow = g.window;
+  savedDocument = g.document;
   win = makeTarget();
   el = makeTarget();
+  doc = makeDoc(el);
+  lockCalls = [];
+  lockOutcome = () => 'grant';
+  (el as unknown as { requestPointerLock: (o?: { unadjustedMovement?: boolean }) => Promise<void> })
+    .requestPointerLock = (o) => {
+      const call = { unadjusted: o?.unadjustedMovement === true };
+      lockCalls.push(call);
+      const outcome = lockOutcome(call);
+      if (outcome === 'throw') throw new Error('拒绝');
+      if (outcome === 'reject') return Promise.reject(new Error('拒绝'));
+      doc.grant();
+      return Promise.resolve();
+    };
   g.window = win;
+  g.document = doc;
   im = new InputManager(el as unknown as HTMLElement);
 });
 
 afterEach(() => {
   im.dispose();
   g.window = savedWindow;
+  g.document = savedDocument;
 });
+
+/** 让 requestPointerLock 的 Promise 回调跑完 */
+const flush = (): Promise<void> => Promise.resolve().then(() => {}).then(() => {});
 
 /** 返回事件对象，`prevented` 记录 InputManager 有没有拦下默认行为 */
 const keyDown = (code: string): { code: string; prevented: boolean } => {
@@ -306,5 +357,165 @@ describe('双键跑的拖动路由', () => {
     const f = im.sample(1 / 60);
     expect(f.rightDrag).toEqual({ dx: 7, dy: 2 });
     expect(f.leftDrag).toBeNull();
+  });
+});
+
+/**
+ * ★★ X15 指针锁定。修的是「右键拖转身被窗口宽度封顶」——
+ * 光标一顶到屏幕边缘 `movementX` 就归零（1366px 窗里拖满 1200px 只转出 149°）。
+ *
+ * ⚠️ 这里验的是**请求/释放/回落的时机规则**，不是浏览器真的锁没锁：
+ *   靶子模拟浏览器的授予与 `pointerlockchange`。真机手感只能真机验。
+ */
+describe('★★ X15 指针锁定', () => {
+  const mouse = (type: string, e: Record<string, unknown>): void => {
+    (type === 'mousedown' ? el : win).emit(type, { preventDefault: () => {}, ...e });
+  };
+
+  it('★ 默认开启（真人档），右键按下即请求锁定，优先带 unadjustedMovement', () => {
+    expect(im.pointerLockEnabled).toBe(true);
+    expect(im.pointerLocked).toBe(false);
+
+    mouse('mousedown', { button: 2 });
+    expect(lockCalls).toEqual([{ unadjusted: true }]);
+    expect(im.pointerLocked).toBe(true);
+  });
+
+  it('★ 左键单独按下**不**请求锁定（左键还兼着点选与确认落点，一点一锁不划算）', () => {
+    mouse('mousedown', { button: 0 });
+    expect(lockCalls).toEqual([]);
+    expect(im.pointerLocked).toBe(false);
+  });
+
+  it('★★ 锁定期间位移照常累加进右键通道 —— 与未锁定是同一行代码', () => {
+    mouse('mousedown', { button: 2 });
+    // 锁定后 movementX 不再被屏幕边缘归零：一次拖动累出远超窗口宽度的位移
+    for (let i = 0; i < 10; i++) mouse('mousemove', { movementX: 400, movementY: 0 });
+    const f = im.sample(1 / 60);
+    expect(f.rightDrag).toEqual({ dx: 4000, dy: 0 });
+    expect(f.leftDrag).toBeNull();
+  });
+
+  it('★ 松开右键退出锁定', () => {
+    mouse('mousedown', { button: 2 });
+    expect(im.pointerLocked).toBe(true);
+    mouse('mouseup', { button: 2 });
+    expect(im.pointerLocked).toBe(false);
+    expect(doc.pointerLockElement).toBeNull();
+  });
+
+  it('★★ 双键跑中途松开右键**不**解锁（光标不该突然蹦回来），两颗都松才解', () => {
+    mouse('mousedown', { button: 2 });
+    mouse('mousedown', { button: 0 });
+    mouse('mouseup', { button: 2 });
+    expect(im.pointerLocked).toBe(true);
+    mouse('mouseup', { button: 0 });
+    expect(im.pointerLocked).toBe(false);
+  });
+
+  it('★★ Esc 退锁（浏览器行为，拦不住）：右键仍按住时完整回落拖动路径，且不重发请求', () => {
+    mouse('mousedown', { button: 2 });
+    expect(lockCalls).toHaveLength(1);
+
+    doc.exitPointerLock(); // 浏览器因 Esc 解锁
+    expect(im.pointerLocked).toBe(false);
+
+    // 右键还按着 —— 拖动照样进右键通道（旧路径一行没删）
+    mouse('mousemove', { movementX: 33, movementY: -4 });
+    expect(im.sample(1 / 60).rightDrag).toEqual({ dx: 33, dy: -4 });
+    // 本次按住期间不再重发（Chrome 对 Esc 退锁后的请求有冷却）
+    expect(lockCalls).toHaveLength(1);
+
+    // 松开再按下 = 新的一次用户手势，才重新尝试
+    mouse('mouseup', { button: 2 });
+    mouse('mousedown', { button: 2 });
+    expect(lockCalls).toHaveLength(2);
+    expect(im.pointerLocked).toBe(true);
+  });
+
+  it('★★ 开关关掉：不再请求锁定，拖动仍然正常（旧路径）', () => {
+    im.setPointerLockEnabled(false);
+    expect(im.pointerLockEnabled).toBe(false);
+
+    mouse('mousedown', { button: 2 });
+    expect(lockCalls).toEqual([]);
+    expect(im.pointerLocked).toBe(false);
+    mouse('mousemove', { movementX: 18, movementY: 3 });
+    expect(im.sample(1 / 60).rightDrag).toEqual({ dx: 18, dy: 3 });
+  });
+
+  it('★ 正锁着时关掉开关 → 立即释放（玩家来关它，多半正因为光标不见了）', () => {
+    mouse('mousedown', { button: 2 });
+    expect(im.pointerLocked).toBe(true);
+    im.setPointerLockEnabled(false);
+    expect(im.pointerLocked).toBe(false);
+  });
+
+  it('★ 关掉再打开，下一次右键按下重新请求', () => {
+    im.setPointerLockEnabled(false);
+    mouse('mousedown', { button: 2 });
+    mouse('mouseup', { button: 2 });
+    im.setPointerLockEnabled(true);
+    mouse('mousedown', { button: 2 });
+    expect(lockCalls).toHaveLength(1);
+    expect(im.pointerLocked).toBe(true);
+  });
+
+  it('★★ 浏览器拒绝 unadjustedMovement → 退一步用无参形式重试**一次**', async () => {
+    lockOutcome = (c) => (c.unadjusted ? 'reject' : 'grant');
+    mouse('mousedown', { button: 2 });
+    await flush();
+    expect(lockCalls).toEqual([{ unadjusted: true }, { unadjusted: false }]);
+    expect(im.pointerLocked).toBe(true);
+  });
+
+  it('★★ 两次都被拒 → 不成环，完整回落拖动路径', async () => {
+    lockOutcome = () => 'reject';
+    mouse('mousedown', { button: 2 });
+    await flush();
+    expect(lockCalls).toHaveLength(2);
+    expect(im.pointerLocked).toBe(false);
+
+    mouse('mousemove', { movementX: 21, movementY: 7 });
+    expect(im.sample(1 / 60).rightDrag).toEqual({ dx: 21, dy: 7 });
+  });
+
+  it('★ 同步抛异常（老浏览器的旧签名）同样只退一步，不炸出去', () => {
+    lockOutcome = (c) => (c.unadjusted ? 'throw' : 'grant');
+    expect(() => mouse('mousedown', { button: 2 })).not.toThrow();
+    expect(lockCalls).toHaveLength(2);
+    expect(im.pointerLocked).toBe(true);
+  });
+
+  it('★★ 根本不支持 requestPointerLock → 一个字都不改，拖动照旧', () => {
+    delete (el as unknown as { requestPointerLock?: unknown }).requestPointerLock;
+    mouse('mousedown', { button: 2 });
+    expect(im.pointerLocked).toBe(false);
+    mouse('mousemove', { movementX: 60, movementY: 0 });
+    expect(im.sample(1 / 60).rightDrag).toEqual({ dx: 60, dy: 0 });
+  });
+
+  it('★ pointerlockerror 也把状态摆回未锁定', () => {
+    mouse('mousedown', { button: 2 });
+    expect(im.pointerLocked).toBe(true);
+    doc.emit('pointerlockerror', {});
+    expect(im.pointerLocked).toBe(false);
+  });
+
+  it('★ 失焦（Alt+Tab）释放锁定，与清空按键同一处', () => {
+    mouse('mousedown', { button: 2 });
+    win.emit('blur', {});
+    expect(im.pointerLocked).toBe(false);
+    expect(doc.pointerLockElement).toBeNull();
+  });
+
+  it('★ dispose 先退锁再摘监听器（否则场景重建后悬停拾取永远不恢复）', () => {
+    mouse('mousedown', { button: 2 });
+    expect(doc.listenerCount('pointerlockchange')).toBe(1);
+    im.dispose();
+    expect(im.pointerLocked).toBe(false);
+    expect(doc.pointerLockElement).toBeNull();
+    expect(doc.listenerCount('pointerlockchange')).toBe(0);
+    expect(doc.listenerCount('pointerlockerror')).toBe(0);
   });
 });

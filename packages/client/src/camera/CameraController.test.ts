@@ -49,6 +49,34 @@ describe('4.2 / 验收 #2 — 左键环绕不改变角色朝向，右键联动',
     expect(Math.abs(c.yaw)).toBeGreaterThan(1);
   });
 
+  /**
+   * ★★ X15 指针锁定要成立，镜头这一侧必须没有「单次拖动上限」。
+   *   锁定之后一次按住能累出远超窗口宽度的 `movementX`（光标不再有边界），
+   *   若 yaw 通道对增量有夹取或按窗口宽度归一，锁定就白做了。
+   */
+  it('★★ X15 — 一次按住内的大额位移全额转成 yaw（转身量不被任何上限封顶）', () => {
+    const c = new CameraController(16 / 9);
+    const before = c.yaw;
+    // 1366px 窗里拖满 1200px 只转出 149°（真机量化）；锁定后同一次按住可累出 4000px
+    let charYaw = 0;
+    for (let i = 0; i < 10; i++) {
+      charYaw += c.applyInput({ ...noInput, rightDrag: { dx: 400, dy: 0 } });
+    }
+    expect(c.yaw - before).toBeCloseTo(-4000 * CAMERA.SENSITIVITY, 10);
+    // 4000px × 0.0045 = 18 弧度 ≈ 2.86 圈：一次按住转过整圈是本条债的判据
+    expect(Math.abs(c.yaw - before)).toBeGreaterThan(Math.PI * 2);
+    // 角色朝向跟着走同样的量（4.2 右键联动，锁定与否是同一条路径）
+    expect(charYaw).toBeCloseTo(c.yaw - before, 10);
+  });
+
+  it('★ X15 — 俯仰仍然被夹住（yaw 不封顶不等于 pitch 也放开，4.1 不许变垂直俯视）', () => {
+    const c = new CameraController(16 / 9);
+    for (let i = 0; i < 10; i++) c.applyInput({ ...noInput, rightDrag: { dx: 0, dy: 400 } });
+    expect(c.pitch).toBeCloseTo((CAMERA.MAX_PITCH_DEG * Math.PI) / 180, 10);
+    for (let i = 0; i < 20; i++) c.applyInput({ ...noInput, rightDrag: { dx: 0, dy: -400 } });
+    expect(c.pitch).toBeCloseTo((CAMERA.MIN_PITCH_DEG * Math.PI) / 180, 10);
+  });
+
   it('一键复位把镜头转回角色正后方', () => {
     const c = new CameraController(16 / 9);
     c.applyInput({ ...noInput, leftDrag: { dx: 300, dy: 0 } });

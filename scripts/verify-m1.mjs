@@ -58,6 +58,27 @@ page.on('console', (m) => {
   if (m.type() === 'error') runtimeErrors.push(m.text());
 });
 
+/**
+ * ★★ X15 播种：**关掉指针锁定**，在 `goto` 之前。
+ *
+ *   本脚本用**合成**鼠标事件驱动镜头（下面的左键环绕与右键转身）。指针锁定
+ *   默认是开的（真人档：右键按下即 `requestPointerLock`，光标不再被屏幕边缘
+ *   卡住）—— 但一旦锁上，合成事件的 `movementX` 口径就由浏览器的锁定态说了算，
+ *   与这些断言当年成立时的口径不是一回事。
+ *
+ *   播种 `pointerLock:false` ⇒ 合成事件继续走**旧拖动路径**（那条路径一行没删），
+ *   于是**断言一个字都不用改**。真人手感由默认开的那条路负责。
+ *
+ * ★ 与 `?art=off` 是同一个分工思路：验收档只关掉「会改变测量口径」的东西。
+ * ★ 只写这一个键 —— 其余字段由 `normalizeAccessibility` 补成默认值
+ *   （accessibility.test.ts 里有一条「逐字段等于默认档」的断言钉着）。
+ */
+await page.addInitScript(() => {
+  try {
+    localStorage.setItem('wowpvp.accessibility.v1', JSON.stringify({ pointerLock: false }));
+  } catch { /* 隐私模式等拿不到 storage：那种环境里本来也锁不上 */ }
+});
+
 await page.goto(URL, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1800);
 

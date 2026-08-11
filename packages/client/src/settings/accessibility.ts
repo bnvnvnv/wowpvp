@@ -162,6 +162,26 @@ export interface AccessibilitySettings {
    *   长度被 accessibility.test.ts 钉在 4。
    */
   hitStop: boolean;
+
+  /**
+   * X15 指针锁定：右键拖转身时把光标交给页面（`requestPointerLock`），
+   * 于是转身量不再被窗口宽度封顶（真机量化：1366px 窗里拖满 1200px 只转出 149°）。
+   *
+   * ★ **为什么这一项住在「可访问性」这份设置里**（它显然更像「控制」）：
+   *   一是它确实有无障碍面：锁定会**夺走系统光标**，用眼控/头控/轨迹球等
+   *   辅助指点设备的人必须能一键关掉，这与「减弱镜头震动」是同一类需求；
+   *   二是这份对象已经是设置面板 → 场景唯一入口 → localStorage 的**既有通道**
+   *   （两场景 + 大厅都接好了），为一个布尔值另开一条存档键会造出第二套
+   *   「面板显示的和生效的不一致」的风险。与 `hitStop` 同一个先例。
+   *
+   * ★ 它**不是**能隐藏信息的开关（17.2 第二句管的是那种）：关掉之后画面上
+   *   一个像素都不变，只是光标继续受屏幕边界约束 —— 也就是 X15 之前的行为。
+   *
+   * ⚠️ 默认 **true**。验收脚本靠合成鼠标事件驱动镜头，它们在 `goto` 之前
+   *   播种 `pointerLock:false`（见 scripts/verify-m1.mjs 的 seedSettings），
+   *   让合成事件继续走旧拖动路径 —— 断言一个字没改。
+   */
+  pointerLock: boolean;
 }
 
 export const DEFAULT_ACCESSIBILITY: AccessibilitySettings = {
@@ -174,6 +194,7 @@ export const DEFAULT_ACCESSIBILITY: AccessibilitySettings = {
   namePlateDensity: 1,
   effectQuality: 'high',
   hitStop: true,
+  pointerLock: true,
 };
 
 export const clampUiScale = (v: number): number =>
@@ -194,6 +215,7 @@ export const normalizeAccessibility = (
   namePlateDensity: clamp01(raw.namePlateDensity ?? 1),
   effectQuality: isQualityTier(raw.effectQuality) ? raw.effectQuality : 'high',
   hitStop: raw.hitStop ?? true,
+  pointerLock: raw.pointerLock ?? true,
 });
 
 const isColorblindMode = (v: unknown): v is ColorblindMode =>

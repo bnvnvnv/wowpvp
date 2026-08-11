@@ -277,3 +277,27 @@ describe('渲染顿帧开关（偏差 #8）', () => {
     expect(INDEPENDENT_TOGGLES.length).toBe(4);
   });
 });
+
+describe('指针锁定开关（X15）', () => {
+  /**
+   * ★ 默认**开** —— 真人玩家档。验收脚本靠合成鼠标事件驱动镜头，
+   *   由它们在 goto 之前播种 `pointerLock:false`（scripts/verify-m1|m3），
+   *   合成事件继续走旧拖动路径，断言一个字没改。
+   */
+  it('★ 默认开启；normalize 补默认值；显式 false 被保留（验收播种靠这一条）', () => {
+    expect(DEFAULT_ACCESSIBILITY.pointerLock).toBe(true);
+    expect(normalizeAccessibility({}).pointerLock).toBe(true);
+    expect(normalizeAccessibility({ pointerLock: false }).pointerLock).toBe(false);
+  });
+
+  /** ★ 只播种这一个键时，其余设置必须逐字段等于默认值 —— 否则播种会顺带改掉验收环境 */
+  it('★★ 只播种 pointerLock:false 时，其余字段与默认档逐字段相同', () => {
+    expect(normalizeAccessibility({ pointerLock: false }))
+      .toEqual({ ...DEFAULT_ACCESSIBILITY, pointerLock: false });
+  });
+
+  it('★ 它不隐藏任何信息通道，因此不进 UNSWITCHABLE_CHANNELS 的禁区', () => {
+    expect(INDEPENDENT_TOGGLES).not.toContain('pointerLock' as never);
+    expect(UNSWITCHABLE_CHANNELS).not.toContain('pointerLock' as never);
+  });
+});

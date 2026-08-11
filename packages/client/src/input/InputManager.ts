@@ -129,6 +129,33 @@ export const DEFAULT_BINDINGS: Readonly<Record<Action, string>> = {
 /** 角色转向速度，弧度/秒。A/D 未按右键时用它转身 */
 export const TURN_SPEED = 3.2;
 
+/**
+ * X15 指针锁定：`requestPointerLock` 的最小结构性描述。
+ *
+ * ★ 不直接用 lib.dom 的签名：`requestPointerLock` 的返回值在不同 TS lib 版本里
+ *   是 `void` 或 `Promise<void>`，`unadjustedMovement` 选项更是后来才进 lib.dom。
+ *   自己描述一遍，编译期结论就不随 TS 版本漂移，运行期照样两种形态都处理。
+ */
+interface LockableElement {
+  requestPointerLock?: (options?: { unadjustedMovement?: boolean }) => Promise<void> | void;
+}
+interface LockAwareDocument {
+  pointerLockElement?: Element | null;
+  exitPointerLock?: () => void;
+  addEventListener?: (type: string, fn: () => void) => void;
+  removeEventListener?: (type: string, fn: () => void) => void;
+}
+
+/**
+ * ★ 每次现取而不是构造时缓存：单测里没有 jsdom，`globalThis.document`
+ *   由用例自己塞进来（与 `globalThis.window` 同一套做法）。
+ */
+const docOf = (): LockAwareDocument | undefined =>
+  (globalThis as { document?: LockAwareDocument }).document;
+
+const isThenable = (v: unknown): v is Promise<void> =>
+  typeof (v as Promise<void> | undefined)?.then === 'function';
+
 export interface FrameInput {
   /** -1..1 */
   forward: number;
@@ -178,6 +205,35 @@ export class InputManager {
   private rightDown = false;
   private disposers: Array<() => void> = [];
 
+  /**
+   * ★★ X15 指针锁定。
+   *
+   *   **它修的是什么**：右键拖转身此前被**窗口宽度**封顶 —— 光标一顶到屏幕边缘，
+   *   `movementX` 就归零。P10 真机量化：1366px 的窗里拖满 1200px 只转出 149°，
+   *   贴身缠斗转半圈就得松手把鼠标提回来重拖一次。锁定后光标不再有边界，
+   *   一次连续拖动能转任意角度。
+   *
+   *   ★ **累加口径一个字没改**：`onMouseMove` 从 M1 起读的就是 `movementX/Y`，
+   *     锁定与否走的是**同一行代码**。指针锁定只是让 `movementX` 在光标顶到
+   *     屏幕边缘之后继续有值 —— 所以「锁定失败/被拒/不支持」的回落不需要
+   *     任何补偿逻辑：那条旧路径本来就一直在跑。
+   *
+   *   ★ **只有右键请求锁定**（4.2 的转身键）。左键单独拖是「环绕观察」，同时还
+   *     承担点选目标（5.2）与确认落点（5.5）—— 每一次普通点击都锁一下再解一下
+   *     换来的是光标闪烁与 Chrome 的退锁冷却，而 X15 量化的封顶发生在缠斗转身。
+   *     ⚠️ 但右键按住期间**左键接着按下**（双键跑）不解锁，直到两颗键都松开 ——
+   *     否则双键跑到一半光标会突然蹦回来。
+   *
+   *   ⚠️ Esc 退锁是浏览器保留行为，拦不住。退锁后右键往往还按着：此时
+   *     `locked` 由 `pointerlockchange` 置回 false，拖动**继续**走旧路径，
+   *     不重发请求（Chrome 对 Esc 退锁后的再次请求有冷却，重发只会刷错误）。
+   *     下一次按下右键才重新尝试。
+   */
+  private lockEnabled = true;
+  private locked = false;
+  /** 本次按住期间已经发过请求 —— 防止失败后每帧重试 */
+  private lockRequested = false;
+
   constructor(
     private readonly element: HTMLElement,
     bindings: Record<Action, string> = { ...DEFAULT_BINDINGS },
@@ -193,6 +249,78 @@ export class InputManager {
 
   getBindings(): Readonly<Record<Action, string>> {
     return this.bindings;
+  }
+
+  /**
+   * X15：设置面板的「指针锁定」开关（默认开）。关掉时立即释放当前锁定 ——
+   * 玩家在设置里关它的那一刻多半正因为光标不见了而着急。
+   */
+  setPointerLockEnabled(on: boolean): void {
+    this.lockEnabled = on;
+    if (!on) this.releaseLock();
+  }
+
+  get pointerLockEnabled(): boolean {
+    return this.lockEnabled;
+  }
+
+  /**
+   * 当前是否真的锁着（由 `pointerlockchange` 说了算，不是「请求过」）。
+   * ★ 调用方拿它做两件事：暂停悬停拾取、不再画悬停光标 —— 锁定期间屏幕上
+   *   没有光标，"指着谁" 这个语义不存在。
+   */
+  get pointerLocked(): boolean {
+    return this.locked;
+  }
+
+  /**
+   * 请求锁定。★ 只在**右键按下**这个用户手势里调用 —— 浏览器要求
+   * `requestPointerLock` 来自用户手势，从 mousemove 里补发不保证被接受。
+   */
+  private requestLock(): void {
+    if (!this.lockEnabled || this.lockRequested || this.locked) return;
+    const el = this.element as unknown as LockableElement;
+    // 不支持（老浏览器 / 非元素靶子）→ 什么都不做，完整走旧拖动路径
+    if (typeof el.requestPointerLock !== 'function') return;
+    if (docOf()?.pointerLockElement === (this.element as unknown as Element)) {
+      this.locked = true;
+      return;
+    }
+    this.lockRequested = true;
+    this.tryLock(true);
+  }
+
+  /**
+   * ★ 两段式：先带 `unadjustedMovement`（去掉系统鼠标加速 —— 转身量与位移
+   *   严格成正比，这正是 FPS/MMO 手感的前提），不支持就**退一步**用无参形式，
+   *   再失败就彻底放弃、回落拖动路径。
+   * ⚠️ 只在带参那次失败后重试一次，失败不成环。
+   */
+  private tryLock(withUnadjusted: boolean): void {
+    const el = this.element as unknown as LockableElement;
+    try {
+      const r = withUnadjusted
+        ? el.requestPointerLock!({ unadjustedMovement: true })
+        : el.requestPointerLock!();
+      // ⚠️ 一定要接住：Promise 形态下被拒是 rejection，不接就是一条未捕获错误
+      //   （验收脚本把 pageerror 当红灯）
+      if (isThenable(r)) {
+        void r.then(undefined, () => {
+          if (withUnadjusted) this.tryLock(false);
+        });
+      }
+    } catch {
+      if (withUnadjusted) this.tryLock(false);
+    }
+  }
+
+  /** 松开全部镜头键 / 关开关 / 失焦时退出锁定。★ `locked` 不在这里改 —— 由事件说了算 */
+  private releaseLock(): void {
+    this.lockRequested = false;
+    const doc = docOf();
+    if (doc?.pointerLockElement === (this.element as unknown as Element)) {
+      doc.exitPointerLock?.();
+    }
   }
 
   private codeOf(action: Action): string {
@@ -288,6 +416,8 @@ export class InputManager {
       this.down.clear();
       this.leftDown = false;
       this.rightDown = false;
+      // X15：窗口都不在了，锁定没有意义（浏览器多半也已经解了）
+      this.releaseLock();
     };
 
     const onMouseDown = (e: MouseEvent) => {
@@ -295,11 +425,24 @@ export class InputManager {
       if (e.button === 2) {
         this.rightDown = true;
         e.preventDefault();
+        // X15：转身键按下即请求锁定（这里是用户手势，浏览器只认这个时机）
+        this.requestLock();
       }
     };
     const onMouseUp = (e: MouseEvent) => {
       if (e.button === 0) this.leftDown = false;
       if (e.button === 2) this.rightDown = false;
+      // X15：两颗镜头键都松开才解锁 —— 双键跑中途松右键不该把光标蹦回来
+      if (!this.leftDown && !this.rightDown) this.releaseLock();
+    };
+    /** X15：锁定状态的唯一真相来源。Esc 退锁、被系统抢走都从这里回来 */
+    const onLockChange = () => {
+      this.locked = docOf()?.pointerLockElement === (this.element as unknown as Element);
+      // 丢锁后本次按住不再重发（Chrome 对 Esc 退锁后的请求有冷却）
+      if (!this.locked) this.lockRequested = this.rightDown || this.leftDown;
+    };
+    const onLockError = () => {
+      this.locked = false;
     };
     const onMouseMove = (e: MouseEvent) => {
       /**
@@ -335,8 +478,20 @@ export class InputManager {
     window.addEventListener('mousemove', onMouseMove);
     this.element.addEventListener('wheel', onWheel, { passive: false });
     this.element.addEventListener('contextmenu', onContextMenu);
+    // X15：锁定状态挂 document（规范就发在这里）。★ 没有 document 的环境
+    //   （单测靶子）直接跳过 —— 那里也永远不会有真的锁定
+    const doc = docOf();
+    if (doc?.addEventListener) {
+      doc.addEventListener('pointerlockchange', onLockChange);
+      doc.addEventListener('pointerlockerror', onLockError);
+      this.disposers.push(
+        () => doc.removeEventListener?.('pointerlockchange', onLockChange),
+        () => doc.removeEventListener?.('pointerlockerror', onLockError),
+      );
+    }
 
     this.disposers = [
+      ...this.disposers,
       () => window.removeEventListener('keydown', onKeyDown),
       () => window.removeEventListener('keyup', onKeyUp),
       () => window.removeEventListener('blur', onBlur),
@@ -349,6 +504,10 @@ export class InputManager {
   }
 
   dispose(): void {
+    // X15：先退锁再摘监听器 —— 反过来的话 pointerlockchange 没人收，
+    // `locked` 会留在 true（场景重建后悬停拾取永远不恢复）
+    this.releaseLock();
+    this.locked = false;
     for (const d of this.disposers) d();
     this.disposers = [];
   }

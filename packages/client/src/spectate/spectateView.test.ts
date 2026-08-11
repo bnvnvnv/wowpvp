@@ -247,9 +247,22 @@ describe('W24 接线锁', () => {
     expect(body).toContain('SpectateFollow');
   });
 
-  it('★★ 观战席不发指令帧：simulate 第一句就是那道显式闸', () => {
+  it('★★ 观战席不发指令帧：simulate 里那道显式闸在任何上行之前', () => {
     const body = bodyOf(NET_SCENE_SRC, 'private simulate(');
-    expect(body).toContain('if (this.spectating) return;');
+    /**
+     * ⚠️ A5 收口把这道闸从一行 `if (this.spectating) return;` 变成了一个块
+     *   （观战席要顺带清掉转身账本的基准 —— 服务器那边观战席根本没有账本）。
+     *   本条断言的意图**一字未改**：闸必须还在、必须 `return`、必须排在
+     *   `simulate` 里任何一句上行之前。所以判据从「逐字包含那一行」换成
+     *   「位置关系」，而不是把断言删掉。
+     */
+    const guard = body.indexOf('if (this.spectating)');
+    expect(guard, '观战闸没了').toBeGreaterThanOrEqual(0);
+    // 闸体里必须有 return（不是「进去做点事然后继续往下走」）
+    expect(body.slice(guard, guard + 600)).toContain('return;');
+    const send = body.indexOf('this.conn.send(');
+    expect(send, '指令帧那句上行得还在，否则这条断言在空转').toBeGreaterThan(0);
+    expect(guard, '观战闸排到了上行之后').toBeLessThan(send);
   });
 
   /**
@@ -270,8 +283,11 @@ describe('W24 接线锁', () => {
   it('★★ renderDeathState 对观战席先返回', () => {
     const body = bodyOf(NET_SCENE_SRC, 'private renderDeathState(');
     const guard = body.indexOf('if (this.spectating)');
-    const findSelf = body.indexOf('this.lastEntities.find');
+    // ⚠️ P10 把「按 id 找人」从线性 `lastEntities.find` 换成了索引
+    //   `entityOf()`；本条断言的意图（那道闸必须在找自己**之前**）一字未改
+    const findSelf = body.indexOf('this.entityOf(this.selfId');
     expect(guard).toBeGreaterThanOrEqual(0);
+    expect(findSelf, '找自己那一句得还在，否则这条断言在空转').toBeGreaterThan(0);
     expect(guard).toBeLessThan(findSelf);
   });
 

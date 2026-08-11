@@ -409,6 +409,9 @@ export class SettingsPanel {
       ${row('屏幕闪烁', toggle('data-acc-toggle="screenFlash"', a.screenFlash))}
       ${row('武器粒子', toggle('data-acc-toggle="weaponParticles"', a.weaponParticles))}
       ${row('打击顿帧', toggle('data-acc-toggle="hitStop"', a.hitStop))}
+      ${head('控制')}
+      ${row('指针锁定', toggle('data-acc-toggle="pointerLock"', a.pointerLock))}
+      <div style="opacity:.55;font-size:12px;margin:0 0 2px">开启后右键转身不再被屏幕边缘卡住（光标交给游戏，Esc 可随时取回）</div>
       ${skillBarSection}
       ${head(keyHead)}
       ${keyHintHtml}
