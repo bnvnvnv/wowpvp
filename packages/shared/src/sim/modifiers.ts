@@ -9,8 +9,9 @@
  *   随手改成相乘会让 5v5 里三个减伤叠出 90% 免伤。
  */
 
+import { RANGE } from '../constants/combat.js';
 import { getArmor, getWeapon } from '../data/index.js';
-import type { AuraModifiers } from '../data/schema.js';
+import type { AuraModifiers, SkillDef, SkillModifier } from '../data/schema.js';
 import { School } from '../types/enums.js';
 import type { ArmorId, WeaponId } from '../types/ids.js';
 
@@ -247,6 +248,56 @@ export const equipmentModifiersOf = (
   getWeapon(weaponId)?.modifiers,
   getArmor(armorId)?.modifiers,
 ];
+
+// ── W27：武器对**单个技能**的改写 ────────────────────────────────
+
+/**
+ * ★★ **`WeaponDef.skillModifiers` 的唯一查表入口。**
+ *
+ *   W27 之前这张表全仓只有 `data/index.ts` 的完整性校验读过键名，
+ *   八个乘算字段一个都没有消费方 —— 而 `docs/05` 把它们当装备规格
+ *   逐行公示（「rogue.backstab: damageMultiplier=1.15」）。
+ *   接线之后消费点有六处（读条 / 冷却 / 距离 / 伤害 / 治疗 / 背刺加成 /
+ *   光环时长 / 形状半径），**它们全部走这一个函数**：
+ *   六处各写一遍 `getWeapon(e.weaponId)?.skillModifiers?.[id]` 迟早漂移成
+ *   「换了武器伤害变了、冷却没变」这种没人看得出来的分歧。
+ *
+ * ★ **现读当前武器，不做释放瞬间快照。** 与 `effectiveModifiersOf` 同一条
+ *   纪律（`damageDealt` 也是结算那一刻现聚合）—— 武器不能在战斗中换
+ *   （10.x 换装有脱战要求），所以「读条开始时和结算时是同一把」在生产
+ *   路径上恒成立，不必为它多存一份状态。
+ *
+ * ★ 参数取结构类型而不是 `CombatEntity`：`modifiers.ts` 不依赖 `entity.ts`，
+ *   而且单测可以直接喂 `{ weaponId }` 而不必造一个完整实体。
+ */
+export const skillModifierOf = (
+  entity: { readonly weaponId: WeaponId },
+  skillId: string,
+): SkillModifier | undefined => getWeapon(entity.weaponId)?.skillModifiers?.[skillId];
+
+/**
+ * 一个技能的**最大距离**乘算：技能级 `SkillModifier.rangeMultiplier` ×
+ * 武器级 `WeaponDef.rangeMultiplier`。
+ *
+ * ★★ 两个字段不是重复：技能级改的是「这把武器让**这个技能**打得更远」，
+ *   武器级是「这套方案让**所有远程技能**缩距离」（法师「法刃 + 元素焦点」
+ *   的代价原文：远程技能最大距离 -20%）。前者按技能查表，后者是武器属性，
+ *   合成成一个数交给距离检查 —— 检查处只认一个乘算，不必知道它由几层组成。
+ *
+ * ★ **武器级只作用于远程技能**，判据是 `range.max > RANGE.MELEE_POLEARM`
+ *   （3.8 米是全仓最长的近战触及）。不加这道闸的话，法刃法师的元素之刃
+ *   （2.8 米近战）也会跟着缩到 2.24 米 —— 而 cost 文案写的是「**远程**技能」。
+ *   ⚠️ 今天没有任何武器写 `rangeMultiplier`，这一段恒返回 1；写在这里是为了
+ *   「从此有人填就生效」，与 W26 `absorbDone` 同一口径。
+ */
+export const skillRangeMultiplierOf = (
+  entity: { readonly weaponId: WeaponId },
+  skill: SkillDef,
+): number => {
+  const perSkill = skillModifierOf(entity, skill.id)?.rangeMultiplier ?? 1;
+  if (skill.range.max <= RANGE.MELEE_POLEARM) return perSkill;
+  return perSkill * (getWeapon(entity.weaponId)?.rangeMultiplier ?? 1);
+};
 
 /** 某学派的实际承伤系数。未单列的学派回落到全局 damageTaken */
 export const damageTakenFor = (m: EffectiveModifiers, school: School): number =>

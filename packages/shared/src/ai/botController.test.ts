@@ -9,11 +9,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { ALL_CLASSES, druid, hunter, mage, priest, rogue, warrior } from '../data/index.js';
+import {
+  ALL_CLASSES, druid, getWeapon, hunter, mage, priest, rogue, warrior,
+} from '../data/index.js';
 import { PARTY_SKILLS } from '../data/party.js';
 import type { AuraDef, SkillDef } from '../data/schema.js';
 import { CastKind, DispelType, DrCategory, School, TargetFilter } from '../types/enums.js';
-import { asSkillId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
+import { asSkillId, asWeaponId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
 import { dirToYaw, sub, vec3 } from '../math/vec3.js';
 import { createEntity, type CombatEntity } from '../sim/entity.js';
 import type { CastState, CastingStore } from '../sim/casting.js';
@@ -1180,5 +1182,101 @@ describe('★★ W23/W25：bot 估值在弹道迁移前后逐位不变', () => {
     expect(mage.skills.filter(hasDamage).length).toBeGreaterThan(3);
     expect(priest.skills.filter(hasDamage).length).toBeGreaterThan(2);
     expect(druid.skills.filter(hasDamage).length).toBeGreaterThan(2);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+//  W27 收口：估值与结算读同一张武器改写表
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * ★★ **这组守的是「bot 用哪套数字选招」。**
+ *
+ *   W27 把 `WeaponDef.skillModifiers.damageMultiplier` 接进了结算
+ *   （`effects/combat.dealDamage`），但 `burstDamageOf` 那一支没跟上 ——
+ *   于是 bot **用接线前的数字选招、按接线后的数字结算**。实测偏差：
+ *   长弓的瞄准射击被低估 13%（实伤 ×1.15、估值 ×1）、匕首圆盾的肾击
+ *   被高估 43%（实伤 ×0.7），bot 会持续优先按一个已经削掉三成的技能。
+ *
+ *   ⚠️ 这条不只是「AI 打得笨一点」：`scripts/balance-report.ts` 跑的正是
+ *   bot 对战，不同步会让极差位移里混进「bot 选错招」的分量，
+ *   与「数值真的变了」再也分不开 —— 下一轮拿那个数字调配平就会调错方向。
+ */
+describe('★★ W27：burstDamageOf 与结算共用 skillModifiers', () => {
+  /** 临时拔掉一把真实武器的整张改写表，跑完还原 */
+  const withoutMods = <T>(weaponId: string, fn: () => T): T => {
+    const w = getWeapon(asWeaponId(weaponId)) as
+      { skillModifiers?: Record<string, unknown> };
+    const prev = w.skillModifiers;
+    w.skillModifiers = undefined;
+    try { return fn(); } finally { w.skillModifiers = prev; }
+  };
+
+  const withWeapon = (cls: typeof hunter, weaponId: string): CombatEntity => {
+    const world = createWorld();
+    const e = addEntity(world, createEntity(allocEntityId(world), cls, TEAM_RED, vec3(0, 0, 0)));
+    e.weaponId = asWeaponId(weaponId);
+    return e;
+  };
+
+  it('★★ 加强方向：长弓的瞄准射击估值 ×1.15（与实伤同一个数）', () => {
+    const h = withWeapon(hunter, 'hunter.long_bow');
+    const aimed = hunter.skills.find((sk) => (sk.id as string) === 'hunter.aimed_shot')!;
+    const base = withoutMods('hunter.long_bow', () => burstDamageOf(aimed, h));
+    expect(base, '基线归零了，这条比的是两个零').toBeGreaterThan(0);
+    expect(burstDamageOf(aimed, h) / base).toBeCloseTo(1.15, 6);
+  });
+
+  it('★★ 削弱方向：匕首圆盾的肾击估值 ×0.7（高估 43% 正是选招偏差的来源）', () => {
+    const r = withWeapon(rogue as unknown as typeof hunter, 'rogue.dagger_buckler');
+    const kidney = rogue.skills.find((sk) => (sk.id as string) === 'rogue.kidney_shot')!;
+    const base = withoutMods('rogue.dagger_buckler', () => burstDamageOf(kidney, r));
+    expect(base).toBeGreaterThan(0);
+    expect(burstDamageOf(kidney, r) / base).toBeCloseTo(0.7, 6);
+  });
+
+  it('★★ 无改写逐位不变：短弓没有瞄准射击那条 → 与拔掉整张表**逐位**相同', () => {
+    const h = withWeapon(hunter, 'hunter.short_bow');
+    const aimed = hunter.skills.find((sk) => (sk.id as string) === 'hunter.aimed_shot')!;
+    expect(burstDamageOf(aimed, h))
+      .toBe(withoutMods('hunter.short_bow', () => burstDamageOf(aimed, h)));
+  });
+
+  it('★★ 嵌套载荷同样吃（法杖的暴风雪 ×1.15 全在 spawnGroundArea.onTick 里）', () => {
+    const m = withWeapon(mage as unknown as typeof hunter, 'mage.staff');
+    const blizzard = mage.skills.find((sk) => (sk.id as string) === 'mage.blizzard')!;
+    const base = withoutMods('mage.staff', () => burstDamageOf(blizzard, m));
+    expect(base).toBeGreaterThan(0);
+    expect(burstDamageOf(blizzard, m) / base).toBeCloseTo(1.15, 6);
+  });
+
+  /**
+   * ★★ **DoT 逐跳刻意不乘。** `tick.ts` 第 4 步给光环周期跳传的是
+   *   `t.aura.def.id` 而不是技能 id，所以 DoT 的每一跳**实伤**本来就不吃
+   *   武器加成（见 `effects/combat.weaponSkillModOf` 的 ⚠️）。估值跟着乘
+   *   只是把偏差换个方向。这条钉的就是「别顺手把 DoT 也乘了」。
+   *
+   * ★ 用暗言术·痛：它是**纯 DoT**（伤害整个住在
+   *   `lockedProjectile.onHit → applyAura.periodic` 里，一滴直伤都没有），
+   *   所以「挂上乘算之后估值**逐位不变**」是个不会被别的分量稀释的判据。
+   * ★ 今天没有任何武器给一个带 DoT 的技能填 `damageMultiplier`，所以这里
+   *   临时挂一条真实武器上的改写（与 `sim/skillModifiers.test.ts` 同一手法）。
+   */
+  it('★★ 光环周期跳不乘：纯 DoT 技能挂上乘算后估值逐位不变', () => {
+    const swp = priest.skills.find((sk) => (sk.id as string) === 'priest.shadow_word_pain')!;
+    const p = withWeapon(priest as unknown as typeof hunter, 'priest.two_hand_staff');
+    const before = burstDamageOf(swp, p);
+    expect(before, '暗言术·痛的估值归零了 —— 这条比的是两个零').toBeGreaterThan(0);
+
+    const w = getWeapon(asWeaponId('priest.two_hand_staff')) as
+      { skillModifiers?: Record<string, unknown> };
+    const prev = w.skillModifiers;
+    w.skillModifiers = { ...(prev ?? {}), 'priest.shadow_word_pain': { damageMultiplier: 3 } };
+    try {
+      expect(burstDamageOf(swp, p), 'DoT 也被乘了 —— 实伤并不吃，估值又偏回去了')
+        .toBe(before);
+    } finally {
+      w.skillModifiers = prev;
+    }
   });
 });

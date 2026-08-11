@@ -13,7 +13,7 @@
 import { GCD } from '../constants/combat.js';
 import { hasLineOfSight, inRange, isFacing } from '../math/geometry.js';
 import type { Vec3 } from '../math/vec3.js';
-import type { SkillDef } from '../data/schema.js';
+import type { SkillDef, SkillModifier } from '../data/schema.js';
 import {
   CastFailure,
   CastKind,
@@ -75,6 +75,31 @@ export const isCasting = (store: CastingStore, id: EntityId): boolean => store.h
 
 // ── 校验 ─────────────────────────────────────────────────────────
 
+/**
+ * ★★ **W27：武器对技能的改写，由调用方注入。**
+ *
+ *   `skillModifiers` 要查 `getWeapon()`，而本文件的纪律是**零数据注册表依赖**
+ *   （理由见 `validateCast` 里 `availableSkills` 那段）。注入两个纯函数就不会
+ *   把 data 拖进来，单测也能直接喂一张假表而不用注册一把假武器。
+ *
+ * ★ 生产路径只有 `tick.ts` 一处（`weaponSkills`），三个施法入口
+ *   （`beginCast` / `beginCastOrQueue` / `tickCastQueue`）与 `tickCasting`
+ *   共用**同一个**对象 —— 与 `castTimeScale` 同一条纪律：分头各传各的，
+ *   迟早出现「直接放吃武器冷却缩减、排队放不吃」这种没人会发现的分歧。
+ *
+ * ★ 不传 = 全部乘算为 1 = 与 W27 之前逐位相同的行为。
+ */
+export interface SkillModifierAccess {
+  /** 这把武器对该技能的乘算表。没有改写时返回 undefined */
+  modifierOf: (caster: CombatEntity, skill: SkillDef) => SkillModifier | undefined;
+  /**
+   * 技能最大距离的合成乘算（技能级 × 武器级）。
+   * 单列一路是因为武器级 `WeaponDef.rangeMultiplier` 不在 `SkillModifier` 里，
+   * 而距离检查只该认一个数 —— 见 `modifiers.skillRangeMultiplierOf`。
+   */
+  rangeScaleOf: (caster: CombatEntity, skill: SkillDef) => number;
+}
+
 export interface CastContext {
   world: World;
   caster: CombatEntity;
@@ -83,7 +108,18 @@ export interface CastContext {
   groundPoint?: Vec3;
   /** 校验阶段：开始时不检查目标是否仍存活，完成时要检查 */
   phase: 'start' | 'complete';
+  /** W27：武器对技能的改写。不传 = 距离不缩放，与接线前逐位相同 */
+  weapon?: SkillModifierAccess;
 }
+
+/**
+ * 这次校验实际要用的最大距离。
+ *
+ * ★ 距离检查有四处（门禁的地面 / 直接目标，提示的地面 / 直接目标），
+ *   四处都必须读同一个数 —— 否则会出现「HUD 说够得着、按下去说超出距离」。
+ */
+const maxRangeOf = (ctx: CastContext): number =>
+  ctx.skill.range.max * (ctx.weapon?.rangeScaleOf(ctx.caster, ctx.skill) ?? 1);
 
 /**
  * ★ 验收 #19：施法开始和完成时都会检查目标、距离、视线和朝向。
@@ -160,7 +196,7 @@ export const validateCast = (ctx: CastContext): CastFailure => {
       ctx.groundPoint.x - caster.position.x,
       ctx.groundPoint.z - caster.position.z,
     );
-    if (d > skill.range.max) return CastFailure.OutOfRange;
+    if (d > maxRangeOf(ctx)) return CastFailure.OutOfRange;
     // 落点合法性交给 geometry.isGroundPositionLegal，客户端指示器调的是同一个函数
     return CastFailure.Ok;
   }
@@ -188,7 +224,9 @@ export const validateCast = (ctx: CastContext): CastFailure => {
   if (skill.targetFilter === TargetFilter.Ally && hostile) return CastFailure.InvalidTarget;
 
   // 6.1/6.2 距离。近战走碰撞体边缘，远程走胸口到胸口 —— inRange 内部按 maxRange 区分
-  if (!inRange(hitCircleOf(caster), hitCircleOf(target), skill.range.max, skill.range.min)) {
+  // ★ W27：只有**上界**吃武器乘算。`range.min` 表达的是「太近不能用」这条
+  //   机制门槛（冲锋），把它一起缩会顺手改掉冲锋的可用窗口。
+  if (!inRange(hitCircleOf(caster), hitCircleOf(target), maxRangeOf(ctx), skill.range.min)) {
     // 15.2 要求 HUD 给出明确原因，所以要区分「太远」和「太近」。
     // 冲锋这类有最小距离的技能贴脸时是 TooClose，不是 OutOfRange。
     const withinMinRange =
@@ -278,7 +316,7 @@ export const describeCastBlockers = (ctx: CastContext): CastFailure[] => {
         ctx.groundPoint.x - caster.position.x,
         ctx.groundPoint.z - caster.position.z,
       );
-      if (d > skill.range.max) out.push(CastFailure.OutOfRange);
+      if (d > maxRangeOf(ctx)) out.push(CastFailure.OutOfRange);
     }
   } else if (needsTarget) {
     if (!target) out.push(CastFailure.NoTarget);
@@ -289,7 +327,7 @@ export const describeCastBlockers = (ctx: CastContext): CastFailure[] => {
         (skill.targetFilter === TargetFilter.Ally && hostile);
       if (!isSelectableBy(target, caster) || wrongSide) out.push(CastFailure.InvalidTarget);
       else {
-        if (!inRange(hitCircleOf(caster), hitCircleOf(target), skill.range.max, skill.range.min)) {
+        if (!inRange(hitCircleOf(caster), hitCircleOf(target), maxRangeOf(ctx), skill.range.min)) {
           const withinMin =
             skill.range.min > 0 &&
             inRange(hitCircleOf(caster), hitCircleOf(target), skill.range.min, 0);
@@ -379,10 +417,25 @@ export type CastTimeScaleFn = (caster: CombatEntity) => number;
  *     读条条当场跳一下，玩家只会读作卡顿；
  *   · 联网侧同源：服务器 `CastStarted` 发的是 `endsAt - startedAt`，
  *     客户端读条条自动跟随，**零协议改动**。
+ *
+ * ★★ **W27：完整公式 = `cast.time × castSpeed × castTimeMultiplier`。**
+ *   · `castSpeed` 是**光环 + 装备聚合**的全局读条速度（法杖 1.1、守护甲 1.08…），
+ *     由 `scale` 注入；
+ *   · `castTimeMultiplier` 是**这把武器对这一个技能**的改写（`skillModifiers`），
+ *     由 `weapon` 注入。
+ *   两者相乘而不是取较强：它们是两根不同的轴（「我读条整体慢」×「这一发特别快」），
+ *   而 17.1 的「不能无限叠加」管的是多职业往同一个人身上堆，这两个都只来自
+ *   本人的**一件**装备，结构上无法叠加（与 `modifiers.ts` 装备池独立相乘同理）。
  */
 export const castTimeOf = (
-  skill: SkillDef, caster: CombatEntity, scale?: CastTimeScaleFn,
-): number => skill.cast.time * (scale?.(caster) ?? 1);
+  skill: SkillDef,
+  caster: CombatEntity,
+  scale?: CastTimeScaleFn,
+  weapon?: SkillModifierAccess,
+): number =>
+  skill.cast.time *
+  (scale?.(caster) ?? 1) *
+  (weapon?.modifierOf(caster, skill)?.castTimeMultiplier ?? 1);
 
 export type CastResult =
   | { ok: true; state: CastState | null }
@@ -448,6 +501,8 @@ export const beginCast = (
     target?: CombatEntity; groundPoint?: Vec3; events?: CastEvents;
     /** W26：读条时间乘算。不传 = 1，与接线前逐位相同 —— 见 `castTimeOf` */
     castTimeScale?: CastTimeScaleFn;
+    /** W27：武器对技能的改写（读条 / 冷却 / 距离）。不传 = 全部乘算 1 */
+    weapon?: SkillModifierAccess;
   } = {},
 ): CastResult => {
   // 已在施法时按新技能：7.5 允许主动取消，但不允许叠加两个读条
@@ -460,6 +515,7 @@ export const beginCast = (
     target: opts.target,
     groundPoint: opts.groundPoint,
     phase: 'start',
+    ...(opts.weapon ? { weapon: opts.weapon } : {}),
   });
   if (reason !== CastFailure.Ok) {
     opts.events?.onFailed?.(caster, skill, reason);
@@ -480,8 +536,9 @@ export const beginCast = (
     skillId: skill.id,
     kind: skill.cast.kind,
     startedAt: world.time,
-    // ★ W26：读条时长在这里、而且**只在这里**吃 castSpeed（见 castTimeOf）
-    endsAt: world.time + castTimeOf(skill, caster, opts.castTimeScale),
+    // ★ W26/W27：读条时长在这里、而且**只在这里**吃 castSpeed 与
+    //   castTimeMultiplier（见 castTimeOf）
+    endsAt: world.time + castTimeOf(skill, caster, opts.castTimeScale, opts.weapon),
     targetId: opts.target?.id,
     groundPoint: opts.groundPoint ? { ...opts.groundPoint } : undefined,
     facing: caster.yaw,
@@ -504,6 +561,29 @@ export const beginCast = (
 };
 
 /**
+ * 7.4 步骤 5 的冷却写入。
+ *
+ * ★★ **两条完成路径共用这一个函数**：读条/瞬发的 `finishCast`，与引导在
+ *   「引导开始」那一刻的结算。X10 追加轮之前这两处各写各的，结果引导技能
+ *   整整一批**免费且无冷却**（`cooldowns.set` 只存在于 `finishCast`）。
+ *   W27 又给同一行加了一个乘数 —— 再分家一次就会得到「直接放吃武器的
+ *   冷却缩减、暴风雪不吃」。
+ *
+ * ★ `cooldownMultiplier` 乘的是**技能自己的冷却**，不碰 GCD：GCD 是 7.4
+ *   步骤 2 的固定值，动它等于动全部瞬发技能的节奏（与 `castTimeOf` 同一条）。
+ */
+const enterCooldown = (
+  world: World,
+  caster: CombatEntity,
+  skill: SkillDef,
+  weapon?: SkillModifierAccess,
+): void => {
+  if (skill.cooldown <= 0) return;
+  const scale = weapon?.modifierOf(caster, skill)?.cooldownMultiplier ?? 1;
+  caster.cooldowns.set(skill.id, world.time + skill.cooldown * scale);
+};
+
+/**
  * 7.4 步骤 4–5：完成瞬间**再次**校验，通过才消耗资源与冷却。
  */
 const finishCast = (
@@ -512,7 +592,10 @@ const finishCast = (
   caster: CombatEntity,
   skill: SkillDef,
   state: CastState | null,
-  opts: { target?: CombatEntity; groundPoint?: Vec3; events?: CastEvents },
+  opts: {
+    target?: CombatEntity; groundPoint?: Vec3; events?: CastEvents;
+    weapon?: SkillModifierAccess;
+  },
 ): CastResult => {
   const target = opts.target ?? getEntity(world, state?.targetId);
   const groundPoint = opts.groundPoint ?? state?.groundPoint;
@@ -524,6 +607,7 @@ const finishCast = (
     target,
     groundPoint,
     phase: 'complete',
+    ...(opts.weapon ? { weapon: opts.weapon } : {}),
   });
 
   store.delete(caster.id);
@@ -537,7 +621,7 @@ const finishCast = (
 
   // 7.4 步骤 5：成功释放才消耗资源、进入冷却
   if (skill.cost) spendResource(caster, skill.cost.resource, skill.cost.amount);
-  if (skill.cooldown > 0) caster.cooldowns.set(skill.id, world.time + skill.cooldown);
+  enterCooldown(world, caster, skill, opts.weapon);
 
   opts.events?.onCompleted?.(caster, skill, state ?? {
     skillId: skill.id,
@@ -578,6 +662,12 @@ export interface TickOptions {
   events?: CastEvents;
   /** 移动判定阈值，米。超过它才算「主动移动」 */
   moveEpsilon?: number;
+  /**
+   * W27：武器对技能的改写。**必须与 `beginCast` 传的是同一个对象** ——
+   * 引导技能的冷却写在这条路径上（见 `enterCooldown`），只接一边等于
+   * 「暴风雪不吃武器的冷却缩减」。
+   */
+  weapon?: SkillModifierAccess;
 }
 
 /**
@@ -655,6 +745,7 @@ export const tickCasting = (world: World, store: CastingStore, opts: TickOptions
           target: getEntity(world, state.targetId),
           groundPoint: state.groundPoint,
           phase: 'complete',
+          ...(opts.weapon ? { weapon: opts.weapon } : {}),
         });
         if (reason !== CastFailure.Ok) {
           store.delete(id);
@@ -662,7 +753,7 @@ export const tickCasting = (world: World, store: CastingStore, opts: TickOptions
           continue;
         }
         if (skill.cost) spendResource(caster, skill.cost.resource, skill.cost.amount);
-        if (skill.cooldown > 0) caster.cooldowns.set(skill.id, world.time + skill.cooldown);
+        enterCooldown(world, caster, skill, opts.weapon);
         state.channelResolved = true;
         opts.events?.onCompleted?.(caster, skill, state);
       }
@@ -674,7 +765,10 @@ export const tickCasting = (world: World, store: CastingStore, opts: TickOptions
 
     // 读条 / 瞄准射击完成
     if (world.time >= state.endsAt) {
-      finishCast(world, store, caster, skill, state, { events: opts.events });
+      finishCast(world, store, caster, skill, state, {
+        events: opts.events,
+        ...(opts.weapon ? { weapon: opts.weapon } : {}),
+      });
     }
   }
 };
@@ -780,6 +874,7 @@ export const beginCastOrQueue = (
   opts: {
     target?: CombatEntity; groundPoint?: Vec3; events?: CastEvents;
     castTimeScale?: CastTimeScaleFn;
+    weapon?: SkillModifierAccess;
   } = {},
 ): CastResult => {
   const { quiet, report } = withoutFailureReport(opts.events);
@@ -810,6 +905,8 @@ export interface CastQueueTickOptions {
    * 遍历的，一个数就变成「谁排队都按同一个人的护甲算读条」。
    */
   castTimeScale?: CastTimeScaleFn;
+  /** W27：武器对技能的改写。与直接放走同一个对象，见 `SkillModifierAccess` */
+  weapon?: SkillModifierAccess;
 }
 
 /**
@@ -862,6 +959,7 @@ export const tickCastQueue = (
       ...(q.targetId !== undefined ? { target: getEntity(world, q.targetId) } : {}),
       ...(q.groundPoint ? { groundPoint: q.groundPoint } : {}),
       ...(opts.castTimeScale ? { castTimeScale: opts.castTimeScale } : {}),
+      ...(opts.weapon ? { weapon: opts.weapon } : {}),
       events: quiet,
     });
     if (r.ok) {

@@ -10,7 +10,7 @@
  */
 
 import { getSkill, getWeapon } from '../../data/index.js';
-import type { AuraDef, EffectDef, Magnitude } from '../../data/schema.js';
+import type { AuraDef, EffectDef, Magnitude, SkillModifier } from '../../data/schema.js';
 import { DrCategory, School } from '../../types/enums.js';
 import { asSkillId } from '../../types/ids.js';
 import {
@@ -27,7 +27,9 @@ import {
 } from '../aura.js';
 import { applyDr, onControlEndedEarly, type DrStore } from '../dr.js';
 import { gainResource, spendResource, type CombatEntity } from '../entity.js';
-import { ccDurationTakenFor, damageTakenFor, equipmentDamageTakenFor } from '../modifiers.js';
+import {
+  ccDurationTakenFor, damageTakenFor, equipmentDamageTakenFor, skillModifierOf,
+} from '../modifiers.js';
 import { isBehind } from '../../math/geometry.js';
 import { applyInterrupt } from '../interrupt.js';
 import { registerEffect, type CombatEvent, type EffectContext } from './registry.js';
@@ -35,6 +37,38 @@ import { nextRandom, type World } from '../world.js';
 import { CRIT } from '../../constants/combat.js';
 
 // ── 数值换算 ─────────────────────────────────────────────────────
+
+/**
+ * 这一次结算里，**施加者当前武器**对这个技能的改写（W27 / `skillModifiers`）。
+ *
+ * ★★ **前提是 `ctx.skillId` 到这里还是「技能 id」**。W23/W25 家族已经在
+ *   「技能载荷藏在 `lockedProjectile.onHit` / `delayedGroundImpact.onImpact`
+ *   里」上翻过八次车，所以这里逐条核过，结论写死在注释里：
+ *
+ *   · **投射物**（碰撞 / 锁定 / 延迟落点三种）：`tick.ts` 第 5 步传的是
+ *     `hit.projectile.skillId`，那是建投射物时从 `ctx.skillId` 抄下来的 ——
+ *     **在**。冰枪、瞄准射击、陨星的落点伤害都吃得到。
+ *   · **地面区域逐跳**：第 6 步传 `g.skillId` —— **在**。
+ *     法杖的「强化暴风雪」（`mage.blizzard: damageMultiplier=1.15`）
+ *     正是靠这一条才落到每一跳雪上。
+ *   · **普通攻击**：第 6b 步传的是字符串 `'autoAttack'` —— 查不到，而这是
+ *     对的：白字不是技能，武器对它的影响写在 `swingPercent` 上，
+ *     再叠一层就是同一件事收两遍钱。
+ *   · ⚠️ **光环周期跳（DoT / HoT）**：第 4 步传的是 `t.aura.def.id`
+ *     （例如 `rogue.poisoned_blade`），**不是**技能 id —— 于是 DoT 的每一跳
+ *     不吃武器加成，只有落刀那一下吃。这是取舍不是遗漏：光环贴上之后就
+ *     脱离了施法者的装备（施法者换武器、甚至死了，DoT 照跳），
+ *     按「跳的那一刻手里拿着什么」缩放会把「上完 DoT 立刻换武器」变成一条
+ *     操作技巧。已如实登记在 docs/15 的 W27 行。
+ *
+ * ★ **导出**是 W27 收口加的：`effects/displacement.ts` 的三个生成类处理器
+ *   （`spawnGroundArea` / `delayedGroundImpact` / `spawnTrap`）要用同一个口径
+ *   缩放它们**自己身上那个 radius**。在那边另写一遍
+ *   `getWeapon(...)?.skillModifiers?.[...]` 就是 `skillModifierOf` 的 ★★
+ *   点名要避免的分歧（「换了武器伤害变了、半径没变」）。
+ */
+export const weaponSkillModOf = (ctx: EffectContext): SkillModifier | undefined =>
+  skillModifierOf(ctx.source, ctx.skillId);
 
 /** 把 Magnitude 换算成具体数值。武器百分比按施法者当前武器计算 */
 export const magnitudeOf = (m: Magnitude, source: CombatEntity): number => {
@@ -174,10 +208,19 @@ export const dealDamage = (
   );
   const crit = (opts.canCrit ?? true) && rollCrit(ctx.source, critChance);
 
+  /**
+   * ★★ W27：`skillModifiers.damageMultiplier` 就在这一行 ——
+   *   与 `attackerMods.damageDealt` 并排、同为**攻击方**的输出乘算。
+   *   两者相乘而不是取较强：`damageDealt` 是「我现在整体打得更重」
+   *   （义愤、法杖的法术伤害 +12%），`damageMultiplier` 是「这把武器让
+   *   **这一个**技能更重」（长弓的瞄准射击 +15%）。前者是 17.1 管的那种
+   *   可叠加窗口，后者结构上每人只有一件武器，不构成「多职业重复叠加」。
+   */
   let amount =
     rawAmount *
     (crit ? CRIT.DAMAGE_MULTIPLIER * attackerMods.critDamage : 1) *
     attackerMods.damageDealt *
+    (weaponSkillModOf(ctx)?.damageMultiplier ?? 1) *
     damageTakenFor(targetMods, school);
 
   /**
@@ -186,12 +229,27 @@ export const dealDamage = (
    *   只能有一个答案。今天没有任何锁定投射物带 `behindBonus`
    *   （唯一的使用方是盗贼背刺，3.8 米近战），所以这一行的行为逐位不变；
    *   写成这样是为了将来真有一发「背后飞行体」时不必再想一遍。
+   *
+   * ★★ W27 `behindBonusDelta` 与 W25 的快照**正交**，别把两者混成一件事：
+   *   · 快照冻结的是「他是不是背对我」这个**事实**（布尔，释放瞬间定死）；
+   *   · delta 改的是「背对时多打多少」这个**数值**（来自武器）。
+   *   一个管 if，一个管乘数。
+   * ★ **只对本来就有背刺加成的技能生效**（`opts.behindBonus !== undefined`）：
+   *   schema 的原文是「背刺加成的**增量**」，而给一个没有背刺设计的技能
+   *   凭空长出一份背后加成是在发明机制；反过来，一个负 delta 落到没有
+   *   加成的技能上会变成「从背后打反而更疼/更轻」，纯属意外。
+   * ★ 夹到 ≥ 0：双剑那种「背后加成降低」写过头（delta < -bonus）时
+   *   最多是「背刺没有加成」，不该倒挂成减伤。
    */
   const behind = ctx.hitSnapshot
     ? ctx.hitSnapshot.fromBehind
     : isBehind(ctx.source.position, target.position, target.yaw);
-  if (opts.behindBonus && behind) {
-    amount *= 1 + opts.behindBonus;
+  const behindBonus =
+    opts.behindBonus === undefined
+      ? 0
+      : Math.max(0, opts.behindBonus + (weaponSkillModOf(ctx)?.behindBonusDelta ?? 0));
+  if (behindBonus > 0 && behind) {
+    amount *= 1 + behindBonus;
   }
   amount = Math.max(0, Math.round(amount));
 
@@ -365,11 +423,16 @@ export const dealHeal = (
   const crit = (opts.canCrit ?? true) && rollCrit(ctx.source, critChance);
 
   // 8.5：治疗受竞技场战斗抑制影响
+  // ★ W27 `healingMultiplier` 与伤害侧的 `damageMultiplier` 一一对应：
+  //   `healingDone` 是「我治疗整体更强」，它是「这把武器让**这一个**治疗更强」。
+  //   ⚠️ 今天没有任何武器写 `healingMultiplier`（自然法杖的「愈合 +10%」写成了
+  //   `damageMultiplier`，见 docs/15 W27 行的如实登记），所以这一层恒为 1。
   const amount = Math.max(
     0,
     Math.round(
       rawAmount * (crit ? CRIT.HEAL_MULTIPLIER * casterMods.critDamage : 1) *
-        casterMods.healingDone * targetMods.healingTaken * (1 - dampening.amount),
+        casterMods.healingDone * (weaponSkillModOf(ctx)?.healingMultiplier ?? 1) *
+        targetMods.healingTaken * (1 - dampening.amount),
     ),
   );
 
@@ -591,8 +654,20 @@ registerEffect('applyAura', (ctx, e, targets) => {
       ctx.events.push({ t: 'immune', targetId: t.id, auraId: e.aura.id, why: 'flag' });
       continue;
     }
-    // 8.2：带递减类别的光环要过递减
-    let duration = e.aura.duration;
+    /**
+     * ★ W27 `durationMultiplier`：武器对**这个技能**施加的光环时长的改写。
+     *
+     *   位置刻意在**递减之前** —— 递减（8.2）算的是「同一类控制在这个人身上
+     *   已经吃过几次」，它该缩的是「本来会有多久」，而武器改写正是那个基数的
+     *   一部分。放到递减之后会得到「第三次背刺的定身比第一次还长」这种倒挂。
+     * ★ 控制类效果（`applyControl` 那条路）**不走这里**，也不该走：控制时长
+     *   已经有 `ccDurationDealt` / `ccDurationTaken` 两根专门的轴（10.8 抗控甲），
+     *   再叠一层按技能的乘算等于给同一件事开第三个出口。
+     * ⚠️ 今天没有任何武器写 `durationMultiplier`，恒为 1、逐位不变；
+     *   接线的意义是「从此有人填就生效」（W26 `absorbDone` 同一口径）。
+     */
+    let duration =
+      e.aura.duration * (weaponSkillModOf(ctx)?.durationMultiplier ?? 1);
     let drFactor = 1;
     if (e.aura.drCategory) {
       const r = applyDr(ctx.dr, t.id, e.aura.drCategory, duration, ctx.world.time);

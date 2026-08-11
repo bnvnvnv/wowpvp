@@ -17,6 +17,30 @@ import { spawnColliding, spawnDelayedImpact, spawnHoming } from '../projectile.j
 import { asSkillId } from '../../types/ids.js';
 import type { CombatEntity } from '../entity.js';
 import { registerEffect, type EffectContext } from './registry.js';
+import { weaponSkillModOf } from './combat.js';
+
+/**
+ * 这一次结算的**半径乘算**（W27 `SkillModifier.radiusMultiplier`）。
+ *
+ * ★★ **W27 收口（铁律⑦第 9 处）。** `radiusMultiplier` 原本只作用于
+ *   `skill.shape`（`castResolve.resolveCastTargets` → `aiming.scaleShape`），
+ *   可**真正决定这三种 AoE 大小的半径写在嵌套 effect 自己身上**：
+ *   暴风雪是 `spawnGroundArea.radius`、陨星是 `delayedGroundImpact.radius`、
+ *   冰冻陷阱是 `spawnTrap.triggerRadius` —— 而这三个处理器压根不读 `targets`。
+ *   于是「把形状吹大」只是把一批没人用的目标算了一遍：实测给法杖挂
+ *   `mage.blizzard: radiusMultiplier=2` 之后区域半径**仍然是 6**。
+ *   与 W23/W25 前八次同族翻车逐字同形（载荷藏在嵌套 effect 里）。
+ *
+ * ★ 和 `scaleShape` 读的是**同一个数**（`skillModifierOf` 是唯一查表入口），
+ *   所以消费点只有一个乘算、不会出现「形状大了半径没大」的半吊子状态。
+ * ★ 无改写时是 `× 1`：逐位不变，全部现有断言不动。
+ * ⚠️ **时长不在这条路上**：`spawnGroundArea.duration` / `spawnTrap.duration` /
+ *   `delayedGroundImpact.delay` 今天仍然直读 effect 字段，不吃
+ *   `durationMultiplier`（那个乘算只落在 `combat.ts` 的 applyAura 上）。
+ *   零数据源、纯潜伏，如实登记在 docs/15 的 W27 行 —— 别以为半径接上了时长也接上了。
+ */
+const radiusScaleOf = (ctx: EffectContext): number =>
+  weaponSkillModOf(ctx)?.radiusMultiplier ?? 1;
 
 /**
  * 把实体移动到目标点，路径被墙截断时停在墙前。
@@ -173,7 +197,8 @@ registerEffect('delayedGroundImpact', (ctx, e, targets) => {
     skillId: asSkillId(ctx.skillId),
     source: ctx.source,
     center,
-    radius: e.radius,
+    // W27 收口：落点半径吃武器的 radiusMultiplier（见 `radiusScaleOf` 的 ★★）
+    radius: e.radius * radiusScaleOf(ctx),
     delay: e.delay,
     /**
      * ★★ 8.1「友军伤害默认关闭」：落地要重新圈人（1.5 秒后的事），
@@ -196,7 +221,8 @@ registerEffect('spawnGroundArea', (ctx, e) => {
     skillId: ctx.skillId,
     sourceId: ctx.source.id,
     center: { ...center },
-    radius: e.radius,
+    // W27 收口：区域半径吃武器的 radiusMultiplier（见 `radiusScaleOf` 的 ★★）
+    radius: e.radius * radiusScaleOf(ctx),
     createdAt: ctx.world.time,
     expiresAt: ctx.world.time + e.duration,
     tickInterval: e.tickInterval ?? 0,
@@ -214,7 +240,8 @@ registerEffect('spawnTrap', (ctx, e) => {
     skillId: ctx.skillId,
     sourceId: ctx.source.id,
     center: { ...center },
-    triggerRadius: e.triggerRadius,
+    // W27 收口：触发半径吃武器的 radiusMultiplier（见 `radiusScaleOf` 的 ★★）
+    triggerRadius: e.triggerRadius * radiusScaleOf(ctx),
     armedAt: ctx.world.time + e.armTime,
     expiresAt: ctx.world.time + e.armTime + e.duration,
     onTrigger: e.onTrigger,

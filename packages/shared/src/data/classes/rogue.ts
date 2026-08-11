@@ -742,8 +742,12 @@ const weapons: WeaponDef[] = [
     advantage: '正面持续伤害稳定',
     cost: '背后加成降低，攻速慢',
     grantsSkills: [asSkillId('rogue.blade_flurry')],
-    // schema 没有「修改某技能的 behindBonus」这一档修正，
-    // 用背刺整体伤害系数下调来表达 9.4 的「背后加成降低」
+    // ✅ W27 更正：`SkillModifier.behindBonusDelta` 一直在 schema 里，缺的是
+    //   消费方（八个字段全仓零读取）。现在 `effects/combat.ts` 的背刺加成真的
+    //   读它了，9.4 的「背后加成降低」可以精确表达成 `behindBonusDelta: -0.2`
+    //   —— 只削背后那一段，正面持平（这正是双剑「正面持续伤害稳定」的卖点）。
+    //   ⚠️ 本批只接线不换字段：从 damageMultiplier 0.85 换成 behindBonusDelta
+    //   会同时改掉正面伤害，是一次配平改动，单独一批归因。
     skillModifiers: { 'rogue.backstab': { damageMultiplier: 0.85 } },
     removesSkills: [asSkillId('rogue.riposte')],
     model: 'dual_swords',

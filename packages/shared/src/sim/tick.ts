@@ -59,8 +59,10 @@ import {
 import {
   beginCast, beginCastOrQueue, tickCasting, tickCastQueue,
   type CastEvents, type CastQueueStore, type CastState, type CastingStore,
+  type SkillModifierAccess,
 } from './casting.js';
 import { resolveCastTargets } from './castResolve.js';
+import { skillModifierOf, skillRangeMultiplierOf } from './modifiers.js';
 import type { DrStore } from './dr.js';
 import { tickBoss, type BossState, type BossTickResult } from './boss.js';
 import { settleDeaths, type DeathSettlement } from './death.js';
@@ -394,6 +396,20 @@ export const tickWorld = (
     effectiveModifiersOf(deps.auras, c, deps.world.time).castSpeed;
 
   /**
+   * ★★ **W27：`WeaponDef.skillModifiers` 的唯一注入点。**
+   *   `casting.ts` 保持零数据注册表依赖（见那边 `SkillModifierAccess` 的 ★★），
+   *   所以查表这件事在这里做，四个消费入口
+   *   （`beginCast` / `beginCastOrQueue` / `tickCasting` / `tickCastQueue`）
+   *   共用**同一个**对象 —— 与 `castTimeScale` / `castEvents` 同一条纪律。
+   * ★ 查表本身是两次 Map/对象取值，逐 tick 逐实体的开销可以忽略；
+   *   没有改写的技能（91 个里的绝大多数）拿到 undefined，走的还是原来的那一行。
+   */
+  const weaponSkills: SkillModifierAccess = {
+    modifierOf: (c, skill) => skillModifierOf(c, skill.id),
+    rangeScaleOf: (c, skill) => skillRangeMultiplierOf(c, skill),
+  };
+
+  /**
    * ★★ **统一的施法完成入口。**
    *   同时传给 `beginCast`（瞬发走这条）与 `tickCasting`（读条走这条）——
    *   见 `TickDeps.castRequests` 的注释，只接一个出口是 M4 踩过的坑。
@@ -402,7 +418,11 @@ export const tickWorld = (
     // ★ 必须在效果结算**之前** —— 先掉旗，再播放技能表现（12.3 / 验收 #40）
     if (skill.dropsFlagOnUse) sinks.onBeforeSkillEffects?.(caster, skill);
 
-    const r = resolveCastTargets(deps.world, caster, skill, state);
+    // W27：范围类技能吃武器的 radiusMultiplier（形状缩放，见 `scaleShape`）
+    const r = resolveCastTargets(
+      deps.world, caster, skill, state,
+      skillModifierOf(caster, skill.id)?.radiusMultiplier ?? 1,
+    );
     // 7.4 步骤 6：锁定的目标已离场 → 不产生效果
     if (r.targetLost) return;
     // ★ 必须在 resolve 之前 —— 见 onCastResolved 的注释：结算之后目标集合就变了
@@ -464,6 +484,7 @@ export const tickWorld = (
       ...(intent.groundPoint ? { groundPoint: intent.groundPoint } : {}),
       events: castEvents,
       castTimeScale,
+      weapon: weaponSkills,
     };
     /**
      * ★ 分叉只有这一处，而且是**显式开关**驱动的：没带 `queue` 的请求
@@ -654,7 +675,9 @@ export const tickWorld = (
   }
 
   // ── 3. casting 推进（必须在 movement 之后 —— 7.3）──────────
-  tickCasting(deps.world, deps.casting, { getSkill: deps.getSkill, events: castEvents });
+  tickCasting(deps.world, deps.casting, {
+    getSkill: deps.getSkill, events: castEvents, weapon: weaponSkills,
+  });
 
   // ── 3b. 施法排队窗消费（P10 / 合同 C5）──────────────────────
   /**
@@ -668,7 +691,7 @@ export const tickWorld = (
    */
   if (deps.castQueue) {
     tickCastQueue(deps.world, deps.casting, deps.castQueue, {
-      getSkill: deps.getSkill, events: castEvents, castTimeScale,
+      getSkill: deps.getSkill, events: castEvents, castTimeScale, weapon: weaponSkills,
     });
   }
 

@@ -112,6 +112,39 @@ export const shapeRadius = (shape: ShapeDef): number => {
   }
 };
 
+/**
+ * 按倍率放大/缩小一个形状。W27 `SkillModifier.radiusMultiplier` 的落点。
+ *
+ * ★★ **缩放的是「外沿」，不是全部数字**：
+ *   · `circle.radius` / `ring.outerRadius` / `cone.range` / `line.length` /
+ *     `chain.jumpRange` —— 这些都是 `shapeRadius()` 认的那个外径，缩它才是
+ *     「范围变大/变小」；
+ *   · `ring.innerRadius` **跟着一起缩**，否则环会被压成实心圆（内径不变、
+ *     外径缩到内径以内 = 一个永远选不中人的环）；
+ *   · `cone.angleDeg` / `line.width` / `maxTargets` **不动** —— 前两个是形状的
+ *     「胖瘦」而不是距离，schema 对这个字段的原文是「半径或距离乘算」；
+ *     `maxTargets` 是命中上限，属于强度不属于几何。
+ *
+ * ★ 倍率为 1（今天全部数据都是）时**原样返回同一个对象**，零分配、
+ *   逐位不变 —— 这一层因此可以无条件挂在结算路径上。
+ */
+export const scaleShape = (shape: ShapeDef, factor: number): ShapeDef => {
+  if (factor === 1) return shape;
+  switch (shape.kind) {
+    case 'single': return shape;
+    case 'circle': return { ...shape, radius: shape.radius * factor };
+    case 'ring':
+      return {
+        ...shape,
+        innerRadius: shape.innerRadius * factor,
+        outerRadius: shape.outerRadius * factor,
+      };
+    case 'cone': return { ...shape, range: shape.range * factor };
+    case 'line': return { ...shape, length: shape.length * factor };
+    case 'chain': return { ...shape, jumpRange: shape.jumpRange * factor };
+  }
+};
+
 // ── 6.3 形状选目标 ───────────────────────────────────────────────
 
 export interface ShapeQuery {

@@ -36,6 +36,7 @@ import { aurasOf, dispelEligible, type AuraStore } from '../sim/aura.js';
 import { drFactor, type DrStore } from '../sim/dr.js';
 import { CONTROL_DR_CATEGORY, magnitudeOf } from '../sim/effects/combat.js';
 import { isFriendly, type CombatEntity } from '../sim/entity.js';
+import { skillModifierOf } from '../sim/modifiers.js';
 import type { ClassId, EntityId } from '../types/ids.js';
 import type { GroundStore } from '../sim/groundArea.js';
 import type { MovementInput } from '../sim/movement.js';
@@ -78,6 +79,17 @@ const REACTION_SECONDS: Record<BotDifficulty, number> = {
  *     老教训悄悄复发：bot 又把 60 秒大爆发当成了没伤害的杂项（P1a 测试抓回）
  *   · `delayedGroundImpact.onImpact` —— 陨星（地面技能 bot 暂不放，但估值
  *     函数不该对形状撒谎 —— P1b 接落点时它就该直接是对的）
+ *
+ * ★★ **W27 收口：估值必须与结算读同一张武器改写表。**
+ *   `skillModifiers.damageMultiplier` 接线之后，同一发瞄准射击**实伤**已经
+ *   ×1.15，而这里算出来的还是接线前的数 —— bot 于是「用旧数字选招、按新数字
+ *   结算」。偏差最大的是被削那几套：匕首圆盾的肾击 ×0.7 被高估 43%，
+ *   bot 会持续优先按一个已经削掉三成的技能；反向低估的是法刃的火焰爆
+ *   与长弓的瞄准射击（各 +15%）。`scripts/balance-report.ts` 跑的正是 bot
+ *   对战，不同步会让 W27 的极差位移里混进「bot 选错招」的分量，
+ *   与「数值真的变了」再也分不开。
+ *   ⚠️ **治疗侧不需要同样处理**：bot 选治疗只按 `isHealSkill` 过滤 +
+ *     血量最低者，从不比较治疗量，没有一个 argmax 会被 `healingMultiplier` 带偏。
  */
 const totalDamageOf = (
   sk: SkillDef,
@@ -87,7 +99,11 @@ const totalDamageOf = (
    * 没有目标上下文（`nominalDps`/`standOff` 就是这样调的）→ 行为与旧版逐位一致。
    */
   tickingOnTarget?: ReadonlySet<string>,
-): number => sumDamage(sk.effects, self, tickingOnTarget);
+): number => sumDamage(
+  sk.effects, self, tickingOnTarget,
+  // ★ 与结算处同一个唯一查表入口（`sim/modifiers.skillModifierOf`）
+  skillModifierOf(self, sk.id)?.damageMultiplier ?? 1,
+);
 
 /**
  * `totalDamageOf` 的实际累加体。拆成独立函数**只为了一件事**：
@@ -107,13 +123,27 @@ const sumDamage = (
   effects: readonly EffectDef[],
   self: CombatEntity,
   tickingOnTarget?: ReadonlySet<string>,
+  /**
+   * W27：当前武器对**这个技能**的伤害乘算（`skillModifiers.damageMultiplier`）。
+   *
+   * ★★ 逐条对齐 `effects/combat.ts` 里 `weaponSkillModOf` 那张核过的清单 ——
+   *   结算处按 `ctx.skillId` 查表，所以「结算那一刻 skillId 还在不在」决定
+   *   这里该不该乘。直伤 / 碰撞弹 / 锁定弹 / 落点 / 地面区域逐跳**都在**，
+   *   于是都乘；⚠️ 唯独**光环周期跳（DoT）不在**：`tick.ts` 第 4 步传的是
+   *   `t.aura.def.id` 而不是技能 id，DoT 的每一跳实伤本来就不吃武器加成。
+   *   在这里跟着乘会让估值又偏回去 —— 只是偏的方向反了。
+   * ★ 缺省 1：老调用方与无改写的技能逐位不变。
+   */
+  skillScale = 1,
 ): number => {
   let sum = 0;
   for (const e of effects) {
-    if (e.kind === 'lockedProjectile') sum += sumDamage(e.onHit, self, tickingOnTarget);
-    if (e.kind === 'damage') sum += magnitudeOf(e.amount, self);
+    if (e.kind === 'lockedProjectile') sum += sumDamage(e.onHit, self, tickingOnTarget, skillScale);
+    if (e.kind === 'damage') sum += magnitudeOf(e.amount, self) * skillScale;
     if (e.kind === 'spawnProjectile') {
-      for (const h of e.onHit) if (h.kind === 'damage') sum += magnitudeOf(h.amount, self);
+      for (const h of e.onHit) {
+        if (h.kind === 'damage') sum += magnitudeOf(h.amount, self) * skillScale;
+      }
     }
     if (e.kind === 'applyAura' && e.aura.periodic) {
       /**
@@ -137,6 +167,7 @@ const sumDamage = (
       const already = e.target !== 'self' && tickingOnTarget?.has(e.aura.id);
       if (!already) {
         const ticks = Math.floor(e.aura.duration / e.aura.periodic.interval);
+        // ★ 这一支**刻意不乘 skillScale**：DoT 逐跳的实伤也不吃（见 skillScale 的 ⚠️）
         for (const h of e.aura.periodic.effects) {
           if (h.kind === 'damage') sum += magnitudeOf(h.amount, self) * ticks;
         }
@@ -145,11 +176,13 @@ const sumDamage = (
     if (e.kind === 'spawnGroundArea' && e.onTick && e.tickInterval) {
       const ticks = Math.floor(e.duration / e.tickInterval);
       for (const h of e.onTick) {
-        if (h.kind === 'damage') sum += magnitudeOf(h.amount, self) * ticks;
+        if (h.kind === 'damage') sum += magnitudeOf(h.amount, self) * ticks * skillScale;
       }
     }
     if (e.kind === 'delayedGroundImpact') {
-      for (const h of e.onImpact) if (h.kind === 'damage') sum += magnitudeOf(h.amount, self);
+      for (const h of e.onImpact) {
+        if (h.kind === 'damage') sum += magnitudeOf(h.amount, self) * skillScale;
+      }
     }
     /**
      * ⚠️ 终结技（spendComboPoints/spendResource 的 damage base）**刻意不计**。

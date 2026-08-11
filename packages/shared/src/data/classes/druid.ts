@@ -607,7 +607,18 @@ const weapons: WeaponDef[] = [
     modifiers: { healingDone: 1.1 },
     advantage: '治疗和控制 +10%',
     cost: '动物形态伤害 -10%',
-    // 文档 9.8 的「技能变化」列写的是**强化已有技能**，没有授予新技能
+    /**
+     * 文档 9.8 的「技能变化」列写的是**强化已有技能**，没有授予新技能。
+     *
+     * ⚠️ **W27 如实登记：`healing_touch` 这一条今天是空转的。**
+     *   愈合是纯治疗技能（`heal` + HoT），效果里一滴伤害都没有，
+     *   而 `damageMultiplier` 只在 `dealDamage` 生效 —— 接线之后它依旧
+     *   什么都不加强。作者想说的显然是 `healingMultiplier: 1.1`
+     *   （W27 已把那个字段接进 `dealHeal`）。
+     * ★ 本批**不改**：换字段等于给德鲁伊默认武器凭空 +10% 治疗，
+     *   是一次要跑 balance 归因的配平改动。已入 docs/15 的 W27 行。
+     *   `entangling_roots` 的冷却缩减是活的（-10%）。
+     */
     skillModifiers: {
       'druid.healing_touch': { damageMultiplier: 1.1 },
       'druid.entangling_roots': { cooldownMultiplier: 0.9 },
@@ -627,6 +638,15 @@ const weapons: WeaponDef[] = [
     modifiers: { healingDone: 0.88 },
     advantage: '动物形态伤害 +15%，近战范围较长',
     cost: '治疗 -12%，攻速慢',
+    /**
+     * ⚠️ **W27 如实登记：这两条结构上表达不出「动物形态伤害 +15%」。**
+     *   `skillModifiers` 改的是**那一个技能自己**的结算，而巨熊/猎豹形态
+     *   两个技能只做 `shapeshift` + `applyAura`，本身零伤害 —— 于是
+     *   `damageMultiplier` 乘在一个不存在的数上。
+     * ★ 「形态期间的伤害」需要的是**按形态生效的 `damageDealt`**
+     *   （形态光环上的 `modifiers`），那是形态光环的活，不是武器改写的活。
+     *   接线批不改数据，已入 docs/15 的 W27 行。
+     */
     skillModifiers: {
       'druid.bear_form': { damageMultiplier: 1.15 },
       'druid.cat_form': { damageMultiplier: 1.15 },

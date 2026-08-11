@@ -469,9 +469,21 @@ const weapons: WeaponDef[] = [
     swingPercent: 0.45,
     reach: RANGE.MEDIUM,
     isRanged: true,
-    // 文档写的是「单体治疗读条 -15%」；schema 只有全局 castSpeed，
-    // skillModifiers 也只支持 damageMultiplier / cooldownMultiplier，无法按技能改读条时间，
-    // 所以先按全局记。「范围治疗 -10%」同样缺少 AoE 治疗修正字段，只保留在 cost 文案里。
+    /**
+     * 文档写的是「单体治疗读条 -15%」，这里记成全局 `castSpeed: 0.85`。
+     *
+     * ⚠️ **这段注释此前是错的，W27 更正**：原文写「skillModifiers 也只支持
+     *   damageMultiplier / cooldownMultiplier，无法按技能改读条时间」——
+     *   `castTimeMultiplier` 其实一直在 schema 里，只是**八个字段全都没有
+     *   消费方**（连它以为活着的那两个也是死的）。W27 接线后八个字段全部生效，
+     *   于是「只压单体治疗、不压暗言术」现在**表达得出来**了：
+     *   `skillModifiers: { 'priest.flash_heal': { castTimeMultiplier: 0.85 } }`。
+     *
+     * ★ 本批**不改数值**（W27 是接线批，改数要单独归因 balance）——
+     *   把全局 castSpeed 换成按技能的 castTimeMultiplier 是一次配平改动，
+     *   该单独一批（与 `data/party.ts` 文件头对 `castSpeed` 的处置同则）。
+     *   「范围治疗 -10%」仍然缺 AoE 治疗修正字段，只保留在 cost 文案里。
+     */
     modifiers: { castSpeed: 0.85 },
     advantage: '单体治疗读条 -15%，驱散效率高',
     cost: '范围治疗 -10%',

@@ -16,7 +16,9 @@
 
 import type { SkillDef } from '../data/schema.js';
 import type { Vec3 } from '../math/vec3.js';
-import { collectShapeTargets, needsGroundPlacement, shapeOrigin, usesNoTarget } from './aiming.js';
+import {
+  collectShapeTargets, needsGroundPlacement, scaleShape, shapeOrigin, usesNoTarget,
+} from './aiming.js';
 import type { CastState } from './casting.js';
 import type { CombatEntity } from './entity.js';
 import { getEntity, type World } from './world.js';
@@ -46,13 +48,24 @@ export const resolveCastTargets = (
   caster: CombatEntity,
   skill: SkillDef,
   state: CastState | null,
+  /**
+   * W27 `SkillModifier.radiusMultiplier`：这把武器把这个技能的范围放大/缩小多少。
+   *
+   * ★ 由调用方算好一个数传进来（生产路径是 `tick.ts` 的 `weaponSkills`）——
+   *   本文件是**纯规则**，查武器表要 `getWeapon()`，那会把 data 注册表拖进来。
+   * ★ 不传或为 1 时 `scaleShape` 原样返回同一个形状对象：逐位不变、零分配。
+   * ⚠️ **直接目标技能不受影响** —— 它根本不看形状（见文件头的 ★★ 与
+   *   `party.test.ts` 里那条「形状会被忽略、退化成单体」）。
+   */
+  radiusScale = 1,
 ): CastTargets => {
   const groundPoint = state?.groundPoint;
+  const shape = scaleShape(skill.shape, radiusScale);
 
   if (needsGroundPlacement(skill)) {
     const targets = groundPoint
       ? collectShapeTargets(world, caster, {
-          origin: groundPoint, yaw: caster.yaw, shape: skill.shape, filter: skill.targetFilter,
+          origin: groundPoint, yaw: caster.yaw, shape, filter: skill.targetFilter,
         })
       : [];
     return { targets, targetLost: false, ...(groundPoint ? { groundPoint } : {}) };
@@ -62,7 +75,7 @@ export const resolveCastTargets = (
     return {
       targets: collectShapeTargets(world, caster, {
         origin: shapeOrigin(caster, skill), yaw: caster.yaw,
-        shape: skill.shape, filter: skill.targetFilter,
+        shape, filter: skill.targetFilter,
       }),
       targetLost: false,
     };

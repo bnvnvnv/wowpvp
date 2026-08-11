@@ -582,11 +582,29 @@ const skills: SkillDef[] = [
 
 // ── 武器方案（附录A#4：职业、攻击间隔、距离、优势、代价、改变的技能）──
 //
-// ⚠ schema 缺口：WeaponDef 没有「远程技能最大距离乘算」字段，skillModifiers 也只有
-//   damageMultiplier / cooldownMultiplier，无法表达半径或持续时间的变化。
-//   因此「法刃 + 元素焦点」的远程距离 -20%、双手法杖的「范围能力强」目前只能写在
-//   advantage / cost 文案里。建议后续给 WeaponDef 增加 rangeMultiplier，
-//   给 skillModifiers 增加 radiusMultiplier / durationMultiplier 后再数据化。
+// ✅ W27 更正：这里原本写着「schema 缺口 —— 没有远程距离乘算、没有半径/持续时间」。
+//   缺口从来不在 schema：`WeaponDef.rangeMultiplier` 与 `SkillModifier` 的
+//   radiusMultiplier / durationMultiplier 一直都在，缺的是**消费方**（八个字段
+//   全仓零读取）。W27 把它们全部接上了：
+//     · 「法刃 + 元素焦点」的远程距离 -20% → `rangeMultiplier: 0.8`（武器级，
+//       只作用于超出近战触及的技能，见 `sim/modifiers.skillRangeMultiplierOf`）
+//     · 双手法杖的「范围能力强」→ 暴风雪/陨星 `radiusMultiplier`
+//   ⚠️ 本批**只接线不填数**：填上就是一次配平改动，必须单独跑 balance 归因
+//   （与 `data/party.ts` 文件头对 castSpeed 的处置同则）。所以这两条今天仍然
+//   只活在 advantage / cost 文案里 —— 但从此「写上去就生效」。
+//
+// ✅✅ **W27 收口更正（铁律⑦第 9 处）**：上面那句「写上去就生效」当时**只对了
+//   一半**。`radiusMultiplier` 接线时只落在了 `skill.shape` 上，而暴风雪与陨星
+//   真正决定 AoE 大小的半径写在**嵌套 effect 自己身上**
+//   （`spawnGroundArea.radius: 6` / `delayedGroundImpact.radius: 5`），
+//   那两个处理器压根不读 `targets` —— 于是把形状吹大只是把一批没人用的目标
+//   算了一遍，实测挂 `radiusMultiplier: 2` 之后区域半径**仍然是 6**。
+//   收口把三个生成类处理器（`spawnGroundArea` / `delayedGroundImpact` /
+//   `spawnTrap`）也接到了同一个乘算上（见 `effects/displacement.radiusScaleOf`），
+//   全仓 9 个嵌套半径逐个有断言（`sim/skillModifiers.test.ts`）。
+//   ⚠️ **时长仍然够不到**：`durationMultiplier` 只落在 `applyAura` 上，
+//   「暴风雪多下 2 秒」「冰霜陷阱多摆 5 秒」今天写上去无效（零数据源、
+//   纯潜伏，如实登记在 docs/15 的 W27 行）。
 
 const weapons: WeaponDef[] = [
   {
@@ -605,7 +623,9 @@ const weapons: WeaponDef[] = [
     advantage: '法术伤害 +12%，范围能力强',
     cost: '读条时间 +10%，物理防御低',
     removesSkills: [asSkillId('mage.elemental_slash')],
-    // 「强化暴风雪/陨石」：schema 只支持伤害/冷却乘算，半径与持续时间加强暂无字段
+    // 「强化暴风雪/陨石」：目前只写了伤害乘算。W27 收口之后 `radiusMultiplier`
+    // 才真的能表达「范围能力强」那一半（区域/落点半径都跟着缩放，
+    // 不再是只吹形状不吹圈），填不填是配平批的事（见文件上方 ✅✅）
     skillModifiers: {
       'mage.blizzard': { damageMultiplier: 1.15 },
       'mage.meteor': { damageMultiplier: 1.15 },
@@ -649,8 +669,17 @@ const weapons: WeaponDef[] = [
     advantage: '瞬发技能 +15%，自保提高',
     cost: '远程技能最大距离 -20%',
     grantsSkills: [asSkillId('mage.elemental_slash')],
-    // 「瞬发技能 +15%」：AuraModifiers 没有「仅瞬发」维度，只能逐个瞬发技能列举，
-    // 避免用 damageDealt 把读条技能一起加强（17.1：不能同时提高伤害/攻速/防御/移动/控制）
+    /**
+     * 「瞬发技能 +15%」：AuraModifiers 没有「仅瞬发」维度，只能逐个瞬发技能列举，
+     * 避免用 damageDealt 把读条技能一起加强（17.1：不能同时提高伤害/攻速/防御/移动/控制）。
+     *
+     * ⚠️ **W27 如实登记：`frost_nova` 这一条空转。**
+     *   冰霜新星的效果只有 `root`（定身 2 秒），一滴伤害都没有 ——
+     *   `damageMultiplier` 乘在一个不存在的数上。列举「全部瞬发技能」时
+     *   没人检查过它到底打不打伤害。想加强它得用 `durationMultiplier`
+     *   （W27 已接进 applyAura 时长），但那是**控制强度**，改它要跑 balance 归因。
+     *   接线批不动数据；断言与清单见 `sim/skillModifiers.test.ts` 的 `KNOWN_INERT`。
+     */
     skillModifiers: {
       'mage.fire_blast': { damageMultiplier: 1.15 },
       'mage.frost_nova': { damageMultiplier: 1.15 },
