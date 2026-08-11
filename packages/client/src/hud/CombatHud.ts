@@ -465,11 +465,39 @@ export class CombatHud {
 
     this.renderUnitFrame(this.targetFrame, dir.target, dir, '目标');
     this.renderUnitFrame(this.focusFrame, dir.focus, dir, '焦点');
-    this.renderSelfAuras(dir);
-    this.renderPlayerCast(dir);
-    this.renderSkillBar(dir.skillSlots());
+    /**
+     * W24：观战席**没有身体** —— 技能栏、自己的施法条、自己的光环行
+     * 这三块讲的都是「我」，而观战者的 `dir.player` 是**他正在看的那个人**
+     * （`Snapshot.you` 的观战语义）。照常渲染的话，屏幕下方会出现一排
+     * 他按不动的技能格和一条不属于他的读条 —— 那不是少信息，是错信息。
+     * ★ 三块在 `setSpectating(true)` 时已经清空并藏起来了，这里只需要
+     *   **不再往回写**（不然下一帧又被填满）。
+     */
+    if (!this.spectating) {
+      this.renderSelfAuras(dir);
+      this.renderPlayerCast(dir);
+      this.renderSkillBar(dir.skillSlots());
+    }
     this.renderLog(dir);
   }
+
+  /**
+   * W24：切换到「观战面」。★ 幂等，且只做一次 DOM 改动 ——
+   * 常态下（参战）本方法从不被调用，默认路径逐字节不变。
+   */
+  setSpectating(on: boolean): void {
+    if (this.spectating === on) return;
+    this.spectating = on;
+    for (const el of [this.skillBar, this.playerCastBar, this.selfAuras]) {
+      el.innerHTML = '';
+      el.style.display = 'none';
+    }
+    // 关掉观战面时让下一帧重新填内容（两块渲染函数都有「内容没变就跳过」的缓存）
+    this.lastSelfAuraHtml = '';
+    this.lastSlots = [];
+    if (!on) this.skillBar.style.display = '';
+  }
+  private spectating = false;
 
   // ── 15.2 目标框 ─────────────────────────────────────────────
 

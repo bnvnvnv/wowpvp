@@ -74,6 +74,40 @@ export const readyBlocker = (self: RoomPlayerView | undefined): string | null =>
   return null;
 };
 
+// ── W24 房间列表：进行中的房间也进得去 ─────────────────────────
+
+/** 房间列表一行上该出现哪几颗按钮 */
+export interface RoomRowActions {
+  /** 「观战」—— `started` 房恒有（观战不占战斗席，满员房也能看）*/
+  spectate: boolean;
+  /** 「加入」*/
+  join: boolean;
+  /** 加入键上的字。★ 已开局时要把「还坐得下几个」说出来 */
+  joinLabel: string;
+}
+
+/**
+ * 一行房间 → 按钮组合。
+ *
+ * ★★ **判据是 `joinableSeats`，不是 `capacity - players`。** 两者在开局后
+ *   不等价：队伍被人机补满了，差值恒为 0，而**真正能坐下的正是那些人机
+ *   席位**。照差值画的话，中途加入这条路在界面上根本不存在（协议注释里
+ *   的原话）。
+ * ★ `started && joinableSeats === 0` 仍然给观战键 —— 观战不占战斗席。
+ * ★ 两颗键发的是**同一条** `JoinRoom`：对 `started` 房间，入场就是观战席，
+ *   上不上场由入场之后那个席位面板决定（服务器语义，客户端不发明第二种）。
+ */
+export const roomRowActions = (
+  r: { started: boolean; joinableSeats: number },
+): RoomRowActions => {
+  if (!r.started) return { spectate: false, join: true, joinLabel: '加入' };
+  return {
+    spectate: true,
+    join: r.joinableSeats > 0,
+    joinLabel: r.joinableSeats > 0 ? `加入（${r.joinableSeats} 个空席/人机席位）` : '',
+  };
+};
+
 /** 分享链接：`?lobby=<码>`，显式指定过服务器地址时一并带上 */
 export const shareLink = (
   origin: string,

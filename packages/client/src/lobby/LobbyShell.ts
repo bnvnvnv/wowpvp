@@ -15,8 +15,11 @@
  * ★ 连接归大厅所有，跨越房间与战斗两个阶段。对局的 3D 场景（NetworkScene）
  *   **每场重建**：MatchStart 时新建画布与场景（借用本连接，见 NetLink），
  *   MatchEnd 回房间时整体销毁 —— 职业模型、技能栏、插值缓冲这些「上一局
- *   的状态」从根上不存在，而不是逐个字段去清（CharacterView.setClass 是
- *   幂等首调生效的，跨局复用场景会让换职业悄悄失效）。
+ *   的状态」从根上不存在，而不是逐个字段去清（跨局复用场景要清的东西
+ *   有十几样，漏一样就是一条只在第二局出现的怪）。
+ *   ★ W24 收口后 `CharacterView.setClass` 本身支持换职业了（**局内** respec
+ *   要用），但这不改变「每场重建」这条规矩：局内换的是一个字段，跨局换的
+ *   是整份状态。
  */
 
 import {
@@ -59,11 +62,13 @@ import {
   mapOptionsFor,
   normalizeRoomCode,
   readyBlocker,
+  roomRowActions,
   sanitizeName,
   shareLink,
   showMapRow,
   splitRoster,
 } from './logic.js';
+import { midJoinSeats, midJoinTakeoverHint } from '../spectate/spectateView.js';
 
 /** 昵称的本地存档（照 accessibility 的 `wowpvp.<域>.v1` 键式）*/
 const LOBBY_STORAGE_KEY = 'wowpvp.lobby.v1';
@@ -145,6 +150,8 @@ export interface LobbyStatus {
   playerId: string | null;
   players: { name: string; team: string; classId: string | null; ready: boolean; connected: boolean }[];
   roomStarted: boolean;
+  /** W24：本会话此刻坐在观战席（verify 断言「进行中的房间进得去」的入口）*/
+  spectating: boolean;
   /** W12：verify 断言模式选择走通（RoomState 广播回来的口径，不是本地记的按钮）*/
   mode: string | null;
   mapId: string | null;
@@ -196,6 +203,22 @@ export class LobbyShell {
   private summary: MatchSummaryData | undefined;
   /** 点了建房/加房但连接还没通（或 JoinRoom 还没被答复）*/
   private pendingJoin: { code: string; creating: boolean } | undefined;
+  /**
+   * W24：本会话此刻坐在**观战席**（`MatchStart.spectating`）。
+   * ★ 与 `page === 'match'` 一起决定「席位面板画不画」。
+   */
+  private spectating = false;
+  /** W24：房间列表上点的是「加入」而不是「观战」—— 入场后自动弹席位面板 */
+  private wantsToPlay = false;
+  private midJoinOpen = false;
+  private midJoinTeam: 'red' | 'blue' | undefined;
+  private midJoinClass: string | undefined;
+  /**
+   * W24：已发出的 `JoinOngoing`。★ 上场后建场景要用它兜底 —— 走「空席位」
+   * 那条路时名单里的自己还是**观战席条目**（没有队伍也没有职业），
+   * 而 RoomState 的广播在 MatchStart **之后**才到（服务器的顺序）。
+   */
+  private midJoinRequest: { team: 'red' | 'blue'; classId: string } | undefined;
 
   private scene: NetworkScene | undefined;
   private matchRoot: HTMLElement | undefined;
@@ -265,6 +288,7 @@ export class LobbyShell {
         connected: p.connected,
       })),
       roomStarted: this.roomStarted,
+      spectating: this.spectating,
       mode: (this.mode as string | undefined) ?? null,
       mapId: (this.mapId as string | undefined) ?? null,
       matchStarts: this.matchStarts,
@@ -537,6 +561,32 @@ export class LobbyShell {
         </div>
       </div>
 
+      <!--
+        W24 席位面板：**浮在观战画面之上**，不是一页。
+        ★ 与结算横幅（.lb-end）同一条理由：此刻 3D 场景正在跑（观战），
+          大厅那几页整体让位给画布，能出现的只有浮层。
+        ★ 样式走内联而不是新 class —— 样式表不归本包改，新 class 在真机上
+          会是一块没有布局的裸 DOM（.lb-end[hidden] 那次的同款教训）。
+        ★ 选项内容全部由 renderMidJoin() 现算：席位余量来自 RoomState 名单，
+          客户端不缓存一份会过期的余量。
+      -->
+      <button class="lb-btn lb-small" id="lb-midjoin-open" data-action="midjoin-open" hidden
+              style="position:fixed;right:14px;top:58px;z-index:60">⚔ 加入这局</button>
+      <div id="lb-midjoin" hidden
+           style="position:fixed;left:50%;bottom:6%;transform:translateX(-50%);z-index:60;max-width:min(760px,94vw)">
+        <div class="lb-panel" style="padding:14px 18px">
+          <h3 style="margin:0 0 8px">加入这局对局</h3>
+          <div class="lb-row" id="lb-midjoin-seats"></div>
+          <div class="lb-fine" id="lb-midjoin-why"></div>
+          <div class="lb-fine" style="margin:8px 0 2px">选择职业：</div>
+          <div class="lb-row" id="lb-midjoin-classes" style="flex-wrap:wrap"></div>
+          <div class="lb-row" style="margin-top:8px">
+            <button class="lb-btn lb-primary" data-action="midjoin-go" id="lb-midjoin-go">加入对局</button>
+            <button class="lb-btn lb-ghost lb-small" data-action="midjoin-close">继续观战</button>
+          </div>
+        </div>
+      </div>
+
       <div id="lb-toast" hidden></div>
     `;
     this.app.appendChild(this.root);
@@ -668,7 +718,13 @@ export class LobbyShell {
           this.clearToast();
           this.setTitleBusy(false); // 离开房间回到标题页时按钮得是活的
         }
-        if (this.page !== 'match') this.render();
+        /**
+         * W24：对局中也会来 `RoomState`（有人中途加入 / 掉线被人机接管）。
+         * ★ 大厅页此刻整体让位给画布，能更新的只有那块浮层 —— 而它读的
+         *   正是名单（席位余量）。不刷的话玩家看着一个已经被人坐掉的空位。
+         */
+        if (this.page === 'match') this.renderMidJoin();
+        else this.render();
         break;
       }
 
@@ -708,8 +764,23 @@ export class LobbyShell {
         break;
 
       case 'Rejected': {
+        /**
+         * ★★ W24：`JoinOngoing` 被拒时**必须 toast** —— 会话仍在观战席，
+         *   而拒绝理由是服务器专门写成可以直接展示的一句话（「红方没有可
+         *   加入的席位——蓝方还有 2 个，换一边试试」）。落进战斗日志里
+         *   等于没说：玩家此刻正盯着席位面板。
+         * ★ 面板留在原地（不关），换一边再点就是了。
+         */
+        if (msg.what === 'JoinOngoing') {
+          this.midJoinRequest = undefined;
+          this.midJoinOpen = true;
+          this.renderMidJoin();
+          this.toast(msg.reason, 6000);
+          break;
+        }
         if (this.pendingJoin && msg.what === 'JoinRoom') {
           this.pendingJoin = undefined;
+          this.wantsToPlay = false; // 这一次没进去 —— 意图不留到下一次点击
           this.setTitleBusy(false); // 被服务器拒了也停在标题页，按钮必须能再点
           this.toast(`加入失败：${msg.reason}`);
         } else if (this.page === 'room' || this.page === 'class') {
@@ -780,9 +851,52 @@ export class LobbyShell {
       }
       case 'join-listed': {
         const code = btn?.dataset['code'];
-        if (code) this.join(code, false);
+        if (!code) break;
+        /**
+         * W24：对 `started` 房间，`JoinRoom` 就是入场观战 —— 想上场的人
+         * 还要选席位与职业，而那两样**要先看见房间状态**才选得出来
+         * （哪一队坐得下、有几个人机可顶）。记下意图，`MatchStart` 到达
+         * 切进观战场景后自动把席位面板弹出来。
+         */
+        this.wantsToPlay = btn?.dataset['intent'] === 'play';
+        this.join(code, false);
         break;
       }
+      /** W24 席位面板：先选边（大乱斗只有一个「参战」）*/
+      case 'midjoin-team': {
+        const team = btn?.dataset['team'];
+        if (team === 'red' || team === 'blue') this.midJoinTeam = team;
+        this.renderMidJoin();
+        break;
+      }
+      /** W24 席位面板：再选职业 */
+      case 'midjoin-class': {
+        this.midJoinClass = btn?.dataset['class'] ?? this.midJoinClass;
+        this.renderMidJoin();
+        break;
+      }
+      case 'midjoin-go': {
+        if (!this.midJoinTeam || !this.midJoinClass) break;
+        /**
+         * ★ 只发意图。「这一队坐不坐得下」「那个人机顶不顶得了」全在服务器的
+         *   `onJoinOngoing` —— 被拒时它给的是一句**可以直接展示**的话
+         *   （「红方没有可加入的席位——蓝方还有 2 个，换一边试试」），
+         *   客户端一个判据都不复述。
+         */
+        this.midJoinRequest = { team: this.midJoinTeam, classId: this.midJoinClass };
+        this.conn.send({
+          t: 'JoinOngoing', team: this.midJoinTeam, classId: this.midJoinClass as ClassId,
+        });
+        break;
+      }
+      case 'midjoin-close':
+        this.midJoinOpen = false;
+        this.renderMidJoin();
+        break;
+      case 'midjoin-open':
+        this.midJoinOpen = true;
+        this.renderMidJoin();
+        break;
       case 'join': {
         const code = normalizeRoomCode(
           (this.root.querySelector('#lb-code') as HTMLInputElement)?.value ?? '',
@@ -966,6 +1080,11 @@ export class LobbyShell {
         this.players = [];
         this.roomCode = '';
         this.ffaQuick = false; // 直通流程随房间一起结束
+        // W24：观战/中途加入的意图随房间一起结束（不带进下一个房间）
+        this.spectating = false;
+        this.midJoinOpen = false;
+        this.midJoinRequest = undefined;
+        this.midJoinTeam = undefined;
         this.clearToast();
         this.page = 'title';
         this.render();
@@ -997,6 +1116,8 @@ export class LobbyShell {
     rooms: readonly {
       roomId: string; mode: string; players: number;
       capacity: number; started: boolean; fillWithBots: boolean;
+      /** W24：**现在**坐得下几个战斗席（与 capacity-players 不等价，见 roomRowActions）*/
+      joinableSeats: number;
     }[],
   ): void {
     /**
@@ -1017,16 +1138,38 @@ export class LobbyShell {
       if (c) return `夺旗 ${c[1]}v${c[1]}`;
       return m;
     };
-    const row = (r: (typeof rooms)[number]): string => `
+    /**
+     * ★★ W24：进行中的房间不再是一行灰字。此前这里写死「对局进行中」＋
+     *   不给任何按钮 —— 而服务器从本批起对 `started` 房间的 `JoinRoom`
+     *   语义就是**入场观战**，能不能上场看 `joinableSeats`。
+     * ★ 两颗键发的是同一条消息（`join-listed`），区别只在
+     *   `data-intent`：带 `play` 的那颗在入场后自动弹席位面板 ——
+     *   点「观战」的人不该被一个面板糊在脸上。
+     */
+    const row = (r: (typeof rooms)[number]): string => {
+      const act = roomRowActions(r);
+      const code = escapeHtml(r.roomId);
+      const buttons = [
+        act.spectate
+          ? `<button class="lb-btn lb-small lb-ghost" data-action="join-listed"
+                     data-code="${code}" data-intent="watch"
+                     title="观战不占战斗席，满员的房间也看得了">观战</button>`
+          : '',
+        act.join
+          ? `<button class="lb-btn lb-small" data-action="join-listed"
+                     data-code="${code}" data-intent="${r.started ? 'play' : 'room'}"
+                     >${escapeHtml(act.joinLabel)}</button>`
+          : '',
+      ].join('');
+      return `
       <div class="lb-row lb-fine lb-room-row">
-        <b class="lb-code" style="font-size:13px">${escapeHtml(r.roomId)}</b>
+        <b class="lb-code" style="font-size:13px">${code}</b>
         <span>${modeLabel(r.mode)}</span>
         <span>${r.players}/${r.capacity} 人${r.fillWithBots ? '（人机补位）' : ''}</span>
-        ${r.started
-          ? '<span style="opacity:.6">对局进行中</span>'
-          : `<button class="lb-btn lb-small" data-action="join-listed"
-                     data-code="${escapeHtml(r.roomId)}">加入</button>`}
+        ${r.started ? '<span style="opacity:.6">进行中</span>' : ''}
+        ${buttons}
       </div>`;
+    };
     const ffa = rooms.filter((r) => r.mode === 'ffa');
     const pvp = rooms.filter((r) => r.mode !== 'ffa');
     if (pvpBox) pvpBox.innerHTML = pvp.map(row).join('') || '<div class="lb-fine lb-empty">暂无组队房间</div>';
@@ -1078,6 +1221,14 @@ export class LobbyShell {
     this.destroyMatch(); // 观战/边缘态下可能还挂着上一场
     // ★ 清掉上一局的统计 —— 不清的话第二局结束时会短暂显示上一局的表
     this.summary = undefined;
+    /**
+     * ★★ W24：`spectating` 决定这一场**建的是哪一种场景**。中途加入成功时
+     *   服务器会**再发一条**不带 `spectating` 的 MatchStart —— 于是这里
+     *   自然地把观战场景整个销毁、按参战重建（「一局一场景」的老规矩本来
+     *   就在做这件事，不需要给场景加一条「从观战变成参战」的状态迁移）。
+     */
+    this.spectating = msg.spectating === true;
+    this.midJoinOpen = false;
 
     const root = document.createElement('div');
     root.id = 'match-root';
@@ -1088,14 +1239,38 @@ export class LobbyShell {
     this.matchRoot = root;
 
     const self = this.self();
+    /**
+     * ★★ W24 中途加入时**名单还是旧的**（服务器的顺序是 Welcome →
+     *   MatchStart → RoomState），所以自己那一行要分两种情况读：
+     *   · **顶替人机**：`playerId` 已经换成那个席位的 id（服务器刚发的
+     *     Welcome），旧名单里那一行正是被顶替的人机 —— 队伍与
+     *     **当场生效的职业**（人机那个）都在里面，读它就对；
+     *   · **坐空席位**：`playerId` 没变，名单里的自己还是观战席条目
+     *     （没有队伍、没有职业）→ 退回刚发出去的那条 `JoinOngoing`。
+     *   两种情况下 `classId` 拿到的都是**这具身体真正的职业**，自己的
+     *   角色模型因此不会挂错。★ 挂错也不再是整局错了（W24 收口后
+     *   `CharacterView.setClass` 认「职业变了」而不是「调过一次」，
+     *   场景每帧按快照的 `classId` 复核一次）—— 但那是兜底，不是理由：
+     *   开场先挂一具错职业的身体，玩家看得见。
+     */
+    const req = this.midJoinRequest;
+    const team: 'red' | 'blue' = self?.team === 'blue'
+      ? 'blue'
+      : self?.team === 'red' ? 'red' : (req?.team ?? 'red');
+    const classId = (self?.classId as string | undefined) ?? req?.classId ?? 'mage';
     const scene = new NetworkScene(canvas, {
       url: this.opts.serverUrl,
       roomId: this.roomCode,
       name: this.name,
-      team: self?.team === 'blue' ? 'blue' : 'red',
-      classId: (self?.classId as string | undefined) ?? 'mage',
+      team,
+      classId,
+      spectating: this.spectating,
+      // ★ 玩家**选的**那个职业（可能与上面那个不同 = 顶替了人机，还没生效）
+      ...(req ? { requestedClassId: req.classId } : {}),
       link: this.conn, // ★ 借用大厅的连接 —— 场景不再自建（NetLink 边界）
     });
+    // 请求已兑现（成功 = 这条 MatchStart）：不留到下一局去解释一个不存在的顶替
+    if (!this.spectating) this.midJoinRequest = undefined;
     this.scene = scene;
     // 与 ?net= 老路同名暴露，诊断脚本两条路通用
     (globalThis as Record<string, unknown>)['__net'] = scene;
@@ -1106,6 +1281,12 @@ export class LobbyShell {
     this.ffaQuick = false; // 直通完成 —— 战后回到的是正常的（大乱斗版）房间页
     this.clearToast();
     this.page = 'match';
+    /**
+     * W24：房间列表上点的是「加入」的人，入场即把席位面板摊开 ——
+     * 他要的是上场，不是看别人打。点「观战」的人只拿到右上角一颗小按钮。
+     */
+    if (this.spectating && this.wantsToPlay) this.midJoinOpen = true;
+    this.wantsToPlay = false;
     this.render();
   }
 
@@ -1147,6 +1328,8 @@ export class LobbyShell {
       else el.classList.toggle('active', page === this.page);
     }
 
+    // W24：席位面板是浮层，任何一页切换后都要复核一次它该不该在
+    this.renderMidJoin();
     if (this.page === 'room' || this.page === 'class') this.renderRoom();
     if (this.page === 'class') this.renderClassSelection();
     if (this.page === 'end') {
@@ -1165,6 +1348,65 @@ export class LobbyShell {
           })
         : '';
     }
+  }
+
+  /**
+   * W24 席位面板（观战中才存在）。
+   *
+   * ★★ **余量全部现算**，一份都不缓存：`RoomState` 每广播一次就变一次
+   *   （有人中途加入、有人掉线被人机接管）。缓存一份的后果是玩家点了一个
+   *   两秒前还空着的席位，然后吃一条拒绝 —— 而那正是这块面板要消灭的东西。
+   * ★ 它只是**门面**：能不能坐下由服务器 `onJoinOngoing` 说了算，被拒时
+   *   服务器给的那句话可以直接展示（「红方没有可加入的席位——蓝方还有
+   *   2 个，换一边试试」），客户端一个判据都不复述。
+   */
+  private renderMidJoin(): void {
+    const openBtn = this.root.querySelector('#lb-midjoin-open') as HTMLElement | null;
+    const box = this.root.querySelector('#lb-midjoin') as HTMLElement | null;
+    if (!openBtn || !box) return; // 老布局/单测桩：整块跳过（与房间列表同则）
+    const active = this.page === 'match' && this.spectating;
+    openBtn.hidden = !active || this.midJoinOpen;
+    box.hidden = !active || !this.midJoinOpen;
+    if (box.hidden) return;
+
+    const seats = midJoinSeats(this.players, {
+      mode: this.mode,
+      teamSize: this.mode ? teamSizeOf(this.mode) : 0,
+    });
+    // 默认落在第一个坐得下的席位上（都坐不下就不预选，按钮自然是灰的）
+    if (this.midJoinTeam === undefined || !seats.some((s) => s.team === this.midJoinTeam && s.selectable)) {
+      this.midJoinTeam = seats.find((s) => s.selectable)?.team;
+    }
+    this.midJoinClass ??= ALL_CLASSES[0]!.id as string;
+
+    (this.root.querySelector('#lb-midjoin-seats') as HTMLElement).innerHTML = seats
+      .map((s) => `
+        <button class="lb-btn lb-small${s.team === this.midJoinTeam ? ' lb-armed' : ''}"
+                data-action="midjoin-team" data-team="${s.team}"
+                ${s.selectable ? '' : 'disabled'}
+                title="${escapeHtml(s.hint)}">${escapeHtml(s.label)}
+          <i class="lb-fine">${s.free + s.bots}</i></button>`).join('');
+
+    const chosen = seats.find((s) => s.team === this.midJoinTeam);
+    const family = this.mapId !== undefined
+      ? MAP_BY_ID.get(this.mapId as string)?.family
+      : undefined;
+    // 顶替人机才有「职业延后生效」这一说 —— 有空位时不吓唬人
+    const takeover = chosen && chosen.free === 0 && chosen.bots > 0
+      ? midJoinTakeoverHint(family)
+      : null;
+    (this.root.querySelector('#lb-midjoin-why') as HTMLElement).textContent = chosen
+      ? `${chosen.hint}${takeover ? ` · ${takeover}` : ''}`
+      : '这局暂时没有可加入的席位 —— 继续观战，有人离开时再试';
+
+    (this.root.querySelector('#lb-midjoin-classes') as HTMLElement).innerHTML = ALL_CLASSES
+      .map((c) => `
+        <button class="lb-btn lb-small${(c.id as string) === this.midJoinClass ? ' lb-armed' : ''}"
+                data-action="midjoin-class"
+                data-class="${c.id as string}">${escapeHtml(c.name)}</button>`).join('');
+
+    const go = this.root.querySelector('#lb-midjoin-go') as HTMLButtonElement;
+    go.disabled = this.midJoinTeam === undefined;
   }
 
   private renderRoom(): void {

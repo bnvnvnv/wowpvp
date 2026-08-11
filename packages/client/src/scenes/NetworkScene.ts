@@ -26,6 +26,7 @@ import {
   FlagState,
   GEOMETRY,
   MAP_BY_ID,
+  NO_ENTITY,
   RANGE,
   TEAM_RED,
   Targeting,
@@ -89,7 +90,10 @@ import { pickTabTargetFromSnapshot } from '../net/snapshotTargeting.js';
 import { CombatHud } from '../hud/CombatHud.js';
 import { partyViewFromSnapshot } from '../hud/PartyFrame.js';
 import type { MinimapBlip } from '../hud/ModeHud.js';
-import { nextSpectateTarget } from '../spectate/SpectateController.js';
+import { nextSpectateSeatTarget, nextSpectateTarget } from '../spectate/SpectateController.js';
+import {
+  SPECTATE_HINT_TEXT, midJoinClassNotice, spectateBannerText,
+} from '../spectate/spectateView.js';
 import { SettingsPanel, rebindableActions, prettyKey } from '../settings/SettingsPanel.js';
 import { makeRebindController } from '../settings/keybindings.js';
 import {
@@ -161,6 +165,24 @@ export interface NetworkSceneOptions {
    * 不给则是 `?net=` 老路：自建连接 + 四连发进房，行为与 M10 起完全一致。
    */
   link?: NetLink;
+  /**
+   * W24：这一场是**观战席**入场（`MatchStart.spectating`）。
+   *
+   * ★★ 为什么在构造参数里也要有一份，而不是只等 `MatchStart` 到达时再判：
+   *   构造函数会把自己的角色模型加进场景并请求挂载（`setClass` 是幂等首调
+   *   生效的）。观战席没有身体，那具模型会以一个**站在原点不动的胶囊**
+   *   出现在场上。大厅在 `MatchStart` 到手之后才建场景，这个值它拿得到。
+   * ★ 消息仍然是权威：`MatchStart` 那一支会再确认一次（两者不一致时以消息为准）。
+   */
+  spectating?: boolean;
+  /**
+   * W24 中途加入：玩家在席位面板上**选的**职业。
+   *
+   * ★ 与 `classId` 刻意分成两个字段：顶替人机时 `classId` 是**当场生效的**
+   *   那个（被顶替者的），这个才是他选的。两者不同 = 「还没生效」，
+   *   文案由 `midJoinClassNotice` 说（竞技场那句尤其不能抄错）。
+   */
+  requestedClassId?: string;
 }
 
 /** 供验收脚本读取的联网状态 */
@@ -221,8 +243,14 @@ export interface NetStatus {
   } | null;
   /** W5：死亡遮罩当前是否可见 */
   deathOverlay: boolean;
-  /** W5：正在观战的实体 id；未观战为 null */
+  /** W5：正在观战的实体 id；未观战为 null。★ W24 起观战席也用它记「在看谁」 */
   spectating: number | null;
+  /**
+   * W24：本会话是**观战席**（在局、无自身实体）。
+   * ★ 与 `spectating` 是两件事：那是「在看谁」，这是「我有没有身体」——
+   *   死亡观战两者都有值，观战席则 `you` 为 0 时只有这一个为真。
+   */
+  spectatorSeat: boolean;
   /** W6：断线横幅当前是否可见（= started 且连接断开）*/
   reconnecting: boolean;
   /** W6：指令往返延迟（毫秒，EMA 平滑；未测得为 null）*/
@@ -320,6 +348,24 @@ export class NetworkScene {
   private readonly deathOverlaySub: HTMLElement;
   private spectatingId: number | null = null;
   /**
+   * W24：本会话是观战席（无自身实体）。
+   *
+   * ★★ 它与 `spectatingId` 分工非常清楚，混用会立刻出错：
+   *   · `spectatingId` = **在看谁**（死亡观战与观战席共用，镜头只认它）
+   *   · `spectating`   = **我有没有身体**（决定预测/发不发 Input/HUD 画哪一面）
+   *   死亡观战的人是有身体的，所以那条路径上 `spectating` 恒为 false。
+   */
+  private spectating: boolean;
+  /** W24：观战席顶部提示条（「观战中 · 正在看 X · 按 V 切换视角」）*/
+  private readonly spectateBanner: HTMLElement;
+  /**
+   * 上一帧镜头看的位置。★ 只为观战席的一个真实边界：`you === NO_ENTITY`
+   * （全场阵亡/全部潜行）时**保持上一帧镜头**，而不是掉回原点。
+   */
+  private lastCameraTarget = { x: 0, y: 0, z: 0 };
+  /** W24：顶替人机后的「职业还没生效」提示只说一次（说两遍等于噪音）*/
+  private midJoinNoticeSaid = false;
+  /**
    * W6（技术债总账）：断线横幅与延迟指示。
    * 横幅纯轮询 `conn.connected` —— NetLink 窄接口本来就带它，
    * 大厅路径与 `?net=` 老路零 API 改动、同一份逻辑。
@@ -385,9 +431,16 @@ export class NetworkScene {
   ) {
     // G4：renderer/画质/环境/镜头/输入/resize 全在壳里（SceneShell 文件头）
     this.shell = new SceneShell(canvas);
-    this.selfView.setClass(opts.classId);
-
-    this.scene.add(this.selfView.group);
+    this.spectating = opts.spectating === true;
+    /**
+     * W24：观战席**不建自己的角色模型**（见 `NetworkSceneOptions.spectating`）。
+     * ★ 只是不进场，不是不构造 —— `selfView` 仍然是 `readonly` 字段，
+     *   中途加入是**换一个新场景**而不是给这个场景补一具身体。
+     */
+    if (!this.spectating) {
+      this.selfView.setClass(opts.classId);
+      this.scene.add(this.selfView.group);
+    }
     this.scene.add(this.targetRing.group, this.focusRing.group);
     /**
      * X14 阵营标记。★ **不受 `art` 门禁** —— 与目标环同一条理由：
@@ -488,7 +541,25 @@ export class NetworkScene {
      *   否则屏幕底部会同时出现两条（双条比没有更糟）。
      *   F 键与「点模型」是本轮才接通的两条（此前写进提示就是在撒谎）。
      */
-    this.shell.showHintBar(NET_HINT_TEXT);
+    this.shell.showHintBar(this.spectating ? SPECTATE_HINT_TEXT : NET_HINT_TEXT);
+
+    /**
+     * W24：观战席的顶部提示条。★ 与死亡遮罩**刻意不是同一个控件**：
+     *   遮罩说的是「你死了、接下来会发生什么」，这一条说的是「你没有身体，
+     *   现在在看谁」。共用一个控件就必须往里塞两套语义，而观战席永远
+     *   不该看到「你已阵亡」四个字。
+     * ★ 文案走 textContent（玩家名是不受信任输入），与遮罩同一条纪律。
+     */
+    this.spectateBanner = document.createElement('div');
+    this.spectateBanner.id = 'spectate-banner';
+    Object.assign(this.spectateBanner.style, {
+      position: 'absolute', left: '50%', top: '5%', transform: 'translate(-50%,0)',
+      padding: '8px 20px', borderRadius: '8px',
+      background: 'rgba(14,16,22,.78)', border: '1px solid rgba(154,212,143,.42)',
+      color: '#e7f1e4', font: '600 14px system-ui, sans-serif', textAlign: 'center',
+      pointerEvents: 'none', display: 'none', zIndex: '32', letterSpacing: '.04em',
+    } as Partial<CSSStyleDeclaration>);
+    (canvas.parentElement ?? document.body).appendChild(this.spectateBanner);
 
     // W6：延迟指示。小、常驻、不抢注意力 —— 有异常时颜色先说话
     this.rttLabel = document.createElement('div');
@@ -562,6 +633,12 @@ export class NetworkScene {
      * 槽位照旧）。10 格之后原本只能鼠标点的技能进了自定义池。
      */
     this.view.skillBarFor = (classId) => {
+      /**
+       * W24：观战席的 `you` 是**他正在看的人** —— 把那个人的职业记成
+       * `myClassId` 会让 F10 设置面板列出一份「他的技能栏」并允许改存档
+       * （改的还是别人职业的那一份）。如实返回空栏：技能栏本来就不画。
+       */
+      if (this.spectating) return [];
       this.myClassId = classId;
       return this.skillBarDefsFor(classId);
     };
@@ -609,6 +686,12 @@ export class NetworkScene {
     this.hud.onSkillClick = (slot) => { this.clickedSlot = slot; };
     // 点姓名板选人 → 发 SetTarget（服务器仍会校验可见集合）
     this.view.onSelect = (id) => {
+      /**
+       * W24：观战席**一条 `SetTarget` 都不发**。服务器的阶段白名单会拒
+       * （`SetTarget` 是验收 #5 的探测通道，观战席拿不到它），发上去只换来
+       * 一串拒绝刷屏 —— 而「按了没反应」正是本仓库最难查的一类。
+       */
+      if (this.spectating) return;
       this.currentTargetId = id;
       this.view.targetId = id;
       this.conn.send({ t: 'SetTarget', slot: 'hard', entityId: id });
@@ -812,6 +895,8 @@ export class NetworkScene {
       // W5：死亡遮罩与观战状态（verify:m13 的判据入口）
       deathOverlay: this.deathOverlay.style.display !== 'none',
       spectating: this.spectatingId,
+      // W24：观战席（无自身实体）——「技能栏该不该在」的端到端读数
+      spectatorSeat: this.spectating,
       // W6：断线横幅与指令往返延迟
       reconnecting: this.connBanner.style.display !== 'none',
       rttMs: this.rttMs === null ? null : Math.round(this.rttMs),
@@ -873,9 +958,24 @@ export class NetworkScene {
   private onMessage(msg: ServerMessage): void {
     switch (msg.t) {
       case 'MatchStart': {
-        this.selfId = msg.you;
         this.started = true;
         this.loadMap(msg.mapId as string);
+        /**
+         * ★★ W24：`spectating` 是「`you` 不是我，是我在看的人」那面旗子
+         *   （协议注释里的原话）。不读它的后果非常具体：观战者会对着**别人的
+         *   角色**建预测器、每 50ms 发一条 `Input` —— 服务器按阶段丢弃，
+         *   而画面上那个人会与快照打架（预测在推、权威在拉）。
+         * ★ 重连也走这条分支：观战者凭同一个令牌回来仍是观战席，
+         *   服务器重发的 MatchStart 照样带 `spectating`。
+         */
+        this.spectating = msg.spectating === true;
+        if (this.spectating) {
+          this.enterSpectatorSeat(msg.you);
+          this.interp.reset();
+          this.hydrator.reset();
+          break;
+        }
+        this.selfId = msg.you;
         /**
          * ★ 预测器在这里才建得出来 —— 它需要地图几何做碰撞。
          *   起点先用 (0,0,0)，第一份快照会把它纠正到权威位置；
@@ -946,6 +1046,23 @@ export class NetworkScene {
         this.lastDrops = hydrated.drops;
         this.lastArmories = msg.armories;
         this.lastMatch = msg.match;
+        /**
+         * ★★ W24 观战席：`you` **每份快照都可能变** —— 被跟随者死了或遁形了，
+         *   服务器会自动退回可跟随列表里的第一个（`spectatableForSpectator`，
+         *   按 id 序，确定性），一个可跟的都没有时发 `NO_ENTITY`（0 哨兵）。
+         *   所以客户端**不维护**一份自己的跟随记账：以快照为准 —— 与 A11
+         *   「复活这件事只有服务器说了算」同一条哲学，也省掉一条「服务器
+         *   已经换人了、客户端还盯着尸体」的窗口。
+         */
+        if (this.spectating) {
+          this.spectatingId =
+            (msg.you as number) === (NO_ENTITY as number) ? null : (msg.you as number);
+        }
+        /**
+         * ★ 观战席这一行照旧成立且**有用**：`you` 是被跟随者，于是脚下阵营
+         *   标记与小地图按「他那一队」上色 —— 转播视角本来就该是这样，
+         *   而这不多给任何信息（观战段是两队的交集，跟到谁都一样）。
+         */
         this.selfTeam = entities.find((e) => e.id === msg.you)?.team ?? this.selfTeam;
         /**
          * 5.1 焦点回读。★ 服务器是切换语义的唯一实现处，所以焦点**只从快照来**
@@ -954,6 +1071,8 @@ export class NetworkScene {
          */
         this.view.focusId = entities.find((e) => e.id === msg.you)?.focusId;
         this.view.ingest(hydrated, msg.time);
+        // W24：顶替人机之后那句「你选的职业还没生效」（判据要等自己那份快照）
+        this.noteMidJoinClass();
 
         const me = entities.find((e) => e.id === msg.you);
         if (me && this.predictor) {
@@ -1363,6 +1482,55 @@ export class NetworkScene {
     }
   }
 
+  /**
+   * W24 中途加入：**我选的职业这局到底生不生效**，如实说一次。
+   *
+   * ★★ 判据是「我请求的 classId」与**快照里我这具身体的 classId**（服务器
+   *   的 `EntityMeta.statics` 一路合过来的）之间的差 —— 不同 = 顶替了一个
+   *   人机、还在沿用它的职业。服务器在协议里**没有**「待生效职业」这个字段
+   *   （没有消费方之前不加字段），客户端知道自己请求了什么，所以够用。
+   * ★ 只说一次：拿到自己那一份快照就有答案了，每帧重复说等于噪音。
+   * ⚠️ 文案本体在 `midJoinClassNotice`（纯函数，可单测）—— 竞技场单回合制
+   *   那句必须与夺旗分开写，理由见那个函数的 ★★。
+   */
+  private noteMidJoinClass(): void {
+    if (this.midJoinNoticeSaid || this.spectating) return;
+    const want = this.opts.requestedClassId;
+    if (want === undefined || this.selfId === null) return;
+    const me = this.lastEntities.find((e) => e.id === this.selfId);
+    if (!me) return;
+    this.midJoinNoticeSaid = true;
+    const text = midJoinClassNotice(want, me.classId as string, this.map?.family);
+    if (text === null) return;
+    /**
+     * ★ 两处一起说：中部提示（此刻眼睛在那儿）+ 战斗日志（1.6 秒之后
+     *   还想再看一眼时唯一找得回来的地方）。与 `CastFailed` 同一条分工。
+     */
+    this.view.push(text, 'interrupt');
+    this.hud.showCenterNotice(text);
+  }
+
+  /**
+   * W24：切进**观战席**（无自身实体）的那一下。
+   *
+   * ★ 三件事，各自对应一条会出错的路径：
+   *   · `selfId = null` —— 全场「谁是我」的判断（记分板高亮、死亡回顾、
+   *     队伍框、最近敌人）从此一致地答「没有我」，而不是错答成被跟随者；
+   *   · 自己的模型退场 —— 它此刻是一具站在原点不动的胶囊（大厅一般会把
+   *     `spectating` 传进构造函数，这里是**消息为准**的第二道）；
+   *   · HUD 换观战面 + 底部键位提示换成观战席按得动的那几个键。
+   */
+  private enterSpectatorSeat(you: EntityId): void {
+    this.selfId = null;
+    this.predictor = undefined;
+    // ★ `you === NO_ENTITY`（0 哨兵）= 一个可跟的都没有 —— **不要**去查实体 0
+    this.spectatingId = (you as number) === (NO_ENTITY as number) ? null : (you as number);
+    this.scene.remove(this.selfView.group);
+    this.hud.setSpectating(true);
+    this.shell.showHintBar(SPECTATE_HINT_TEXT);
+    this.spectateBanner.style.display = '';
+  }
+
   private loadMap(mapId: string): void {
     if (this.mapRenderer) return;
     const map = MAP_BY_ID.get(mapId);
@@ -1390,6 +1558,8 @@ export class NetworkScene {
 
   private readInput(dt: number): void {
     const raw = this.input.sample(dt);
+    // W24：观战席没有身体 —— 走一条**白名单**式的短分支（见该函数的 ★★）
+    if (this.spectating) { this.readSpectateInput(raw); return; }
     /**
      * A11：**死后只留观察类按键**。
      *
@@ -1549,6 +1719,62 @@ export class NetworkScene {
     }
 
     this.applyArsenalInput(input);
+  }
+
+  /**
+   * W24 观战席这一帧能按什么。
+   *
+   * ★★ **白名单，不是「把几条 if 掉」** —— 与服务器 `Session` 那三张阶段
+   *   白名单同一条理由（那里的注释：用布尔的话，每加一条新按键都要有人
+   *   记得问一句「观战者能按吗」，而忘了问的后果是一条越权路径）。这里
+   *   的后果具体到画面：任何一条需要身体的消息发上去都会被阶段拒收，
+   *   而 `Rejected` 会进战斗日志 —— 20Hz 的拒绝刷屏。
+   * ★ 允许的四类：转镜头（纯本地）、V 换视角（`SpectateFollow`，观战席
+   *   与死亡观战共用的那一条）、看板（O 记分板 / F10 设置 / M 静音 /
+   *   F2 画质）、以及设置面板里的「离开对局」（`LeaveMatch` 任何阶段都合法）。
+   * ⚠️ **不发 `Input`** 也不建预测器 —— `simulate()` 那边还有第二道。
+   */
+  private readSpectateInput(input: FrameInput): void {
+    /**
+     * ★ 先把两个「留给瞄准流程消费」的标志位吃掉 —— 观战席根本没有瞄准流程，
+     *   不清的话它们会一直挂着 true（今天无害，但那是一个等着被读到的陈旧状态）。
+     */
+    this.clickFlags.left = false;
+    this.clickFlags.right = false;
+    this.clickedSlot = null;
+    // 镜头：拖动/滚轮/复位都是纯本地的，观战席照常可用
+    this.characterYaw += this.cam.applyInput({
+      wheel: input.wheel,
+      leftDrag: input.leftDrag,
+      rightDrag: input.rightDrag,
+      reset: input.cameraReset,
+    });
+    if (input.cameraReset) this.cam.resetBehind(this.characterYaw);
+    if (input.pressed.has(Action.CycleQuality)) {
+      this.shell.cycleQualityTier(this.sun, this.decorRenderer);
+    }
+    if (input.pressed.has(Action.OpenSettings)) this.settings.toggle();
+    if (input.pressed.has(Action.ToggleMute)) {
+      console.info(`[音频] ${audio.toggleMute() ? '已静音' : '已取消静音'}`);
+    }
+    if (input.pressed.has(Action.ToggleScoreboard)) this.hud.scoreboard.toggle();
+    // W13：BGM 照常跟着战况走 —— 观战也是在看一场比赛
+    if (this.started) {
+      this.musicDir ??= new MusicDirector(ambientTrackFor(this.map?.id as string | undefined));
+      this.musicDir.update(this.serverTime);
+    }
+    /**
+     * V 换视角。★ 本地只是猜「下一个是谁」（快照里没有 `isPet`，判不了），
+     *   权威在服务器的 `isLegalSpectateFollow`；猜错就是一条被拒的请求，
+     *   而**下一份快照的 `you` 会把真相带回来**（服务器自己会退回第一个）。
+     */
+    if (input.pressed.has(Action.SpectateNext)) {
+      const next = nextSpectateSeatTarget(
+        this.lastEntities.map((e) => ({ id: e.id as number, alive: e.alive })),
+        this.spectatingId,
+      );
+      if (next) this.conn.send({ t: 'SpectateFollow', entityId: next.id as EntityId });
+    }
   }
 
   /**
@@ -1903,6 +2129,12 @@ export class NetworkScene {
    */
   private simulate(_dt: number): void {
     const input = this.pendingInput;
+    /**
+     * W24：观战席**一条 `Input` 都不发**（协议注释里的硬要求）。
+     * ★ 显式判 `spectating` 而不是靠「没有预测器所以自然返回」——
+     *   后者是「碰巧无害」，而本仓库对这类默契的容忍度是零（A8 的教训）。
+     */
+    if (this.spectating) return;
     if (!input || !this.predictor || !this.started) return;
     /**
      * A11：**死后不再发指令帧**。
@@ -2016,6 +2248,14 @@ export class NetworkScene {
    * 有存活队友则提示 V 观战；夺旗显示波次倒计时（12.6，W12 接入）。
    */
   private renderDeathState(): void {
+    /**
+     * ★★ W24：观战席**必须先返回**，不能落进下面那段。
+     *   下面第一句就是「找不到自己 → 把 `spectatingId` 清零」（复活时的
+     *   正确行为），而观战席永远找不到自己 —— 落进去的话跟随目标每帧被
+     *   抹一次，镜头当场退回原点。观战席的顶部提示条走 `renderSpectateBanner`，
+     *   死亡遮罩对他从头到尾不出现（他没有可以阵亡的身体）。
+     */
+    if (this.spectating) { this.renderSpectateBanner(); return; }
     const me = this.lastEntities.find((e) => e.id === this.selfId);
     if (!me || me.alive) {
       if (this.deathOverlay.style.display !== 'none') this.deathOverlay.style.display = 'none';
@@ -2063,6 +2303,19 @@ export class NetworkScene {
   }
 
   /**
+   * W24：观战席顶部那一条。文案由纯函数给（`spectateBannerText`）——
+   * 「暂无可观战目标」那一态是协议里真实存在的一帧（`you === NO_ENTITY`），
+   * 不是异常分支。
+   */
+  private renderSpectateBanner(): void {
+    const name = this.spectatingId === null
+      ? undefined
+      : this.lastEntities.find((e) => (e.id as number) === this.spectatingId)?.name;
+    const text = spectateBannerText(name);
+    if (this.spectateBanner.textContent !== text) this.spectateBanner.textContent = text;
+  }
+
+  /**
    * W12：快照的旗帜数据 → 与试验场同构的 `FlagView[]`。
    * ★ `carrierName` 从快照实体反查 —— 12.3 禁止旗手潜行，所以旗手
    *   永远在快照里，查不到名字只可能是他刚离场（如实不带名）。
@@ -2100,13 +2353,24 @@ export class NetworkScene {
    *   启发式压掉一人两点的噪音（网格量化误差 ≤ ~4.3 米，阈值取 8）。
    */
   private renderMinimap(): void {
-    const me = this.lastEntities.find((e) => e.id === this.selfId);
+    /**
+     * ★ W24：小地图的**锚**是「镜头在谁身上」，不是「我是谁」——
+     *   观战席没有身体，锚落在被跟随者上（转播视角，与脚下阵营标记同源）。
+     *   `you === NO_ENTITY` 那一帧锚取不到，整张图这一帧不画（如实空白，
+     *   胜过按上一个人的位置继续画一张会撒谎的图）。
+     */
+    const anchorId = this.spectating ? this.spectatingId : (this.selfId as number | null);
+    const me = anchorId === null
+      ? undefined
+      : this.lastEntities.find((e) => (e.id as number) === anchorId);
     if (!me) return;
-    const pos = this.predictor?.position ?? me.position;
+    const pos = (this.spectating ? this.lastRemotePos.get(anchorId as number) : this.predictor?.position)
+      ?? me.position;
+    const yaw = this.spectating ? me.yaw : this.characterYaw;
     const blips: MinimapBlip[] = [
       { x: pos.x, z: pos.z, kind: 'self' },
       ...this.lastEntities
-        .filter((e) => e.id !== this.selfId)
+        .filter((e) => (e.id as number) !== anchorId)
         .map<MinimapBlip>((e) => ({
           x: e.position.x, z: e.position.z,
           kind: e.team === me.team ? 'ally' : 'enemy', team: e.team,
@@ -2143,7 +2407,7 @@ export class NetworkScene {
         blips.push({ x: f.position.x, z: f.position.z, kind: 'droppedFlag', team: f.team });
       }
     }
-    this.hud.minimap.draw(blips, pos.x, pos.z, this.characterYaw);
+    this.hud.minimap.draw(blips, pos.x, pos.z, yaw);
   }
 
   /**
@@ -2327,6 +2591,13 @@ export class NetworkScene {
   }
 
   private drawSelf(dt: number, realDt: number): void {
+    /**
+     * W24 观战席：没有身体可画，只推镜头。
+     * ★ 镜头目标由 `spectateCameraTarget()` 给 —— 与 11.4 死亡观战**同一个
+     *   函数**（G4 教训：两条平行实现迟早分叉，而分叉的那一半会静默地
+     *   多给一个自由度）。取不到目标（`you === NO_ENTITY`）时保持上一帧。
+     */
+    if (this.spectating) { this.updateCamera(dt, undefined, false); return; }
     if (!this.predictor) return;
     /**
      * ★ 渲染位置 = 预测位置 + 尚未消化完的纠正量。
@@ -2367,6 +2638,13 @@ export class NetworkScene {
     this.selfView.setLocomotionTimeScale(this.selfAnim.timeScale);
     this.selfView.setCasting(this.view.playerCast !== undefined);
     if (meSnap) {
+      /**
+       * ★★ W24 收口：**职业是会在局内变的** —— 中途加入顶替人机的人在下一次
+       *   复活换成他选的职业（服务器 `respecCombatant` + 静态块指纹补发）。
+       *   不跟这一句的话，自己的模型整局停在被顶替者那个职业上。
+       *   `setClass` 自己判「职业没变就一次都不多做」，所以这是每帧一次的比较。
+       */
+      this.selfView.setClass(meSnap.classId as string);
       this.syncWeapon(meSnap.id as number, this.selfView, meSnap.equipment?.currentWeaponId as string | undefined);
       // 8.2「迷惑」= 被变形（快照 auras 是权威，重连也不丢）
       // ★ 判据统一走 `isMorphedByAuraIds` —— 按单一 id 比会漏掉气旋囚笼（X29）
@@ -2380,22 +2658,59 @@ export class NetworkScene {
     }
     this.selfView.update(dt);
 
-    /**
-     * W5：死亡观战 —— 镜头改看被跟随的队友（位置取 `lastRemotePos`，
-     * 与他在屏幕上的模型同源、已插值）。11.4 的边界由数据来源保证：
-     * `spectatingId` 只可能指向快照里的己方存活者，「飞到任意坐标」写不出来。
-     */
-    const meDead = this.lastEntities.some((e) => e.id === this.selfId && !e.alive);
-    const spectPos = meDead && this.spectatingId !== null
-      ? this.lastRemotePos.get(this.spectatingId)
-      : undefined;
-    this.cam.update(
+    this.updateCamera(
       dt,
-      { position: spectPos ?? pos, yaw: this.characterYaw, grounded: s.grounded },
-      this.map?.geometry ?? [],
+      { position: pos, yaw: this.characterYaw, grounded: s.grounded },
       this.selfAnim.smoothedSpeed > 0.5,
     );
     this.selfView.setFirstPerson(this.cam.isFirstPerson);
+  }
+
+  /**
+   * 观战镜头看向哪里 —— **11.4 死亡观战与 W24 观战席共用的唯一实现**。
+   *
+   * ★★ 不分叉是有理由的，而且理由就是 11.4 本身：这个函数返回的永远是
+   *   「某个活人此刻在屏幕上的位置」，**签名里没有任何让调用方自选坐标的
+   *   余地**（与 `SpectateController.cameraTargetOf` 同一条纪律）。写第二份
+   *   的那一半迟早会先长出一个 `position` 参数，而那就是自由镜头 = 透视。
+   * ★ 位置取 `lastRemotePos`（插值后、与他在屏幕上的模型同源），不是快照
+   *   原始位置 —— 否则镜头以 10Hz 跳而人是平滑的。
+   * ★ 两条路径的**准入判据不同**，差别只有这一句：死亡观战要求「我死了」
+   *   （活人跟别人就是透视），观战席本来就没有身体。
+   */
+  private spectateCameraTarget(): { x: number; y: number; z: number } | undefined {
+    if (this.spectatingId === null) return undefined;
+    if (!this.spectating) {
+      const meDead = this.lastEntities.some((e) => e.id === this.selfId && !e.alive);
+      if (!meDead) return undefined;
+    }
+    return this.lastRemotePos.get(this.spectatingId);
+  }
+
+  /**
+   * 推镜头。`self` 为 undefined = 观战席（没有身体）。
+   * ★ 观战目标优先于自身位置 —— 死亡观战的语义原样，只是搬进了这一处。
+   * ★ 两者都取不到时**保持上一帧**：`you === NO_ENTITY`（全场阵亡/全部潜行）
+   *   那一帧如果掉回原点，画面会从战场瞬移到地图中心再瞬移回来。
+   */
+  private updateCamera(
+    dt: number,
+    self: { position: { x: number; y: number; z: number }; yaw: number; grounded: boolean }
+      | undefined,
+    moving: boolean,
+  ): void {
+    const position = this.spectateCameraTarget() ?? self?.position ?? this.lastCameraTarget;
+    this.lastCameraTarget = { x: position.x, y: position.y, z: position.z };
+    this.cam.update(
+      dt,
+      {
+        position,
+        yaw: self?.yaw ?? this.characterYaw,
+        grounded: self?.grounded ?? true,
+      },
+      this.map?.geometry ?? [],
+      moving,
+    );
   }
 
   private drawRemotes(dt: number, realDt: number): void {
@@ -2412,6 +2727,14 @@ export class NetworkScene {
         this.views.set(id, view);
         this.scene.add(view.group);
         this.anims.set(id, new AnimationController());
+      } else if (e.snapshot.classId) {
+        /**
+         * ★★ W24 收口：远端的**职业也会在局内变**（中途加入者下一次复活换职业，
+         *   服务器按静态块指纹把整块 statics 补发过来）。不跟这一句的话，
+         *   全场看到的仍然是被顶替人机那个职业的模型。
+         *   `setClass` 自判「职业没变就一次都不多做」，所以这是一次字符串比较。
+         */
+        view.setClass(e.snapshot.classId as string);
       }
 
       const prev = this.lastRemotePos.get(id);

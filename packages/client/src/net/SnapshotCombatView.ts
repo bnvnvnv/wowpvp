@@ -232,11 +232,26 @@ export class SnapshotCombatView implements CombatView {
 
     // 自己的职业决定技能栏
     const me = snapshot.entities.find((e) => e.id === snapshot.you);
-    if (me && this.skills.length === 0) {
+    /**
+     * ★★ 判据是「**职业变了**」而不是只有「栏是空的」（W24 收口）。
+     *   中途加入顶替人机的人会在下一次复活换成他选的职业（服务器的
+     *   `respecCombatant` 已经把 `classId` / `availableSkills` / 装备栏全换了），
+     *   只认「栏空」的话技能栏整局停在**被顶替者**的职业上 —— 玩家按每一个
+     *   键都换来一条 CastFailed，而快照里的血量资源都是对的，没有任何一层会报错。
+     * ★ 「栏是空的」那一条**保留**：同职业顶替（旧 classId === 新 classId，
+     *   例如观战期看的就是战士、坐上去也是战士）在只判「变了」时会一格都不发。
+     * ★ 自定义技能栏（F10 的 `setSkillBar`）不受影响：那不改 `lastSelfClassId`，
+     *   所以不会被下一帧覆盖回默认九格。
+     */
+    if (me && (this.skills.length === 0 || me.classId !== this.lastSelfClassId)) {
+      this.lastSelfClassId = me.classId as string;
       this.skills = this.skillBarFor?.(me.classId as string)
         ?? getClass(me.classId)?.skills ?? [];
     }
   }
+
+  /** 上一次据以算技能栏的职业 —— 换职业要重算，见 `ingest` 的 ★★ */
+  private lastSelfClassId: string | undefined;
 
   /** P3c：设置面板改完技能栏立即生效（下一帧 HUD 重渲染自然拿到新栏）*/
   setSkillBar(defs: readonly SkillDef[]): void {

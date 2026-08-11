@@ -214,15 +214,30 @@ export class CharacterView {
   }
 
   /**
-   * 请求挂载职业模型。幂等：只有第一次调用生效。
-   * 构造时职业未知的调用方（联网场景的字段初始化）可以事后再补。
+   * 请求挂载职业模型。构造时职业未知的调用方（联网场景的字段初始化）可以事后再补。
+   *
+   * ★★ **幂等的判据是「职业没变」，不是「已经调过一次」**（W24 收口）。
+   *   此前是首调生效 —— 而 W24 的换职业（中途加入者顶替人机后下一次复活
+   *   换成他选的那个）是一次**局内**的 classId 变化：服务器把
+   *   `classId`/`availableSkills`/装备全换了，画面上却还是被顶替者那个职业的
+   *   模型（自己和全场都是）。「跨局复用场景会让换职业悄悄失效」那条老注释
+   *   （LobbyShell 文件头）说的正是这个坑，只是当年只在跨局那一侧关上了。
+   * ★ 重复调同一个职业仍然一次都不多做（`classId === this.classId` 直接返回），
+   *   所以老路径（构造时一次）行为逐字不变。
    */
   setClass(classId: string): void {
-    if (this.modelRequested) return;
-    this.modelRequested = true;
-    void this.attachModel(classId);
+    if (classId === this.classId) return;
+    this.classId = classId;
+    void this.attachModel(classId, ++this.classSeq);
   }
-  private modelRequested = false;
+  /** 当前（已请求的）职业 id —— 换职业的判据，见 `setClass` */
+  private classId: string | undefined;
+  /**
+   * 换职业序号：模型是异步加载的，两次 `setClass` 叠在一起时**只有最后一次
+   * 算数**（与 `weaponSeq` 同一条规矩）。没有它的话先发的那个模型会后到，
+   * 于是玩家看到的是他上一个职业。
+   */
+  private classSeq = 0;
 
   /** 场景移除该视图时调用，取消在途的异步挂载 */
   dispose(): void {
@@ -255,11 +270,38 @@ export class CharacterView {
     return this.model !== undefined;
   }
 
-  private async attachModel(classId: string): Promise<void> {
+  private async attachModel(classId: string, seq: number): Promise<void> {
     const lib = ModelLibrary.instance;
     if (!lib) return;
     const m = await lib.characterFor(classId);
-    if (!m || this.disposed) return;
+    if (!m || this.disposed || seq !== this.classSeq) return;
+
+    /**
+     * ★★ 换职业：把**上一具**模型连同挂在它身上的东西一起摘干净。
+     *   一条都不能漏，而漏了的表现全是「不报错的怪」：
+     *     · `model.root` 不摘 → 两个职业的身体叠在同一个坐标上；
+     *     · `weaponNodes` 不摘 → 武器挂在已经离场的旧手骨上（浮在原地）；
+     *     · `actions` 不清 → 里面存的是**旧 mixer** 造的动作，新 mixer 推不动它们，
+     *       角色从此定格在 T-pose（`applyClip` 的去重键还会认为「没变」）；
+     *     · `castUpper` 不清 → 上半身叠加层同上，且会被 `syncCastLayer` 继续调权重；
+     *     · 侧闪/摇头的基准（`dodgeElapsed` / `wobbleBodyBase`）不清 → 新根节点被
+     *       按旧基准回位，位置和旋转会跳一下。
+     *   ★ 首次挂载（`this.model === undefined`）这一段整个空转，老路径逐字不变。
+     */
+    if (this.model) {
+      for (const n of this.weaponNodes) n.removeFromParent();
+      this.weaponNodes = [];
+      this.model.root.removeFromParent();
+      this.mixer?.stopAllAction();
+      this.actions.clear();
+      this.castUpper = undefined;
+      this.dodgeElapsed = undefined;
+      this.wobbleBodyBase = undefined;
+      this.wobbleApplied = false;
+      this.headBone = undefined;
+      // 手里那把武器要重新挂到新模型的手骨上 —— 挂载末尾的 pending 分支会做
+      this.pendingWeaponId = this.weaponId;
+    }
 
     this.model = m;
     for (const part of this.capsuleParts) this.group.remove(part);
@@ -297,6 +339,9 @@ export class CharacterView {
     const headBones: THREE.Object3D[] = [];
     m.root.traverse((o) => { if ((o as THREE.Bone).isBone) headBones.push(o); });
     this.headBone = findHeadBone(headBones);
+    // ★ 变形显隐与第一人称共用 `model.root.visible` —— 换模型之后统一裁决一次
+    //   （首次挂载时它与上面那句 `m.root.visible = !this.firstPerson` 等价，空转）
+    this.applyMorphVisibility();
     this.applyClip();
 
     if (this.pendingWeaponId !== undefined) {

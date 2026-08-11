@@ -255,3 +255,88 @@ describe('★★ 施法：起手与释放接活', () => {
     expect(priv.castLayerOn, '尸体保持着施法姿势').toBe(false);
   });
 });
+
+/**
+ * W24 收口：**换职业要换模型**。
+ *
+ * ★★ `setClass` 此前是「幂等首调生效」（`if (this.modelRequested) return`），
+ *   而 W24 引入了一次**局内**的职业变化：中途加入顶替人机的人在下一次
+ *   复活换成他选的职业。服务器把 statics 整块补发了，画面上却还是被顶替者
+ *   那个职业的模型 —— 自己和全场都是。判据因此改成「职业没变才不做」。
+ */
+describe('★★ 局内换职业：模型跟着换', () => {
+  /** 每个职业一份**不同的** root，好断言「换的是哪一具身体」 */
+  const mountSwitchable = async (): Promise<{
+    view: CharacterView;
+    rootOf: Map<string, THREE.Group>;
+    handOf: Map<string, THREE.Object3D>;
+    asked: string[];
+  }> => {
+    const rootOf = new Map<string, THREE.Group>();
+    const handOf = new Map<string, THREE.Object3D>();
+    const asked: string[] = [];
+    vi.spyOn(ModelLibrary, 'instance', 'get').mockReturnValue({
+      characterFor: (classId: string) => {
+        asked.push(classId);
+        const root = makeRig();
+        const hand = new THREE.Object3D();
+        root.add(hand);
+        rootOf.set(classId, root);
+        handOf.set(classId, hand);
+        return Promise.resolve({
+          root, clips: FULL_CLIPS(), handR: hand, handL: undefined,
+        } as CharacterModel);
+      },
+      weaponFor: () => Promise.resolve({ right: new THREE.Object3D() }),
+      creatureFor: () => Promise.resolve(null),
+    } as unknown as ModelLibrary);
+    const view = new CharacterView('warrior');
+    await vi.waitFor(() => expect(view.hasModel).toBe(true));
+    return { view, rootOf, handOf, asked };
+  };
+
+  it('★★ setClass 换一个职业 → 旧模型离场、新模型进场（同一个视图）', async () => {
+    const { view, rootOf, asked } = await mountSwitchable();
+    const oldRoot = rootOf.get('warrior')!;
+    expect(view.group.children).toContain(oldRoot);
+
+    view.setClass('priest');
+    await vi.waitFor(() => expect(rootOf.has('priest')).toBe(true));
+    const newRoot = rootOf.get('priest')!;
+    await vi.waitFor(() => expect(view.group.children).toContain(newRoot));
+
+    expect(view.group.children, '旧职业的身体还留在场上（两具叠在一个坐标）')
+      .not.toContain(oldRoot);
+    expect(asked).toEqual(['warrior', 'priest']);
+  });
+
+  it('★ 同一个职业再调一次：一次都不多做（老路径逐字不变）', async () => {
+    const { view, asked } = await mountSwitchable();
+    view.setClass('warrior');
+    view.setClass('warrior');
+    expect(asked).toEqual(['warrior']);
+  });
+
+  it('★★ 换完职业动画还播得动（新 mixer 造的动作，不是旧表里的死引用）', async () => {
+    const { view, rootOf } = await mountSwitchable();
+    view.setClass('priest');
+    await vi.waitFor(() => expect(rootOf.has('priest')).toBe(true));
+    await vi.waitFor(() => expect(view.group.children).toContain(rootOf.get('priest')!));
+
+    clipSpy.mockClear();
+    view.setAnimState(AnimState.Run);
+    expect(playedClips(), '换完职业之后角色定格在 T-pose').toContain('Running_A');
+  });
+
+  it('★★ 手里的武器重新挂到新模型的手骨上（不留在离场的旧手上）', async () => {
+    const { view, rootOf, handOf } = await mountSwitchable();
+    view.setWeapon('warrior.greatsword');
+    await vi.waitFor(() => expect(handOf.get('warrior')!.children.length).toBe(1));
+
+    view.setClass('priest');
+    await vi.waitFor(() => expect(rootOf.has('priest')).toBe(true));
+    await vi.waitFor(() => expect(handOf.get('priest')!.children.length).toBe(1));
+    expect(handOf.get('warrior')!.children, '武器还挂在旧职业那只已经离场的手上')
+      .toHaveLength(0);
+  });
+});

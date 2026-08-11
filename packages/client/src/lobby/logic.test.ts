@@ -19,6 +19,7 @@ import {
   mapOptionsFor,
   normalizeRoomCode,
   readyBlocker,
+  roomRowActions,
   sanitizeName,
   shareLink,
   showMapRow,
@@ -193,5 +194,40 @@ describe('P5 选图行（mapOptionsFor / showMapRow）', () => {
       const mode = `arena${n}v${n}` as GameMode;
       expect(showMapRow(mode), `${n}v${n} 只有一张图可选`).toBe(true);
     }
+  });
+});
+
+/**
+ * W24：房间列表上的进行中房间。
+ *
+ * ★★ 这一组盯的是**一个具体的退化**：判据一旦从 `joinableSeats` 换回
+ *   「capacity - players」，中途加入的按钮就会在所有开局的房间上消失
+ *   （开局后队伍被人机补满，差值恒 0），而界面上只会少一颗按钮 ——
+ *   不会有任何东西报错。
+ */
+describe('W24 房间列表：进行中的房间也进得去', () => {
+  it('未开局的房间照旧只有一颗「加入」（老行为逐字不变）', () => {
+    expect(roomRowActions({ started: false, joinableSeats: 3 }))
+      .toEqual({ spectate: false, join: true, joinLabel: '加入' });
+    // ⚠️ 未开局时 joinableSeats 为 0（满员）也仍然给加入键：能不能进由服务器判
+    expect(roomRowActions({ started: false, joinableSeats: 0 }).join).toBe(true);
+  });
+
+  it('★★ 已开局 + 有可坐的席位 → 观战与加入两颗都有，且把数目说出来', () => {
+    const a = roomRowActions({ started: true, joinableSeats: 5 });
+    expect(a.spectate).toBe(true);
+    expect(a.join).toBe(true);
+    expect(a.joinLabel).toContain('5');
+  });
+
+  it('★★ 已开局 + 一个席位都没有 → 仍然可以观战（观战不占战斗席）', () => {
+    const a = roomRowActions({ started: true, joinableSeats: 0 });
+    expect(a.spectate).toBe(true);
+    expect(a.join).toBe(false);
+  });
+
+  it('★★ 判据是 joinableSeats 本身 —— 满员的进行中房间也可能坐得下（人机席位）', () => {
+    // 12/12 人「满员」但有 4 个人机席位可顶：差值口径会画成「不可加入」
+    expect(roomRowActions({ started: true, joinableSeats: 4 }).join).toBe(true);
   });
 });

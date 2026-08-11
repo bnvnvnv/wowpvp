@@ -46,6 +46,29 @@ export const nextSpectateTarget = <T extends { id: number; team: TeamId; alive: 
   return list[(i + 1) % list.length];
 };
 
+/**
+ * W24 **观战席**的轮换（与上面那条刻意不是同一个判据）。
+ *
+ * ★★ 差别只有一处，但那一处是整条规则的理由：观战席**没有「己方」**。
+ *   死亡观战的同队约束是因为跟随者是场上一名选手，跟到敌人身上就是透视；
+ *   观战席跟谁都不会因此多看见一个人 —— 服务器发给他的实体段永远是那一份
+ *   两队交集（`isVisibleToSpectator`），跟随对象只决定镜头看谁。
+ *   所以这里的过滤只剩「活着」。
+ *
+ * ★ 与死亡观战同一条哲学：本地只是「按 V 换下一个」的猜测，合法性由服务器
+ *   的 `isLegalSpectateFollow` 复核（那里还多一条 `!isPet`，而 `isPet`
+ *   **不在快照里**，客户端结构上判不了）。猜错的代价是一条被拒的请求。
+ */
+export const nextSpectateSeatTarget = <T extends { id: number; alive: boolean }>(
+  entities: readonly T[],
+  currentId: number | null,
+): T | undefined => {
+  const list = entities.filter((e) => e.alive);
+  if (list.length === 0) return undefined;
+  const i = list.findIndex((e) => e.id === currentId);
+  return list[(i + 1) % list.length];
+};
+
 export interface SpectateTarget {
   id: number;
   name: string;

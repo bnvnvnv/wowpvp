@@ -94,6 +94,20 @@ console.log('\n── 规格书 8.2 / 验收 #23：控制递减 ──');
 {
   await backAwayFromWarrior();
 
+  /**
+   * ★★ 先换魔杖法球（B 键，一次），不是仪式是**算术**（2026-08-11，G6 预言应验）：
+   *   递减窗 = 上次时长 + 15s（从施加起算，dr.ts），而化形链的施加间隔 =
+   *   冷却 15 + 读条 + 弹道飞行。持法杖（castSpeed 1.1，W26 起生效）读条
+   *   1.65s，间隔 ≈ 16.84s 对上第二层的窗 2+15=17s —— 余量 0.16s，
+   *   SwiftShader 的轮询抖动决定红绿（实测红出 4→2→4→2）。魔杖 castSpeed
+   *   0.88 → 读条 1.32s → 余量 0.5s。这不是绕过：换装本身是 10.7 的真实
+   *   玩法动作，法师玩家维持递减链也得这么干 —— castSpeed 让化形链变紧
+   *   是 W26 的真实玩法后果。wand_orb 只移除近战技（elemental_slash），
+   *   固定 9 格不重排，Digit4/Digit8 的格位不动。
+   */
+  await page.keyboard.press('KeyB');
+  await page.waitForTimeout(3600); // 10.7 换装 3 秒读条 + 余量
+
   const durations = [];
   const immuneSeen = [];
   for (let i = 0; i < 4; i++) {
