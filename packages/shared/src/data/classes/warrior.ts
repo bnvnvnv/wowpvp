@@ -177,6 +177,8 @@ const skills: SkillDef[] = [
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
+    // 5.6：治疗/驱散/保护支持鼠标指向施法（W19）
+    allowMouseover: true,
     range: { min: 0, max: 20 },
     shape: { kind: 'single' },
     cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },

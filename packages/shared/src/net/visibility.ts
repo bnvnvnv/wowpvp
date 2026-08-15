@@ -419,6 +419,8 @@ export interface EntitySnapshot {
  *   · `selfMovement` —— docs/08 §5 第 6 步重放的全部积分状态。没有它，
  *     预测从「正确位置 + 错误速度」出发，每次对账都差一点点
  *   · `focusId` —— 5.1 焦点回读，且只在焦点对自己可见时有（P10）
+ *   · `hardTargetId` —— W20 硬目标回读，同一条可见性纪律。此前硬目标只有
+ *     客户端乐观记账：服务器拒绝/目标失效后 HUD 一直显示旧选中
  *   · `pickableDropIds` —— 10.2 可拾取性按接收者算（sim 的 dropViewFor），
  *     共享段的 drops 只带物品事实，「我能不能捡」在这里
  *
@@ -429,6 +431,7 @@ export interface SelfStateSnapshot {
   cooldowns: Readonly<Record<string, number>>;
   gcdUntil?: number;
   focusId?: EntityId;
+  hardTargetId?: EntityId;
   selfMovement?: SelfMovementSnapshot;
   /** 只在有临时武装的对局里有意义；无掉落时省略 */
   pickableDropIds?: readonly number[];
@@ -473,6 +476,8 @@ export interface HydratedEntitySnapshot {
   selfMovement?: SelfMovementSnapshot;
   cooldowns?: Readonly<Record<string, number>>;
   focusId?: EntityId;
+  /** W20：服务器权威的硬目标（self 段合回，仅 you；不可见时缺席） */
+  hardTargetId?: EntityId;
   gcdUntil?: number;
   /**
    * 装备（来自 `EntityLoadouts` 通道的缓存）。队友是完整视图，敌人是
@@ -955,6 +960,16 @@ export const buildSelfState = (deps: SnapshotDeps, viewer: CombatEntity): SelfSt
     ? deps.world.entities.get(viewer.targets.focus)
     : undefined;
   if (focus && isVisibleTo(focus, viewer, ctx)) self.focusId = focus.id;
+
+  /**
+   * W20：硬目标回读 —— 与焦点同一条纪律：只发**对自己可见**的（验收 #5，
+   * 潜行遁走 = 字段消失，客户端不需要一条「清目标」逻辑）。服务器由此成为
+   * 硬目标显示的唯一权威：拒绝、失效、离场都在下一份快照自然收口。
+   */
+  const hard = viewer.targets.hard !== undefined
+    ? deps.world.entities.get(viewer.targets.hard)
+    : undefined;
+  if (hard && isVisibleTo(hard, viewer, ctx)) self.hardTargetId = hard.id;
 
   // docs/08 §5 第 6 步：只有自己需要重放，所以也只有自己带完整移动状态
   const m = deps.movement?.get(viewer.id);

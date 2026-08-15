@@ -847,6 +847,7 @@ export class TestbedScene {
      */
     if (this.input.pointerLocked) {
       this.canvas.classList.remove('cursor-attack', 'cursor-friendly');
+      this.combat.setMouseover(undefined); // W19：锁定期「指着谁」不存在
       return;
     }
     this.shell.ndcFromMouse(ev, this.ndc);
@@ -862,20 +863,30 @@ export class TestbedScene {
    *   24 个角色组做 raycast 是白扔掉的帧。
    */
   private updateHoverCursor(): void {
-    if (this.aim.isAiming) return; // 瞄准期间光标语义由地面指示器承担
+    if (this.aim.isAiming) {
+      this.combat.setMouseover(undefined); // 瞄准期间光标语义由地面指示器承担
+      return;
+    }
     const ray = new THREE.Raycaster();
     ray.setFromCamera(this.ndc, this.cam.camera);
+    let hoveredId: number | undefined;
     let hoveredTeam: number | undefined;
     let best = Infinity;
     for (const [id, view] of this.dummyViews) {
       const hits = ray.intersectObject(view.group, true);
       if (hits.length && hits[0]!.distance < best) {
         best = hits[0]!.distance;
+        hoveredId = id;
         hoveredTeam = this.combat.allEntities().find((e) => (e.id as number) === id)?.team as
           | number
           | undefined;
       }
     }
+    /**
+     * W19：悬停即 mouseover 目标（5.6）。与光标换形读的是**同一次** raycast ——
+     * 「光标已经变成盾了、mouseover 却另有其人」这类分叉在结构上不存在。
+     */
+    this.combat.setMouseover(hoveredId);
     const cls = this.canvas.classList;
     const mine = this.combat.player.team as number;
     cls.toggle('cursor-attack', hoveredTeam !== undefined && hoveredTeam !== mine);

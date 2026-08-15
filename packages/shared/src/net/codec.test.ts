@@ -71,11 +71,15 @@ describe('★ 服务器消息编解码往返', () => {
    * 且只在成立时发）—— 与 crit/overkill 属于同一类，所以进同一张回归网：
    * 换二进制编码时最容易被漏掉的正是「不总是出现」的那几个。
    */
-  it('★ P10/波3：self 段的 focusId/gcdUntil 往返无损', () => {
+  it('★ P10/波3：self 段的 focusId/gcdUntil/hardTargetId 往返无损', () => {
     const msg: ServerMessage = {
       t: 'Snapshot', tick: 3, time: 0.15, ackSeq: 7, you: asEntityId(1),
-      // P11 波3：这两个字段住在每人的 self 段（实体段是全队共享的）
-      self: { cooldowns: { 'mage.blink': 5 }, focusId: asEntityId(2), gcdUntil: 1.25 },
+      // P11 波3：这些字段住在每人的 self 段（实体段是全队共享的）；
+      // hardTargetId 是 W20 的硬目标回读，同属「条件展开」家族
+      self: {
+        cooldowns: { 'mage.blink': 5 },
+        focusId: asEntityId(2), gcdUntil: 1.25, hardTargetId: asEntityId(2),
+      },
       entities: [selfEntity],
       projectiles: [], grounds: [], drops: [], armories: [],
       match: { dampening: 0, suddenDeath: false },
@@ -83,7 +87,7 @@ describe('★ 服务器消息编解码往返', () => {
     expect(decodeServerMessage(encodeServerMessage(msg))).toEqual(msg);
   });
 
-  it('★ P10：没有焦点 / 不在 GCD 时两个字段不会凭空出现', () => {
+  it('★ P10：没有焦点 / 不在 GCD / 没有硬目标时字段不会凭空出现', () => {
     const msg: ServerMessage = {
       t: 'Snapshot', tick: 3, time: 0.15, ackSeq: 7, you: asEntityId(1),
       entities: [selfEntity],
@@ -94,6 +98,7 @@ describe('★ 服务器消息编解码往返', () => {
     expect(back).toEqual(msg);
     expect(JSON.stringify(back)).not.toContain('focusId');
     expect(JSON.stringify(back)).not.toContain('gcdUntil');
+    expect(JSON.stringify(back)).not.toContain('hardTargetId');
   });
 
   it("★ 入站校验不受影响：客户端消息里塞 'crit' 仍被丢弃", () => {

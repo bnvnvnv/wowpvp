@@ -359,6 +359,25 @@ describe('docs/08 §4.3 冷却与资源', () => {
     // 与潜行裁剪同一条标准：id 连字节都不出现
     expect(JSON.stringify(self)).not.toContain(`"focusId"`);
   });
+
+  it('★ W20：硬目标回读给自己（服务器成为选中显示的唯一权威）', () => {
+    me.targets.hard = foe.id;
+    expect(buildSelfState(deps(), me).hardTargetId).toBe(foe.id);
+    // 别人的硬目标不进共享段 —— 集火意图泄露，与焦点同理
+    mate.targets.hard = foe.id;
+    expect(JSON.stringify(buildSnapshot(deps(), me))).not.toContain('hardTargetId');
+  });
+
+  /** ★★ 验收 #5 在硬目标通道上的复述（与焦点同一条纪律） */
+  it('★★ W20：硬目标潜行后不再回读（看不见的目标等于没有目标）', () => {
+    me.targets.hard = sneak.id;
+    expect(buildSelfState(deps(), me).hardTargetId).toBe(sneak.id);
+
+    sneak.flags.stealthed = true;
+    const self = buildSelfState(deps(), me);
+    expect(self.hardTargetId).toBeUndefined();
+    expect(JSON.stringify(self)).not.toContain(`"hardTargetId"`);
+  });
 });
 
 // ════════════════════════════════════════════════════════════════

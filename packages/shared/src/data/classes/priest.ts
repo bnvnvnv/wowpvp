@@ -64,6 +64,8 @@ const skills: SkillDef[] = [
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
+    // 5.6：治疗/驱散/保护支持鼠标指向施法（W19）
+    allowMouseover: true,
     range: { min: 0, max: RANGE.RANGED },
     shape: { kind: 'single' },
     // 9.7：1.1 秒神圣读条，原地施放
@@ -84,6 +86,8 @@ const skills: SkillDef[] = [
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
+    // 5.6：治疗/驱散/保护支持鼠标指向施法（W19）
+    allowMouseover: true,
     range: { min: 0, max: RANGE.RANGED },
     shape: { kind: 'single' },
     cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
@@ -120,6 +124,8 @@ const skills: SkillDef[] = [
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
+    // 5.6：治疗/驱散/保护支持鼠标指向施法（W19）
+    allowMouseover: true,
     range: { min: 0, max: RANGE.RANGED },
     shape: { kind: 'single' },
     cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
@@ -158,6 +164,9 @@ const skills: SkillDef[] = [
     // sim 层按所选目标的阵营只执行其中一条，另一条直接跳过。
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Any,
+    // 5.6：驱散支持鼠标指向施法（W19）。悬停敌人=偷增益、悬停队友=去负面，
+    // 阵营分支照旧由 dispel 效果的 from 决定 —— mouseover 只是换了「目标从哪来」
+    allowMouseover: true,
     range: { min: 0, max: RANGE.RANGED },
     shape: { kind: 'single' },
     cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
@@ -227,6 +236,8 @@ const skills: SkillDef[] = [
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
+    // 5.6：治疗/驱散/保护支持鼠标指向施法（W19）
+    allowMouseover: true,
     range: { min: 0, max: RANGE.MEDIUM },
     shape: { kind: 'single' },
     cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },
@@ -256,6 +267,8 @@ const skills: SkillDef[] = [
     classId: CLASS_ID,
     targeting: Targeting.Direct,
     targetFilter: TargetFilter.Ally,
+    // 5.6：治疗/驱散/保护支持鼠标指向施法（W19）
+    allowMouseover: true,
     range: { min: 0, max: RANGE.RANGED },
     shape: { kind: 'single' },
     cast: { kind: CastKind.Instant, time: 0, movable: true, interruptible: false },

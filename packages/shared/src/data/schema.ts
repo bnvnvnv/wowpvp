@@ -440,6 +440,13 @@ export interface SkillDef {
   targeting: Targeting;
   /** 允许作用的阵营 */
   targetFilter: TargetFilter;
+  /**
+   * 5.6：支持鼠标指向施法（治疗/驱散/保护 —— 悬停即目标，不动硬目标）。
+   * 只对 `Targeting.Direct` 有意义（地面/自身/无目标技能不走目标解析）。
+   * 解析优先级在 `sim/targeting.resolveSkillTarget`：mouseover → 硬目标 → 自我。
+   * W19 之前这个能力只存在于规格书里 —— `allowMouseover` 生产代码零调用。
+   */
+  allowMouseover?: boolean;
   /** 距离，米。近战技能填武器触及距离 */
   range: { min: number; max: number };
   /** 形状（6.3）*/

@@ -115,6 +115,7 @@ export class SnapshotHydrator {
         ...(isYou && self ? { cooldowns: self.cooldowns } : {}),
         ...(isYou && self?.gcdUntil !== undefined ? { gcdUntil: self.gcdUntil } : {}),
         ...(isYou && self?.focusId !== undefined ? { focusId: self.focusId } : {}),
+        ...(isYou && self?.hardTargetId !== undefined ? { hardTargetId: self.hardTargetId } : {}),
         ...(isYou && self?.selfMovement ? { selfMovement: self.selfMovement } : {}),
         ...(() => {
           const eq = this.loadouts.get(e.id);

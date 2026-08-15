@@ -465,6 +465,15 @@ export class CombatDirector {
     this.player.flags = deriveStatusFlags(this.auras, this.player);
   }
 
+  /**
+   * W19：场景把「此刻悬停在谁身上」喂进来 —— 5.6 鼠标指向施法的数据源。
+   * `targets.mouseover`「仅当前帧有效」的语义由场景维护：每次 mousemove
+   * 重算（含悬空 = undefined），瞄准/指针锁定分支清空。
+   */
+  setMouseover(id: number | undefined): void {
+    this.player.targets.mouseover = id as EntityId | undefined;
+  }
+
   // ── 每 tick ─────────────────────────────────────────────────
 
   update(dt: number, playerPosition: Vec3, playerYaw: number): void {
@@ -1284,7 +1293,10 @@ export class CombatDirector {
       return;
     }
 
-    const resolved = resolveSkillTarget(this.world, this.player, skill.targetFilter);
+    // W19：技能声明了 mouseover 支持时，悬停目标优先于硬目标（5.6 的顺位）
+    const resolved = resolveSkillTarget(this.world, this.player, skill.targetFilter, {
+      allowMouseover: skill.allowMouseover === true,
+    });
     const target = resolved.ok ? resolved.target : undefined;
 
     // 打断类技能要特殊处理：它不是「对目标施法」，而是「结算一次打断」
@@ -1441,7 +1453,10 @@ export class CombatDirector {
         // 否则技能栏会一直显示「需要目标」，那是错的（15.2 要求提示准确）。
         groundPoint = this.player.position;
       } else if (!usesNoTarget(skill)) {
-        const resolved = resolveSkillTarget(this.world, this.player, skill.targetFilter);
+        // W19：技能栏的可用性判定与真实施法同一套目标解析（含 mouseover 顺位）
+        const resolved = resolveSkillTarget(this.world, this.player, skill.targetFilter, {
+          allowMouseover: skill.allowMouseover === true,
+        });
         target = resolved.ok ? resolved.target : undefined;
       }
       const ctx = hudCastContext(this.world, this.player, skill, target, groundPoint);

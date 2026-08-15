@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { Targeting, TargetFilter } from '../types/enums.js';
 import {
   ALL_CLASSES,
   ALL_SKILLS,
@@ -209,5 +210,41 @@ describe('BOSS 狂暴 — 文案与 modifiers 不许各说各话', () => {
     ).toBeCloseTo(1 / (1 + speedUp), 10);
     // 方向兜底：狂暴必须让间隔变短，接反了上面那条也可能凑巧通过
     expect(BOSS_ENRAGE_AURA.modifiers?.attackSpeed).toBeLessThan(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * W19 —— 5.6 鼠标指向施法的数据标注。
+ * 修复前 `allowMouseover` 生产代码零调用：规格书写明的能力在游戏里不存在。
+ * 这两条钉住「往后新加的治疗/保护不许忘了标」。
+ */
+describe('W19 — 5.6 鼠标指向施法（allowMouseover）', () => {
+  it('★ 直接目标的友方技能（治疗/保护）全部支持鼠标指向', () => {
+    const directAlly = ALL_SKILLS.filter(
+      (s) => s.targeting === Targeting.Direct && s.targetFilter === TargetFilter.Ally,
+    );
+    expect(directAlly.length).toBeGreaterThan(0);
+    for (const s of directAlly) {
+      expect(
+        s.allowMouseover,
+        `${s.id}（${s.name}）是直接目标的友方技能，5.6 要求支持鼠标指向施法`,
+      ).toBe(true);
+    }
+  });
+
+  it('★ 净化术（驱散，Any）在册；非直接目标技能不带此标注', () => {
+    expect(
+      ALL_SKILLS.find((s) => (s.id as string) === 'priest.dispel_magic')?.allowMouseover,
+    ).toBe(true);
+    for (const s of ALL_SKILLS) {
+      if (s.targeting !== Targeting.Direct) {
+        expect(
+          s.allowMouseover,
+          `${s.id} 不是直接目标技能，目标解析读不到 allowMouseover —— 标了等于谎话`,
+        ).toBeUndefined();
+      }
+    }
   });
 });

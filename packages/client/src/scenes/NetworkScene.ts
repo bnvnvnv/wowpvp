@@ -93,6 +93,7 @@ import { Interpolator } from '../net/Interpolator.js';
 import { SnapshotHydrator } from '../net/SnapshotHydrator.js';
 import { Predictor } from '../net/Predictor.js';
 import { pickTabTargetFromSnapshot } from '../net/snapshotTargeting.js';
+import { reconcileHardTarget, type PendingHardTarget } from '../net/hardTarget.js';
 import { CombatHud } from '../hud/CombatHud.js';
 import { partyViewFromSnapshot } from '../hud/PartyFrame.js';
 import type { MinimapBlip } from '../hud/ModeHud.js';
@@ -413,6 +414,13 @@ export class NetworkScene {
   private readonly directionIndicator = new DirectionIndicator();
   private readonly ndc = new THREE.Vector2();
   private clickFlags = { left: false, right: false };
+  /**
+   * W19：此刻悬停在谁身上（mousemove 的 raycast 结果，与光标换形同源）。
+   * 「仅当前帧有效」的语义：每次 mousemove 重算，瞄准/指针锁定时清空。
+   * mouseover 施法（5.6）从这里取目标 —— 联网侧没有本地 sim，
+   * `targets.mouseover` 由 `CastRequest.targetId` 代言，服务器照常复核。
+   */
+  private hoveredId: number | undefined;
   /** 鼠标点过的技能格，下一帧被 readInput 消费（与数字键同一条流程）*/
   private clickedSlot: number | null = null;
 
@@ -420,6 +428,10 @@ export class NetworkScene {
   /** 自己的队伍与当前硬目标 —— Tab 循环要用 */
   private selfTeam: TeamId | null = null;
   private currentTargetId: EntityId | undefined;
+  /** W20：待服务器确认的乐观选中（`setHardTarget` 登记，快照/Rejected 收口） */
+  private pendingTarget: PendingHardTarget | undefined;
+  /** W20：最近一份快照回读的权威硬目标 —— Rejected 即时回滚的落点 */
+  private lastAuthoritativeTarget: EntityId | undefined;
   /** 最近一份快照的实体列表，Tab 从它里面挑 */
   private lastEntities: readonly HydratedEntitySnapshot[] = [];
   /**
@@ -730,9 +742,7 @@ export class NetworkScene {
        * 一串拒绝刷屏 —— 而「按了没反应」正是本仓库最难查的一类。
        */
       if (this.spectating) return;
-      this.currentTargetId = id;
-      this.view.targetId = id;
-      this.conn.send({ t: 'SetTarget', slot: 'hard', entityId: id });
+      this.setHardTarget(id);
     };
     // 6.5 朝向提示用**本地预测**的角色 yaw（快照的 yaw 晚一个单程延迟）
     this.view.selfYaw = () => this.characterYaw;
@@ -835,6 +845,7 @@ export class NetworkScene {
      */
     if (this.input.pointerLocked) {
       this.canvas.classList.remove('cursor-attack', 'cursor-friendly');
+      this.hoveredId = undefined; // W19：锁定期「指着谁」不存在
       return;
     }
     this.shell.ndcFromMouse(ev, this.ndc);
@@ -903,9 +914,12 @@ export class NetworkScene {
     // 瞄准期间光标语义由地面指示器承担
     if (this.aim.isAiming || !this.started) {
       cls.remove('cursor-attack', 'cursor-friendly');
+      this.hoveredId = undefined;
       return;
     }
     const id = this.pickEntityAt(this.ndc);
+    // W19：mouseover 目标与光标换形读同一次 raycast，结构上不会分叉
+    this.hoveredId = id;
     const team = id === undefined
       ? undefined
       : this.entityOf(id)?.team;
@@ -1119,6 +1133,12 @@ export class NetworkScene {
          *   焦点离场/潜行遁走时字段自然消失，客户端不需要一条「清焦点」的逻辑。
          */
         this.view.focusId = entities.find((e) => e.id === msg.you)?.focusId;
+        /**
+         * W20：硬目标与焦点同手法从快照回读 —— 服务器是唯一权威（拒绝、
+         * 目标失效、潜行遁走都在这里自然收口）。点击的乐观显示由确认窗口
+         * 兜住（`net/hardTarget.ts`），窗口外一律以快照为准。
+         */
+        this.reconcileHardTargetFromSnapshot(entities.find((e) => e.id === msg.you)?.hardTargetId);
         this.view.ingest(hydrated, msg.time);
         // W24：顶替人机之后那句「你选的职业还没生效」（判据要等自己那份快照）
         this.noteMidJoinClass();
@@ -1144,6 +1164,15 @@ export class NetworkScene {
       case 'Rejected':
         // ★ 拒绝要让玩家看得见，否则「按了没反应」是最难查的一类问题
         this.view.push(`${msg.what} 被拒绝：${msg.reason}`, 'fail');
+        /**
+         * W20：SetTarget 被拒 → 立刻回滚乐观选中到最近的权威值，不等下一份
+         * 快照（拒绝已经明说「没设上」）。静默不采纳的路径由快照回读收口。
+         */
+        if (msg.what === 'SetTarget') {
+          this.pendingTarget = undefined;
+          this.currentTargetId = this.lastAuthoritativeTarget;
+          this.view.targetId = this.lastAuthoritativeTarget;
+        }
         /**
          * 10.2「交互时提示『职业不匹配』」——**在人眼看的地方**提示。
          * 战斗日志在屏幕角落，而玩家此刻正盯着脚下那件装备。
@@ -1967,13 +1996,34 @@ export class NetworkScene {
     const selfCast = this.pendingInput?.selfCastHeld === true
       && this.selfId !== null
       && (skill.targetFilter === TargetFilter.Ally || skill.targetFilter === TargetFilter.Any);
+    /**
+     * W19：鼠标指向施法（5.6）。顺位与试验场一致：Alt 自我（显式覆盖）→
+     * mouseover（技能支持且悬停者合法）→ 硬目标。这里只做 UI 级预检
+     * （存活/阵营），服务器 `validateCast` 照常复核 —— 与点姓名板选人
+     * 同一条信任边界（客户端提名，服务器裁决）。
+     */
+    const mouseover = selfCast ? undefined : this.mouseoverTargetFor(skill);
     this.conn.send({
       t: 'CastRequest',
       skillId: skill.id,
       ...(selfCast
         ? { targetId: this.selfId as never }
-        : this.currentTargetId !== undefined ? { targetId: this.currentTargetId } : {}),
+        : mouseover !== undefined
+          ? { targetId: mouseover as never }
+          : this.currentTargetId !== undefined ? { targetId: this.currentTargetId } : {}),
     });
+  }
+
+  /** W19：悬停者能否充当这个技能的 mouseover 目标（UI 预检口径） */
+  private mouseoverTargetFor(skill: SkillDef): number | undefined {
+    if (skill.allowMouseover !== true) return undefined;
+    const id = this.hoveredId;
+    if (id === undefined) return undefined;
+    const e = this.entityOf(id);
+    if (!e || !e.alive) return undefined;
+    if (skill.targetFilter === TargetFilter.Ally && e.team !== this.selfTeam) return undefined;
+    if (skill.targetFilter === TargetFilter.Enemy && e.team === this.selfTeam) return undefined;
+    return id;
   }
 
   /**
@@ -2174,9 +2224,36 @@ export class NetworkScene {
       ...(this.currentTargetId !== undefined ? { currentTargetId: this.currentTargetId } : {}),
     }, reverse);
     if (picked === undefined) return; // 5.3：没有候选时保持原目标不变
-    this.currentTargetId = picked;
-    this.view.targetId = picked;
-    this.conn.send({ t: 'SetTarget', slot: 'hard', entityId: picked });
+    this.setHardTarget(picked);
+  }
+
+  /**
+   * W20：设硬目标的唯一入口 —— 乐观显示 + 发 `SetTarget` + 登记待确认。
+   * 权威在服务器：确认与回滚由快照回读（`reconcileHardTarget`）和
+   * `Rejected` 分支收口，本地不再「设完就当真」。
+   */
+  private setHardTarget(id: EntityId): void {
+    this.currentTargetId = id;
+    this.view.targetId = id;
+    this.pendingTarget = { id: id as number, at: this.serverTime };
+    this.conn.send({ t: 'SetTarget', slot: 'hard', entityId: id });
+  }
+
+  /**
+   * W20：每份快照对账一次硬目标（与 `focusId` 同手法的回读）。
+   * 观战席没有乐观值（一条 SetTarget 都不发）——目标框直接跟随被跟随者。
+   */
+  private reconcileHardTargetFromSnapshot(authoritative: EntityId | undefined): void {
+    this.lastAuthoritativeTarget = authoritative;
+    if (this.spectating) {
+      this.currentTargetId = authoritative;
+      this.view.targetId = authoritative;
+      return;
+    }
+    const r = reconcileHardTarget(this.pendingTarget, authoritative, this.serverTime);
+    this.pendingTarget = r.pending;
+    this.currentTargetId = r.targetId as EntityId | undefined;
+    this.view.targetId = r.targetId as EntityId | undefined;
   }
 
   /**
