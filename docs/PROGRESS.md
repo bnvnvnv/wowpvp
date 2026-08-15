@@ -4267,6 +4267,36 @@ debuff 壳层四层叠加糊不糊 · 击晕摇头/变形游走观感 · 四张�
 
 ---
 
+## 外部审计批已交付清单（七条问题逐条核验：五真两误，2026-08-15）
+
+外部代码审计报了 7 条问题（3×P1 + 4×P2）。逐条到代码里核验后：**5 条为真
+全部修复，2 条定性误报/已记录取舍并补测试钉死语义**；核验途中另暴出
+1 条谁都没报的存量泄漏，一并清掉。全绿判据：**2871 单测（+16）** ·
+typecheck/lint 零告警 · m9 35/35 · m10 16/16 · hardening 6/6（+3）·
+balance `--seed 1` 改前后**逐字节一致**。
+
+| # | 审计条目 | 核验结论 | 处置 |
+|---|---|---|---|
+| 1 | A18 死亡不清光环（P1） | **真**（债在册未清） | 按登记修法落地：`AuraDef.clearOnDeath` 缺省 true、复活保护显式 false；`clearAurasOnDeath` 接进 `settleDeaths`，`assertDeathsSettled` 自检加码（漏清=响亮失败）；death.test +3（含 1260→1050 复活链）。balance 逐字节不变——1v1 死亡即回合结束、`resetRound` 本就全清，A18 影响的是带复活的模式（夺旗/FFA） |
+| 2 | 排队连接被心跳误杀（P1） | **真，且比报告的更凶**：排队 socket 连 error 监听都没有——`ws` 的 error 无监听器=未捕获异常，排队者发一条超 maxPayload 的帧就把**整个进程**带走 | pong/misses 记账挪到 connection 层（对排队者同样生效）；排队分支挂具名 error 监听（出队+重报位置）。hardening.test +2 |
+| 2b | （核验途中顺带发现，谁都没报） | **存量泄漏**：`drainQueue` 的 `removeAllListeners('close')` 把 `WebSocketServer` 内部「从 `wss.clients` 摘除」的监听一起删了——队列接纳过的连接断开后**永远留在 `wss.clients`**：心跳白 ping 尸体、对象泄漏、`close()` 优雅退出永久挂死（实测复现） | 排队三监听改为具名引用、接纳时逐个 `off()`；hardening 新用例的 afterEach 关服本身就是回归（修复前 3/3 超时） |
+| 3 | W19 mouseover 施法链路死的（P1） | **真**（债在册） | 14 个直接友方技能 + 净化术（Any 驱散）标 `allowMouseover`，data.test 不变量钉住「新加的治疗/保护不许忘标」；两场景 hover 与光标换形共用同一次 raycast（试验场写 `targets.mouseover`；联网侧无本地 sim，由 `CastRequest.targetId` 代言，服务器 `validateCast` 照常复核）；`CombatDirector` 两处目标解析接入 5.6 顺位 |
+| 4 | W20 拒绝后乐观目标不回滚（P2） | **真**（债在册） | 按登记修法：self 段加 `hardTargetId`（与 focusId 同一条可见性纪律：只发对自己可见的，潜行遁走=字段消失；visibility/codec 测试各 +2）；客户端快照对账 `client/net/hardTarget.ts`（乐观确认窗 1s 防闪烁，纯函数 +5 例）+ `Rejected('SetTarget')` 即时回滚；观战席目标框直接跟随被跟随者 |
+| 5 | error/close 双重断线处理（P2） | **真**：`roomOf` 按 `session.roomId` 查而 disconnect 不清它——传输错误的 error→close 双事件会二次登记重连、二次广播 PeerDisconnected、二次排接管 | `disconnect()` 幂等守卫：`all.delete()` 的返回值就是「是否首次」；端到端回归（hardening +1）：对局中发超限帧（真实的 error→close 双事件）只广播一次 PeerDisconnected |
+| 6 | 首条 CastRequest.facing 绕过 A5（P2） | **误报（按设计）**：`collectInputs` 每 tick 无条件为真人建账并把 `pendingCasts.facing` 记入基准；账本 `yaw: undefined` 时「第一条原样采信」是拍板语义（开局/中途加入/重连，turnRate.test:215 早有钉）。改用 `budgetOf()` 行为也逐字节相同 | turnRate.test +1「零 Input 开局」：首条播种、其后逐条受钳——「永不发 Input 只发 CastRequest」不构成免费瞄准通道；`requestCast` 注释如实登记第三处残余 |
+| 7 | 生产构建不含素材（P2） | **半误报（documented tradeoff）**：vite.config 头注写明刻意不用 `publicDir`（572MB/次构建），发布带素材归发布工程（docs/09 §7.2）——但那一步此前只有一句话没有落地物，审计说的「单独部署 dist 会 404」是事实 | 落地 `pnpm package:client`（scripts/package-client-dist.mjs）：白名单拷 art/music/来源致谢进 dist（结构上碰不到 `assets/local/` T1 红线），自包含可静态部署，实测 424MB 就位；默认 build 照旧不付这笔税。docs/09 §7.2 记入组装命令 |
+
+债务动账：**A18 / W19 / W20 销账**（docs/15 各行含落地细节）。
+新落地物：`scripts/package-client-dist.mjs`、`client/src/net/hardTarget.ts`。
+
+教训入册（与「规则写对了没人调用」并列的一课）：**给 `ws` 的 socket 做
+`removeAllListeners` 等于连库内部的记账监听一起杀** —— 这类泄漏只有「队列
+真的接纳过人 + 进程试图优雅退出」时才可见，日常自测永远撞不到；本批是
+新回归测试的 afterEach 把它翻出来的。往后凡是「接管一条别人建的 socket」，
+摘监听必须按具名引用逐个摘。
+
+---
+
 ## 技术债
 
 > ★★ **2026-08-04 起，技术债的唯一活账本迁至 [15-debt-registry.md](15-debt-registry.md)。**
