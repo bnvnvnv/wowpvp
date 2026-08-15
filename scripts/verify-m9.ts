@@ -97,7 +97,7 @@ const ctfDeps = {
   },
 };
 const statsDeps = { world, ctf: { state: ctf, map: ctfMap } };
-const deathDeps = { world, loadouts, swaps, pickups };
+const deathDeps = { world, auras, loadouts, swaps, pickups };
 
 const effectCtx = (source: typeof carrier) => ({
   world, auras, dr, projectiles,

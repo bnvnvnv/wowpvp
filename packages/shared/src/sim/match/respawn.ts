@@ -43,6 +43,8 @@ export const SPAWN_PROTECTION_AURA: AuraDef = {
   kind: 'buff',
   duration: CTF.SPAWN_PROTECTION_SECONDS,
   dispelType: DispelType.None,
+  // A18：复活↔死亡机器自身的零件，不吃「死亡清光环」（生灭由本文件负责）
+  clearOnDeath: false,
   flags: { immuneAll: true, spawnProtection: true },
   description: '复活后短暂免疫伤害。主动攻击、治疗或使用技能会提前结束，且不能用于拔旗或交旗。',
 };

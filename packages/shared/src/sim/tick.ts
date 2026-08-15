@@ -889,7 +889,10 @@ export const tickWorld = (
 
   // ── 11. settleDeaths（必须在 swaps/pickups 之后 —— 17.3）───
   for (const ev of settleDeaths(
-    { world: deps.world, loadouts: deps.loadouts, swaps: deps.swaps, pickups: deps.pickups },
+    {
+      world: deps.world, auras: deps.auras,
+      loadouts: deps.loadouts, swaps: deps.swaps, pickups: deps.pickups,
+    },
     result.events,
   )) {
     result.deaths.push(ev);

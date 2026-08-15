@@ -536,3 +536,18 @@ export const hasFullImmunity = (store: AuraStore, id: EntityId): boolean =>
 export const clearAuras = (store: AuraStore, id: EntityId): void => {
   store.delete(id);
 };
+
+/**
+ * A18：死亡时的光环清除（WoW 口径：死亡掉形态与增减益，DoT 不跨尸体）。
+ *
+ * ★ 与 `clearAuras`（回合重置的全清）不同：放过 `clearOnDeath: false`
+ *   的系统光环 —— 它们是死亡↔复活机器自身的零件（复活保护），
+ *   生灭由各自机制负责。由 `settleDeaths()` 在死亡事件漏斗里调用。
+ */
+export const clearAurasOnDeath = (store: AuraStore, id: EntityId): void => {
+  const list = store.get(id);
+  if (!list) return;
+  const kept = list.filter((a) => a.def.clearOnDeath === false);
+  if (kept.length === 0) store.delete(id);
+  else store.set(id, kept);
+};

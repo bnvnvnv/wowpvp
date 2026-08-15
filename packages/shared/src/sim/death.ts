@@ -20,11 +20,13 @@
 import type { EntityId } from '../types/ids.js';
 import { onDeath as clearTemporaryEquipment, type LoadoutStore, type SwapStore } from './loadout.js';
 import type { PickupStore } from './arsenal.js';
+import { aurasOf, clearAurasOnDeath, type AuraStore } from './aura.js';
 import type { CombatEvent } from './effects/registry.js';
 import { listEntities, type World } from './world.js';
 
 export interface DeathSettleDeps {
   world: World;
+  auras: AuraStore;
   loadouts: LoadoutStore;
   swaps: SwapStore;
   pickups: PickupStore;
@@ -38,6 +40,8 @@ export interface DeathSettlement {
    * 得先改这个类型，那是一次显眼的改动。
    */
   temporaryEquipmentCleared: true;
+  /** A18：该清的光环已清（`clearOnDeath: false` 的机器零件除外）。同为写死的 `true` */
+  aurasCleared: true;
 }
 
 /**
@@ -77,7 +81,16 @@ export const settleDeaths = (
     // 万一某条路径绕过了 tickPickups（例如实体被直接移出世界）
     deps.pickups.delete(e.id);
 
-    out.push({ entityId: e.id, temporaryEquipmentCleared: true });
+    /**
+     * A18：光环随死亡清除（WoW 口径：死亡掉形态与增减益）。
+     * ★ 不清的话熊/猫形态的 3600 秒光环会跨越死亡：`tickWorld` 第 7 步
+     *   照旧按它重算生命上限，波次复活 `health = maxHealth` 直接给出
+     *   **增益后的**满血（实测 1260/1260）。豁免只有 `clearOnDeath: false`
+     *   的「死亡↔复活机器零件」（复活保护），见 `clearAurasOnDeath`。
+     */
+    clearAurasOnDeath(deps.auras, e.id);
+
+    out.push({ entityId: e.id, temporaryEquipmentCleared: true, aurasCleared: true });
   }
 
   return out;
@@ -107,6 +120,15 @@ export const assertDeathsSettled = (deps: DeathSettleDeps): void => {
     if (deps.pickups.has(e.id)) {
       throw new Error(
         `死亡结算漏了：实体 ${e.id}（${e.name}）已死却仍有进行中的拾取。17.3。`,
+      );
+    }
+
+    const lingering = aurasOf(deps.auras, e.id).filter((a) => a.def.clearOnDeath !== false);
+    if (lingering.length > 0) {
+      throw new Error(
+        `死亡结算漏了：实体 ${e.id}（${e.name}）已死却仍带着该清的光环` +
+          `（${lingering.map((a) => a.def.id).join('、')}）。` +
+          `A18：形态/增益跨死会让波次复活按增益后的生命上限满血。`,
       );
     }
 

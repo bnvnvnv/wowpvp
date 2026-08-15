@@ -17,9 +17,12 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { getSkill, warrior } from '../data/index.js';
 import { vec3 } from '../math/vec3.js';
-import { CastFailure, School } from '../types/enums.js';
+import { CastFailure, DispelType, School } from '../types/enums.js';
 import { asSkillId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
-import { createAuraStore, type AuraStore } from '../sim/aura.js';
+import type { AuraDef } from '../data/schema.js';
+import {
+  applyAura, aurasOf, createAuraStore, effectiveModifiersOf, type AuraStore,
+} from '../sim/aura.js';
 import {
   addArmor, addWeapon, beginSwap, createLoadout, createLoadoutStore, createSwapStore,
   SwapKind, tickSwaps, type LoadoutStore, type SwapStore,
@@ -32,7 +35,7 @@ import { ArenaPreset } from '../types/enums.js';
 import { createDrStore, type DrStore } from './dr.js';
 import { createGroundStore, type GroundStore } from './groundArea.js';
 import { createProjectileStore, type ProjectileStore } from './projectile.js';
-import { createEntity, type CombatEntity } from './entity.js';
+import { applyMaxHealthMultiplier, createEntity, type CombatEntity } from './entity.js';
 import { dealDamage } from './effects/index.js';
 import { validateCast } from './casting.js';
 import { assertDeathsSettled, settleDeaths, type DeathSettleDeps } from './death.js';
@@ -72,7 +75,7 @@ beforeEach(() => {
   void arsenal;
 });
 
-const deathDeps = (): DeathSettleDeps => ({ world, loadouts, swaps, pickups });
+const deathDeps = (): DeathSettleDeps => ({ world, auras, loadouts, swaps, pickups });
 
 /** 打死 victim，返回本次结算产生的事件 */
 const kill = (): CombatEvent[] => {
@@ -121,7 +124,9 @@ describe('10.10 死亡时临时装备失效（M6 的规则 + M9 补的接线）'
     expect(l.spareWeapons).toHaveLength(1);
 
     const settled = settleDeaths(deathDeps(), events);
-    expect(settled).toEqual([{ entityId: victim.id, temporaryEquipmentCleared: true }]);
+    expect(settled).toEqual([
+      { entityId: victim.id, temporaryEquipmentCleared: true, aurasCleared: true },
+    ]);
     expect(l.spareWeapons).toEqual([]);
     expect(l.spareArmors).toEqual([]);
     expect(victim.weaponId).toBe(l.defaultWeaponId);
@@ -159,6 +164,60 @@ describe('10.10 死亡时临时装备失效（M6 的规则 + M9 补的接线）'
     loadUpVictim();
     settleDeaths(deathDeps(), kill());
     expect(() => assertDeathsSettled(deathDeps())).not.toThrow();
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * A18：死亡不清光环 —— 形态类 3600 秒光环跨越死亡（W26 收口批对抗校验发现）。
+ *
+ * ★★ 链条：熊形态光环 → `tickWorld` 第 7 步按它重算 `maxHealth`（1050→1260）
+ *   → 死亡后光环还在 → 上限一直是 1260 → 波次复活 `health = maxHealth`
+ *   → **1260/1260 满血复活**。清光环之后同一条链自然回落到 1050/1050。
+ */
+describe('A18 死亡清光环（形态血池跨不过死亡）', () => {
+  const BEAR_LIKE: AuraDef = {
+    id: 'test.bearForm', name: '测试形态', kind: 'buff', duration: 3600,
+    dispelType: DispelType.None, persistent: true,
+    modifiers: { maxHealth: 1.2 }, description: '',
+  };
+  const MACHINERY: AuraDef = {
+    id: 'test.machinery', name: '复活机器零件', kind: 'buff', duration: 3,
+    dispelType: DispelType.None, clearOnDeath: false, description: '',
+  };
+
+  it('★★ 死亡清掉该清的光环；clearOnDeath: false 的机器零件留下', () => {
+    applyAura(auras, victim, BEAR_LIKE, victim.id, 0);
+    applyAura(auras, victim, MACHINERY, victim.id, 0);
+
+    settleDeaths(deathDeps(), kill());
+    expect(aurasOf(auras, victim.id).map((a) => a.def.id)).toEqual(['test.machinery']);
+    // 且自检认可这份豁免（机器零件不算「漏清」）
+    expect(() => assertDeathsSettled(deathDeps())).not.toThrow();
+  });
+
+  it('★★ 形态增益的生命上限跨不过死亡：复活按基础上限满血', () => {
+    applyAura(auras, victim, BEAR_LIKE, victim.id, 0);
+    // tickWorld 第 7 步的写回（真函数、真聚合）：上限 ×1.2
+    applyMaxHealthMultiplier(victim, effectiveModifiersOf(auras, victim, 0).maxHealth);
+    expect(victim.maxHealth).toBeCloseTo(victim.baseMaxHealth * 1.2, 6);
+
+    settleDeaths(deathDeps(), kill());
+    // 死亡后的下一 tick：光环已清，写回把上限拉回基础值
+    applyMaxHealthMultiplier(victim, effectiveModifiersOf(auras, victim, 1).maxHealth);
+    expect(victim.maxHealth).toBe(victim.baseMaxHealth);
+
+    // respawn.ts 波次复活的那两行（12.6）：满血按**基础**上限，不是 1.2 倍
+    victim.alive = true;
+    victim.health = victim.maxHealth;
+    expect(victim.health).toBe(victim.baseMaxHealth);
+  });
+
+  it('★ 漏清光环会被自检抓住（与临时装备同一个响亮失败）', () => {
+    applyAura(auras, victim, BEAR_LIKE, victim.id, 0);
+    kill();
+    expect(() => assertDeathsSettled(deathDeps())).toThrow(/该清的光环/);
   });
 });
 
