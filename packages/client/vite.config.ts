@@ -4,7 +4,9 @@
  * ★ 不用 `publicDir` —— 它会在每次 `vite build` 时把 572MB 素材整包复制进
  *   `dist/`。素材是**运行时按 URL 取**的（图标 <img>、GLB fetch、音频 fetch），
  *   不参与打包，所以 dev/preview 用中间件直接从仓库根流式读出即可。
- *   正式发布包如何带素材是发布工程的事，见 docs/09-asset-license.md §7.2。
+ *   正式发布包带素材是**显式一步**：`pnpm build && pnpm package:client`
+ *   （scripts/package-client-dist.mjs，按 docs/09 §7.2 清单拷 art/music
+ *   与来源致谢进 dist）—— 单独部署 dist 不再 404。
  *
  * ★ 素材缺失不是错误：所有消费方（图标/模型/音频/环境）都自带程序化兜底，
  *   没有 `assets/` 目录时游戏照常可玩 —— 这保持了 M1–M10 验收不依赖素材。

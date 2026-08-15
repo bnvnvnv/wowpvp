@@ -243,3 +243,10 @@
 - [ ] 没有暴雪资产
 - [ ] 没有误把 `assets/local/`（T1）打进发布包
 - [ ] 技能名等原创化评估仍按 §3（与素材来源无关）
+
+**组装命令**（外部审计批 2026-08-15 落地）：`pnpm build && pnpm package:client` ——
+`scripts/package-client-dist.mjs` 把 `assets/art`、`assets/music` 与来源/致谢文件
+拷进 `packages/client/dist`（白名单只拷这几样，结构上碰不到 `assets/local/`）。
+组装后的 dist 自包含，`/art`、`/music` 与 dev 中间件同形，可直接静态部署；
+默认 `pnpm build` 刻意**不**做这步（~420MB 复制不该是每次构建的税，
+见 `packages/client/vite.config.ts` 文件头）。
