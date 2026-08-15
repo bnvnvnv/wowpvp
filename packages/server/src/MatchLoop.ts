@@ -755,6 +755,13 @@ export class MatchLoop {
      * ⚠️ 另一处如实：桶满时一条 `CastRequest` 能瞄向任意方向（180° 就是
      *   「任意」的上限）。这是令牌桶的取舍本身，`turnBudget.ts` 的 ⚠️ 写了
      *   为什么不能靠收紧它来挡 aimbot。
+     * ⚠️ 第三处如实（外部审计问过）：会话**首条**消息就是带 facing 的
+     *   `CastRequest` 时预算条目还不存在（`.get()` 落空），这一条原样采信 ——
+     *   与账本 `yaw: undefined` 的「第一条原样采信」（开局/中途加入/重连，
+     *   `collectInputs` 的 ★）是同一个语义：即便这里改用 `budgetOf()`，
+     *   新账本照样原样放行第一条。且 `collectInputs` 每 tick 无条件为真人
+     *   建账并把 `pendingCasts` 的 facing 记入基准，所以这份免费额度一个
+     *   席位终生恰好一次，之后逐条受钳（turnRate.test 的「零 Input 开局」钉住）。
      */
     const budget = isBot ? undefined : this.turnBudgets.get(entityId);
     const admitted: CastIntent = intent.facing !== undefined && budget !== undefined

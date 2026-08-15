@@ -272,7 +272,14 @@ export const startServer = async (port = 0, opts: ServerOptions = {}): Promise<S
    * ★ 队列有自己的上限（防无限排队吃内存）：超出的仍按老规矩 1013。
    */
   const admitted = new Set<WebSocket>();
-  const waiting: { socket: WebSocket; buffered: string[] }[] = [];
+  const waiting: {
+    socket: WebSocket;
+    buffered: string[];
+    // 排队期挂上的三个监听（接纳时按引用逐个摘除，见 drainQueue 的 ★★）
+    onMessage: (raw: { toString(): string }) => void;
+    onClose: () => void;
+    onError: (err: Error) => void;
+  }[] = [];
   const QUEUE_MAX = 200;
   const QUEUE_BUFFER_MAX = 64;
 
@@ -286,8 +293,7 @@ export const startServer = async (port = 0, opts: ServerOptions = {}): Promise<S
 
   const admit = (socket: WebSocket, replay: readonly string[] = []): void => {
     admitted.add(socket);
-    missesOf.set(socket, 0);
-    socket.on('pong', () => missesOf.set(socket, 0));
+    // 心跳记账（misses 归零 + pong 监听）在 connection 时就挂好了 —— 见 wss.on('connection')
     const session = rooms.connect(adapt(socket));
     playerOf.set(socket, session.playerId);
 
@@ -338,8 +344,17 @@ export const startServer = async (port = 0, opts: ServerOptions = {}): Promise<S
     let moved = false;
     while (admitted.size < maxConnections && waiting.length > 0) {
       const next = waiting.shift()!;
-      next.socket.removeAllListeners('message');
-      next.socket.removeAllListeners('close');
+      /**
+       * ★★ 只摘**我们自己**挂的三个监听，绝不 `removeAllListeners` ——
+       *   `WebSocketServer` 在 connection 时给每个 socket 挂了自己的 'close'
+       *   监听（负责把它从 `wss.clients` 集合里摘除）。全量清除会把它一起
+       *   删掉：这个 socket 断开后**永远留在 `wss.clients` 里** —— 心跳每轮
+       *   白 ping 一具尸体、对象泄漏、`wss.close()` 等不到集合清空，
+       *   进程优雅退出永远挂死（实测：排队接纳过一个连接后 close() 不返回）。
+       */
+      next.socket.off('message', next.onMessage);
+      next.socket.off('close', next.onClose);
+      next.socket.off('error', next.onError);
       if (next.socket.readyState !== next.socket.OPEN) continue; // 排着排着走了
       log('info', 'queue_admitted', { waited: waiting.length });
       admit(next.socket, next.buffered);
@@ -349,6 +364,14 @@ export const startServer = async (port = 0, opts: ServerOptions = {}): Promise<S
   };
 
   wss.on('connection', (socket: WebSocket) => {
+    /**
+     * ★★ 心跳记账对**所有**连接生效 —— 排队的也在 `wss.clients` 里被 ping。
+     *   此前 pong 监听只在 `admit()` 里注册：排队连接的 misses 只涨不清，
+     *   maxMisses 个周期后被当成半开收割 —— 健康的排队者白白吃一个 1006。
+     */
+    missesOf.set(socket, 0);
+    socket.on('pong', () => missesOf.set(socket, 0));
+
     // Origin 已在 verifyClient（握手层）拦过，走到这里的都是允许的来源
     if (admitted.size >= maxConnections) {
       if (waiting.length >= QUEUE_MAX) {
@@ -356,16 +379,37 @@ export const startServer = async (port = 0, opts: ServerOptions = {}): Promise<S
         socket.close(1013, '服务器已满');
         return;
       }
-      const entry = { socket, buffered: [] as string[] };
+      /**
+       * ★ 三个监听都以**具名引用**存进 entry —— drainQueue 接纳时要按引用
+       *   逐个摘除（`removeAllListeners` 会误伤 ws 内部监听，见那边的 ★★）。
+       */
+      const entry = {
+        socket,
+        buffered: [] as string[],
+        onMessage: (raw: { toString(): string }): void => {
+          if (entry.buffered.length < QUEUE_BUFFER_MAX) entry.buffered.push(raw.toString());
+        },
+        onClose: (): void => {
+          const i = waiting.indexOf(entry);
+          if (i >= 0) { waiting.splice(i, 1); notifyQueue(); }
+        },
+        /**
+         * ★★ 排队连接也必须有 error 监听 —— `ws` 的 error 事件没有监听器就是
+         *   **未捕获异常**（例如排队者发一条超 maxPayload 的帧），会带走整个
+         *   进程，而进程里跑着别人的比赛。处理与 close 同款：出队、重报位置。
+         */
+        onError: (err: Error): void => {
+          log('warn', 'queued_conn_error', { error: String(err) });
+          const i = waiting.indexOf(entry);
+          if (i >= 0) { waiting.splice(i, 1); notifyQueue(); }
+          socket.terminate();
+        },
+      };
       waiting.push(entry);
       log('info', 'conn_queued', { position: waiting.length });
-      socket.on('message', (raw) => {
-        if (entry.buffered.length < QUEUE_BUFFER_MAX) entry.buffered.push(raw.toString());
-      });
-      socket.on('close', () => {
-        const i = waiting.indexOf(entry);
-        if (i >= 0) { waiting.splice(i, 1); notifyQueue(); }
-      });
+      socket.on('message', entry.onMessage);
+      socket.on('close', entry.onClose);
+      socket.on('error', entry.onError);
       socket.send(JSON.stringify({ t: 'QueueStatus', ahead: waiting.length - 1 }));
       return;
     }

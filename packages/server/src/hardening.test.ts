@@ -223,3 +223,86 @@ describe('S6 /healthz', () => {
     a.close();
   });
 });
+
+/**
+ * 外部审计批（2026-08-15）：排队连接的两条**致命**边界。
+ *
+ * ★★ 修复前的两种死法，都只在「队列非空」时出现，日常自测撞不到：
+ *   · 心跳遍历全部 `wss.clients`，但 pong 记账只在 admit() 注册 ——
+ *     排队者的 misses 只涨不清，maxMisses 个周期后被当半开收割（1006）；
+ *   · 排队 socket 没有 error 监听 —— `ws` 的 error 无监听器 = 未捕获异常，
+ *     一个排队者发条超 maxPayload 的帧就把**整个进程**带走。
+ */
+describe('P12 排队连接 × A3 心跳 / S2 传输错误', () => {
+  it('★★ 健康的排队连接不被心跳收割，且老大离开后能被接纳', async () => {
+    const s = await spawn({ maxConnections: 1, heartbeatIntervalMs: 40 });
+    const a = await connect(s.port);
+    const b = await connect(s.port);
+    let closed = false;
+    b.once('close', () => { closed = true; });
+
+    // 旧实现在第 3 个心跳周期（~120ms）就 terminate；给足 6 个周期
+    await new Promise((r) => setTimeout(r, 260));
+    expect(closed, '健康的排队连接被心跳当成半开收割了').toBe(false);
+    expect(b.readyState).toBe(WebSocket.OPEN);
+
+    // 仍然真的在队里活着：位置空出来就该被接纳（收到 Welcome）
+    const welcomed = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('没等到 Welcome')), 3000);
+      b.on('message', (raw) => {
+        if (String(raw).includes('"Welcome"')) { clearTimeout(timer); resolve(); }
+      });
+    });
+    a.close();
+    await welcomed;
+    b.close();
+  });
+
+  it('★★ 排队者发超限帧只断它自己，进程与既有连接安然无恙', async () => {
+    const s = await spawn({ maxConnections: 1, maxPayloadBytes: 512 });
+    const a = await connect(s.port);
+    const b = await connect(s.port);
+
+    const closed = waitClose(b);
+    b.send('x'.repeat(2048)); // 超 maxPayload → 服务器侧该 socket 触发 error(1009)
+    await closed;             // 修复前：进程在这里已经崩了，什么都等不到
+
+    expect(a.readyState, '既有连接被排队者的坏帧连坐').toBe(WebSocket.OPEN);
+    const { status, body } = await getHealthz(s.port);
+    expect(status).toBe(200);
+    expect(body['ok']).toBe(true);
+    a.close();
+  });
+
+  it('★★ 对局中传输层错误（error→close 双事件）只广播一次 PeerDisconnected', async () => {
+    const s = await spawn({ maxPayloadBytes: 512 });
+    const a = await connect(s.port);
+    const b = await connect(s.port);
+    const seen: string[] = [];
+    b.on('message', (raw) => { seen.push(String(raw)); });
+
+    const readyUp = (socket: WebSocket, name: string, team: string, classId: string): void => {
+      socket.send(JSON.stringify({ t: 'JoinRoom', roomId: 'dup', name }));
+      socket.send(JSON.stringify({ t: 'SelectTeam', team }));
+      socket.send(JSON.stringify({ t: 'SelectClass', classId }));
+      socket.send(JSON.stringify({ t: 'SetReady', ready: true }));
+    };
+    readyUp(a, '甲', 'red', 'mage');
+    await new Promise((r) => setTimeout(r, 150)); // 甲先建房，避免撞房主竞态
+    readyUp(b, '乙', 'blue', 'warrior');
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`没等到 MatchStart：${seen.length} 条`)), 4000);
+      const probe = setInterval(() => {
+        if (seen.some((m) => m.includes('"MatchStart"'))) { clearTimeout(timer); clearInterval(probe); resolve(undefined); }
+      }, 20);
+    });
+
+    // 甲发超限帧：服务器侧甲的 socket 走 error(1009) → close 双事件
+    a.send('x'.repeat(2048));
+    await new Promise((r) => setTimeout(r, 500));
+
+    const peerDisconnects = seen.filter((m) => m.includes('"PeerDisconnected"')).length;
+    expect(peerDisconnects, 'error 与 close 各广播了一次断线').toBe(1);
+    b.close();
+  });
+});

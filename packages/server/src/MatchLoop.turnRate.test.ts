@@ -440,4 +440,41 @@ describe('A5 CastRequest.facing —— 与移动 yaw 同一把尺', () => {
     loop.advance();
     expect(me.yaw).toBe(0.3);
   });
+
+  /**
+   * ★★ 外部审计问过的边界：会话**首条**消息就是带 facing 的 `CastRequest`
+   *   （此前一条 Input 都没发，预算条目还不存在）。
+   *
+   *   钉两件事：① 这一条按「第一条原样采信」的既定语义过（与上面 Input 路径
+   *   的同名用例同一条规则 —— 开局/中途加入/重连没有可比的基准）；
+   *   ② 免费额度**终生恰好一次**：`collectInputs` 每 tick 无条件为真人建账
+   *   并把 `pendingCasts` 的 facing 记入基准，所以从第二条起就在同一把尺下 ——
+   *   「永不发 Input、只发 CastRequest」不构成免费瞄准通道。
+   */
+  it('★★ 零 Input 开局：首条 CastRequest 按「第一条原样采信」播种，此后逐条受钳', () => {
+    const r = rig();
+    const { match, loop } = r;
+    const me = entityOf(match, 'human');
+    freezeMovement(match, 'human');
+
+    // 开局第一条消息（还没有任何 advance 之外的输入）：原样采信 = 播种基准
+    loop.requestCast('human', { skillId: ICE_LANCE, facing: 2.5 });
+    loop.advance();
+    expect(me.yaw, '第一条 facing 不该被「从出生朝向慢慢转过去」').toBe(2.5);
+
+    // 继续只发 CastRequest 把桶抽干（一条 Input 都不发）
+    for (let i = 0; i < 8; i++) {
+      loop.requestCast('human', { skillId: ICE_LANCE, facing: wrapAngle(me.yaw + Math.PI) });
+      loop.advance();
+    }
+
+    // 桶空之后：每 tick 只走得动注入的那一份 —— 免费通道不存在
+    const from = me.yaw;
+    loop.requestCast('human', { skillId: ICE_LANCE, facing: wrapAngle(from + Math.PI) });
+    loop.advance();
+    expect(
+      Math.abs(wrapAngle(me.yaw - from)),
+      '零 Input 的会话在首条之后仍未入账 —— CastRequest 成了免费转身通道',
+    ).toBeCloseTo(MAX_YAW_STEP_PER_TICK, 9);
+  });
 });

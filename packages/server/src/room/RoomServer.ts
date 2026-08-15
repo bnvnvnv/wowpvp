@@ -201,7 +201,14 @@ export class RoomServer {
    *   告诉队友。**什么都不对实体做**，正是那条规则的实现方式。
    */
   disconnect(session: Session): void {
-    this.all.delete(session);
+    /**
+     * ★ 幂等守卫：`ws` 的传输错误路径是 error → close **两次**走进这里
+     *   （index.ts 对两个事件都挂了断线处理 —— error 不必然伴随 close，
+     *   两边都挂是对的，代价是这里必须可重入）。
+     *   `all` 的成员资格就是「这条会话还没断线过」的事实：删过一次即已处理；
+     *   不守卫的话第二次会重复登记重连、二次广播 PeerDisconnected、再排一次接管。
+     */
+    if (!this.all.delete(session)) return;
     session.clearInputs();
 
     const sr = this.roomOf(session);
