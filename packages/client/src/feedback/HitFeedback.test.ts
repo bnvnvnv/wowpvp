@@ -72,14 +72,46 @@ describe('★★ 通道独立性', () => {
 });
 
 describe('★★ 本地玩家筛选', () => {
-  it('★★ 别人打别人：不加创伤不顿帧，但浮字/粒子/闪白仍在', () => {
+  it('retains the available skill identity for impact visuals', () => {
+    const { deps, feedback } = makeDeps();
+    feedback.onHit(hit({ skillId: 'mage.frostbolt' }));
+    expect(deps.vfxDamage).toHaveBeenCalledWith(expect.objectContaining({ skillId: 'mage.frostbolt', sourceId: ENEMY }));
+    feedback.onHit(hit({ skillId: undefined, sourceId: undefined }));
+    expect(deps.vfxDamage).toHaveBeenLastCalledWith(expect.objectContaining({ skillId: undefined, sourceId: undefined }));
+  });
+
+  it('coalesces simultaneous area hits into one camera impulse', () => {
+    const { deps, feedback } = makeDeps();
+    for (let i = 0; i < 6; i++) feedback.onHit(hit({ sourceId: SELF, targetId: asEntityId(i + 2), crit: true }));
+    expect(deps.addTrauma).toHaveBeenCalledTimes(1);
+    feedback.update(0.1);
+    feedback.onHit(hit({ sourceId: SELF, targetId: ENEMY, crit: true }));
+    expect(deps.addTrauma).toHaveBeenCalledTimes(2);
+  });
+  it('hides unrelated combat numbers while retaining visible impacts', () => {
     const { deps, view, feedback } = makeDeps();
     feedback.onHit(hit({ targetId: OTHER, sourceId: ENEMY, crit: true, amount: 400 }));
     expect(deps.addTrauma).not.toHaveBeenCalled();
     expect(deps.hitStop.trigger).not.toHaveBeenCalled();
-    expect(deps.floaters.push).toHaveBeenCalled();
+    expect(deps.floaters.push).not.toHaveBeenCalled();
     expect(deps.vfxDamage).toHaveBeenCalled();
     expect(view.flashHit).toHaveBeenCalled();
+  });
+
+  it('labels unrelated damage separately when all numbers are enabled', () => {
+    const { deps, feedback } = makeDeps({ otherCombatNumbers: true });
+    feedback.onHit(hit({ targetId: OTHER, sourceId: ENEMY, crit: true, amount: 400 }));
+    expect(deps.floaters.push).toHaveBeenCalledWith('他人 400!', 'otherDamage', expect.anything());
+  });
+
+  it('distinguishes outgoing and incoming damage without relying only on color', () => {
+    const { deps, feedback } = makeDeps();
+    feedback.onHit(hit({ targetId: OTHER, sourceId: SELF, amount: 80 }));
+    expect(deps.floaters.push).toHaveBeenLastCalledWith('80', 'damage', expect.anything(), {});
+    feedback.onHit(hit({ amount: 80 }));
+    expect(deps.floaters.push).toHaveBeenLastCalledWith('-80', 'damageTaken', expect.anything(), {});
+    feedback.onHeal({ sourceId: SELF, targetId: OTHER, amount: 30, crit: false });
+    expect(deps.floaters.push).toHaveBeenLastCalledWith('+30', 'heal', expect.anything(), {});
   });
 
   it('★ 自己打出暴击：有创伤（攻击方的手感），弱于挨到暴击', () => {
@@ -109,7 +141,7 @@ describe('分档驱动的表现', () => {
     const { deps, feedback } = makeDeps();
     // 默认夹具打的是**自己**（targetId = SELF）→ 红色的 critTaken
     feedback.onHit(hit({ crit: true, amount: 123 }));
-    expect(deps.floaters.push).toHaveBeenCalledWith('123!', 'critTaken', expect.anything());
+    expect(deps.floaters.push).toHaveBeenCalledWith('-123!', 'critTaken', expect.anything());
     // 打**别人**的暴击 → 橙黄的 crit（X10 追加轮拍板：谁在爆谁一眼分清）
     feedback.onHit(hit({ crit: true, amount: 88, targetId: OTHER, sourceId: SELF }));
     expect(deps.floaters.push).toHaveBeenCalledWith('88!', 'crit', expect.anything());

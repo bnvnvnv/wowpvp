@@ -25,7 +25,7 @@ export const CAMERA = {
    * （8% 需要 21.6 米）。这里优先满足后者，取舍已登记为 docs/10 的 Q7。
    */
   MAX_DISTANCE: 18,
-  DEFAULT_DISTANCE: 6.5,
+  DEFAULT_DISTANCE: 8.5,
   FOV: 60,
   /** 滚轮每格改变的距离 */
   ZOOM_STEP: 0.9,
@@ -84,7 +84,8 @@ export class CameraController {
 
   /** ★ 镜头 yaw。绝不能拿它去做朝向判定（6.5）*/
   yaw = 0;
-  pitch = 12 * DEG;
+  pitch = 22 * DEG;
+  sensitivity = 1;
 
   // 显式标 number：CAMERA 是 as const，不标注会被推断成字面量类型 6.5
   private targetDistance: number = CAMERA.DEFAULT_DISTANCE;
@@ -167,17 +168,17 @@ export class CameraController {
 
     // 4.2 按住左键拖动：**只环绕观察角色**，不改变角色面向
     if (input.leftDrag) {
-      this.yaw -= input.leftDrag.dx * CAMERA.SENSITIVITY;
-      this.pitch = clampPitch(this.pitch + input.leftDrag.dy * CAMERA.SENSITIVITY);
+      this.yaw -= input.leftDrag.dx * CAMERA.SENSITIVITY * this.sensitivity;
+      this.pitch = clampPitch(this.pitch + input.leftDrag.dy * CAMERA.SENSITIVITY * this.sensitivity);
       this.suspendAutoFollow();
     }
 
     // 4.2 按住右键拖动：镜头与角色朝向联动
     if (input.rightDrag) {
-      const dYaw = -input.rightDrag.dx * CAMERA.SENSITIVITY;
+      const dYaw = -input.rightDrag.dx * CAMERA.SENSITIVITY * this.sensitivity;
       this.yaw += dYaw;
       characterYawDelta = dYaw; // ★ 只有这条路径会转动角色
-      this.pitch = clampPitch(this.pitch + input.rightDrag.dy * CAMERA.SENSITIVITY);
+      this.pitch = clampPitch(this.pitch + input.rightDrag.dy * CAMERA.SENSITIVITY * this.sensitivity);
       this.suspendAutoFollow();
     }
 
@@ -193,7 +194,7 @@ export class CameraController {
   /** 一键复位：镜头回到角色正后方（4.2）*/
   resetBehind(characterYaw: number): void {
     this.yaw = characterYaw;
-    this.pitch = 12 * DEG;
+    this.pitch = 22 * DEG;
     this.autoFollowEnabled = true;
   }
 

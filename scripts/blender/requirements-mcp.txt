@@ -1,0 +1,3 @@
+blendmcp @ git+https://github.com/owenpkent/blendmcp.git@ee36dea918b3d12bd73ec4eb53403de229cda23d
+mcp[cli]>=1.3,<2
+requests>=2.32,<3

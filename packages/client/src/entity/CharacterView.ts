@@ -19,6 +19,7 @@ import { ModelLibrary, type CharacterModel } from './ModelLibrary.js';
 import { buildUpperBodyAdditive, findHeadBone } from './animLayer.js';
 import { STUN_WOBBLE, stunWobbleAt, wobbleWeightStep } from './stunWobble.js';
 import { swingClipsFor, swingStyleFor, swingTimeScaleFor } from './weaponAnim.js';
+import { impactPoseAt } from './impactPose.js';
 
 /** 各动作状态的调试配色。模型加载前（或加载失败时）的兜底表现 */
 const STATE_COLOR: Record<AnimState, number> = {
@@ -75,7 +76,7 @@ const CAST_RELEASE_CLIP = 'Spellcast_Shoot';
 
 /** 起手/释放的倍速：素材偏长（2.1 / 0.93 秒），压到一拍之内才读作「起手」而不是慢动作 */
 const CAST_RAISE_SPEED = 2.2;
-const CAST_RELEASE_SPEED = 1.25;
+const CAST_RELEASE_SPEED = 1.8;
 
 /**
  * 受击踉跄的最短间隔（秒）。12v12 里挨打频率能到每秒 3–4 次，
@@ -119,6 +120,11 @@ export class CharacterView {
 
   // ── M12：模型与动画 ──────────────────────────────────────────
   private model: CharacterModel | undefined;
+  private readonly impactRig = new THREE.Group();
+  private impactAge = Infinity;
+  private impactFresh = false;
+  private impactPitch = 0;
+  private impactRoll = 0;
   private mixer: THREE.AnimationMixer | undefined;
   private readonly actions = new Map<string, THREE.AnimationAction>();
   /** 当前片段名，供 `actions` 查找与 `setLocomotionTimeScale` */
@@ -132,7 +138,7 @@ export class CharacterView {
   private disposed = false;
   /** 受击闪白：剩余秒数，update 里衰减 */
   private flashLeft = 0;
-  private flashMats: THREE.MeshStandardMaterial[] = [];
+  private flashMats: (THREE.MeshStandardMaterial | THREE.MeshToonMaterial)[] = [];
   /** 换装是异步的：序号防止旧请求覆盖新请求 */
   private weaponSeq = 0;
   private pendingWeaponId: string | undefined;
@@ -307,12 +313,18 @@ export class CharacterView {
     }
 
     this.model = m;
+    const body = [...m.root.children];
+    this.impactRig.clear();
+    this.impactRig.rotation.set(0, 0, 0);
+    this.impactRig.add(...body);
+    m.root.add(this.impactRig);
+    this.impactAge = Infinity;
     for (const part of this.capsuleParts) this.group.remove(part);
     this.hideInFirstPerson = [m.root];
     m.root.visible = !this.firstPerson;
     this.group.add(m.root);
     // 模型是异步挂上来的 —— 挂之前设过的体型要在这里补上（巨人化中途换模型）
-    if (this.bodyScale !== 1) m.root.scale.setScalar(this.bodyScale);
+    m.root.scale.setScalar(this.bodyScale * (classId === BOSS_CLASS_ID_STR ? BOSS_VISUAL_SCALE : 1));
 
     // ★ 就在这里量身高：**绑定姿势、尚未挂武器**（见 modelHeight 注释）
     const box = new THREE.Box3().setFromObject(m.root);
@@ -325,8 +337,8 @@ export class CharacterView {
       if (!mesh.isMesh) return;
       const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
       for (const mat of mats) {
-        if ((mat as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
-          this.flashMats.push(mat as THREE.MeshStandardMaterial);
+        if ((mat as THREE.MeshStandardMaterial).isMeshStandardMaterial || (mat as THREE.MeshToonMaterial).isMeshToonMaterial) {
+          this.flashMats.push(mat as THREE.MeshStandardMaterial | THREE.MeshToonMaterial);
         }
       }
     });
@@ -475,6 +487,19 @@ export class CharacterView {
   private flashDuration = 0.12;
   private readonly flashColor = new THREE.Color(0xffffff);
 
+  kickImpact(direction: { x: number; z: number } | undefined, strength: number): void {
+    if (!this.model || this.morphed || this.state === AnimState.Death) return;
+    const length = direction ? Math.hypot(direction.x, direction.z) : 0;
+    const x = length > 0.001 ? direction!.x / length : 0;
+    const z = length > 0.001 ? direction!.z / length : 1;
+    const yaw = this.group.rotation.y;
+    const force = Math.min(0.18, Math.max(0, strength));
+    this.impactPitch = (x * Math.sin(yaw) + z * Math.cos(yaw)) * force;
+    this.impactRoll = -(x * Math.cos(yaw) - z * Math.sin(yaw)) * force;
+    this.impactAge = 0;
+    this.impactFresh = true;
+  }
+
   /**
    * 受击踉跄：一次性覆盖动作（打击感改造，只在重击及以上触发）。
    *
@@ -496,6 +521,7 @@ export class CharacterView {
     //   「我的法术被打断了」—— 那是对一条明确规则的误导。施法中被打走
     //   加强版闪白（HitFeedback 已给了更强的参数），模型通道不缺席。
     if (this.casting) return;
+    if (this.overrideKind === 'swing' || this.overrideKind === 'castRelease') return;
     if (this.morphed) return; // 变形中人形是隐藏的
     if (this.hitReactCooldown > 0) return;
 
@@ -580,7 +606,7 @@ export class CharacterView {
       .find((c): c is THREE.AnimationClip => c !== null && c !== undefined);
     if (!clip) return;
     this.swingAlt++;
-    this.playOverride('swing', clip, swingTimeScaleFor(clip.duration, this.weaponId), 0.07);
+    this.playOverride('swing', clip, swingTimeScaleFor(clip.duration, this.weaponId), 0.035, clip.duration * 0.30);
   }
 
   /**
@@ -646,6 +672,7 @@ export class CharacterView {
     clip: THREE.AnimationClip,
     timeScale: number,
     fade: number,
+    startAt = 0,
   ): void {
     if (!this.mixer) return;
     this.endOverride(false);
@@ -653,6 +680,7 @@ export class CharacterView {
     const action = this.mixer.clipAction(clip);
     const current = this.actions.get(this.currentClip);
     action.reset();
+    action.time = startAt;
     action.setLoop(THREE.LoopOnce, 1);
     action.clampWhenFinished = false;
     action.timeScale = timeScale;
@@ -749,7 +777,7 @@ export class CharacterView {
   setBodyScale(scale: number): void {
     if (this.bodyScale === scale) return;
     this.bodyScale = scale;
-    this.model?.root.scale.setScalar(scale);
+    this.model?.root.scale.setScalar(scale * (this.classId === BOSS_CLASS_ID_STR ? BOSS_VISUAL_SCALE : 1));
   }
 
   // ── X30：被击晕的摇头晃脑（程序化，素材里没有 Dizzy 片段）──────
@@ -871,6 +899,11 @@ export class CharacterView {
     const owed = this.animStride.feed(dt, stride);
     if (owed !== undefined) this.mixer?.update(owed);
     this.applyStunWobble(dt);
+    if (this.morphed || this.state === AnimState.Death) this.impactAge = Infinity;
+    if (this.impactFresh) this.impactFresh = false;
+    else this.impactAge += dt;
+    const impact = impactPoseAt(this.impactAge);
+    this.impactRig.rotation.set(this.impactPitch * impact, 0, this.impactRoll * impact);
     if (this.hitReactCooldown > 0) this.hitReactCooldown -= dt;
     // P6 程序化侧闪：sin 半波去-回，闪完恢复基准（模型根的 x/侧倾归位）
     if (this.dodgeElapsed !== undefined) {

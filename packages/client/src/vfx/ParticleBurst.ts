@@ -134,7 +134,7 @@ const VERT = /* glsl */ `
 `;
 
 /**
- * 片元着色器：有贴图用贴图，无贴图用软圆点。加法混合，alpha 即亮度权重。
+ * 片元着色器：灰度贴图作为遮罩，普通透明混合让彩色粒子在亮背景上也可见。
  */
 const FRAG = /* glsl */ `
   uniform sampler2D uTexture;
@@ -149,7 +149,10 @@ const FRAG = /* glsl */ `
       float d = length(gl_PointCoord - vec2(0.5));
       mask = smoothstep(0.5, 0.0, d);
     }
-    gl_FragColor = vec4(vColor * mask * vAlpha, mask * vAlpha);
+    float alpha = mask * vAlpha;
+    if (alpha < 0.01) discard;
+    gl_FragColor = vec4(vColor, alpha);
+    #include <colorspace_fragment>
   }
 `;
 
@@ -211,7 +214,8 @@ class Burst {
       fragmentShader: FRAG,
       transparent: true,
       depthWrite: false,
-      blending: THREE.AdditiveBlending,
+      blending: THREE.NormalBlending,
+      toneMapped: false,
     });
 
     this.points = new THREE.Points(geo, this.material);

@@ -99,6 +99,7 @@ export interface PartyDropState {
   radius: number;
   /** 第一件掉落的时刻（绝对秒）*/
   firstAt: number;
+  sites?: readonly Vec3[];
 }
 
 export interface ArsenalStore {
@@ -250,7 +251,7 @@ export const partyDropPlan = (
  */
 export const setupPartyDrops = (
   store: ArsenalStore,
-  opts: { seed: number; radius: number; firstAt?: number },
+  opts: { seed: number; radius: number; firstAt?: number; sites?: readonly Vec3[] },
 ): void => {
   store.enabled = true;
   store.party = {
@@ -258,6 +259,7 @@ export const setupPartyDrops = (
     nextIndex: 0,
     radius: Math.max(PARTY_DROP.MIN_RADIUS + 1, opts.radius),
     firstAt: opts.firstAt ?? PARTY_DROP.FIRST_AT,
+    ...(opts.sites ? { sites: opts.sites } : {}),
   };
 };
 
@@ -290,6 +292,7 @@ export const tickPartyDrops = (store: ArsenalStore, now: number): GroundDrop[] =
 
     if (alive >= PARTY_DROP.MAX_ALIVE) continue;
     if (plan.itemId === '') continue;
+    if (party.sites?.length === 0) continue;
 
     const drop: GroundDrop = {
       id: store.nextId++,
@@ -302,7 +305,9 @@ export const tickPartyDrops = (store: ArsenalStore, now: number): GroundDrop[] =
        *   借一个职业 id 会让 `dropViewFor()` 把它显示成某个职业的东西
        *   （与消耗品无归属同一条理由，见 `GroundDrop.classId` 的注释）。
        */
-      position: { ...plan.position },
+      position: { ...(party.sites
+        ? party.sites[Math.min(party.sites.length - 1, Math.floor(roll01(party.seed, party.nextIndex - 1, 7) * party.sites.length))]!
+        : plan.position) },
       spawnedAt: now,
     };
     store.drops.push(drop);

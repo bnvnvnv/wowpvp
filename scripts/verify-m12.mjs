@@ -199,6 +199,12 @@ const browser = await (async () => {
 /** 开一页并等到场景装配完成（美术是异步加载的，要给它时间） */
 const open = async (url, settleMs = 14000) => {
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  // This suite compares high with low; the player-facing default is independently configurable.
+  await page.addInitScript(() => {
+    localStorage.setItem('wowpvp.graphics.v1', JSON.stringify({
+      quality: 'high', frameRate: 60, adaptiveResolution: false,
+    }));
+  });
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });

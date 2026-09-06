@@ -25,6 +25,7 @@ import type { ClassId, EntityId, MapId, SkillId, TeamId } from '../types/ids.js'
 import type { Vec3 } from '../math/vec3.js';
 import type { ArsenalOption } from '../sim/arsenal.js';
 import type { FfaOffer } from '../sim/match/ffa.js';
+import type { BattleOffer, BattleRewardReason } from '../sim/match/battleground.js';
 import type {
   AllyEquipmentSnapshot, ArmorySnapshot, DropSnapshot, EnemyEquipmentSnapshot,
   EntitySnapshot, EntityStaticsSnapshot, GroundAreaSnapshot, MatchSnapshot,
@@ -211,6 +212,7 @@ export type ClientMessage =
    *   带上价格的话，改一行前端就是一件 0 分的武器。
    */
   | { t: 'FfaBuy'; offerId: string }
+  | { t: 'BattleBuy'; offerId: string }
 
   // ── 观战（11.4：只能跟随己方存活玩家）──
   | { t: 'SpectateFollow'; entityId: EntityId };
@@ -227,7 +229,7 @@ export const ALL_CLIENT_MESSAGE_KINDS: readonly ClientMessageKind[] = [
   'LeaveMatch', 'Reconnect', 'ListRooms', 'JoinOngoing',
   'Input', 'SetTarget', 'TabTarget', 'CastRequest', 'CancelCast', 'UseTrinket',
   'InteractStart', 'InteractCancel', 'SwapWeapon', 'SwapArmor', 'UseConsumable',
-  'OpenArmory', 'ChooseArsenal', 'FfaBuy',
+  'OpenArmory', 'ChooseArsenal', 'FfaBuy', 'BattleBuy',
   'SpectateFollow',
 ];
 
@@ -531,6 +533,8 @@ export type ServerMessage =
    *   长期错开，而玩家只会觉得「分数算错了」。
    */
   | { t: 'FfaShop'; balance: number; offers: readonly FfaOffer[] }
+  | { t: 'BattleShop'; balance: number; earned: number; offers: readonly BattleOffer[] }
+  | { t: 'BattleReward'; amount: number; reason: BattleRewardReason }
   /**
    * 10.4：军械箱被打开后的三个横向选择。
    *
@@ -595,7 +599,7 @@ export const ALL_SERVER_MESSAGE_KINDS: readonly ServerMessageKind[] = [
   'Welcome', 'QueueStatus', 'RoomState', 'RoomList', 'MatchStart', 'Snapshot', 'EntityMeta',
   'CastStarted', 'CastResolved', 'CastInterrupted', 'CastFailed', 'CastQueueExpired',
   'Damage', 'Heal',
-  'AuraApplied', 'AuraRemoved', 'Death', 'FfaKill', 'FfaShop', 'ArsenalOffer', 'PickupResult',
+  'AuraApplied', 'AuraRemoved', 'Death', 'FfaKill', 'FfaShop', 'BattleShop', 'BattleReward', 'ArsenalOffer', 'PickupResult',
   'FlagEvent', 'BossEvent', 'RoundEnd', 'MatchEnd', 'MatchStats',
   'Rejected', 'PeerDisconnected', 'PeerReconnected', 'PeerEliminated',
 ];

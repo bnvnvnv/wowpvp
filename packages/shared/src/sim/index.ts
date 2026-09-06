@@ -18,6 +18,7 @@ export * from './match/dampening.js';
 export * from './match/room.js';
 export * from './match/flag.js';
 export * from './match/ffa.js';
+export * from './match/battleground.js';
 export * from './match/respawn.js';
 export * from './match/setup.js';
 export * from './loadout.js';

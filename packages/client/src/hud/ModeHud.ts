@@ -16,7 +16,7 @@
  *   与 M6 的 `enemyLoadoutView()` 返回类型里没有备用装备字段同源。
  */
 
-import { CTF, FlagState, type FlagView, type TeamId } from '@wowpvp/shared';
+import { CTF, FlagState, type FlagView, type TeamId, type MatchSnapshot } from '@wowpvp/shared';
 
 /**
  * 竞技场 HUD 数据。15.4 左列：
@@ -25,6 +25,8 @@ import { CTF, FlagState, type FlagView, type TeamId } from '@wowpvp/shared';
  * ★ 这个类型**没有**任何旗帜相关字段，而且不许加。
  */
 export interface ArenaHudView {
+  phase?: 'prep' | 'combat' | 'resolved';
+  prepRemaining?: number;
   aliveRed: number;
   aliveBlue: number;
   /** 当前回合序号，从 1 开始 */
@@ -44,6 +46,7 @@ export interface ArenaHudView {
  * 「夺旗比分、比赛时间、双方旗帜状态、旗手姓名、旗手聚焦层数」
  */
 export interface CtfHudView {
+  objectives?: MatchSnapshot['objectives'] | undefined;
   scoreRed: number;
   scoreBlue: number;
   scoreToWin: number;
@@ -162,6 +165,7 @@ export class ModeHud {
     this.el.dataset.mode = 'arena';
     const damp = Math.round(v.dampening * 100);
     this.el.innerHTML = `
+      <div class="mh-rule">${v.phase === 'prep' ? `准备 ${Math.ceil(v.prepRemaining ?? 0)}s` : '竞技场 · 阵亡淘汰'}</div>
       <div class="mh-row mh-score">
         <span class="team red">${v.aliveRed}</span>
         <span class="mh-vs">存活</span>
@@ -176,6 +180,13 @@ export class ModeHud {
   }
 
   /** 渲染夺旗 HUD（15.4 右列） */
+  renderFfa(v: NonNullable<MatchSnapshot['ffa']>): void {
+    this.el.style.display = '';
+    this.el.dataset.mode = 'ffa';
+    this.el.innerHTML = `<div class="mh-rule">大乱斗 · 击杀目标 ${v.killTarget}</div>`
+      + v.leaders.map((p, i) => `<div class="mh-row">${i + 1}. ${esc(p.name)}　${p.kills} 击杀</div>`).join('');
+  }
+
   renderCtf(v: CtfHudView): void {
     this.el.style.display = '';
     this.el.dataset.mode = 'ctf';
@@ -208,6 +219,10 @@ export class ModeHud {
       ${flagRows}
       ${focus}
       ${v.respawnIn === undefined ? '' : `<div class="mh-row">复活波次 ${Math.ceil(v.respawnIn)}s</div>`}
+      ${v.objectives ? `<div class="mh-objectives">${v.objectives.boss
+        ? `<b>${esc(v.objectives.boss.name)}</b><meter min="0" max="${v.objectives.boss.maxHealth}" value="${v.objectives.boss.health}" title="BOSS 生命"></meter>`
+        : `<span>BOSS 出现 ${mmss(v.objectives.nextBossIn)}</span>`}
+        ${v.objectives.nextSupplyIn === undefined ? '' : `<span>补给刷新 ${mmss(v.objectives.nextSupplyIn)}</span>`}</div>` : ''}
       ${v.message ? `<div class="mh-row mh-msg">${esc(v.message)}</div>` : ''}
     `;
   }
@@ -217,7 +232,7 @@ export class ModeHud {
 export interface MinimapBlip {
   x: number;
   z: number;
-  kind: 'self' | 'ally' | 'enemy' | 'objective' | 'flagCarrier' | 'droppedFlag' | 'supply';
+  kind: 'self' | 'ally' | 'enemy' | 'objective' | 'flagCarrier' | 'droppedFlag' | 'flagBase' | 'boss' | 'shop' | 'supply';
   team?: TeamId;
   label?: string;
 }
@@ -231,4 +246,4 @@ export interface MinimapBlip {
 export type ArenaBlip = MinimapBlip & { kind: 'self' | 'ally' | 'enemy' | 'supply' };
 
 export const isFlagBlip = (b: MinimapBlip): boolean =>
-  b.kind === 'flagCarrier' || b.kind === 'droppedFlag';
+  b.kind === 'flagCarrier' || b.kind === 'droppedFlag' || b.kind === 'flagBase';

@@ -41,10 +41,12 @@ const LIFETIME = 1.15;
 /** 上浮高度（米）。★ 用世界坐标而不是像素 —— 远处的数字该飘得更少 */
 const RISE = 1.4;
 
-export type FloaterKind = 'damage' | 'heal' | 'crit' | 'critTaken' | 'miss' | 'immune' | 'absorb';
+export type FloaterKind = 'damage' | 'damageTaken' | 'otherDamage' | 'heal' | 'crit' | 'critTaken' | 'miss' | 'immune' | 'absorb';
 
 const CLASS_OF: Record<FloaterKind, string> = {
   damage: 'fn-damage',
+  damageTaken: 'fn-damage-taken',
+  otherDamage: 'fn-other-damage',
   heal: 'fn-heal',
   crit: 'fn-crit',
   // X10 追加轮拍板：自己挨的暴击红色（打别人的橙黄）—— 弹道同款、只换色
@@ -73,6 +75,8 @@ export const POP_SETTLE = 0.16;
  */
 export const POP_PEAK: Record<FloaterKind, number> = {
   damage: 1.25,
+  damageTaken: 1.15,
+  otherDamage: 1,
   crit: 5,
   critTaken: 5,
   heal: 1.15,

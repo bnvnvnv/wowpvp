@@ -46,7 +46,6 @@ import { FAIL_TEXT } from '../combat/CombatDirector.js';
 import { Action, InputManager, type FrameInput } from '../input/InputManager.js';
 import { DecorRenderer } from '../render/DecorRenderer.js';
 import { EntityLod } from '../render/entityLod.js';
-import { canvasSize } from '../render/canvasSize.js';
 import { GameLoop } from '../render/GameLoop.js';
 import { HitStop } from '../render/HitStop.js';
 import { HitFeedback } from '../feedback/HitFeedback.js';
@@ -338,6 +337,7 @@ export class TestbedScene {
 
     this.obstacles = stage.map.geometry;
     this.mapRenderer = new MapRenderer(stage.map, this.art);
+    this.mapRenderer.applyQuality(this.quality.current);
     this.scene.add(this.mapRenderer.group);
     // M12：环境与地面材质。两者都是「加法」，失败即回落到 M11 的画面
     if (this.art) {
@@ -353,7 +353,7 @@ export class TestbedScene {
       }
     }
     this.scene.add(this.view.group);
-    this.addGrid();
+    if (!this.art) this.addGrid();
     this.addLights();
 
     this.move = createMovementState(stage.spawn.position, stage.spawn.yaw);
@@ -545,6 +545,8 @@ export class TestbedScene {
      */
     this.combat.onSwingHit = (attackerId) => {
       this.viewFor(attackerId)?.playMeleeSwing();
+      const attacker = this.combat.allEntities().find((entity) => entity.id === attackerId);
+      if (attacker) this.spellVfx?.onWeaponSwing(attacker, attacker.weaponId);
       audio.playVariant('swing', { volume: 0.45, ...audioDeps.positionOf(attackerId) });
     };
 
@@ -603,7 +605,9 @@ export class TestbedScene {
       getAccessibility: () => this.access,
       setAccessibility: (next) => this.setAccessibility(next),
       getQuality: () => this.quality.current,
-      setQuality: (tier) => this.shell.setQualityTier(tier, this.sun, this.decorRenderer),
+      setQuality: (tier) => this.shell.setQualityTier(tier, this.sun, this.decorRenderer, this.mapRenderer),
+      getGraphics: () => this.shell.graphics,
+      setGraphics: (next) => this.shell.setGraphics(next),
       bindings: () => this.input.getBindings(),
       rebind: (action, code) => rebindCtl.rebind(action, code),
       resetBindings: () => rebindCtl.reset(),
@@ -678,6 +682,7 @@ export class TestbedScene {
       undefined,
       // 顿帧：只缩放渲染 dt。模拟步/输入采样在 GameLoop 里恒用真实 dt
       (realDt) => this.hitStop.scale(realDt),
+      () => this.shell.graphics.frameRate,
     );
   }
 
@@ -817,6 +822,7 @@ export class TestbedScene {
 
   dispose(): void {
     this.loop.stop();
+    this.combat.dispose();
     this.canvas.removeEventListener('mousedown', this.onCanvasMouseDown);
     window.removeEventListener('mousemove', this.onPointerMove);
     this.deathOverlay?.remove();
@@ -1096,7 +1102,7 @@ export class TestbedScene {
       //  （浮字/闪白/屏闪/音效分层/震动/顿帧一处定序），见 onCombatEvent 的分流
       case 'heal': {
         // 暴击治疗放大浮字（HitFeedback.onHeal 统一处理）
-        this.feedback.onHeal({ targetId: ev.targetId, amount: ev.amount, crit: ev.crit === true });
+        this.feedback.onHeal({ targetId: ev.targetId, sourceId: ev.sourceId, amount: ev.amount, crit: ev.crit === true });
         break;
       }
       case 'shieldBroken': {
@@ -1208,7 +1214,11 @@ export class TestbedScene {
    *   不是写死的演示数据 —— 旗帜状态、旗手姓名、聚焦层数全部来自 flag.ts。
    *   附录A#7：不能用占位图冒充完成。
    */
+  private lastPanelUpdate = 0;
   private updateHudPanels(): void {
+    const now = performance.now();
+    if (now - this.lastPanelUpdate < 100) return;
+    this.lastPanelUpdate = now;
     const player = this.combat.player;
 
     // 15.1 左侧：己方队友。试验场里只有玩家自己一个人在红队
@@ -1282,12 +1292,14 @@ export class TestbedScene {
 
   private addLights(): void {
     // three r155+ 默认使用物理光照单位，强度不要照搬旧版数值 —— 容易直接过曝成白板
-    this.scene.add(new THREE.HemisphereLight(0xa8bcd8, 0x3a4250, 0.85));
+    this.scene.add(new THREE.HemisphereLight(this.art ? 0xeaf3ff : 0xa8bcd8, this.art ? 0x718b87 : 0x3a4250, this.art ? 0.9 : 0.85));
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.12));
-    const sun = new THREE.DirectionalLight(0xfff0dd, 1.1);
+    const sun = new THREE.DirectionalLight(this.art ? 0xfffaf2 : 0xfff0dd, this.art ? 1.7 : 1.1);
     this.sun = sun;
-    sun.position.set(24, 40, 16);
+    sun.position.set(this.art ? -24 : 24, 40, this.art ? 22 : 16);
     this.quality.applyToLight(sun);
+    sun.shadow.bias = -0.0002;
+    sun.shadow.normalBias = 0.06;
     const c = sun.shadow.camera;
     c.left = -45;
     c.right = 45;
@@ -1346,7 +1358,7 @@ export class TestbedScene {
     }
     if (input.pressed.has(Action.CycleQuality)) {
       // 14.4 的档位取舍与「不藏关键元素」纪律见 SceneShell.setQualityTier 注释
-      const tier = this.shell.cycleQualityTier(this.sun, this.decorRenderer);
+      const tier = this.shell.cycleQualityTier(this.sun, this.decorRenderer, this.mapRenderer);
       console.info(`[画质] ${tier}`);
     }
 
@@ -1621,7 +1633,7 @@ export class TestbedScene {
       // ★ P4：画布高走缓存 —— 直接读 `clientHeight` 会在这一帧的 HUD 写入之后
       //   强制一次同步重排（理由与代价见 render/canvasSize.ts）
       pointScale:
-        canvasSize(this.canvas).h /
+        this.canvas.height /
         (2 * Math.tan((this.cam.camera.fov * Math.PI) / 360)),
       now: this.combat.world.time,
       cameraPosition: this.cam.camera.position,
@@ -1648,7 +1660,7 @@ export class TestbedScene {
     this.flagMarkers.update(this.ctf?.views() ?? [], this.elapsed);
     this.updateTargetRings(rendered);
     this.updateHudPanels();
-    this.renderer.render(this.scene, this.cam.camera);
+    this.shell.render();
     // ★ 喂的是 `hudView` 而不是 director 本身 —— 差别只有 X17 的光环行
     this.hud.update(this.hudView, this.cam.camera, this.canvas, dt);
 

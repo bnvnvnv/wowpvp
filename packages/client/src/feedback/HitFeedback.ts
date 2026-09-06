@@ -51,6 +51,7 @@ export interface HitEvent {
 export interface TargetViewLike {
   flashHit(strength?: number, seconds?: number, color?: number): void;
   playHitReact?(): void;
+  kickImpact?(direction: { x: number; z: number } | undefined, strength: number): void;
   /** P6：规避反应 —— 招架/格挡抬手（Block 片段），闪避程序化侧闪。可缺席同上 */
   playAvoidReact?(kind: 'dodge' | 'parry' | 'block'): void;
 }
@@ -89,6 +90,7 @@ export interface HitFeedbackDeps {
   /** 14.2 命中爆发。?art=off 时缺席 */
   vfxDamage?: (ev: {
     targetId: EntityId; amount: number; school: School; immune: boolean;
+    sourceId?: EntityId | undefined; skillId?: string | undefined;
     avoided?: 'dodge' | 'parry' | 'block' | undefined; tier: ImpactTier;
   }) => void;
   /**
@@ -127,6 +129,8 @@ export class HitFeedback {
    */
   private lastCritSoundAt = -Infinity;
   private now = 0;
+  private traumaWindowAt = -Infinity;
+  private traumaInWindow = 0;
   /** 诊断只读：本场景累计看到的暴击数（diag-feel 断言 > 0）*/
   critsSeen = 0;
   /** 诊断只读：创伤峰值（clamp 前的原始请求值取 max）*/
@@ -161,8 +165,15 @@ export class HitFeedback {
     if (ev.crit) this.critsSeen++;
 
     // ── 2. 浮字（开关在 FloatingNumbers 内部，这里不判断）────────
-    if (at) {
-      if (ev.immune) d.floaters.push('免疫', 'immune', at);
+    const personal = onSelf || bySelf;
+    if (at && (personal || self === undefined || d.access().otherCombatNumbers)) {
+      if (!personal) {
+        const text = ev.immune ? '免疫' : ev.avoided
+          ? { dodge: '闪避', parry: '招架', block: '格挡' }[ev.avoided]
+          : ev.amount > 0 ? `${ev.amount}${ev.crit ? '!' : ''}`
+          : ev.absorbed > 0 ? `吸收 ${ev.absorbed}` : '';
+        if (text) d.floaters.push(`他人 ${text}`, 'otherDamage', at);
+      } else if (ev.immune) d.floaters.push('免疫', 'immune', at);
       else if (ev.avoided) {
         d.floaters.push(
           { dodge: '闪避', parry: '招架', block: '格挡' }[ev.avoided], 'miss', at,
@@ -171,10 +182,10 @@ export class HitFeedback {
         if (ev.crit) {
           // 「!」是第三条通道（字形）：颜色 + 尺寸 + 字形，色盲/小屏下都剩两条
           // X10 追加轮拍板：打别人的暴击橙黄、**自己挨的暴击红色** —— 谁在爆谁一眼分清
-          d.floaters.push(`${ev.amount}!`, onSelf ? 'critTaken' : 'crit', at);
+          d.floaters.push(`${onSelf ? '-' : ''}${ev.amount}!`, onSelf ? 'critTaken' : 'crit', at);
         } else {
           d.floaters.push(
-            String(ev.amount), 'damage', at,
+            `${onSelf ? '-' : ''}${ev.amount}`, onSelf ? 'damageTaken' : 'damage', at,
             tier === 'heavy' || tier === 'kill' ? { peakScale: HEAVY_PEAK } : {},
           );
         }
@@ -186,6 +197,7 @@ export class HitFeedback {
     // ── 3. 粒子（SpellVfx 按 tier 放大，?art=off 时整体缺席）────
     d.vfxDamage?.({
       targetId: ev.targetId, amount: ev.amount, school: ev.school,
+      sourceId: ev.sourceId, skillId: ev.skillId,
       immune: ev.immune, avoided: ev.avoided, tier,
     });
 
@@ -208,6 +220,11 @@ export class HitFeedback {
          *   踉跄会误导）、昏迷/落地/死亡不播、冷却防刷屏。
          */
         if (tier !== 'light') view.playHitReact?.();
+        if (tier !== 'light') {
+          const source = ev.sourceId !== undefined ? d.headOf(ev.sourceId) : undefined;
+          view.kickImpact?.(at && source ? { x: at.x - source.x, z: at.z - source.z } : undefined,
+            tier === 'normal' ? 0.09 : ev.crit ? 0.18 : 0.14);
+        }
       }
     }
 
@@ -283,7 +300,14 @@ export class HitFeedback {
           : 0;
       if (trauma > 0) {
         this.traumaPeak = Math.max(this.traumaPeak, trauma);
-        d.addTrauma(trauma);
+        if (this.now - this.traumaWindowAt > 0.07) {
+          this.traumaWindowAt = this.now;
+          this.traumaInWindow = 0;
+        }
+        // One area attack can hit many targets in a frame; keep its strongest camera impulse.
+        const extra = Math.max(0, trauma - this.traumaInWindow);
+        this.traumaInWindow = Math.max(this.traumaInWindow, trauma);
+        if (extra > 0) d.addTrauma(extra);
       }
       if ((onSelf || bySelf) && this.deps.access().hitStop) {
         d.hitStop.trigger(HIT_STOP.DURATION[tier]);
@@ -308,14 +332,17 @@ export class HitFeedback {
   }
 
   /** 治疗反馈：暴击治疗放大浮字（沿用 fn-heal 的绿色，不新增 CSS 类）*/
-  onHeal(ev: { targetId: EntityId; amount: number; crit: boolean }): void {
+  onHeal(ev: { targetId: EntityId; sourceId?: EntityId | undefined; amount: number; crit: boolean }): void {
     if (ev.amount <= 0) return;
     const at = this.deps.headOf(ev.targetId);
     if (!at) return;
+    const self = this.deps.selfId();
+    const personal = ev.targetId === self || (ev.sourceId !== undefined && ev.sourceId === self);
+    if (!personal && self !== undefined && !this.deps.access().otherCombatNumbers) return;
     this.deps.floaters.push(
-      ev.crit ? `+${ev.amount}!` : `+${ev.amount}`,
-      'heal', at,
-      ev.crit ? { peakScale: 1.6 } : {},
+      `${personal ? '' : '他人 '}+${ev.amount}${ev.crit ? '!' : ''}`,
+      personal ? 'heal' : 'otherDamage', at,
+      ev.crit && personal ? { peakScale: 1.6 } : {},
     );
   }
 

@@ -17,7 +17,7 @@
  */
 
 import * as THREE from 'three';
-import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
+import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { isVisible, type QualityTier } from './quality.js';
 
 /** 可用的环境预设 → HDR 文件名（不含 `_1k` / `_2k` 与扩展名）*/
@@ -126,7 +126,7 @@ export class Environment {
     }
     this.loadingUrl = url;
     try {
-      const hdr = await new RGBELoader().loadAsync(url);
+      const hdr = await new HDRLoader().loadAsync(url);
       if (this.disposed) { hdr.dispose(); return; }
       // 加载期间画质又降了 → 丢弃，别把低画质的场景又点亮
       if (this.loadingUrl !== url) { hdr.dispose(); return; }
@@ -195,6 +195,7 @@ export const loadGroundTextures = async (
   kind: GroundTexture,
   /** 平铺次数。地图是米制，一般取「边长 / 4 米」*/
   repeat: number,
+  albedoOnly = false,
 ): Promise<{
   map: THREE.Texture;
   normalMap?: THREE.Texture;
@@ -218,6 +219,7 @@ export const loadGroundTextures = async (
 
   const map = await one('Color', true);
   if (!map) return undefined; // 底色都没有就整套放弃，别出现「只有法线的黑地面」
+  if (albedoOnly) return { map };
   const [normalMap, roughnessMap] = await Promise.all([
     one('NormalGL', false),
     one('Roughness', false),

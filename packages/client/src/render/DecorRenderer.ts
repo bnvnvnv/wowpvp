@@ -16,6 +16,7 @@ import * as THREE from 'three';
 import type { MapDecorDef } from '@wowpvp/shared';
 import { ModelLibrary } from '../entity/ModelLibrary.js';
 import { isVisible, type QualityTier } from './quality.js';
+import { instanceStaticMeshes } from './staticBatch.js';
 
 export interface DecorStatus {
   /** 数据里登记了几件 */
@@ -30,6 +31,7 @@ export class DecorRenderer {
   readonly group = new THREE.Group();
   private loaded = 0;
   private disposed = false;
+  private tier: QualityTier = 'medium';
 
   constructor(private readonly decor: readonly MapDecorDef[]) {
     this.group.name = 'map-decor';
@@ -39,20 +41,31 @@ export class DecorRenderer {
   private async load(): Promise<void> {
     const lib = ModelLibrary.instance;
     if (!lib) return; // ?art=off：ModelLibrary 没 init，一件都不摆
+    const meshes: THREE.Mesh[] = [];
     await Promise.all(this.decor.map(async (d) => {
       const g = await lib.sceneModel(d.model);
       if (!g || this.disposed) return;
       g.position.set(d.position.x, d.position.y, d.position.z);
       g.rotation.y = d.yaw ?? 0;
       if (d.scale !== undefined) g.scale.multiplyScalar(d.scale);
-      this.group.add(g);
+      g.updateMatrixWorld(true);
+      g.traverseVisible((o) => {
+        if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh);
+      });
       this.loaded++;
     }));
+    if (this.disposed) return;
+    this.group.add(instanceStaticMeshes(meshes));
+    this.applyQuality(this.tier);
   }
 
   /** 14.4：低画质隐藏整组（环境叶片档）。切档时由场景调一次 */
   applyQuality(tier: QualityTier): void {
+    this.tier = tier;
     this.group.visible = isVisible('foliage', tier);
+    this.group.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) o.castShadow = tier === 'high';
+    });
   }
 
   status(): DecorStatus {
@@ -61,5 +74,9 @@ export class DecorRenderer {
 
   dispose(): void {
     this.disposed = true;
+    this.group.traverse((o) => {
+      if ((o as THREE.InstancedMesh).isInstancedMesh) (o as THREE.InstancedMesh).dispose();
+    });
+    this.group.clear();
   }
 }

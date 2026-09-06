@@ -10,7 +10,7 @@
  */
 
 import * as THREE from 'three';
-import { GEOMETRY } from '@wowpvp/shared';
+import { GEOMETRY, getClass, type ClassId } from '@wowpvp/shared';
 import { ModelLibrary } from '../entity/ModelLibrary.js';
 
 /** 转台角速度，弧度/秒。慢到能看清正反面，快到不用等 */
@@ -50,25 +50,45 @@ export class ClassPreview {
     // 加载期间用户又点了别的卡片 —— 这份结果作废
     if (this.wanted !== classId) return this.model !== undefined;
     if (!character) return false;
+    const cls = getClass(classId as ClassId);
+    if (cls) {
+      const weapon = await lib.weaponFor(cls.defaultWeaponId);
+      if (this.wanted !== classId) return false;
+      if (weapon.right) character.handR?.add(weapon.right);
+      if (weapon.left) character.handL?.add(weapon.left);
+    }
 
     this.clearModel();
     this.model = character.root;
     // ModelLibrary 出厂时把模型转成面向 -Z（游戏里的「前方」）；
     // 预览镜头在 +Z，转回 0 让角色**开场面对镜头**，转台从脸开始转
-    this.model.rotation.y = 0;
+    this.model.rotation.y = Math.PI;
     this.scene.add(this.model);
 
     const idle = character.clips.find((c) => c.name === 'Idle') ?? character.clips[0];
     if (idle) {
       this.mixer = new THREE.AnimationMixer(this.model);
       this.mixer.clipAction(idle).play();
+      this.mixer.update(0.2);
     }
+    this.model.updateMatrixWorld(true);
+    this.model.traverse(node => {
+      if (node instanceof THREE.SkinnedMesh) node.skeleton.update();
+    });
+    const bounds = new THREE.Box3().setFromObject(this.model, true);
+    const center = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3());
+    const halfFrame = Math.max(size.y / 2, size.x / (2 * this.cam.aspect));
+    const distance = halfFrame / Math.tan(THREE.MathUtils.degToRad(this.cam.fov / 2));
+    this.cam.position.set(center.x, center.y, center.z + distance * 1.15 + size.z / 2);
+    this.cam.lookAt(center);
     this.startLoop();
     return true;
   }
 
   /** 离开选职业页：停渲染循环（GPU 归零），模型留着下次直接续 */
   stop(): void {
+    this.wanted = undefined;
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
   }
@@ -86,7 +106,11 @@ export class ClassPreview {
       try {
         this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: true });
         this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-        this.renderer.setSize(this.canvas.clientWidth || 260, this.canvas.clientHeight || 320, false);
+        const width = this.canvas.clientWidth || 260;
+        const height = this.canvas.clientHeight || 320;
+        this.renderer.setSize(width, height, false);
+        this.cam.aspect = width / height;
+        this.cam.updateProjectionMatrix();
       } catch {
         return undefined; // WebGL 不可用 —— 与素材缺失同一种缺席方式
       }
@@ -106,6 +130,8 @@ export class ClassPreview {
     this.lastMs = performance.now();
     const frame = (now: number): void => {
       this.raf = requestAnimationFrame(frame);
+      if (document.hidden) { this.lastMs = now; return; }
+      if (now - this.lastMs < 1000 / 30 - 1) return;
       const dt = Math.min(0.1, (now - this.lastMs) / 1000);
       this.lastMs = now;
       if (this.model) this.model.rotation.y += dt * TURNTABLE_SPEED;

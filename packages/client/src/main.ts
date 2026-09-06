@@ -17,7 +17,8 @@ import './av/signatures/index.js';
 import { probeIconAssets } from './hud/skillIcon.js';
 import { artEnabled } from './settings/artMode.js';
 import { TestbedScene, type DebugInfo } from './scenes/TestbedScene.js';
-import { TESTBED_STAGE, TUTORIAL_STAGE, stressStage } from './scenes/stages.js';
+import { TESTBED_STAGE, TUTORIAL_STAGE, PRACTICE_STAGE, stressStage } from './scenes/stages.js';
+import './hud/combat.css';
 
 // M12：探测素材目录是否可用。不 await —— 场景启动不等它，
 // 探测成功后下一次 HUD 重建（≤50ms）自然切到真实图标。
@@ -212,7 +213,8 @@ const makePaintStress = (stats: HTMLElement): ((d: DebugInfo) => void) => {
  */
 const params = new URLSearchParams(location.search);
 const room = params.get('net');
-const serverUrl = params.get('server') ?? `ws://${location.hostname}:8080`;
+const serverUrl = params.get('server') ?? import.meta.env.VITE_GAME_SERVER
+  ?? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.hostname}:${import.meta.env.VITE_GAME_PORT || 8080}`;
 
 if (room !== null) {
   const canvas = mountSceneDom();
@@ -255,7 +257,7 @@ if (room !== null) {
   const stressMode = params.has('stress');
   const stage = stressMode
     ? stressStage(Number(stressParam) > 0 ? Number(stressParam) : undefined)
-    : tutorialMode ? TUTORIAL_STAGE : TESTBED_STAGE;
+    : tutorialMode ? TUTORIAL_STAGE : params.has('combat') ? PRACTICE_STAGE : TESTBED_STAGE;
   /**
    * P5：`?class=<职业id>` 在试验场直接玩别的职业（`?class=warrior&bot=hard`）。
    * 不带 class 仍是法师（验收初始条件）。非法职业 id 静默回落法师。
@@ -280,6 +282,15 @@ if (room !== null) {
   if (practiceMode) {
     document.getElementById('help')?.remove();
     document.getElementById('stats')?.remove();
+    const modeBar = document.createElement('div');
+    modeBar.id = 'practice-mode-bar';
+    const label = document.createElement('span');
+    label.textContent = '训练场 · 无限复活 · 不计胜负';
+    const leave = document.createElement('button');
+    leave.textContent = '返回大厅';
+    leave.addEventListener('click', () => { location.href = location.pathname; });
+    modeBar.append(label, leave);
+    app.appendChild(modeBar);
   }
   /**
    * C8：`&grace` 由大厅「开始练习」拼进来（A5）。★ 5 秒是**占位值** ——
@@ -298,6 +309,7 @@ if (room !== null) {
     botDifficulty,
     { ctfDemo: !practiceMode, graceSeconds },
   );
+  document.title = `${practiceMode ? '训练场 · ' : ''}${stage.map.name} · wowpvp`;
   /**
    * `#help` 的战斗段改成从**真实技能栏 + 真实键位**生成（见 combatHelpHtml）。
    * 练习场已经把 `#help` 整个 remove 了，所以这里查不到就跳过。

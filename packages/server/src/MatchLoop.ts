@@ -36,6 +36,8 @@ import {
   buildSnapshot,
   buildSelfState,
   buyFfaOffer,
+  buyBattleOffer,
+  battleShopFor,
   cancelCast,
   cancelFlagInteract,
   chooseFromArmory,
@@ -101,7 +103,8 @@ export type MatchCommand =
   | { t: 'OpenArmory'; armoryId: number }
   | { t: 'ChooseArsenal'; armoryId: number; choice: ArsenalChoice }
   /** P13 大乱斗积分商店的兑换。★ 与开箱/领取同规矩：排队，不是收到就改世界 */
-  | { t: 'FfaBuy'; offerId: string };
+  | { t: 'FfaBuy'; offerId: string }
+  | { t: 'BattleBuy'; offerId: string };
 
 import { takeExpired, type ReconnectRegistry } from './room/reconnect.js';
 import type { Session } from './room/Session.js';
@@ -407,7 +410,7 @@ export class MatchLoop {
      *   而「商店只在开局发一次」这种事，靠调用方记得就迟早会漏
      *   （本仓库「规则写对了、没有人调用它」那一家的预防）。
      */
-    if (this.tick === 1 && this.match.ffa) {
+    if (this.tick === 1 && (this.match.ffa || this.match.battleground)) {
       for (const entityId of this.match.playerOf.keys()) this.shopDirty.add(entityId);
     }
 
@@ -548,6 +551,10 @@ export class MatchLoop {
     }
 
     if (result.boss) this.applyBoss(result.boss, outbound);
+    for (const reward of result.battleRewards ?? []) {
+      this.shopDirty.add(reward.entityId);
+      this.sessionOfEntity(reward.entityId)?.send({ t: 'BattleReward', amount: reward.amount, reason: reward.reason });
+    }
 
     this.settleExpiredReconnects();
     this.dispatch(outbound);
@@ -1023,6 +1030,18 @@ export class MatchLoop {
          *   装备段里，新余额由 `flushShop()` 的 `FfaShop` 带 ——
          *   再发一条「你买到了」就是第三个真相源。
          */
+        case 'BattleBuy': {
+          const battle = this.match.battleground;
+          const loadout = this.match.loadouts.get(e.id);
+          if (!battle || !loadout) {
+            this.sessionOfEntity(e.id)?.reject('BattleBuy', '本模式没有战场商店');
+            break;
+          }
+          const result = buyBattleOffer(battle, e, loadout, this.match.map, cmd.offerId, this.match.world.time);
+          if (!result.ok) this.sessionOfEntity(e.id)?.reject('BattleBuy', result.reason);
+          else this.shopDirty.add(e.id);
+          break;
+        }
         case 'FfaBuy': {
           const ffa = this.match.ffa;
           if (!ffa) {
@@ -1150,11 +1169,18 @@ export class MatchLoop {
   /** 给一个人私信他的货架与余额。★ 人机跳过 —— BotSocket 反正把它丢掉 */
   private sendShop(entityId: EntityId): void {
     const ffa = this.match.ffa;
-    if (!ffa) return;
+    const battle = this.match.battleground;
+    if (!ffa && !battle) return;
     const session = this.sessionOfEntity(entityId);
     if (!session || session.isBot) return;
     const e = this.match.world.entities.get(entityId);
     if (!e) return;
+    if (battle) {
+      session.send({ t: 'BattleShop', balance: battle.experience.get(entityId) ?? 0,
+        earned: battle.earned.get(entityId) ?? 0, offers: battleShopFor(e.classId) });
+      return;
+    }
+    if (!ffa) return;
     session.send({
       t: 'FfaShop',
       balance: ffa.points.get(entityId) ?? 0,
@@ -1171,7 +1197,7 @@ export class MatchLoop {
    *   那期间他的面板是空的。这条补发是它必须存在的理由。
    */
   sendShopTo(playerId: string): void {
-    if (!this.match.ffa) return;
+    if (!this.match.ffa && !this.match.battleground) return;
     const entityId = this.match.entityOf.get(playerId);
     if (entityId !== undefined) this.sendShop(entityId);
   }
@@ -1427,6 +1453,11 @@ export class MatchLoop {
       // 10.2 掉落物 + 10.4 军械点。★ 经典竞技场里这两个数组恒空（验收 #28）
       arsenal: m.arsenal,
       ...(m.ctf ? { ctf: m.ctf.state } : {}),
+      ...(m.arena ? { arena: m.arena } : {}),
+      ...(m.boss ? { boss: m.boss } : {}),
+      ...(m.ffa ? { ffa: { killTarget: m.ffa.killTarget, leaders: statsRows(m.stats)
+        .sort((a, b) => b.kills - a.kills).slice(0, 3)
+        .map(row => ({ name: row.name, kills: row.kills })) } } : {}),
       // 12.6 复活波次倒计时（W12：夺旗 HUD 与死亡遮罩都读它）
       ...(m.respawn ? { respawn: m.respawn } : {}),
       // P11 波2：非快照 tick 攒下的瞬移（advance 里累积，广播后清空）
@@ -1874,7 +1905,7 @@ export const referencedEntities = (msg: ServerMessage): EntityId[] => {
     //      形状里只有 skillId 与 waited，零实体引用
     case 'Welcome': case 'QueueStatus': case 'RoomState': case 'RoomList':
     case 'MatchStart': case 'Snapshot':
-    case 'EntityMeta': case 'FfaShop':
+    case 'EntityMeta': case 'FfaShop': case 'BattleShop': case 'BattleReward':
     case 'CastFailed': case 'CastQueueExpired': case 'ArsenalOffer': case 'PickupResult':
     case 'RoundEnd': case 'MatchEnd': case 'MatchStats': case 'Rejected':
     case 'PeerDisconnected': case 'PeerReconnected': case 'PeerEliminated':

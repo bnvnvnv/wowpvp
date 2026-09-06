@@ -812,9 +812,8 @@ describe('W24 收口：装备视图 / 记账 / 存活性 / 赛后', () => {
     forceMatchEnd('e6', host.all('MatchStart')[0]!.you as number);
     await watcher.waitForNth('MatchEnd');
 
-    const before = watcher.all('RoomState').length;
     watcher.send({ t: 'SelectTeam', team: 'blue' });
-    const state = await watcher.waitForNth('RoomState', before + 1);
+    const state = await watcher.waitForRoomState(s => !s.started && s.players.some(p => p.name === '观众' && p.team === 'blue'));
     expect(watcher.all('Rejected'), '两队都被人机占着 —— 观战者一个席位都选不到').toHaveLength(0);
     expect(state.players.find((p) => p.name === '观众')?.team).toBe('blue');
 

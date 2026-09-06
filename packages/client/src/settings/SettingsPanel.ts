@@ -30,6 +30,7 @@ import type { SkillDef } from '@wowpvp/shared';
 import { Action, DEFAULT_BINDINGS } from '../input/InputManager.js';
 import type { RebindOutcome } from './keybindings.js';
 import { skillIconHtml } from '../hud/skillIcon.js';
+import { FRAME_RATES, type GraphicsPreferences } from '../render/graphics.js';
 
 export interface SettingsPanelHooks {
   /** 场景的无障碍唯一入口（应用 + 持久化）。大厅传「存盘 + 应用缩放」的自家实现 */
@@ -38,6 +39,8 @@ export interface SettingsPanelHooks {
   /** 画质（只有场景有；大厅不传则不显示该组）*/
   getQuality?: () => QualityTier;
   setQuality?: (tier: QualityTier) => void;
+  getGraphics?: () => GraphicsPreferences;
+  setGraphics?: (next: GraphicsPreferences) => void;
   /** 键位表。不传用默认表（大厅没有 InputManager）*/
   bindings?: () => Readonly<Record<Action, string>>;
   /**
@@ -321,6 +324,12 @@ export class SettingsPanel {
             .map((t) => `<option value="${t}" ${this.hooks.getQuality!() === t ? 'selected' : ''}>${TIER_TEXT[t]}</option>`)
             .join('')}</select>`)
       : '';
+    const graphics = this.hooks.getGraphics?.();
+    const graphicsRows = graphics
+      ? row('帧率上限', `<select data-frame-rate aria-label="帧率上限">${FRAME_RATES.map((rate) =>
+        `<option value="${rate}" ${graphics.frameRate === rate ? 'selected' : ''}>${rate} FPS</option>`).join('')}</select>`)
+        + row('动态分辨率', toggle('data-adaptive-resolution aria-label="动态分辨率"', graphics.adaptiveResolution))
+      : '';
 
     const bindings = (this.hooks.bindings?.() ?? DEFAULT_BINDINGS);
     // W7：给了 rebind 钩子才可点；否则退回只读展示（大厅路径）
@@ -393,6 +402,7 @@ export class SettingsPanel {
       ${volumeRows}
       ${row('静音（M）', toggle('data-mute', audio.isMuted))}
       ${quality}
+      ${graphicsRows}
       ${head('无障碍（17.2）')}
       ${row('色盲滤镜（F3）', `<select data-acc-select="colorblind">
         ${Object.values(ColorblindMode)
@@ -406,10 +416,12 @@ export class SettingsPanel {
           .map((t) => `<option value="${t}" ${a.effectQuality === t ? 'selected' : ''}>${TIER_TEXT[t]}</option>`)
           .join('')}</select>`)}
       ${row('伤害数字', toggle('data-acc-toggle="damageNumbers"', a.damageNumbers))}
+      ${row('其他玩家的战斗数字', toggle('data-acc-toggle="otherCombatNumbers"', a.otherCombatNumbers))}
       ${row('屏幕闪烁', toggle('data-acc-toggle="screenFlash"', a.screenFlash))}
       ${row('武器粒子', toggle('data-acc-toggle="weaponParticles"', a.weaponParticles))}
       ${row('打击顿帧', toggle('data-acc-toggle="hitStop"', a.hitStop))}
       ${head('控制')}
+      ${graphics ? row('鼠标灵敏度', slider('data-mouse-sensitivity aria-label="鼠标灵敏度"', graphics.mouseSensitivity, 0.25, 2.5, 0.05)) : ''}
       ${row('指针锁定', toggle('data-acc-toggle="pointerLock"', a.pointerLock))}
       <div style="opacity:.55;font-size:12px;margin:0 0 2px">开启后右键转身不再被屏幕边缘卡住（光标交给游戏，Esc 可随时取回）</div>
       ${skillBarSection}
@@ -442,6 +454,19 @@ export class SettingsPanel {
     }
     if (d['quality'] !== undefined) {
       this.hooks.setQuality?.(t.value as QualityTier);
+      return;
+    }
+    const graphics = this.hooks.getGraphics?.();
+    if (graphics && d['mouseSensitivity'] !== undefined) {
+      this.hooks.setGraphics?.({ ...graphics, mouseSensitivity: Number(t.value) });
+      return;
+    }
+    if (graphics && d['frameRate'] !== undefined) {
+      this.hooks.setGraphics?.({ ...graphics, frameRate: Number(t.value) });
+      return;
+    }
+    if (graphics && d['adaptiveResolution'] !== undefined) {
+      this.hooks.setGraphics?.({ ...graphics, adaptiveResolution: (t as HTMLInputElement).checked });
       return;
     }
 

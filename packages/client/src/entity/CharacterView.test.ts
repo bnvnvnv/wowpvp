@@ -79,6 +79,25 @@ const mountView = async (clips: THREE.AnimationClip[], classId = 'mage'): Promis
   return view;
 };
 
+describe('contact feedback', () => {
+  it('keeps an attack playing while recoil affects only the visible model', async () => {
+    const view = await mountView(FULL_CLIPS(), 'warrior');
+    view.setWeapon('warrior.sword_shield');
+    view.setTransform({ x: 5, y: 0, z: 8 }, 0);
+    view.playMeleeSwing();
+    view.playHitReact();
+    const internal = view as unknown as { overrideKind: string; impactRig: THREE.Group };
+    expect(internal.overrideKind).toBe('swing');
+    view.kickImpact({ x: 1, z: 0 }, 0.14);
+    view.update(1 / 60);
+    expect(view.group.getObjectByProperty('uuid', internal.impactRig.uuid)).toBe(internal.impactRig);
+    expect(Math.abs(internal.impactRig.rotation.z)).toBeGreaterThan(0.05);
+    expect(view.group.position.toArray()).toEqual([5, 0, 8]);
+    view.update(0.4);
+    expect(internal.impactRig.rotation.z).toBeCloseTo(0, 10);
+  });
+});
+
 /** 自上次 `clipSpy.mockClear()` 以来被送进 mixer 的片段名 */
 const playedClips = (): string[] =>
   (clipSpy.mock.calls as unknown as THREE.AnimationClip[][]).map((c) => c[0]?.name ?? '');

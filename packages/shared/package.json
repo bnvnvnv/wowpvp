@@ -10,10 +10,14 @@
     ".": "./src/index.ts",
     "./data": "./src/data/index.ts",
     "./math": "./src/math/index.ts",
-    "./sim": "./src/sim/index.ts"
+    "./sim": "./src/sim/index.ts",
+    "./navigation": "./src/navigation/index.ts"
   },
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --noEmit false"
+  },
+  "dependencies": {
+    "recast-navigation": "^0.43.1"
   }
 }

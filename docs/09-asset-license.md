@@ -132,6 +132,12 @@
 |---|---|---|---|---|---|---|---|---|---|---|
 | `assets/art/**` | **GH** | world-of-claudecraft 美术包 | 多作者（见上游 CREDITS） | https://github.com/levy-street/world-of-claudecraft | GitHub 已公开分发（混合上游许可） | 建议见 CREDITS | 本项目允许 | 视上游 | **是（本项目政策）** | 2026-07-31 |
 | `assets/music/**` | **GH** | world-of-claudecraft 音频包 | 多作者（见上游 CREDITS） | https://github.com/levy-street/world-of-claudecraft | GitHub 已公开分发（混合上游许可） | 建议见 CREDITS | 本项目允许 | 视上游 | **是（本项目政策）** | 2026-07-31 |
+| `assets/art/models/weapons/custom/royal_*_v1.glb` | **T3** | 王冠剑盾样板 | 本项目 | `scripts/blender/build_royal_armory.py` | MIT | 保留许可 | 是 | 是 | 是 | 2026-09-06 |
+| `assets/source/**` | **T3** | 自制模型 Blender 源文件 | 本项目 | `scripts/blender/` | MIT | 保留许可 | 是 | 是 | 是 | 2026-09-06 |
+| `assets/art/ui/screens/royal-armory-v1.png` | **T3** | 王冠剑盾渲染图 | 本项目 | `scripts/blender/build_royal_armory.py` | MIT | 保留许可 | 是 | 是 | 是 | 2026-09-06 |
+
+具体自制路径优先于上面的 `assets/art/**` 上游目录总登记；新版战士截图混合使用
+上游角色与本项目剑盾，角色来源仍按上游登记。详见 `assets/SOURCE.md`。
 
 明细见 `assets/SOURCE.md`、`assets/CREDITS-world-of-claudecraft.md`。
 

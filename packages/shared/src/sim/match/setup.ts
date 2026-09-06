@@ -57,6 +57,7 @@ import type { CastIntent, TickDeps } from '../tick.js';
 import { addEntity, allocEntityId, createWorld, listEntities, type World } from '../world.js';
 import { createArena, teamSizeOf, teamWiped, type ArenaState } from './arena.js';
 import { createFfa, type FfaState } from './ffa.js';
+import { battlegroundSupplySites, createBattleground, type BattlegroundState } from './battleground.js';
 import { createCtf, type CtfDeps, type CtfState } from './flag.js';
 import { createRespawn, type RespawnState } from './respawn.js';
 import { Slot, type Room, type RoomPlayer } from './room.js';
@@ -73,6 +74,7 @@ import { Slot, type Room, type RoomPlayer } from './room.js';
  *   那两个是**每 tick 现攒**的，属于循环，不属于比赛状态。
  */
 export interface Match {
+  mode?: GameMode;
   map: MapDef;
 
   world: World;
@@ -114,6 +116,7 @@ export interface Match {
    * stats）；积分/连杀记账在 sim/match/ffa.ts —— 数值只有那一个文件。
    */
   ffa?: FfaState;
+  battleground?: BattlegroundState;
   /**
    * 房主开了「随机大 BOSS」才有（`RoomConfig.bossEnabled`，默认关；
    * 大乱斗一键房默认开 —— 见 createMatch 的 ffa 收尾）。
@@ -291,6 +294,7 @@ export const createMatch = (room: Room, map: MapDef): Match => {
     swaps: createSwapStore(),
     pickups: createPickupStore(),
     arsenal: createArsenalStore(room.config.preset),
+    mode: room.config.mode,
     movement,
     stats,
     swings: createSwingStore(),
@@ -316,6 +320,7 @@ export const createMatch = (room: Room, map: MapDef): Match => {
     }
     match.respawn = createRespawn(exitsByTeam, 0, false, FFA.RESPAWN_SECONDS);
   } else if (map.family === 'ctf') {
+    match.battleground = createBattleground();
     const flagOf = (team: TeamId): Vec3 =>
       map.flags!.find((f) => f.team === team)!.position;
 
@@ -373,13 +378,14 @@ export const createMatch = (room: Room, map: MapDef): Match => {
    * ★ 掉落半径取地图**内切半径的八成**，留出贴墙的一圈不刷货：
    *   贴着墙刷出来的东西会有一半卡在墙里够不着。
    */
-  if (map.family === 'ffa') {
+  if (map.family === 'ffa' || map.family === 'ctf') {
     const halfX = (map.bounds.max.x - map.bounds.min.x) / 2;
     const halfZ = (map.bounds.max.z - map.bounds.min.z) / 2;
     setupPartyDrops(match.arsenal, {
       // ★ 用世界种子：整局仍由一个种子完全决定（world.ts §rng 的不变量）
       seed: world.seed,
       radius: Math.min(halfX, halfZ) * 0.8,
+      ...(map.family === 'ctf' ? { sites: battlegroundSupplySites(map) } : {}),
     });
   }
 
@@ -393,7 +399,7 @@ export const createMatch = (room: Room, map: MapDef): Match => {
    * ⚠️ 掉落跟着 10.1 的预设走（经典预设 = 有 BOSS、没战利品），
    *   理由与提示写在 `setBossEnabled` 那里。
    */
-  if (room.config.bossEnabled === true || map.family === 'ffa') {
+  if (room.config.bossEnabled === true || map.family === 'ffa' || map.family === 'ctf') {
     match.boss = createBossState(map, world.time);
   }
 
@@ -457,6 +463,7 @@ export const tickDepsOf = (
   ...(m.arena ? { arena: m.arena } : {}),
   ...(m.respawn ? { respawn: m.respawn } : {}),
   ...(m.boss ? { boss: m.boss } : {}),
+  ...(m.battleground ? { battleground: m.battleground } : {}),
 });
 
 /** 某个房间玩家在这局里的实体。断线重连、快照裁剪都要它 */

@@ -17,9 +17,9 @@
  *   是同一个思路：把规则做成类型/签名层面的事实，而不是靠记得遵守。
  */
 
-import { RANGE } from '../constants/combat.js';
+import { ARENA, RANGE } from '../constants/combat.js';
 import type { Vec3 } from '../math/vec3.js';
-import type { ArmorId, ClassId, EntityId, TeamId, WeaponId } from '../types/ids.js';
+import { TEAM_RED, TEAM_BLUE, type ArmorId, type ClassId, type EntityId, type TeamId, type WeaponId } from '../types/ids.js';
 import type { School } from '../types/enums.js';
 import { isFriendly, isHiddenFromViewer, type CombatEntity } from '../sim/entity.js';
 import { aurasOf, moveSpeedMultiplierOf, type AuraStore } from '../sim/aura.js';
@@ -27,14 +27,16 @@ import {
   availableArmors, availableWeapons, enemyLoadoutView,
   type Loadout, type LoadoutView, type SwapKind, type SwapStore,
 } from '../sim/loadout.js';
-import { getArmor, getClass, getWeapon } from '../data/index.js';
+import { getArmor, getClass, getWeapon, getConsumable } from '../data/index.js';
 import type { FlagState } from '../types/enums.js';
 import { ctfInOvertime, ctfTimeRemaining, type CtfState } from '../sim/match/flag.js';
 import { secondsToNextWave, type RespawnState } from '../sim/match/respawn.js';
 import { movementLockOf, type MovementState } from '../sim/movement.js';
 import type { GroundStore } from '../sim/groundArea.js';
 import type { ProjectileStore } from '../sim/projectile.js';
-import { dropViewFor, type ArsenalStore, type DropKind } from '../sim/arsenal.js';
+import { dropViewFor, partyDropPlan, type ArsenalStore, type DropKind } from '../sim/arsenal.js';
+import { aliveCount, type ArenaState } from '../sim/match/arena.js';
+import type { BossState } from '../sim/boss.js';
 import { listEntities, type World } from '../sim/world.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -634,6 +636,13 @@ export interface ArmorySnapshot {
 }
 
 export interface MatchSnapshot {
+  ffa?: { killTarget: number; leaders: readonly { name: string; kills: number }[] };
+  arena?: { aliveRed: number; aliveBlue: number; round: number; scoreRed: number; scoreBlue: number; phase: ArenaState['phase']; prepRemaining: number };
+  objectives?: {
+    nextBossIn: number;
+    boss?: { name: string; position: Vec3; health: number; maxHealth: number };
+    nextSupplyIn?: number;
+  };
   /** 8.5 战斗抑制当前值 */
   dampening: number;
   suddenDeath: boolean;
@@ -713,6 +722,9 @@ export interface Snapshot {
 // ════════════════════════════════════════════════════════════════
 
 export interface SnapshotDeps {
+  ffa?: MatchSnapshot['ffa'];
+  arena?: ArenaState;
+  boss?: BossState;
   world: World;
   auras: AuraStore;
   swaps: SwapStore;
@@ -802,7 +814,8 @@ export const buildSnapshot = (deps: SnapshotDeps, viewer: SnapshotAudience): Sna
    */
   const drops: DropSnapshot[] = (deps.arsenal?.drops ?? []).map((d) => {
     const cls = d.classId === undefined ? undefined : getClass(d.classId);
-    const item = d.weaponId ? getWeapon(d.weaponId) : d.armorId ? getArmor(d.armorId) : undefined;
+    const item = d.weaponId ? getWeapon(d.weaponId) : d.armorId ? getArmor(d.armorId)
+      : d.consumableId ? getConsumable(d.consumableId) : undefined;
     const itemId = d.weaponId ?? d.armorId;
     return {
       id: d.id,
@@ -825,7 +838,23 @@ export const buildSnapshot = (deps: SnapshotDeps, viewer: SnapshotAudience): Sna
   const match: MatchSnapshot = {
     dampening: deps.dampening,
     suddenDeath: deps.suddenDeath,
+    ...(deps.ffa ? { ffa: deps.ffa } : {}),
   };
+  if (deps.arena) match.arena = {
+    aliveRed: aliveCount(deps.world, TEAM_RED), aliveBlue: aliveCount(deps.world, TEAM_BLUE),
+    round: deps.arena.round, scoreRed: deps.arena.score[String(TEAM_RED)] ?? 0,
+    scoreBlue: deps.arena.score[String(TEAM_BLUE)] ?? 0, phase: deps.arena.phase,
+    prepRemaining: Math.max(0, (deps.arena.config.prepSeconds ?? ARENA.PREP_SECONDS) - deps.arena.phaseElapsed),
+  };
+  if (deps.boss) {
+    const boss = deps.boss.activeId === undefined ? undefined : deps.world.entities.get(deps.boss.activeId);
+    const party = deps.arsenal?.party;
+    match.objectives = {
+      nextBossIn: boss ? 0 : Math.max(0, deps.boss.nextSpawnAt - deps.world.time),
+      ...(boss ? { boss: { name: boss.name, position: { ...boss.position }, health: boss.health, maxHealth: boss.maxHealth } } : {}),
+      ...(party ? { nextSupplyIn: Math.max(0, partyDropPlan(party.seed, party.nextIndex, party.radius, party.firstAt).at - deps.world.time) } : {}),
+    };
+  }
   if (deps.suddenDeath) {
     match.suddenDeathBlips = buildSuddenDeathBlips(deps.world);
   }

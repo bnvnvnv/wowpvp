@@ -40,11 +40,14 @@ import {
   Targeting,
   asSkillId,
   getSkill,
+  getWeapon,
   type EntityId,
   type SkillDef,
 } from '@wowpvp/shared';
 
 import { BurstPool, FlashPool, type Vec3Like } from './ParticleBurst.js';
+import { CombatShapes } from './CombatShapes.js';
+import { SpellRibbon } from './SpellRibbon.js';
 import {
   ACCENT_TEXTURES,
   PARTICLE_TEXTURE,
@@ -212,6 +215,8 @@ export interface SpellVfxStatus {
   groundDecals: number;
   /** 当前存活的一次性闪光数（刀光/免疫白闪）*/
   activeFlashes: number;
+  sculptedParts: number;
+  ribbonTrails: number;
 }
 
 /**
@@ -286,6 +291,7 @@ const dealsDamage = (effects: readonly SkillDef['effects'][number][]): boolean =
  */
 export type SpellVfxEvent =
   | { t: 'damage'; targetId: EntityId; amount: number; school: School; immune: boolean
+      sourceId?: EntityId | undefined; skillId?: string | undefined;
       avoided?: 'dodge' | 'parry' | 'block'
       /** 打击分档（由 HitFeedback 用 impactTierOf 算好传入 —— 本类不该知道 maxHealth）*/
       tier?: ImpactTier }
@@ -720,13 +726,13 @@ const MAX_WINDUP_EMITTERS = 4;
  *   是按人乘的（`MAX_WINDUP_EMITTERS` 裁的是粒子，法阵一个都不裁）。
  */
 const makeCircleGeometry = (teeth: number): THREE.BufferGeometry => {
-  const base = new THREE.RingGeometry(0.86, 1, 56);
+  const base = new THREE.RingGeometry(0.947, 1, 56);
   const n = Math.max(0, Math.round(teeth));
   if (n === 0) return base;
   const step = (Math.PI * 2) / n;
-  const parts: THREE.BufferGeometry[] = [base];
+  const parts: THREE.BufferGeometry[] = [base, new THREE.RingGeometry(0.70, 0.714, 56)];
   for (let i = 0; i < n; i++) {
-    parts.push(new THREE.RingGeometry(1, 1.14, 3, 1, i * step, 0.11));
+    parts.push(new THREE.RingGeometry(1, 1.14, 3, 1, i * step, 0.07));
   }
   const merged = mergeGeometries(parts);
   for (const p of parts) p.dispose();
@@ -808,6 +814,8 @@ export class SpellVfx {
    *   已如实改掉这句，不留一条骗人的注释（真要补见 PROGRESS 已知不足）。
    */
   private readonly flashes = new FlashPool(24);
+  private readonly combatShapes = new CombatShapes();
+  private readonly ribbons = new SpellRibbon();
 
   /**
    * 刀光轮换游标。★ 轮流而不是随机：随机会连续抽到同一张，
@@ -888,6 +896,8 @@ export class SpellVfx {
     this.group.add(this.pool.group);
     this.group.add(this.streams.group);
     this.group.add(this.flashes.group);
+    this.group.add(this.combatShapes.group);
+    this.group.add(this.ribbons.mesh);
     void this.preload();
   }
 
@@ -926,8 +936,7 @@ export class SpellVfx {
    *   其中一处没偏移就成了「读条是这个色、放出来是另一个色」，
    *   玩家会读成 bug 而不是签名。
    *
-   * ⚠️ 与之相对，**按学派兜底的那条路（`visualForSchool`）保持原样** ——
-   *   见 `onCombatEvent` 的 damage 分支注释：那里根本没有 skillId。
+   * 网络裁剪后没有技能 id 时，命中表现按学派回落；不反推隐藏的来源。
    */
   private visualFor(skill: SkillDef): AttributeVisual {
     const key = skill.id as string;
@@ -968,6 +977,18 @@ export class SpellVfx {
   }
 
   // ── 表现钩子 ──────────────────────────────────────────────────
+
+  onWeaponSwing(caster: { position: Vec3Like; height: number; yaw: number }, weaponId?: string): void {
+    const weapon = weaponId ? getWeapon(weaponId as never) : undefined;
+    if (weapon?.isRanged) return;
+    const at = {
+      x: caster.position.x - Math.sin(caster.yaw) * 0.8,
+      y: caster.position.y + caster.height * 0.58,
+      z: caster.position.z - Math.cos(caster.yaw) * 0.8,
+    };
+    this.combatShapes.swing(at, caster.yaw, ATTRIBUTE_VISUALS.physical,
+      weapon?.handedness === 'twoHand' ? 1.35 : weapon?.handedness === 'dualWield' ? 0.9 : 1.1);
+  }
 
   /**
    * 施法生命周期。
@@ -1041,6 +1062,7 @@ export class SpellVfx {
      *   所以小技能是被**收着**的（下限 0.85），不是被削弱。
      */
     const ws = vfxScaleOf(skill);
+    this.combatShapes.release(skill, caster, av);
     /**
      * ★★ 分量（`ws`）与签名规模（`sig.scale`）是**两个不同的量，故意相乘**：
      *   `ws` 说的是「这个技能在数据上有多大」（冷却/耗蓝/伤害推导出来的），
@@ -1129,6 +1151,13 @@ export class SpellVfx {
      *   CC 光环的 id 又是 `control.*`（查不回技能拿颜色），
      *   不在这里补的话「被定住的人」身上什么都不会亮。
      */
+    if (skill.targeting === Targeting.Direct && skill.range.max >= BOLT_MIN_RANGE) {
+      for (const target of targets.slice(0, 4)) {
+        this.combatShapes.connect(hand, {
+          x: target.position.x, y: target.position.y + target.height * 0.5, z: target.position.z,
+        }, av);
+      }
+    }
     if (dealsDamage(skill.effects)) return;
     for (const t of targets) {
       const at: Vec3Like = {
@@ -1154,10 +1183,8 @@ export class SpellVfx {
    *     `syncProjectiles`（那条路要画真实轨迹，因为它能被墙挡、能躲开），
    *     在这里再来一发就成了双份
    *
-   * ★ W23：带 `lockedProjectile` 的技能**照旧走这条路**（不排除）——
-   *   锁定投射物的快照渲染在 `syncProjectiles` 里让位给它，双份的那一半
-   *   在那边收口。判据本身一个字没改：这批技能本来就全部满足上面三条
-   *   （迁移口径与 `flies()` 同源：Direct + 单体 + ≥8 米）。
+   * 只有带 `lockedProjectile` 的技能进入飞行段；即时技能使用当帧轨迹。
+   * 锁定投射物的快照渲染在 `syncProjectiles` 中让位，避免重复绘制。
    * ⚠️ 但这条同源关系**是数据巧合、不是不变式**：真有人把一条 6 米的
    *   或 cone 形状的技能迁进 `lockedProjectile`，`flies()` 就不认它。
    *   兜底在 `syncProjectiles`（没有装饰弹道就退回快照渲染），所以它
@@ -1165,6 +1192,8 @@ export class SpellVfx {
    *   `lockedProjectileVfx.test.ts`。
    */
   private flies(skill: SkillDef): boolean {
+    // Instant effects use a contact-frame streak; only simulated projectiles get a flight phase.
+    if (!skill.effects.some((effect) => effect.kind === 'lockedProjectile')) return false;
     if (skill.shape.kind !== 'single') return false;
     if (skill.targeting !== Targeting.Direct && skill.targeting !== Targeting.Projectile) {
       return false;
@@ -1175,18 +1204,8 @@ export class SpellVfx {
 
   /**
    * 战斗事件 → 命中反馈。
-   * ★ 伤害按**学派**取属性（事件不带 skillId，取舍说明见 `visualForSchool`）。
-   *
-   * ⚠️ **P3 技能签名在这条路上不生效，这是如实的取舍不是遗漏。**
-   *   `SpellVfxEvent.damage` 里根本没有 skillId —— 多目标瞬发伤害在 sim 里是
-   *   「一次结算多个目标」，事件里没有技能引用可查（联网侧 redact 之后
-   *   连 sourceId 都没有）。没有 id 就没有签名，色相偏移/规模/形态三样全不生效，
-   *   命中爆发退回**纯学派色**。
-   *   ★ 签名真正落在有 id 的三条路上：释放爆发（`onCast`）、
-   *     弹道抵达（`updateBolts`）、真投射物消失（`syncProjectiles`）——
-   *     而「飞过去再炸」的技能正好走后两条，玩家最容易注意签名的也是它们。
-   *   ★ 想让这条路也有签名，得先给 `damage` 事件加 skillId ——
-   *     那是协议改动，不是表现层能自己决定的，也不在本批范围内。
+   * 使用 HitFeedback 保留下来的技能 id 与来源，匹配具体技能的颜色和方向。
+   * 网络裁剪后的缺失字段保持缺失，按学派提供通用反馈。
    */
   onCombatEvent(ev: SpellVfxEvent, posOf: (id: EntityId) => Vec3Like | undefined): void {
     switch (ev.t) {
@@ -1235,7 +1254,13 @@ export class SpellVfx {
           return;
         }
         if (ev.amount <= 0) return;
-        const av = visualForSchool(ev.school);
+        const skill = ev.skillId ? getSkill(asSkillId(ev.skillId)) : undefined;
+        const av = skill ? this.visualFor(skill) : visualForSchool(ev.school);
+        const source = ev.sourceId !== undefined ? posOf(ev.sourceId) : undefined;
+        this.combatShapes.impact(at, av, ev.tier, source);
+        if (ev.skillId === 'autoAttack' && source && Math.hypot(at.x - source.x, at.z - source.z) > 6) {
+          this.combatShapes.connect(source, at, av);
+        }
         // 伤害越大爆发越猛，分档再上台阶（打击感改造）。Q 版基调：底数就大
         const plan = burstPlanFor(ev.tier ?? 'normal', ev.amount, this.quality);
         this.emitBurst(at, av, {
@@ -1333,6 +1358,7 @@ export class SpellVfx {
       case 'heal': {
         const at = posOf(ev.targetId);
         if (at && ev.amount > 0) {
+          this.combatShapes.heal(at);
           // 治疗恒用自然的暖绿上浮星火，与伤害一眼可分
           this.emitBurst(at, ATTRIBUTE_VISUALS.nature, {
             count: 12, speed: 1.6, size: 0.55, life: 0.75, gravity: 2.2,
@@ -1350,6 +1376,7 @@ export class SpellVfx {
          *   · 加一圈扩张 glow —— 让「壳没了」这件事在余光里也读得到
          */
         const av = (ev.auraId ? visualForAuraId(ev.auraId) : undefined) ?? ATTRIBUTE_VISUALS.holy;
+        this.combatShapes.impact(at, av, 'heavy');
         const shellR = GEOMETRY.HITBOX_RADIUS * 1.9;
         this.emitBurst(at, av, {
           count: 22, speed: 5.2, size: 0.5, life: 0.5, drag: 1.2, originRadius: shellR,
@@ -1389,6 +1416,8 @@ export class SpellVfx {
     this.cameraDistance = ctx.cameraDistance;
     // 缓存画质给 onCombatEvent 的碎屑门禁用（事件不在 frame 里到达）
     this.quality = ctx.quality;
+    this.combatShapes.beginFrame(dt, ctx.quality, ctx.cameraPosition);
+    this.ribbons.beginFrame(dt, ctx.quality, ctx.cameraPosition);
     /**
      * ★ 签名形态的每帧预算在这里清零。
      *   放在 frame 开头而不是结尾：事件（onCast/onCombatEvent）是在两次 frame
@@ -1408,6 +1437,8 @@ export class SpellVfx {
     this.pool.update(dt);
     this.streams.update(dt);
     this.flashes.update(dt);
+    this.combatShapes.endFrame();
+    this.ribbons.endFrame();
   }
 
   // ── 瞬发范围技能的地面冲击波 ──────────────────────────────────
@@ -1680,6 +1711,7 @@ export class SpellVfx {
         z: c.position.z - Math.cos(c.yaw) * 0.5,
       };
       entry.lastPos = hand;
+      if (emitters.has(c.id)) this.combatShapes.charge(hand, av, plan.progress, c.yaw);
 
       if (plan.count <= 0 || plan.cadence <= 0 || !emitters.has(c.id)) continue;
       entry.timer += dt;
@@ -1783,7 +1815,8 @@ export class SpellVfx {
       opacity: 0,
       depthWrite: false,
       side: THREE.DoubleSide,
-      blending: THREE.AdditiveBlending,
+      blending: THREE.NormalBlending,
+      toneMapped: false,
     });
     const ring = new THREE.Mesh(makeCircleGeometry(circle.teeth), ringMat);
     ring.renderOrder = 3;
@@ -1890,6 +1923,8 @@ export class SpellVfx {
         if (Math.hypot(dx, dy, dz) > 1e-4) {
           this.orientBolt(b.group, { x: dx, y: dy, z: dz }, b.visual, dt, showTrail, b.form);
         }
+        this.ribbons.follow(`bolt:${b.group.id}`, g, b.visual);
+        this.combatShapes.flight(g, b.visual, b.group.rotation);
 
         const plan = trailPlanFor(b.visual.particle, density);
         if (!showTrail || plan.count <= 0 || !emitters.has(i)) continue;
@@ -1897,6 +1932,7 @@ export class SpellVfx {
         b.trailTimer += dt;
         if (b.trailTimer < plan.cadence) continue;
         b.trailTimer = 0;
+        this.combatShapes.trail(g, b.visual, { x: dx, y: dy, z: dz });
         /**
          * ★★ P3：签名规模影响**尾迹密度**，而且只能影响 `count`。
          *   `cadence` 与 `life` 是细流池预算不等式 `ceil(life/cadence) ≤ 6` 的两端，
@@ -1916,6 +1952,7 @@ export class SpellVfx {
 
       // 抵达（或超龄强制抵达）：命中爆发在目标**当前**位置炸开 ——
       // 命中资格早在释放瞬间定死（6.6），这里只是把它演在人身上而不是空地上
+      this.ribbons.follow(`bolt:${b.group.id}`, b.to, b.visual);
       this.emitBurst(b.to, b.visual, {
         count: scaledCount(18, b.sig.scale), speed: 4.4, size: 0.75 * b.sig.scale, life: 0.55,
       });
@@ -1967,6 +2004,7 @@ export class SpellVfx {
     const form = boltFormFor(skillId);
     const group = this.makeBoltNode(av, form);
     group.position.set(from.x, from.y, from.z);
+    this.ribbons.follow(`bolt:${group.id}`, from, av);
     this.group.add(group);
     this.bolts.push({
       group, visual: av, sig, form, to: { ...to }, groundY, track,
@@ -2094,6 +2132,8 @@ export class SpellVfx {
       body.lastPos.x = g.x;
       body.lastPos.y = g.y;
       body.lastPos.z = g.z;
+      this.ribbons.follow(`projectile:${p.id}`, g, body.visual);
+      this.combatShapes.flight(g, body.visual, body.group.rotation);
 
       const plan = trailPlanFor(body.visual.particle, density);
       if (showTrail && plan.count > 0 && this.trailTimer >= plan.cadence) {
@@ -2204,6 +2244,7 @@ export class SpellVfx {
       p.position.y + fallHeightAt(remaining, entry.fall.from, plan.height),
       p.position.z,
     );
+    this.ribbons.follow(`fall:${p.id}`, body.position, av);
     // 翻滚：两轴不同速，避免读成绕单轴的陀螺。★ 只转岩块，火尾恒指向天上
     const rock = body.children.find((c) => c.name === 'fall-rock');
     if (rock) {
@@ -2862,6 +2903,8 @@ export class SpellVfx {
       groundDecals:
         this.decals.length + [...this.rings.values()].filter((r) => r.tint?.visible).length,
       activeFlashes: this.flashes.activeCount,
+      sculptedParts: this.combatShapes.renderedCount,
+      ribbonTrails: this.ribbons.activeCount,
     };
   }
 
@@ -2884,5 +2927,7 @@ export class SpellVfx {
     this.pool.dispose();
     this.streams.dispose();
     this.flashes.dispose();
+    this.combatShapes.dispose();
+    this.ribbons.dispose();
   }
 }

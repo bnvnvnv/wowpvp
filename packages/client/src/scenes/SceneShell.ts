@@ -21,11 +21,13 @@ import { QualityTier } from '../render/quality.js';
 import { artEnabled } from '../settings/artMode.js';
 import { loadBindings } from '../settings/keybindings.js';
 import type { DecorRenderer } from '../render/DecorRenderer.js';
+import type { MapRenderer } from '../render/MapRenderer.js';
+import { loadGraphics, saveGraphics, type GraphicsPreferences } from '../render/graphics.js';
 
 export class SceneShell {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
-  /** ★ 17.1 三档画质。默认最高，F2 循环 —— 验收 #48 要逐档人工检查 */
+  /** 三档画质，真实美术默认中档并记住选择，F2 循环切换。 */
   readonly quality: QualityController;
   /** M12：HDR 环境光与天空。★ 纯加法，见 Environment.ts 文件头 */
   readonly env: Environment;
@@ -33,6 +35,11 @@ export class SceneShell {
   readonly input: InputManager;
   /** M12：是否加载外部美术素材（`?art=off` 关闭）。见 settings/artMode.ts */
   readonly art = artEnabled();
+  graphics = loadGraphics();
+  private resolutionRatio = 1;
+  private frameAverage = 0;
+  private lastRenderAt = 0;
+  private lastResolutionChange = 0;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     // X10 真机实测：双显卡笔记本上浏览器默认把 WebGL 分给省电核显，
@@ -44,24 +51,26 @@ export class SceneShell {
     //   （m13 重连步两页同时重建 renderer 时当场炸出）。真机不受影响。
     this.renderer = SceneShell.createRenderer(canvas, this.art);
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     // M12：HDR 环境是线性高动态的，不做色调映射会大面积过曝成白板。
-    // ★ 与素材同开同关 —— ACES 会整体压暗，`art=off` 时开着就不再是 M11 的画面
+    // Neutral 保留亮场景的色彩；调试材质不参与色调映射。
     if (this.art) {
-      this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      this.renderer.toneMappingExposure = 1.0;
+      this.renderer.toneMapping = THREE.NeutralToneMapping;
+      this.renderer.toneMappingExposure = 0.95;
     }
-    this.quality = new QualityController(this.renderer, QualityTier.High);
+    this.quality = new QualityController(this.renderer, this.art ? this.graphics.quality : QualityTier.High);
+    this.resolutionRatio = Math.min(devicePixelRatio, this.quality.settings.pixelRatioCap);
     // M12：模型库（素材缺失或 ?art=off 时所有角色保留程序化胶囊体）
     if (this.art) ModelLibrary.init(this.renderer);
 
-    this.scene.background = new THREE.Color(0x232a35);
-    this.scene.fog = new THREE.Fog(0x232a35, 90, 160);
+    this.scene.background = new THREE.Color(this.art ? 0xbad6ea : 0x232a35);
+    this.scene.fog = new THREE.Fog(this.art ? 0xbad6ea : 0x232a35, 90, 180);
     // ★ 必须在设完 background 之后构造 —— Environment 捕获当时的背景色
     //   作为素材加载失败时的回落色
     this.env = new Environment(this.renderer, this.scene);
 
     this.cam = new CameraController(canvas.clientWidth / canvas.clientHeight);
+    this.cam.sensitivity = this.graphics.mouseSensitivity;
     // W7：开局就套用持久化的键位（坏存档回落默认，见 keybindings.ts）——
     // 此前 InputManager 永远只吃 DEFAULT_BINDINGS，重绑无从谈起
     this.input = new InputManager(canvas, loadBindings(globalThis.localStorage));
@@ -93,22 +102,64 @@ export class SceneShell {
    * 装饰摆设按「环境叶片」档裁剪（14.4）。这里**没有**任何
    * 「低画质就隐藏 X」的分支 —— 关键元素的可见性根本不经过画质档位。
    */
-  setQualityTier(tier: QualityTier, sun: THREE.DirectionalLight, decor?: DecorRenderer): void {
+  setQualityTier(tier: QualityTier, sun: THREE.DirectionalLight, decor?: DecorRenderer, map?: MapRenderer): void {
     this.quality.set(tier);
-    this.applyTier(tier, sun, decor);
+    this.applyTier(tier, sun, decor, map);
+    this.setGraphics({ ...this.graphics, quality: tier });
   }
 
   /** F2 循环档位，走同一条应用链 */
-  cycleQualityTier(sun: THREE.DirectionalLight, decor?: DecorRenderer): QualityTier {
+  cycleQualityTier(sun: THREE.DirectionalLight, decor?: DecorRenderer, map?: MapRenderer): QualityTier {
     const tier = this.quality.cycle();
-    this.applyTier(tier, sun, decor);
+    this.applyTier(tier, sun, decor, map);
+    this.setGraphics({ ...this.graphics, quality: tier });
     return tier;
   }
 
-  private applyTier(tier: QualityTier, sun: THREE.DirectionalLight, decor?: DecorRenderer): void {
+  private applyTier(tier: QualityTier, sun: THREE.DirectionalLight, decor?: DecorRenderer, map?: MapRenderer): void {
     this.quality.applyToLight(sun);
     if (this.art) this.env.apply(tier);
     decor?.applyQuality(tier);
+    map?.applyQuality(tier);
+  }
+
+  setGraphics(next: GraphicsPreferences): void {
+    this.graphics = next;
+    this.cam.sensitivity = next.mouseSensitivity;
+    saveGraphics(next);
+    this.resolutionRatio = Math.min(devicePixelRatio, this.quality.settings.pixelRatioCap);
+    this.frameAverage = this.lastRenderAt = 0;
+    this.applyResolution();
+  }
+
+  /** Adjust only canvas resolution; HUD and gameplay markers remain intact. */
+  render(): void {
+    const now = performance.now();
+    const ms = now - this.lastRenderAt;
+    this.lastRenderAt = now;
+    if (this.art && this.graphics.adaptiveResolution && ms > 0 && ms < 1000) {
+      const sample = Math.min(ms, 100);
+      this.frameAverage = this.frameAverage ? this.frameAverage * 0.95 + sample * 0.05 : sample;
+      const budget = 1000 / this.graphics.frameRate;
+      const sinceChange = now - this.lastResolutionChange;
+      const next = this.frameAverage > budget * 1.25 && sinceChange > 2500
+        ? Math.max(Math.min(0.75, devicePixelRatio), this.resolutionRatio - 0.125)
+        : this.frameAverage < budget * 1.08 && sinceChange > 12000
+          ? Math.min(devicePixelRatio, this.quality.settings.pixelRatioCap, this.resolutionRatio + 0.125) : this.resolutionRatio;
+      if (next !== this.resolutionRatio) {
+        this.resolutionRatio = next;
+        this.lastResolutionChange = now;
+        this.applyResolution();
+      }
+    }
+    this.renderer.render(this.scene, this.cam.camera);
+  }
+
+  private applyResolution(): void {
+    this.renderer.setPixelRatio(
+      this.art && this.graphics.adaptiveResolution
+        ? this.resolutionRatio : Math.min(devicePixelRatio, this.quality.settings.pixelRatioCap),
+    );
   }
 
   /**

@@ -333,6 +333,7 @@ export class PartyFrame {
    * 渲染队伍框。超过 12 人时截断 —— 15.1 明确写了「最多 12 名」，
    * 静默画到第 13 个会把 HUD 顶出屏幕。
    */
+  private lastHtml = '';
   render(members: readonly PartyMemberView[]): void {
     const shown = members.slice(0, MAX_PARTY_MEMBERS);
     if (shown.length === 0) {
@@ -341,7 +342,11 @@ export class PartyFrame {
       return;
     }
     this.el.style.display = '';
-    this.el.innerHTML = shown.map(memberHtml).join('');
+    const html = shown.map(memberHtml).join('');
+    if (html !== this.lastHtml) {
+      this.el.innerHTML = html;
+      this.lastHtml = html;
+    }
     this.applyLayout(shown.length);
   }
 

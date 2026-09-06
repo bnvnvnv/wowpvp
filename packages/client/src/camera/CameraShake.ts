@@ -46,9 +46,9 @@ export const SHAKE = {
     selfCrit: 0.5,
     selfCritHeavy: 0.62,
     /** 自己**打出**暴击：手感属于攻击方，但要明显弱于挨打 */
-    dealtCrit: 0.22,
-    dealtHeavy: 0.12,
-    dealtKill: 0.3,
+    dealtCrit: 0.44,
+    dealtHeavy: 0.32,
+    dealtKill: 0.5,
     selfDeath: 0.6,
     /** 视野内他人死亡的上限，按距离线性衰减到 0（NEARBY_DEATH_RANGE 外为 0）*/
     nearbyDeathMax: 0.14,

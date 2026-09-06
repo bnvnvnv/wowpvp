@@ -181,8 +181,8 @@ const makeRingMaterial = (opacity: number): THREE.MeshBasicMaterial =>
   });
 
 /** rim 壳：只画背面 + 加法混合 + **保留深度测试**（角色挡掉中间那块，见 RIM_* 注释）*/
-const makeRimMaterial = (): THREE.MeshBasicMaterial =>
-  new THREE.MeshBasicMaterial({
+const makeRimMaterial = (): THREE.MeshBasicMaterial => {
+  const material = new THREE.MeshBasicMaterial({
     color: 0xffffff,
     transparent: true,
     opacity: RIM_OPACITY,
@@ -190,6 +190,18 @@ const makeRimMaterial = (): THREE.MeshBasicMaterial =>
     blending: THREE.AdditiveBlending,
     depthWrite: false,
   });
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader.replace('#include <common>', `#include <common>
+      varying float vFactionEdge;`).replace('#include <begin_vertex>', `#include <begin_vertex>
+      vec3 edgeView = normalize(-(modelViewMatrix * vec4(position, 1.0)).xyz);
+      vFactionEdge = pow(1.0 - abs(dot(normalize(normalMatrix * normal), edgeView)), 3.0);`);
+    shader.fragmentShader = shader.fragmentShader.replace('#include <common>', `#include <common>
+      varying float vFactionEdge;`).replace('#include <color_fragment>', `#include <color_fragment>
+      diffuseColor.a *= vFactionEdge;`);
+  };
+  material.customProgramCacheKey = () => 'faction-edge-v1';
+  return material;
+};
 
 /**
  * 全场的阵营脚下标记。挂一个 group 进场景，每帧喂一次全量视图。

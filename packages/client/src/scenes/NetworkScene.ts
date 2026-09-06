@@ -28,9 +28,11 @@ import {
   MAP_BY_ID,
   NO_ENTITY,
   RANGE,
+  SIM,
   TEAM_RED,
   Targeting,
   admitYaw,
+  atBattleShop,
   createMovementState,
   createTurnBudget,
   refillTurnBudget,
@@ -79,7 +81,6 @@ import { Action, InputManager, type FrameInput } from '../input/InputManager.js'
 import { gateInputWhenDead } from '../input/deathGate.js';
 import { DecorRenderer } from '../render/DecorRenderer.js';
 import { EntityLod } from '../render/entityLod.js';
-import { canvasSize } from '../render/canvasSize.js';
 import { GameLoop } from '../render/GameLoop.js';
 import { MapRenderer } from '../render/MapRenderer.js';
 import { QualityController } from '../render/QualityController.js';
@@ -533,7 +534,7 @@ export class NetworkScene {
      *   价格、余额、能不能买全在服务器（`buyFfaOffer`），这边一个判据都不复述。
      */
     this.ffaShopHud = new FfaShopHud(canvas.parentElement ?? document.body);
-    this.ffaShopHud.onBuy = (offerId) => this.conn.send({ t: 'FfaBuy', offerId });
+    this.ffaShopHud.onBuy = (offerId) => this.conn.send({ t: this.ffaShopHud.isBattleground ? 'BattleBuy' : 'FfaBuy', offerId });
     // 16a 击杀播报与死亡回顾。★ 名字从快照查 —— 本类不持有任何战斗状态
     this.killFeed = new KillFeed(canvas.parentElement ?? document.body);
     this.killFeed.nameOf = (id) =>
@@ -635,7 +636,9 @@ export class NetworkScene {
       getAccessibility: () => this.access,
       setAccessibility: (next) => this.setAccessibility(next),
       getQuality: () => this.quality.current,
-      setQuality: (tier) => this.shell.setQualityTier(tier, this.sun, this.decorRenderer),
+      setQuality: (tier) => this.shell.setQualityTier(tier, this.sun, this.decorRenderer, this.mapRenderer),
+      getGraphics: () => this.shell.graphics,
+      setGraphics: (next) => this.shell.setGraphics(next),
       bindings: () => this.input.getBindings(),
       rebind: (action, code) => rebindCtl.rebind(action, code),
       resetBindings: () => rebindCtl.reset(),
@@ -774,6 +777,7 @@ export class NetworkScene {
       undefined,
       // 顿帧：只缩放渲染 dt（模拟步/输入/插值时钟不受影响，docs/08 §5）
       (realDt) => this.hitStop.scale(realDt),
+      () => this.shell.graphics.frameRate,
     );
 
   }
@@ -1186,7 +1190,10 @@ export class NetworkScene {
          * 「积分不足（需要 200）」落在左下角战斗日志里等于没说。
          * ★ 复用军械 toast 通道，不为商店另造一个提示框（同一件事一份实现）。
          */
-        if (msg.what === 'FfaBuy') this.arsenalHud.toast(msg.reason, this.serverTime);
+        if (msg.what === 'FfaBuy' || msg.what === 'BattleBuy') {
+          this.ffaShopHud.acknowledge();
+          this.arsenalHud.toast(msg.reason, this.serverTime);
+        }
         break;
 
       /**
@@ -1196,6 +1203,14 @@ export class NetworkScene {
       case 'FfaShop':
         this.ffaShopHud.update(msg.balance, msg.offers);
         break;
+      case 'BattleShop':
+        this.ffaShopHud.update(msg.balance, msg.offers, msg.earned);
+        break;
+      case 'BattleReward': {
+        const reason = { kill: '击杀', assist: '助攻', flagReturn: '归还旗帜', flagCapture: '夺旗', boss: 'BOSS 击杀' }[msg.reason];
+        this.arsenalHud.toast(`+${msg.amount} 经验 · ${reason}`, this.serverTime);
+        break;
+      }
 
       /** 10.4：军械箱的三选一。★ 这是私信，只有打开者会收到 */
       case 'ArsenalOffer':
@@ -1241,6 +1256,11 @@ export class NetworkScene {
          */
         if (msg.skillId === 'autoAttack' && msg.sourceId !== undefined) {
           this.viewOfEntity(msg.sourceId)?.playMeleeSwing();
+          const attacker = this.entityOf(msg.sourceId);
+          if (attacker) this.spellVfx?.onWeaponSwing(
+            { position: attacker.position, height: GEOMETRY.HITBOX_HEIGHT, yaw: attacker.yaw },
+            attacker.equipment?.currentWeaponId,
+          );
           audio.playVariant('swing', { volume: 0.45, ...this.audioDistance(msg.sourceId) });
         }
         // 战斗日志：规避如实写「闪避/招架/格挡」而不是「0 点伤害」
@@ -1268,6 +1288,7 @@ export class NetworkScene {
         this.musicDir?.noteCombat(this.serverTime); // W13：治疗同样算战斗活动
         audio.play('heal_impact', this.audioDistance(msg.targetId));
         this.feedback.onHeal({
+          sourceId: msg.sourceId,
           targetId: msg.targetId, amount: msg.amount, crit: msg.crit === true,
         });
         this.spellVfx?.onCombatEvent(
@@ -1615,6 +1636,7 @@ export class NetworkScene {
     if (!map) { console.error(`地图不存在：${mapId}`); return; }
     this.map = map;
     this.mapRenderer = new MapRenderer(map, this.art);
+    this.mapRenderer.applyQuality(this.quality.current);
     this.scene.add(this.mapRenderer.group);
     if (this.art) {
       // W15：地图到手才知道该用哪个昼夜 —— 覆盖构造时的 day（A13 的
@@ -1662,7 +1684,7 @@ export class NetworkScene {
     this.characterYaw += yawDelta;
     if (input.cameraReset) this.cam.resetBehind(this.characterYaw);
     if (input.pressed.has(Action.CycleQuality)) {
-      this.shell.cycleQualityTier(this.sun, this.decorRenderer);
+      this.shell.cycleQualityTier(this.sun, this.decorRenderer, this.mapRenderer);
     }
     // W9：设置面板
     if (input.pressed.has(Action.OpenSettings)) this.settings.toggle();
@@ -1829,7 +1851,7 @@ export class NetworkScene {
     });
     if (input.cameraReset) this.cam.resetBehind(this.characterYaw);
     if (input.pressed.has(Action.CycleQuality)) {
-      this.shell.cycleQualityTier(this.sun, this.decorRenderer);
+      this.shell.cycleQualityTier(this.sun, this.decorRenderer, this.mapRenderer);
     }
     if (input.pressed.has(Action.OpenSettings)) this.settings.toggle();
     if (input.pressed.has(Action.ToggleMute)) {
@@ -2352,13 +2374,14 @@ export class NetworkScene {
    *   取样落后于缓冲，解冻时全场角色猛跳一步。AnimationController 同理
    *   （distance/dt 的表观速度会暴涨，见 GameLoop 的注释）。
    */
-  private draw(_alpha: number, dt: number, realDt: number): void {
+  private lastPanelUpdate = 0;
+  private draw(alpha: number, dt: number, realDt: number): void {
     // 服务器时间自己走，收到快照时校准 —— 插值要按它取样
     this.serverTime += realDt;
     this.elapsed += realDt;
     this.feedback.update(realDt);
 
-    this.drawSelf(dt, realDt);
+    this.drawSelf(dt, realDt, alpha);
     this.drawRemotes(dt, realDt);
     this.updateTargetRing();
     // X14：紧挨目标环 —— 两者同源同帧（见 updateFactionRings 的注释）
@@ -2379,7 +2402,7 @@ export class NetworkScene {
       // ★ P4：画布高走缓存，直接读 `clientHeight` 会强制一次同步重排
       //   （理由与代价见 render/canvasSize.ts）
       pointScale:
-        canvasSize(this.canvas).h /
+        this.canvas.height /
         (2 * Math.tan((this.cam.camera.fov * Math.PI) / 360)),
       // 快照的 impactAt 是服务器时钟 —— now 用同一个钟（收快照时校准）
       now: this.serverTime,
@@ -2394,15 +2417,19 @@ export class NetworkScene {
     this.updateFlags();
     this.killFeed.render(this.serverTime);
 
-    this.renderer.render(this.scene, this.cam.camera);
+    this.shell.render();
     // ★ 与试验场同一个调用 —— 只是喂的 CombatView 实现不同
     this.hud.update(this.view, this.cam.camera, this.canvas, dt);
-    this.renderParty();
-    this.renderModeHud();
-    this.renderMinimap();
+    const now = performance.now();
+    if (now - this.lastPanelUpdate >= 100) {
+      this.lastPanelUpdate = now;
+      this.renderParty();
+      this.renderModeHud();
+      this.renderMinimap();
+      this.renderScoreboard();
+    }
     this.renderDeathState();
     this.renderConnState();
-    this.renderScoreboard();
   }
 
   /** W6：断线横幅 + 延迟指示。横幅纯轮询 `conn.connected`，两条入网路径同一份逻辑 */
@@ -2585,7 +2612,16 @@ export class NetworkScene {
         });
       } else if (f.state === FlagState.Dropped) {
         blips.push({ x: f.position.x, z: f.position.z, kind: 'droppedFlag', team: f.team });
+      } else {
+        blips.push({ x: f.position.x, z: f.position.z, kind: 'flagBase', team: f.team });
       }
+    }
+    for (const drop of this.lastDrops) blips.push({ x: drop.position.x, z: drop.position.z, kind: 'supply' });
+    const boss = this.lastMatch?.objectives?.boss;
+    if (boss) blips.push({ x: boss.position.x, z: boss.position.z, kind: 'boss' });
+    if (this.lastMatch?.flags) for (const grave of this.map?.graveyards ?? []) {
+      if (grave.team === me.team) blips.push({ x: (grave.volume.min.x + grave.volume.max.x) / 2,
+        z: (grave.volume.min.z + grave.volume.max.z) / 2, kind: 'shop' });
     }
     this.hud.minimap.draw(blips, pos.x, pos.z, yaw);
   }
@@ -2605,8 +2641,13 @@ export class NetworkScene {
    *   存活计数，「顺手把旗手标记画进竞技场」在类型上写不出来。
    */
   private renderModeHud(): void {
+    const buyer = this.entityOf(this.selfId ?? undefined);
+    this.ffaShopHud.setBlocked(!this.conn.connected ? '连接中' : !buyer?.alive ? '已阵亡'
+      : this.ffaShopHud.isBattleground && this.map && !atBattleShop(this.map, buyer) ? '返回己方基地后可购买'
+        : buyer.flags.carryingFlag ? '携旗期间不能购买' : '');
     const m = this.lastMatch;
     if (!m) return;
+    if (m.ffa) { this.hud.modeHud.renderFfa(m.ffa); return; }
     if (m.flags !== undefined) {
       /**
        * A17：**比赛时钟接上了**。
@@ -2619,10 +2660,10 @@ export class NetworkScene {
        * ★ 不限时的一局服务器仍然不发这两个字段 → 整行不画（W12 口径没变）。
        */
       this.hud.modeHud.renderCtf(
-        ctfHudViewFromMatch(m, this.flagViewsFromSnapshot(), {
+        { ...ctfHudViewFromMatch(m, this.flagViewsFromSnapshot(), {
           red: TEAM_RED as number,
           blue: TEAM_BLUE as number,
-        }),
+        }), objectives: m.objectives },
       );
       return;
     }
@@ -2636,6 +2677,7 @@ export class NetworkScene {
       scoreBlue: this.roundWins.blue,
       dampening: m.dampening,
       suddenDeath: m.suddenDeath,
+      ...(m.arena ? m.arena : {}),
     });
   }
 
@@ -2770,7 +2812,7 @@ export class NetworkScene {
     }
   }
 
-  private drawSelf(dt: number, realDt: number): void {
+  private drawSelf(dt: number, realDt: number, alpha: number): void {
     /**
      * W24 观战席：没有身体可画，只推镜头。
      * ★ 镜头目标由 `spectateCameraTarget()` 给 —— 与 11.4 死亡观战**同一个
@@ -2784,7 +2826,7 @@ export class NetworkScene {
      *   `renderPosition` 每帧衰减那个纠正量，所以中等偏差是「滑过去」的，
      *   而瞬移档在 `reconcile` 里就已经把它清零了（13.4）。
      */
-    const pos = this.predictor.renderPosition(dt);
+    const pos = this.predictor.renderPosition(realDt, alpha);
     const s = this.predictor.state;
 
     /**
@@ -2793,7 +2835,7 @@ export class NetworkScene {
      */
     const meSnap = this.entityOf(this.selfId ?? undefined);
     this.selfAnim.update({
-      horizontalDistance: s.lastHorizontalDistance,
+      horizontalDistance: s.lastHorizontalDistance * realDt / SIM.TICK_DT,
       dt: realDt, // ★ 状态机时钟（见 draw 头注）
       grounded: s.grounded,
       verticalVelocity: s.velocity.y,
@@ -3172,9 +3214,11 @@ export class NetworkScene {
   // ── 杂项 ──────────────────────────────────────────────────────
 
   private addLights(): void {
-    this.scene.add(new THREE.HemisphereLight(0x9fb4d0, 0x2b3140, 0.8));
-    this.sun = new THREE.DirectionalLight(0xffffff, 1.1);
-    this.sun.position.set(20, 40, 15);
+    this.scene.add(new THREE.HemisphereLight(this.art ? 0xeaf3ff : 0x9fb4d0, this.art ? 0x718b87 : 0x2b3140, this.art ? 0.9 : 0.8));
+    this.sun = new THREE.DirectionalLight(this.art ? 0xfffaf2 : 0xffffff, this.art ? 1.7 : 1.1);
+    this.sun.shadow.bias = -0.0002;
+    this.sun.shadow.normalBias = 0.06;
+    this.sun.position.set(this.art ? -24 : 20, 40, this.art ? 22 : 15);
     this.sun.castShadow = true;
     this.quality.applyToLight(this.sun);
     this.scene.add(this.sun);

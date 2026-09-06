@@ -443,6 +443,7 @@ const forbidden: readonly ForbiddenVolume[] = [
  */
 const makeCtfDecor = (): MapDecorDef[] => {
   const red: MapDecorDef[] = [];
+  red.push({ model: 'props/market_stand_1', position: { x: 20, y: 0, z: 165 }, yaw: -Math.PI / 2 });
 
   // 西/东外墙树线（x=±69.5 贴墙，z 每 32 米一棵，红方半场 z 20..164）
   const PINES = ['foliage/pine_2', 'foliage/pine_4', 'foliage/oak_1', 'foliage/twisted_1'];
@@ -461,7 +462,7 @@ const makeCtfDecor = (): MapDecorDef[] => {
 
   // 侧翼路线外缘的补给残迹（x=±58，离 x=±52 的侧翼路线 6 米）
   red.push({ model: 'props/barrel', position: { x: -58, y: 0, z: 48 }, yaw: 1.1 });
-  red.push({ model: 'biome/camp_crates', position: { x: 58, y: 0, z: 52 }, yaw: 2.6 });
+  red.push({ model: 'props/crate_wooden', position: { x: 58, y: 0, z: 52 }, yaw: 2.6 });
 
   // 中场观赏点：中路两侧 10 米外各一颗半埋雕像头（|x|=10 > 中路让空 8）
   red.push({ model: 'props/statue_head', position: { x: 10.5, y: 0, z: 34 }, yaw: -0.9 });

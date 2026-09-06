@@ -49,6 +49,9 @@ import {
   threatScoreBonus,
   usesNoTarget,
   SIM,
+  activeForbidden,
+  atBattleShop,
+  battleShopFor,
   type BotDifficulty,
   type CombatEntity,
   type CombatEvent,
@@ -59,6 +62,8 @@ import {
   type VisibilityContext,
 } from '@wowpvp/shared';
 import type { SessionSocket } from './room/Session.js';
+import { BattleNavigator } from './BattleNavigator.js';
+import { battleObjective } from './BattleObjectives.js';
 
 /**
  * 人机的假 socket。
@@ -106,6 +111,9 @@ export interface BotSeat {
  *   否则这一 tick 的意图要等下一 tick 才被消费（人机会慢半拍且抖动）。
  */
 export class BotDriver {
+  private navigator: BattleNavigator | undefined;
+  private navigationMatch: Match | undefined;
+  private readonly nextSupplyAction = new Map<string, number>();
   /** playerId → 席位 */
   private readonly seats = new Map<string, BotSeat>();
   /**
@@ -120,7 +128,25 @@ export class BotDriver {
     private readonly match: () => Match | undefined,
     /** 按 playerId 找那条（假）会话，用来投递消息 */
     private readonly feed: (playerId: string, raw: string) => void,
-  ) {}
+  ) {
+    const initialMatch = this.match();
+    if (initialMatch?.map?.geometry.length) this.prepareNavigation(initialMatch);
+  }
+
+  private prepareNavigation(match: Match): void {
+    this.navigator?.dispose();
+    this.navigationMatch = match;
+    const mode = match.mode ?? match.map.modes[0];
+    this.navigator = new BattleNavigator({ ...match.map,
+      forbidden: mode ? activeForbidden(match.map, mode) : match.map.forbidden });
+    this.navigator.prepare([...new Set([...match.world.entities.values()].map(e => e.team))]);
+  }
+
+  dispose(): void {
+    this.navigator?.dispose();
+    this.navigator = undefined;
+    this.seats.clear();
+  }
 
   add(seat: BotSeat): void {
     this.seats.set(seat.playerId, seat);
@@ -131,6 +157,8 @@ export class BotDriver {
 
   remove(playerId: string): void {
     this.seats.delete(playerId);
+    const id = this.match()?.entityOf.get(playerId);
+    if (id !== undefined) this.navigator?.forget(id);
     // ★ rng **不删**：同一个人（掉线 → 接管 → 重连 → 再掉线）应该拿回
     //   同一条流，否则同一场对局的回放会因为断线次数不同而分叉
   }
@@ -168,6 +196,7 @@ export class BotDriver {
   tick(): void {
     const m = this.match();
     if (!m) return;
+    if (this.navigationMatch !== m && m.map?.geometry.length) this.prepareNavigation(m);
 
     /**
      * ★★ 队伍层的两样东西**每 tick 只算一次**，而不是每个人机各算一遍：
@@ -197,7 +226,41 @@ export class BotDriver {
         m, self, seat.difficulty ?? 'normal', self.targets.hard, calls.get(self.team),
         this.threat,
       );
-      if (!foe) continue;
+      if (m.ctf) {
+        const loadout = m.loadouts.get(self.id);
+        if (m.world.time >= (this.nextSupplyAction.get(playerId) ?? 0) && loadout) {
+          this.nextSupplyAction.set(playerId, m.world.time + 1);
+          if (loadout.consumables.length && self.health < self.maxHealth * 0.65) {
+            this.feed(playerId, encodeClientMessage({ t: 'UseConsumable', slot: 0 }));
+          } else if (!loadout.consumables.length && atBattleShop(m.map, self)) {
+            const offer = battleShopFor(self.classId).find(o => o.kind === 'consumable');
+            if (offer && (m.battleground?.experience.get(self.id) ?? 0) >= offer.cost) {
+              this.feed(playerId, encodeClientMessage({ t: 'BattleBuy', offerId: offer.offerId }));
+            }
+          }
+        }
+        const objective = battleObjective(m, self);
+        const near = objective && Math.hypot(self.position.x - objective.point.x,
+          self.position.y - objective.point.y, self.position.z - objective.point.z) <= 1.9;
+        if (objective && (objective.priority || !foe || distance2D(self.position, foe.position) > 22 || (near && objective.interact))) {
+          const movement = near ? { forward: 0, strafe: 0, jump: false, yaw: self.yaw }
+            : this.navigator!.move(self, objective.point, m.world.time);
+          this.feed(playerId, encodeClientMessage({ t: 'Input', seq: this.nextSeq(playerId), dt: SIM.TICK_DT,
+            forward: movement.forward, strafe: movement.strafe, characterYaw: movement.yaw, jump: movement.jump }));
+          if (self.targets.hard !== undefined) this.feed(playerId, encodeClientMessage({ t: 'SetTarget', slot: 'hard', entityId: null }));
+          if (near && objective.interact && !m.pickups.has(self.id)
+            && !Object.values(m.ctf.state.flags).some(f => f.interactorId === self.id)) {
+            this.feed(playerId, encodeClientMessage({ t: 'InteractStart', target: objective.interact }));
+          }
+          continue;
+        }
+      }
+      if (!foe) {
+        this.navigator?.forget(self.id);
+        this.feed(playerId, encodeClientMessage({ t: 'Input', seq: this.nextSeq(playerId), dt: SIM.TICK_DT,
+          forward: 0, strafe: 0, characterYaw: self.yaw, jump: false }));
+        continue;
+      }
 
       const action = decideBotAction({
         world: m.world,
@@ -216,6 +279,8 @@ export class BotDriver {
         // B1：队友名册（只读）—— 治疗职业改奶血最少的那个人，不再只奶自己
         allies: roster.get(self.team),
       });
+      const holdingCast = m.casting.has(self.id) && action.move.forward === 0 && action.move.strafe === 0;
+      if (!holdingCast) action.move = this.navigator?.combatMove(self, foe, action.move, m.world.time) ?? action.move;
 
       /**
        * ★ `dt` 用 `SIM.TICK_DT` 的名义值即可 —— 服务器**根本不读**客户端的 dt

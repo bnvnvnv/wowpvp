@@ -54,6 +54,7 @@ import { Scoreboard } from './Scoreboard.js';
 import { PartyFrame, RESOURCE_TEXT, controlKindsOf } from './PartyFrame.js';
 import { LoadoutPanel } from './LoadoutPanel.js';
 import { FloatingNumbers } from './FloatingNumbers.js';
+import { SkillBarView } from './SkillBarView.js';
 import {
   DEFAULT_ACCESSIBILITY,
   clampUiScale,
@@ -130,6 +131,7 @@ export class CombatHud {
   private readonly focusFrame: HTMLElement;
   private readonly playerCastBar: HTMLElement;
   private readonly skillBar: HTMLElement;
+  private readonly selfVitals: HTMLElement;
   /**
    * W7：技能槽 i 的按键标签。默认显示槽号（1–9），场景重绑后设成
    * `prettyKey(bindings[Skill{i+1}])` —— 否则技能栏的 <kbd> 会在玩家把
@@ -238,6 +240,7 @@ export class CombatHud {
   private pointerY = -1;
   /** 最近一次渲染用的技能槽，tooltip 要按下标反查技能 */
   private lastSlots: readonly HudSkillSlot[] = [];
+  private skillBarView: SkillBarView | undefined;
 
   constructor(container: HTMLElement) {
     this.root = document.createElement('div');
@@ -250,6 +253,7 @@ export class CombatHud {
       <div id="aim-hint"></div>
       <div id="player-cast"></div>
       <div id="self-auras" style="display:none"></div>
+      <div id="self-vitals"><div class="sv-heading"><span></span><b></b></div><div class="sv-health"><i></i></div><div class="sv-resource"><i></i><span></span></div></div>
       <div id="skill-bar"></div>
       <div id="skill-tip" hidden></div>
       <div id="center-notice"></div>
@@ -275,6 +279,7 @@ export class CombatHud {
     this.focusFrame = this.root.querySelector('#focus-frame')!;
     this.playerCastBar = this.root.querySelector('#player-cast')!;
     this.selfAuras = this.root.querySelector('#self-auras')!;
+    this.selfVitals = this.root.querySelector('#self-vitals')!;
     this.skillBar = this.root.querySelector('#skill-bar')!;
     /**
      * 技能格点击 → 施放。**事件委托**挂在容器上：格子每 20Hz 全量重建
@@ -495,6 +500,7 @@ export class CombatHud {
      *   **不再往回写**（不然下一帧又被填满）。
      */
     if (!this.spectating) {
+      this.renderSelfVitals(dir.player);
       this.renderSelfAuras(dir);
       this.renderPlayerCast(dir);
       this.renderSkillBar(dir.skillSlots());
@@ -509,6 +515,7 @@ export class CombatHud {
   setSpectating(on: boolean): void {
     if (this.spectating === on) return;
     this.spectating = on;
+    this.selfVitals.style.display = on ? 'none' : '';
     for (const el of [this.skillBar, this.playerCastBar, this.selfAuras]) {
       el.innerHTML = '';
       el.style.display = 'none';
@@ -716,6 +723,11 @@ export class CombatHud {
 
   private renderSkillBar(slots: readonly HudSkillSlot[]): void {
     this.lastSlots = slots;
+    if (this.skillBarView?.matches(slots)) {
+      this.skillBarView.update(slots, this.skillKeyLabel, (id) => this.lateFlashFor(id));
+      this.syncSkillTip();
+      return;
+    }
     /**
      * ⚠️ 重建 innerHTML 会把焦点打飞：被删掉的元素上的焦点直接回到 body。
      *   格子对外声明了 `role="button"` + `tabindex`，如果每 50ms 自己毁一次
@@ -812,6 +824,8 @@ export class CombatHud {
     if (refocus >= 0) {
       (this.skillBar.children[refocus] as HTMLElement | undefined)?.focus({ preventScroll: true });
     }
+    this.skillBarView = new SkillBarView(this.skillBar, slots);
+    this.skillBarView.update(slots, this.skillKeyLabel, (id) => this.lateFlashFor(id));
     this.syncSkillTip();
   }
 
@@ -870,11 +884,34 @@ export class CombatHud {
     this.skillTip.style.top = `${y / z}px`;
   }
 
+  private lastLogHtml = '';
   private renderLog(dir: CombatView): void {
-    this.logBox.innerHTML = dir.log
+    const html = dir.log
       .slice(0, 14)
       .map((l) => `<div class="log ${l.kind}"><span>${l.time.toFixed(1)}</span>${esc(l.text)}</div>`)
       .join('');
+    if (html !== this.lastLogHtml) {
+      this.logBox.innerHTML = html;
+      this.lastLogHtml = html;
+    }
+  }
+
+  private renderSelfVitals(player: HudUnit): void {
+    const cls = getClass(player.classId);
+    const put = (selector: string, value: string): void => {
+      const el = this.selfVitals.querySelector<HTMLElement>(selector)!;
+      if (el.textContent !== value) el.textContent = value;
+    };
+    put('.sv-heading span', cls?.name ?? player.name);
+    put('.sv-heading b', `${Math.ceil(player.health)} / ${player.maxHealth}`);
+    const hp = Math.max(0, Math.min(1, player.health / Math.max(1, player.maxHealth)));
+    this.selfVitals.classList.toggle('low-health', hp < 0.3);
+    this.selfVitals.querySelector<HTMLElement>('.sv-health i')!.style.transform = `scaleX(${hp})`;
+    const resource = cls?.resources[0]?.resource;
+    const current = resource ? player.resources.get(resource) ?? 0 : 0;
+    const max = resource ? player.maxResources.get(resource) ?? 1 : 1;
+    put('.sv-resource span', resource ? `${RESOURCE_TEXT[resource] ?? resource} ${Math.floor(current)} / ${max}` : '');
+    this.selfVitals.querySelector<HTMLElement>('.sv-resource i')!.style.transform = `scaleX(${Math.max(0, Math.min(1, current / max))})`;
   }
 
   // ── 姓名板 ──────────────────────────────────────────────────

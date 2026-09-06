@@ -75,6 +75,7 @@ import {
 } from './arsenal.js';
 import { takeConsumable, tickSwaps, type LoadoutStore, type SwapStore, type SwapTickEvent } from './loadout.js';
 import { tickArena, type ArenaEvents, type ArenaState } from './match/arena.js';
+import { settleBattleExperience, type BattlegroundState, type BattleReward } from './match/battleground.js';
 import { ctfInOvertime, tickFlags, type CtfDeps, type CtfState, type FlagEvent } from './match/flag.js';
 import {
   enqueueRespawn, setOvertime, tickRespawn, type RespawnEvent, type RespawnState,
@@ -133,6 +134,7 @@ export interface CastIntent {
  *   把它们藏进一个 God object 只会让「谁改了什么」更难看清。
  */
 export interface TickDeps {
+  battleground?: BattlegroundState;
   world: World;
   auras: AuraStore;
   dr: DrStore;
@@ -297,6 +299,7 @@ export interface TickEventSinks {
 }
 
 export interface TickResult {
+  battleRewards?: BattleReward[];
   /** 本 tick 产生的**全部**战斗事件，按发生顺序 */
   events: CombatEvent[];
   swaps: SwapTickEvent[];
@@ -941,6 +944,11 @@ export const tickWorld = (
     }
     if (bossResult.slain) result.drops.push(...bossResult.slain.drops);
   }
+
+  // Rewards consume the completed flag and boss outcomes, including deaths in this tick.
+  if (deps.battleground) result.battleRewards = settleBattleExperience(
+    deps.battleground, deps.world, result.events, result.flags, result.boss,
+  );
 
   // ── 12. 统计的连续量采样 + 清理失效目标 ─────────────────────
   if (deps.stats) {

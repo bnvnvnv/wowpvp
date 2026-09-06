@@ -11,7 +11,7 @@
  */
 
 import { ArenaPreset, GameMode } from '../../types/enums.js';
-import { FFA } from '../../constants/combat.js';
+import { CTF, FFA } from '../../constants/combat.js';
 import { TEAM_BLUE, TEAM_RED, type ClassId, type MapId, type TeamId } from '../../types/ids.js';
 import { getClass, isPlayableClass } from '../../data/index.js';
 import { MAP_BY_ID, mapsForMode } from '../../data/maps/index.js';
@@ -212,6 +212,8 @@ export const setMode = (room: Room, playerId: string, mode: GameMode): SelectRes
   }
 
   const keepsCurrent = options.some((m) => m.id === room.config.mapId);
+  if (mode.startsWith('ctf') && !room.config.mode.startsWith('ctf')) room.config.roundsToWin = CTF.DEFAULT_SCORE_TO_WIN;
+  if (!mode.startsWith('ctf') && room.config.mode.startsWith('ctf')) room.config.roundsToWin = 1;
   room.config.mode = mode;
   room.config.mapId = keepsCurrent ? room.config.mapId : fallback.id;
   for (const p of room.players) p.ready = false;
@@ -301,6 +303,9 @@ export const setBossEnabled = (
 ): SelectResult => {
   if (room.started) return { ok: false, reason: '比赛已开始，不能更改 BOSS 设置' };
   if (room.hostId !== playerId) return { ok: false, reason: '只有房主能更改 BOSS 设置' };
+  if (!enabled && (room.config.mode.startsWith('ctf') || room.config.mode === GameMode.Ffa)) {
+    return { ok: false, reason: '本模式的 BOSS 是固定战场目标' };
+  }
   room.config.bossEnabled = enabled;
   return { ok: true };
 };

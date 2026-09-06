@@ -21,14 +21,12 @@ import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { clone as cloneWithSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { GEOMETRY, getWeapon, type WeaponDef } from '@wowpvp/shared';
+import { stylizeMaterial } from '../render/toonMaterial.js';
 
 /**
  * 八职业 → 玩家模型文件。上游恰好有八个外形互异的卡通人形模型（基调见规格书 13.2）。
  *
- * ★ 大 BOSS（`boss`）**故意不在表里**：素材包里没有巨怪，而
- *   `characterFor()` 查不到就返回 null，`CharacterView` 于是保留程序化胶囊 ——
- *   放大 2.2 倍、脑袋烧成熔岩色的那一只。这与「素材整体可选」是同一条兜底路径，
- *   不是缺陷。将来有模型了，在这里加一行即可。
+ * The neutral boss uses the bundled golem rig; CharacterView applies its existing visual scale.
  */
 const CLASS_MODEL: Readonly<Record<string, string>> = {
   warrior: 'barbarian',
@@ -39,6 +37,7 @@ const CLASS_MODEL: Readonly<Record<string, string>> = {
   mage: 'mage',
   priest: 'mage_classic',
   druid: 'druid',
+  boss: '../enemies/skeleton_golem',
 };
 
 /**
@@ -55,7 +54,7 @@ export interface WeaponAttachment {
  *   （回落仍然存在，见 `proceduralWeapon`，那是给「素材目录整个不存在」留的。）
  */
 export const WEAPON_MODEL: Readonly<Record<string, WeaponAttachment>> = {
-  'warrior.sword_shield': { right: 'adv_sword_1handed', left: 'shield_round' },
+  'warrior.sword_shield': { right: 'custom/royal_sword_v1', left: 'custom/royal_shield_v1' },
   'warrior.greatsword': { right: 'adv_sword_2handed' },
   'warrior.dual_swords': { right: 'adv_sword_1handed', left: 'adv_sword_1handed' },
   'paladin.sword_shield': { right: 'adv_sword_1handed', left: 'shield_round' },
@@ -234,8 +233,9 @@ export class ModelLibrary {
     return {
       root: wrapper,
       clips: tpl.gltf.animations,
-      handR: root.getObjectByName('handslot.r'),
-      handL: root.getObjectByName('handslot.l'),
+      // GLTFLoader sanitizes punctuation in node names before animation binding.
+      handR: root.getObjectByName(THREE.PropertyBinding.sanitizeNodeName('handslot.r')),
+      handL: root.getObjectByName(THREE.PropertyBinding.sanitizeNodeName('handslot.l')),
     };
   }
 
@@ -331,6 +331,20 @@ export class ModelLibrary {
       p = this.loader
         .loadAsync(url)
         .then((gltf) => {
+          const materials = new Map<THREE.Material, THREE.Material>();
+          const stylize = (material: THREE.Material): THREE.Material => {
+            let converted = materials.get(material);
+            if (!converted) {
+              converted = stylizeMaterial(material);
+              materials.set(material, converted);
+            }
+            return converted;
+          };
+          gltf.scene.traverse((object) => {
+            const mesh = object as THREE.Mesh;
+            if (!mesh.isMesh) return;
+            mesh.material = Array.isArray(mesh.material) ? mesh.material.map(stylize) : stylize(mesh.material);
+          });
           const box = new THREE.Box3().setFromObject(gltf.scene);
           return {
             gltf,

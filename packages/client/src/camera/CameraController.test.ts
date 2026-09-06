@@ -203,7 +203,8 @@ describe('4.3 — 跳跃时垂直跟随柔于水平跟随', () => {
 
     const anchorY = 3 + GEOMETRY.CHEST_HEIGHT;
     // 一帧内没有完全跟上
-    expect(c.camera.position.y).toBeLessThan(anchorY);
+    const trackedAnchorY = c.camera.position.y - Math.sin(c.pitch) * c.distanceToAnchor();
+    expect(trackedAnchorY).toBeLessThan(anchorY);
   });
 
   it('落地时垂直跟随更快，避免镜头拖在角色上方', () => {

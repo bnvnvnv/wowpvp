@@ -412,13 +412,8 @@ describe('★★ W25：装饰弹道按技能取弹速（箭 75 / 法术与投掷
     vfx.dispose();
   });
 
-  it('★ 没迁移的技能回落 BOLT_SPEED —— 装饰弹道不因查不到 lockedProjectile 而消失', () => {
-    /**
-     * 断法箭是 W25 明确**维持排除**的那一条（打断迟到等于没断）：sim 里它
-     * 仍然瞬时结算，客户端照旧画一条纯装饰的弹道。这条钉的是回落分支
-     * 还在 —— 查表查不到时返回 `undefined / 0` 会让寿命变成 Infinity 或 0，
-     * 前者弹道永不消失、后者一帧就爆。
-     */
+  it('即时打断使用当帧轨迹，不生成晚到的装饰弹体', () => {
+    // Instant interrupts use a contact-frame streak, not a second arrival after the interrupt.
     const vfx = new SpellVfx();
     const counterShot = skillOf(hunter, 'hunter.counter_shot');
     expect(
@@ -427,10 +422,9 @@ describe('★★ W25：装饰弹道按技能取弹速（箭 75 / 法术与投掷
     ).toBe(false);
 
     vfx.onCast('resolved', caster, counterShot, targetAt(-30));
-    expect(vfx.status().visualBolts, '没迁移的技能连装饰弹道都不画了').toBe(1);
-    const life = flightSeconds(30);
-    expect(boltsAt(vfx, 0, life - 0.05), '回落速度不是 BOLT_SPEED（提前爆了）').toBe(1);
-    expect(boltsAt(vfx, life - 0.05, life + 0.03), '回落速度不是 BOLT_SPEED（还没抵达）').toBe(0);
+    expect(vfx.status().visualBolts).toBe(0);
+    vfx.frame(0.016, frameCtx(0, []));
+    expect(vfx.status().sculptedParts).toBeGreaterThan(0);
     vfx.dispose();
   });
 });

@@ -31,6 +31,10 @@ export class GameLoop {
   private lastTime = 0;
   private rafId = 0;
   private running = false;
+  private renderBudget = 0;
+  private renderElapsed = 0;
+  private visualElapsed = 0;
+  private tick: FrameRequestCallback | undefined;
 
   /** 最近一秒的帧率与模拟步数，供调试面板显示 */
   fps = 0;
@@ -48,12 +52,15 @@ export class GameLoop {
      * ★★ 它只影响传给 `render` 的第二参 —— 见下面 render 调用处的注释。
      */
     private readonly timeScale?: (realDt: number) => number,
+    private readonly frameRateLimit: () => number = () => 60,
   ) {}
 
   start(): void {
     if (this.running) return;
     this.running = true;
     this.lastTime = performance.now();
+    this.accumulator = this.renderBudget = this.renderElapsed = this.visualElapsed = 0;
+    globalThis.document?.addEventListener('visibilitychange', this.onVisibilityChange);
     const tick = (now: number) => {
       if (!this.running) return;
       const frameDt = Math.min((now - this.lastTime) / 1000, 0.25);
@@ -71,7 +78,6 @@ export class GameLoop {
       // 补步上限用完还有欠账 → 丢弃，避免螺旋death
       if (steps === MAX_STEPS_PER_FRAME) this.accumulator = 0;
 
-      this.frameCount++;
       this.fpsTimer += frameDt;
       if (this.fpsTimer >= 0.5) {
         this.fps = this.frameCount / this.fpsTimer;
@@ -86,15 +92,36 @@ export class GameLoop {
        *     · 缩放输入采样 → 顿帧期间「按了没反应」
        *   `frameDt` 同时作为第三参传给 render，让消费者显式选时钟。
        */
-      const renderDt = frameDt * (this.timeScale?.(frameDt) ?? 1);
-      this.render(this.accumulator / this.fixedDt, renderDt, frameDt);
+      this.renderBudget += frameDt;
+      this.renderElapsed += frameDt;
+      this.visualElapsed += frameDt * (this.timeScale?.(frameDt) ?? 1);
+      const interval = 1 / Math.max(1, this.frameRateLimit());
+      // Keep input and simulation at their original cadence. Only drawing is capped.
+      if (this.renderBudget >= interval - 0.001) {
+        this.render(this.accumulator / this.fixedDt, this.visualElapsed, this.renderElapsed);
+        this.frameCount++;
+        this.renderBudget = Math.max(0, this.renderBudget % interval);
+        if (this.renderBudget > interval - 0.001) this.renderBudget = 0;
+        this.renderElapsed = this.visualElapsed = 0;
+      }
       this.rafId = requestAnimationFrame(tick);
     };
-    this.rafId = requestAnimationFrame(tick);
+    this.tick = tick;
+    if (!globalThis.document?.hidden) this.rafId = requestAnimationFrame(tick);
   }
 
   stop(): void {
     this.running = false;
     cancelAnimationFrame(this.rafId);
+    globalThis.document?.removeEventListener('visibilitychange', this.onVisibilityChange);
   }
+
+  private onVisibilityChange = (): void => {
+    cancelAnimationFrame(this.rafId);
+    if (!this.running || globalThis.document?.hidden || !this.tick) return;
+    this.lastTime = performance.now();
+    this.accumulator = this.renderBudget = this.renderElapsed = this.visualElapsed = 0;
+    this.frameCount = this.fpsTimer = this.fps = 0;
+    this.rafId = requestAnimationFrame(this.tick);
+  };
 }

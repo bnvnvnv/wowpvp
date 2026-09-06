@@ -361,6 +361,7 @@ describe('编解码往返（docs/08 §7：语义与编码分离）', () => {
       { t: 'CancelCast' },
       { t: 'SwapWeapon', slot: 1 },
       { t: 'FfaBuy', offerId: FfaOfferId.Heal },
+      { t: 'BattleBuy', offerId: 'battle.weapon' },
     ];
     for (const msg of messages) {
       const r = parseClientMessage(encodeClientMessage(msg));

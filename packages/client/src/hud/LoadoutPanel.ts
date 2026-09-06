@@ -164,7 +164,8 @@ export class LoadoutPanel {
   private interruptText: string | null = null;
   private interruptUntil = 0;
   /** X10 追加轮（用户：「右边的…装备…很占屏幕」）：可收起成一枚小签 */
-  private collapsed = false;
+  private collapsed = true;
+  private lastHtml = '';
 
   constructor(container: HTMLElement) {
     this.el = document.createElement('div');
@@ -227,13 +228,13 @@ export class LoadoutPanel {
     //   同时默认武器凭空消失（而 10.6 要求默认装备永远在列表里）。
     // 收起态：一枚小签。换装进行中/被打断时强制展开 —— 15.3 的进度与
     // 原因提示不能藏（藏了就是「换装没反应」）
-    if (this.collapsed && !swap && !interrupt) {
-      this.el.innerHTML = `
-        <button class="lp-toggle" data-lp-toggle title="展开装备栏">🎒 装备 ◂</button>`;
+    if (this.collapsed && !swap && !interrupt && !pickupCandidate) {
+      this.write(`
+        <button class="lp-toggle" data-lp-toggle title="展开装备栏">🎒 ${esc(view.currentWeapon?.name ?? '装备')} ◂</button>`);
       return;
     }
 
-    this.el.innerHTML = `
+    this.write(`
       <div class="lp-title">战场装备栏
         <button class="lp-toggle lp-fold" data-lp-toggle title="收起装备栏">▸</button>
       </div>
@@ -242,7 +243,13 @@ export class LoadoutPanel {
       ${swapHtml}
       ${interrupt}
       ${compare}
-    `;
+    `);
+  }
+
+  private write(html: string): void {
+    if (html === this.lastHtml) return;
+    this.el.innerHTML = html;
+    this.lastHtml = html;
   }
 }
 

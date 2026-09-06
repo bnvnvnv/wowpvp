@@ -392,6 +392,16 @@ console.log('\n── 规格书 13.5 / 验收 #45：跳跃不增速、无二段�
   await navigateTo(0, 20);
   await page.waitForTimeout(400);
   const base = await read();
+  // Observe rendered frames before keydown; driver round trips can miss the apex.
+  await page.evaluate(() => {
+    const scene = globalThis.__scene;
+    const original = scene.onDebug;
+    globalThis.__jumpProbe = { peak: -Infinity, original };
+    scene.onDebug = (frame) => {
+      globalThis.__jumpProbe.peak = Math.max(globalThis.__jumpProbe.peak, frame.position.y);
+      original(frame);
+    };
+  });
   await hold('Space');
   let peak = base.y;
   /**
@@ -411,6 +421,12 @@ console.log('\n── 规格书 13.5 / 验收 #45：跳跃不增速、无二段�
     await page.waitForTimeout(30);
     peak = Math.max(peak, (await read()).y);
   }
+  peak = Math.max(peak, await page.evaluate(() => {
+    const probe = globalThis.__jumpProbe;
+    globalThis.__scene.onDebug = probe.original;
+    delete globalThis.__jumpProbe;
+    return probe.peak;
+  }));
   check(
     '#45a', '跳跃高度够上台阶、不够爬高台',
     peak - base.y > 0.85 && peak - base.y < 1.5,

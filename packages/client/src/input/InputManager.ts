@@ -394,6 +394,8 @@ export class InputManager {
 
   private attach(): void {
     const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target?.tagName ?? '')) return;
       /**
        * ★ 白名单换成「凡命中已绑定动作的键就拦」：此前写死 Tab/Space/F1/F2/F10，
        *   于是 F3（循环色盲模式）会同时拉出浏览器查找栏、F4 也漏在外面；更要命的是
@@ -414,6 +416,9 @@ export class InputManager {
     /** 失焦时清空按键，否则 Alt+Tab 回来会一直往前走 */
     const onBlur = () => {
       this.down.clear();
+      this.pressedThisFrame.clear();
+      this.wheelAccum = 0;
+      this.leftDragAccum = this.rightDragAccum = null;
       this.leftDown = false;
       this.rightDown = false;
       // X15：窗口都不在了，锁定没有意义（浏览器多半也已经解了）

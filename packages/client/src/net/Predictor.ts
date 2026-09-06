@@ -112,9 +112,11 @@ export class Predictor {
    *   「为了好看而挪过的」位置出发，误差会累积并自我放大。
    */
   private smoothing: Vec3 = vec3(0, 0, 0);
+  private previousPosition: Vec3;
 
   constructor(initial: MovementState, private readonly opts: PredictorOptions) {
     this.predicted = initial;
+    this.previousPosition = { ...initial.position };
   }
 
   /**
@@ -154,6 +156,7 @@ export class Predictor {
    */
   sample(input: MovementInput): InputMessage {
     this.seq++;
+    this.previousPosition = { ...this.predicted.position };
     this.predicted = stepMovement(
       this.predicted, input, SIM.TICK_DT, this.opts.obstacles,
       this.stepOpts(this.predicted.position),
@@ -229,6 +232,7 @@ export class Predictor {
       s = stepMovement(s, p.input, SIM.TICK_DT, this.opts.obstacles, this.stepOpts(s.position)).state;
     }
     this.predicted = s;
+    this.previousPosition = add(this.previousPosition, sub(s.position, before));
 
     // 第 7 步：偏差处理
     const drift = distance(before, s.position);
@@ -242,6 +246,7 @@ export class Predictor {
      */
     if (teleported || drift > CORRECTION.SNAP_ABOVE) {
       this.smoothing = vec3(0, 0, 0);
+      this.previousPosition = { ...s.position };
       return;
     }
 
@@ -260,12 +265,13 @@ export class Predictor {
    * ★ 每个**渲染帧**调一次，传渲染 dt。它只动 `smoothing`，不动 `predicted` ——
    *   见 `smoothing` 的注释。
    */
-  renderPosition(dt: number): Vec3 {
+  renderPosition(dt: number, alpha = 1): Vec3 {
     if (dt > 0) {
       const decay = Math.max(0, 1 - dt / CORRECTION.SMOOTH_SECONDS);
       this.smoothing = scale(this.smoothing, decay);
     }
-    return add(this.predicted.position, this.smoothing);
+    const t = Math.max(0, Math.min(1, alpha));
+    return add(add(this.previousPosition, scale(sub(this.predicted.position, this.previousPosition), t)), this.smoothing);
   }
 
   /**
@@ -277,6 +283,7 @@ export class Predictor {
    */
   reset(state: MovementState): void {
     this.predicted = state;
+    this.previousPosition = { ...state.position };
     this.pending = [];
     this.smoothing = vec3(0, 0, 0);
     // ★ seq 不清零：服务器的 ackSeq 是单调的，清零会让它把新指令当成旧的丢掉

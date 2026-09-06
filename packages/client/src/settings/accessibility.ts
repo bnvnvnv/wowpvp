@@ -135,6 +135,7 @@ export interface AccessibilitySettings {
   // ── 17.2 第三句：以下四项必须**互相独立** ────────────────────
   /** 伤害数字 */
   damageNumbers: boolean;
+  otherCombatNumbers: boolean;
   /** 屏幕闪烁（受击、暴击、低血量）*/
   screenFlash: boolean;
   /** 武器粒子 */
@@ -189,6 +190,7 @@ export const DEFAULT_ACCESSIBILITY: AccessibilitySettings = {
   uiScale: 1,
   cameraShake: 1,
   damageNumbers: true,
+  otherCombatNumbers: false,
   screenFlash: true,
   weaponParticles: true,
   namePlateDensity: 1,
@@ -210,6 +212,7 @@ export const normalizeAccessibility = (
   uiScale: clampUiScale(raw.uiScale ?? 1),
   cameraShake: clamp01(raw.cameraShake ?? 1),
   damageNumbers: raw.damageNumbers ?? true,
+  otherCombatNumbers: raw.otherCombatNumbers === true,
   screenFlash: raw.screenFlash ?? true,
   weaponParticles: raw.weaponParticles ?? true,
   namePlateDensity: clamp01(raw.namePlateDensity ?? 1),

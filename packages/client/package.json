@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@wowpvp/shared": "workspace:*",
+    "lucide": "^1.41.0",
     "three": "^0.185.1"
   },
   "devDependencies": {

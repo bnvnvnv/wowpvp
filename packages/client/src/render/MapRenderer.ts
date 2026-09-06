@@ -13,17 +13,19 @@
 import * as THREE from 'three';
 import type { MapDef, MapVolume } from '@wowpvp/shared';
 import { loadGroundTextures, type GroundTexture } from './Environment.js';
+import { arenaArchitecture } from './ArenaArchitecture.js';
+import { arenaStoneTexture } from './arenaStoneTexture.js';
+import { mergeStaticMeshes } from './staticBatch.js';
+import { paintedMaterial } from './toonMaterial.js';
+import { courtyardGarden } from './CourtyardGarden.js';
+import { isVisible, type QualityTier } from './quality.js';
 
 /**
  * 按语义标签选材。颜色只影响观感，判定看 Aabb 上的 flag。
  *
- * ★ M12 起（`art` 开启时）用 `MeshStandardMaterial` —— `MeshLambertMaterial`
- *   不参与 `scene.environment` 的 IBL，混用会让地图在有 HDR 时明显比角色「脏」。
- *   roughness/metal 按材质语义给，石头粗糙、水面光滑。
- *
- * ★ **颜色沿用 M11 的原值，一个都没调亮。** 有 HDR 时靠 IBL 提亮，
- *   没有时就是 M11 那个画面 —— 两条路径共用一张表，才谈得上
- *   「`art=off` 精确等于 M11」。
+ * 美术开启时，角色、建筑与地图共享卡通明暗分层。
+ * 地图表面按判定几何生成，再叠加石材、旗饰与地面拼花。
+ * 关闭美术时沿用下面的调试色表。
  */
 const MATERIALS: Record<
   MapVolume['tag'],
@@ -40,6 +42,11 @@ const MATERIALS: Record<
   gate: { color: 0x9a6a3a, roughness: 0.7 },
 };
 
+const ART_COLORS: Partial<Record<MapVolume['tag'], number>> = {
+  floor: 0xd4dde0, wall: 0xcbd4d7, pillar: 0xd8dedf, roof: 0x3589b1,
+  ramp: 0xc4cbc1, rail: 0xdda748, gate: 0xcf9250, water: 0x35cdda,
+};
+
 export class MapRenderer {
   readonly group = new THREE.Group();
   private debugGroup = new THREE.Group();
@@ -47,19 +54,14 @@ export class MapRenderer {
   private readonly floors: { mesh: THREE.Mesh; w: number; d: number }[] = [];
 
   /**
-   * @param pbr 用 PBR 材质（吃 IBL）还是 M11 的 Lambert。
-   *
-   * ★★ **`?art=off` 时必须回到 Lambert，不能只是「不给贴图」。**
-   *   PBR 着色本身就比 Lambert 贵得多 —— 实测软件渲染下光是换材质
-   *   就让帧率从 21 掉到 14，而 M1–M9 的验收脚本正跑在软件渲染上，
-   *   且历史上曾因为 12 FPS 超时过（见 PROGRESS 的 M4 性能修复）。
-   *   `art=off` 的契约是「**精确**回到 M11 的表现」，否则那 106 项的
-   *   结果就不能和历史直接对比 —— 而能对比正是这个开关存在的理由。
+   * @param art 显示卡通材质与建筑装饰；关闭时显示原始调试几何。
    */
-  constructor(map: MapDef, pbr = true) {
+  constructor(map: MapDef, art = true) {
     this.group.name = `map:${map.id}`;
     this.debugGroup.visible = false;
     this.group.add(this.debugGroup);
+    const materials = new Map<string, THREE.Material>();
+    const surfaces: THREE.Mesh[] = [];
 
     for (const v of map.geometry) {
       const w = v.max.x - v.min.x;
@@ -68,20 +70,17 @@ export class MapRenderer {
       const spec = MATERIALS[v.tag] ?? { color: 0x666666 };
 
       const common = {
-        color: spec.color,
+        color: art ? ART_COLORS[v.tag] ?? spec.color : spec.color,
         transparent: spec.opacity !== undefined,
         opacity: spec.opacity ?? 1,
       };
-      const mesh = new THREE.Mesh(
-        new THREE.BoxGeometry(w, h, d),
-        pbr
-          ? new THREE.MeshStandardMaterial({
-              ...common,
-              roughness: spec.roughness ?? 0.9,
-              metalness: spec.metalness ?? 0,
-            })
-          : new THREE.MeshLambertMaterial(common),
-      );
+      let material = materials.get(v.tag);
+      if (!material) {
+        material = art ? paintedMaterial(common) : new THREE.MeshLambertMaterial(common);
+        materials.set(v.tag, material);
+      }
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d),
+        v.tag === 'floor' ? material.clone() : material);
       mesh.position.set(
         (v.min.x + v.max.x) / 2,
         (v.min.y + v.max.y) / 2,
@@ -89,8 +88,9 @@ export class MapRenderer {
       );
       mesh.name = v.id;
       mesh.castShadow = v.tag !== 'floor';
-      mesh.receiveShadow = true;
-      this.group.add(mesh);
+      // Flat facade lighting avoids grazing-angle shadow acne; terrain receives cast shadows.
+      mesh.receiveShadow = !art || v.tag === 'floor' || v.tag === 'ramp' || v.tag === 'water';
+      surfaces.push(mesh);
 
       if (v.tag === 'floor') this.floors.push({ mesh, w, d });
 
@@ -104,6 +104,9 @@ export class MapRenderer {
         this.debugGroup.add(edges);
       }
     }
+    if (art) this.group.add(mergeStaticMeshes(surfaces), arenaArchitecture(map));
+    else this.group.add(...surfaces);
+    if (art && map.id === 'practice_courtyard') this.group.add(courtyardGarden());
   }
 
   /**
@@ -116,11 +119,11 @@ export class MapRenderer {
   async applyGroundTexture(kind: GroundTexture): Promise<void> {
     if (this.floors.length === 0) return;
     // 同一份贴图在所有地面间共享，但 repeat 各不相同 → 逐块克隆（克隆共享 image）
-    const base = await loadGroundTextures(kind, 1);
+    const base = kind === 'stone' ? { map: arenaStoneTexture() } : await loadGroundTextures(kind, 1, true);
     if (!base) return;
 
     for (const { mesh, w, d } of this.floors) {
-      const mat = mesh.material as THREE.MeshStandardMaterial;
+      const mat = mesh.material as THREE.MeshLambertMaterial | THREE.MeshToonMaterial;
       /**
        * ★ 分轴算重复次数。`BoxGeometry` 六个面共用 0–1 的 UV，
        *   顶面因此把整个 w×d 映射到一格 —— 用 `max(w,d)` 会让长条地面
@@ -133,8 +136,6 @@ export class MapRenderer {
         return c;
       };
       mat.map = use(base.map);
-      if (base.normalMap) mat.normalMap = use(base.normalMap);
-      if (base.roughnessMap) mat.roughnessMap = use(base.roughnessMap);
       // 贴图自带明暗，底色调回白色，否则叠出来是脏的
       mat.color.setHex(0xffffff);
       mat.needsUpdate = true;
@@ -150,5 +151,12 @@ export class MapRenderer {
 
   setDebugVisible(v: boolean): void {
     this.debugGroup.visible = v;
+  }
+
+  applyQuality(tier: QualityTier): void {
+    for (const name of ['flower-meadows', 'courtyard-skyline']) {
+      const object = this.group.getObjectByName(name);
+      if (object) object.visible = isVisible('foliage', tier);
+    }
   }
 }

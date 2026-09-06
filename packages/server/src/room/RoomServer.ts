@@ -340,6 +340,7 @@ export class RoomServer {
     sr.loop?.stop();
     for (const s of sr.botSessions.values()) sr.sessions.delete(s);
     sr.botSessions.clear();
+    sr.bots?.dispose();
     sr.bots = undefined;
     sr.loop = undefined;
     sr.match = undefined;
@@ -351,6 +352,7 @@ export class RoomServer {
   /** 没人（名单空且无连接）的房间从注册表回收，房间码可复用 */
   private dropIfEmpty(sr: ServerRoom): boolean {
     if (sr.room.players.length > 0 || sr.sessions.size > 0) return false;
+    sr.bots?.dispose();
     this.rooms.delete(sr.room.id);
     return true;
   }
@@ -413,6 +415,8 @@ export class RoomServer {
        */
       case 'FfaBuy':
         return this.enqueue(session, { t: 'FfaBuy', offerId: msg.offerId });
+      case 'BattleBuy':
+        return this.enqueue(session, { t: 'BattleBuy', offerId: msg.offerId });
       case 'SpectateFollow': return this.onSpectateFollow(session, msg.entityId);
 
       case 'UseTrinket': {
@@ -1053,6 +1057,8 @@ export class RoomServer {
     const botIds = new Set(sr.botSessions.keys());
     resetForRematch(sr.room, botIds);
     for (const playerId of botIds) sr.bots?.remove(playerId);
+    sr.bots?.dispose();
+    sr.bots = undefined;
     sr.match = undefined;
     sr.loop = undefined;
     sr.tokens.clear();
@@ -1413,7 +1419,7 @@ export class RoomServer {
       fillWithBots: sr.room.config.fillWithBots,
       botDifficulty: sr.room.config.botDifficulty ?? 'normal',
       // 随机大 BOSS 开关。★ 缺省 false —— 与 RoomConfig 的默认值同一句话
-      bossEnabled: sr.room.config.bossEnabled === true,
+      bossEnabled: sr.room.config.bossEnabled === true || sr.room.config.mode.startsWith('ctf') || sr.room.config.mode === GameMode.Ffa,
     });
   }
 
@@ -1421,6 +1427,7 @@ export class RoomServer {
   stopAll(): void {
     for (const sr of this.rooms.values()) {
       sr.loop?.stop();
+      sr.bots?.dispose();
       // P6 计时器也要清 —— 否则 server.close() 后它还会 fire，测试里挂着不退
       if (sr.abandonTimer) { clearTimeout(sr.abandonTimer); sr.abandonTimer = undefined; }
     }

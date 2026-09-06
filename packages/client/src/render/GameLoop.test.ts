@@ -81,4 +81,54 @@ describe('★★ 顿帧只缩放渲染 dt', () => {
       expect(f.dt).toBeCloseTo(0.016 * 0.06, 4);
     }
   });
+
+  it('caps drawing on a 240 Hz screen while retaining simulation and input cadence', () => {
+    const run = (limit: number) => {
+      now = 0;
+      queue = [];
+      let steps = 0;
+      let inputs = 0;
+      let draws = 0;
+      let renderedSeconds = 0;
+      const loop = new GameLoop(() => { steps++; }, (_alpha, _dt, realDt) => {
+        draws++;
+        renderedSeconds += realDt;
+      }, () => { inputs++; }, 1 / 20, undefined, () => limit);
+      loop.start();
+      for (let i = 0; i < 240; i++) {
+        now += 1000 / 240;
+        const callbacks = queue;
+        queue = [];
+        callbacks.forEach((cb) => cb(now));
+      }
+      loop.stop();
+      return { steps, inputs, draws, renderedSeconds };
+    };
+    const low = run(30);
+    const high = run(120);
+    expect(low.steps).toBe(high.steps);
+    expect(low.inputs).toBe(240);
+    expect(low.draws).toBeGreaterThanOrEqual(29);
+    expect(low.draws).toBeLessThanOrEqual(31);
+    expect(high.draws).toBeGreaterThanOrEqual(119);
+    expect(low.renderedSeconds).toBeCloseTo(1, 1);
+  });
+
+  it('suspends hidden pages and resumes without replaying the hidden duration', () => {
+    const doc = Object.assign(new EventTarget(), { hidden: false });
+    vi.stubGlobal('document', doc);
+    let steps = 0;
+    const loop = new GameLoop(() => { steps++; }, () => {});
+    loop.start();
+    doc.hidden = true;
+    doc.dispatchEvent(new Event('visibilitychange'));
+    expect(queue).toHaveLength(0);
+    now += 60000;
+    doc.hidden = false;
+    doc.dispatchEvent(new Event('visibilitychange'));
+    drive(loop, 1);
+    expect(steps).toBe(0);
+    doc.dispatchEvent(new Event('visibilitychange'));
+    expect(queue).toHaveLength(0);
+  });
 });

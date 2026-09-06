@@ -8,7 +8,8 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mage, priest, rogue, warrior } from '../data/index.js';
-import { DispelType, TargetFilter } from '../types/enums.js';
+import { DispelType, GameMode, TargetFilter } from '../types/enums.js';
+import { createArena } from '../sim/match/arena.js';
 import { vec3 } from '../math/vec3.js';
 import { asEntityId, asSkillId, TEAM_BLUE, TEAM_RED } from '../types/ids.js';
 import { applyAura, createAuraStore, type AuraStore } from '../sim/aura.js';
@@ -79,6 +80,14 @@ const idsIn = (viewer: CombatEntity, over: Partial<SnapshotDeps> = {}): number[]
 // ════════════════════════════════════════════════════════════════
 
 describe('docs/08 §4.1 潜行裁剪（验收 #5）', () => {
+  it('reports the real arena alive count without revealing a hidden enemy', () => {
+    sneak.flags.stealthed = true;
+    const arena = createArena({ mode: GameMode.Arena2v2, roundsToWin: 1 });
+    const snap = buildSnapshot(deps({ arena }), me);
+    expect(snap.match.arena).toMatchObject({ aliveRed: 2, aliveBlue: 2 });
+    expect(snap.entities.some(e => e.id === sneak.id)).toBe(false);
+    expect(JSON.stringify(snap.match)).not.toContain(sneak.name);
+  });
   it('未潜行的敌人正常进快照', () => {
     expect(idsIn(me)).toContain(foe.id as number);
   });

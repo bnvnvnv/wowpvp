@@ -26,6 +26,30 @@ const idle: MovementInput = { forward: 0, strafe: 0, jump: false, yaw: 0 };
 const makePredictor = () =>
   new Predictor(createMovementState(vec3(0, 0, 0)), { obstacles: [floor] });
 
+describe('render interpolation', () => {
+  it('smooths fixed simulation steps without modifying prediction', () => {
+    const p = makePredictor();
+    const start = { ...p.position };
+    p.sample(forward);
+    const end = { ...p.position };
+    expect(p.renderPosition(0, 0)).toEqual(start);
+    expect(p.renderPosition(0, 0.5).z).toBeCloseTo((start.z + end.z) / 2, 9);
+    expect(p.renderPosition(0, 1)).toEqual(end);
+    expect(p.position).toEqual(end);
+    expect(p.pendingCount).toBe(1);
+  });
+
+  it('does not interpolate through a teleport or reconnect', () => {
+    const p = makePredictor();
+    p.sample(forward);
+    const arrival = vec3(10, 0, -20);
+    p.reconcile({ position: arrival, yaw: 0 }, 1, true);
+    expect(p.renderPosition(0, 0)).toEqual(arrival);
+    p.reset(createMovementState(vec3(2, 0, 3)));
+    expect(p.renderPosition(0, 0.5)).toEqual(p.position);
+  });
+});
+
 describe('第 1–3 步：采样即预测', () => {
   it('★ 采一条指令就立刻本地推进（不等服务器）', () => {
     const p = makePredictor();

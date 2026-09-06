@@ -69,9 +69,13 @@ import {
   splitRoster,
 } from './logic.js';
 import { midJoinSeats, midJoinTakeoverHint } from '../spectate/spectateView.js';
+import { ArrowRight, BookOpen, Flag, Flame, Play, Plus, RefreshCw, Settings, Swords, Target, Users } from 'lucide';
+import { iconSvg } from '../hud/icons.js';
+import './lobby.css';
 
 /** 昵称的本地存档（照 accessibility 的 `wowpvp.<域>.v1` 键式）*/
 const LOBBY_STORAGE_KEY = 'wowpvp.lobby.v1';
+const SCREEN_REV = '20260905-2';
 
 // ── P10 纯函数（本仓库没有 jsdom，DOM 之外的判断都提到这里单测）────────
 
@@ -183,14 +187,15 @@ export class LobbyShell {
   /** P12：点了「刷新房间列表」但连接还没通 —— Welcome 到达时补发 ListRooms */
   private pendingBrowse = false;
   /** P12：从「大乱斗」入口建房 —— RoomState 到达后补发 SetRoomMode ffa */
-  private pendingFfa = false;
+  private pendingQuickMode: GameMode | undefined;
+  private quickMode: GameMode = GameMode.Ffa;
   /**
    * X10 二轮（用户：「大乱斗不是快速开始吗，怎么还进了 PVP 的选择界面」）：
    * 「快速开始」是**直通流程** —— 建房后跳过房间页直进选职业页，选完职业
    * 自动参战 + 准备（canStart 的补位分支单人即满足，服务器立刻开局）。
    * 房间页对快速开始的人从头到尾不出现；协议消息与手动路径完全同一套。
    */
-  private ffaQuick = false;
+  private quickStart = false;
   private botDifficulty: 'easy' | 'normal' | 'hard' = 'normal';
   /** 随机大 BOSS。★ 默认关，与 RoomConfig 的默认值同一句话 */
   private bossEnabled = false;
@@ -319,103 +324,7 @@ export class LobbyShell {
       String(clampUiScale(loadAccessibility(globalThis.localStorage).uiScale)),
     );
     this.root.innerHTML = `
-      <section class="lb-page" data-page="title">
-        <div class="lb-title-wrap">
-          <!--
-            X10 追加轮首页重构（用户拍板）：「上来就填昵称房间号不是成熟游戏
-            该有的样子；大乱斗和 PVP 是两种玩法要分开两边；房间列表归属各自
-            模式；要有仪式感、要够 Q 版」。
-            ★ 结构：英雄标题 → 两大模式卡（左 PVP / 右大乱斗，各带自己的
-              房间列表）→ 底栏（教学/练习/设置/昵称小框）。
-            ★ 昵称首次自动生成（generatedName），改名是可选动作不再挡路；
-              房间码加入收进 PVP 卡（那是「找朋友」的场景）。
-            ★ data-action 钩子一个不改 —— p5/w12/m13 的 e2e 全链路照跑。
-            （本段取代 P10「主按钮归练习场」的层级决定：现在两大模式卡
-              就是主入口，练习场退底栏 —— 用户对首页的新拍板优先。）
-          -->
-          <div class="lb-hero">
-            <h1 class="lb-logo">WOWPVP</h1>
-            <p class="lb-sub">打断 · 假读条 · 走位 —— 反制的竞技场</p>
-          </div>
-          <div class="lb-modes">
-            <div class="lb-mode lb-mode-pvp">
-              <div class="lb-mode-art">⚔️</div>
-              <h2>团队竞技场</h2>
-              <p class="lb-mode-tag">组队对抗 · 1v1 到 12v12 · 竞技场与夺旗</p>
-              <button class="lb-btn lb-cta" data-action="create">创建房间</button>
-              <div class="lb-row lb-join">
-                <input id="lb-code" maxlength="16" placeholder="朋友给的房间码"
-                       value="${escapeHtml(this.opts.joinCode ?? '')}"/>
-                <button class="lb-btn lb-small" data-action="join">加入</button>
-              </div>
-              <div class="lb-list-head">开着的房间
-                <button class="lb-btn lb-tiny" data-action="browse" title="刷新房间列表">↻</button>
-                <span class="lb-fine" id="lb-roomlist-hint"></span>
-              </div>
-              <div id="lb-roomlist-pvp" class="lb-roomlist"></div>
-            </div>
-            <div class="lb-mode lb-mode-ffa">
-              <div class="lb-mode-art">🔥</div>
-              <h2>大乱斗</h2>
-              <p class="lb-mode-tag">人人为敌 · 先杀满目标获胜 · 人机补满即点即玩</p>
-              <button class="lb-btn lb-cta lb-cta-ffa" data-action="create-ffa"
-                      title="没有队伍，所有玩家互为敌人；先杀满目标数获胜，至多 100 人">快速开始</button>
-              <div class="lb-list-head">开着的房间
-                <button class="lb-btn lb-tiny" data-action="browse" title="刷新房间列表">↻</button>
-              </div>
-              <div id="lb-roomlist-ffa" class="lb-roomlist"></div>
-            </div>
-          </div>
-          <div class="lb-row lb-secondary">
-            <button class="lb-btn" data-action="tutorial">${
-              tutorialLabel(this.tutorialCompleted())
-            }</button>
-            <button class="lb-btn" data-action="practice">🏋 练习场</button>
-            <button class="lb-btn lb-ghost" data-action="settings">⚙ 设置</button>
-            <label class="lb-name-mini">昵称
-              <input id="lb-name" maxlength="12" value="${escapeHtml(this.name)}"/>
-            </label>
-          </div>
-          <!--
-            P6 练习场配置：点「练习场」展开。此前它直接跳裸试验场（固定法师、
-            假人站桩）—— 用户拍板要成体系的界面，职业与难度都在这里点选。
-          -->
-          <div id="lb-practice" class="lb-practice" hidden>
-            <div class="lb-fine" style="margin:6px 0 2px">选择职业：</div>
-            <!--
-              ★ P10：八个职业此前只有名字。没玩过的人在「死亡骑士」和「德鲁伊」
-              之间没有任何依据可选 —— 小字给的是**这一局会怎么打**（远近 + 节奏），
-              全部由 classTagline() 从 shared 的职业数据算出，不是手写的宣传语。
-              ⚠️ lb-small 带 white-space:nowrap，两行得在这儿就地解开（样式表不归本包改）。
-            -->
-            <div class="lb-row" id="lb-practice-classes" style="flex-wrap:wrap">
-              ${ALL_CLASSES.map((c) => `
-                <button class="lb-btn lb-small${(c.id as string) === this.practiceClass ? ' lb-armed' : ''}"
-                        data-action="practice-class"
-                        style="white-space:normal;line-height:1.3;padding:5px 10px"
-                        data-class="${c.id as string}">${escapeHtml(c.name)}<span
-                          style="display:block;font-size:11px;opacity:.72;margin-top:2px"
-                          >${escapeHtml(classTagline(c))}</span></button>`).join('')}
-            </div>
-            <div class="lb-fine" style="margin:6px 0 2px">人机难度（实战模式，假人会打你）：</div>
-            <div class="lb-row">
-              <button class="lb-btn lb-small" data-action="practice-diff" data-diff="easy">简单</button>
-              <button class="lb-btn lb-small lb-armed" data-action="practice-diff" data-diff="normal">普通</button>
-              <button class="lb-btn lb-small" data-action="practice-diff" data-diff="hard">困难</button>
-            </div>
-            <div class="lb-row">
-              <button class="lb-btn lb-primary" data-action="practice-start">开始练习</button>
-            </div>
-          </div>
-          ${isLocalDev() ? `
-          <!-- P6 本地开发入口：只在 localhost/127.0.0.1 渲染（用户拍板：自测入口按本地判断）-->
-          <div class="lb-row lb-fine lb-devrow">
-            开发：
-            <button class="lb-btn lb-small lb-ghost" data-action="dev-testbed">验收试验场</button>
-            <button class="lb-btn lb-small lb-ghost" data-action="dev-stress">压测台</button>
-          </div>` : ''}
-        </div>
-      </section>
+      ${this.titleHtml()}
 
       <section class="lb-page" data-page="room">
         <div class="lb-panel lb-room">
@@ -452,9 +361,9 @@ export class LobbyShell {
                    选择界面」）。display:contents 的包裹层不改布局。 -->
               <span id="lb-pvp-modes" style="display:contents">
                 <span class="lb-fine">竞技场人数：</span>
-                <input type="range" id="lb-size" min="1" max="12" step="1" value="3"
+                <input type="range" id="lb-size" min="1" max="5" step="1" value="3"
                        style="flex:1;min-width:110px;max-width:200px"
-                       title="拖动选择每队人数（1v1–12v12），不满员可由人机补位"/>
+                       title="每队人数（1v1–5v5）"/>
                 <b id="lb-size-label" style="min-width:52px;font-size:13px">3v3</b>
                 <span class="lb-fine">夺旗：</span>
                 <button class="lb-btn lb-small" data-action="mode" data-mode="ctf6v6">6v6</button>
@@ -699,22 +608,23 @@ export class LobbyShell {
            *   会被 bot 拉走 —— m13 的双人流程当场撞破这一点。想单人打
            *   bot 房，房间里那排「人机补位」开关就是干这个的。
            */
-          if (this.pendingJoin.creating && this.pendingFfa) {
-            this.pendingFfa = false;
-            this.conn.send({ t: 'SetRoomMode', mode: GameMode.Ffa });
+          if (this.pendingJoin.creating && this.pendingQuickMode) {
+            const mode = this.pendingQuickMode;
+            this.pendingQuickMode = undefined;
+            this.conn.send({ t: 'SetRoomMode', mode });
             this.conn.send({ t: 'SetFillWithBots', enabled: true });
             /**
              * 快速开始：直接替玩家「参战」—— 大乱斗没有阵营，红槽只是
              * 战斗席（createMatch 的 ffa 分支按独立阵营重新分）。这一步
              * 提前到这里，选职业页里点一张卡就只差 SetReady 一条消息。
              */
-            if (this.ffaQuick) this.conn.send({ t: 'SelectTeam', team: 'red' });
+            if (this.quickStart) this.conn.send({ t: 'SelectTeam', team: 'red' });
           }
           // JoinRoom 的成功答复就是第一条 RoomState（协议没有单独的 ack）
           this.pendingJoin = undefined;
           // 快速开始跳过房间页：下一步（也是唯一一步）就是选职业
-          this.page = this.ffaQuick ? 'class' : 'room';
-          if (this.ffaQuick) this.showPreview(ALL_CLASSES[0]!.id as string);
+          this.page = this.quickStart ? 'class' : 'room';
+          if (this.quickStart) this.showPreview(ALL_CLASSES[0]!.id as string);
           this.clearToast();
           this.setTitleBusy(false); // 离开房间回到标题页时按钮得是活的
         }
@@ -824,14 +734,19 @@ export class LobbyShell {
   private act(action: string, btn?: HTMLElement): void {
     switch (action) {
       case 'create':
+        this.quickStart = false;
+        this.pendingQuickMode = undefined;
         this.join(makeRoomCode(), true);
         break;
       case 'create-ffa':
-        // P12 大乱斗：建房成功后（RoomState 到达）由 pendingJoin 分支补发换模式
-        this.pendingFfa = true;
-        this.ffaQuick = true; // 快速开始直通：跳房间页，选完职业即开局
-        this.join(makeRoomCode(), true);
+        this.startQuick(GameMode.Ffa);
         break;
+      case 'quick-arena':
+      case 'quick-ctf': {
+        const select = this.root.querySelector<HTMLSelectElement>(action === 'quick-arena' ? '#lb-quick-arena-mode' : '#lb-quick-ctf-mode');
+        if (select) this.startQuick(select.value as GameMode);
+        break;
+      }
       case 'browse': {
         /**
          * P12 房间浏览。连接是懒建立的（此前只有建/加房才连）——
@@ -1047,7 +962,7 @@ export class LobbyShell {
         break;
       case 'back-room':
         // 快速开始没有「房间页」可回 —— 这颗按钮在直通流程里就是「不玩了」
-        if (this.ffaQuick) { this.act('leave'); break; }
+        if (this.quickStart) { this.act('leave'); break; }
         this.page = 'room';
         this.render();
         break;
@@ -1055,7 +970,7 @@ export class LobbyShell {
         const classId = btn?.dataset['class'];
         if (!classId) return;
         this.conn.send({ t: 'SelectClass', classId: classId as ClassId });
-        if (this.ffaQuick) {
+        if (this.quickStart) {
           /**
            * 快速开始：选职业就是最后一步 —— 自动准备，服务器侧 canStart
            * （补位分支）立即成立并开局。停在本页等 MatchStart；
@@ -1079,7 +994,7 @@ export class LobbyShell {
         this.conn.send({ t: 'LeaveMatch' });
         this.players = [];
         this.roomCode = '';
-        this.ffaQuick = false; // 直通流程随房间一起结束
+        this.quickStart = false; // 直通流程随房间一起结束
         // W24：观战/中途加入的意图随房间一起结束（不带进下一个房间）
         this.spectating = false;
         this.midJoinOpen = false;
@@ -1202,7 +1117,7 @@ export class LobbyShell {
    */
   private setTitleBusy(busy: boolean): void {
     for (const el of this.root.querySelectorAll<HTMLButtonElement>(
-      '[data-action="create"], [data-action="join"]',
+      '[data-action="create"], [data-action="join"], [data-action="create-ffa"], [data-action="quick-arena"], [data-action="quick-ctf"]',
     )) {
       el.disabled = busy;
     }
@@ -1278,7 +1193,7 @@ export class LobbyShell {
     scene.deliver(msg); // MatchStart 本体交给场景做 bootstrap（地图/预测器/实体 id）
 
     this.preview?.stop();
-    this.ffaQuick = false; // 直通完成 —— 战后回到的是正常的（大乱斗版）房间页
+    this.quickStart = false; // 直通完成 —— 战后回到的是正常的（大乱斗版）房间页
     this.clearToast();
     this.page = 'match';
     /**
@@ -1580,7 +1495,7 @@ export class LobbyShell {
       el.disabled = !isHost || this.roomStarted || isCtf;
     }
     (this.root.querySelector('#lb-preset-why') as HTMLElement).textContent = isCtf
-      ? '夺旗首版关闭临时装备（12.x），规则预设不生效'
+      ? '夺旗战 · 波次复活 · 经验商店 · BOSS 战利品 · 随机补给'
       : this.preset === ArenaPreset.Armed
         ? '场上会刷军械箱与掉落：G 交互、B 换武器、Z/X 用道具'
         : (isHost ? '纯职业对抗，不刷任何临时装备' : '由房主设置');
@@ -1610,10 +1525,10 @@ export class LobbyShell {
      */
     for (const el of this.root.querySelectorAll<HTMLButtonElement>('[data-action="boss"]')) {
       el.classList.toggle('lb-armed', (el.dataset['boss'] === 'on') === this.bossEnabled);
-      el.disabled = !isHost || this.roomStarted;
+      el.disabled = !isHost || this.roomStarted || isCtf || this.mode === GameMode.Ffa;
     }
     (this.root.querySelector('#lb-boss-state') as HTMLElement).textContent =
-      this.bossEnabled
+      isCtf ? '60 秒首次刷新 · 击杀获得全队经验与装备掉落' : this.bossEnabled
         ? (this.preset === ArenaPreset.Armed
             ? '开局 60 秒后刷新中立大 BOSS，击杀掉落装备与积分'
             : '开局 60 秒后刷新中立大 BOSS（战利品需切到武装竞技场）')
@@ -1648,10 +1563,13 @@ export class LobbyShell {
     }
     // 快速开始的选职业页换口径：这里就是开局前的最后一步，不是房间的配菜
     (this.root.querySelector('#lb-class-title') as HTMLElement).textContent =
-      this.ffaQuick ? '🔥 大乱斗 —— 选好职业马上开打' : '选择职业';
-    (this.root.querySelector('#lb-class-sub') as HTMLElement).hidden = !this.ffaQuick;
+      this.quickStart ? `${this.quickMode.startsWith('ctf') ? '夺旗战场' : this.quickMode === GameMode.Ffa ? '大乱斗' : '团队竞技场'} · 选择职业出战` : '选择职业';
+    (this.root.querySelector('#lb-class-sub') as HTMLElement).hidden = !this.quickStart;
+    (this.root.querySelector('#lb-class-sub') as HTMLElement).textContent = this.quickMode.startsWith('ctf')
+      ? '先夺 3 旗获胜 · 阵亡后波次复活 · 人机补位'
+      : this.quickMode === GameMode.Ffa ? '人人为敌 · 击杀达标获胜 · 人机补位' : '单回合淘汰 · 歼灭对方全队获胜 · 人机补位';
     (this.root.querySelector('#lb-class-back') as HTMLElement).textContent =
-      this.ffaQuick ? '返回大厅' : '返回房间';
+      this.quickStart ? '返回大厅' : '返回房间';
   }
 
   private rosterRow(p: RoomPlayerView): string {
@@ -1700,9 +1618,70 @@ export class LobbyShell {
       .join('');
   }
 
+  private startQuick(mode: GameMode): void {
+    this.quickMode = mode;
+    this.pendingQuickMode = mode;
+    this.quickStart = true;
+    this.join(makeRoomCode(), true);
+  }
+
+  private titleHtml(): string {
+    return `<section class="lb-page" data-page="title">
+      <header class="lb-hero">
+        <img class="lb-hero-image" src="/art/ui/screens/courtyard.jpg?v=${SCREEN_REV}" alt="王冠庭院实机画面" fetchpriority="high"/>
+        <div class="lb-hero-content"><span class="lb-season">王冠庭院</span><h1 class="lb-logo">WOWPVP</h1></div>
+        <img class="lb-hero-figure" src="/art/ui/screens/classes/warrior-royal-v1.png?v=${SCREEN_REV}" alt="持剑盾的战士"/>
+        <button class="lb-icon-button lb-settings" data-action="settings" title="设置" aria-label="设置">${iconSvg(Settings, 22)}</button>
+      </header>
+      <main class="lb-title-wrap">
+        <div class="lb-section-heading"><h2>选择战场</h2><label class="lb-name-mini">昵称 <input id="lb-name" maxlength="12" value="${escapeHtml(this.name)}"/></label></div>
+        <div class="lb-modes">
+          <article class="lb-mode lb-mode-pvp">
+            <img class="lb-mode-image" src="/art/ui/screens/arena.jpg?v=${SCREEN_REV}" alt="竞技场交战画面"/>
+            <div class="lb-mode-content"><h2>${iconSvg(Swords, 22)}团队竞技场</h2>
+              <p class="lb-mode-tag">阵亡淘汰 · 全队歼灭判胜负</p>
+              <div class="lb-mode-controls"><select id="lb-quick-arena-mode" aria-label="竞技场人数">${[1, 2, 3, 4, 5].map(n => `<option value="arena${n}v${n}" ${n === 3 ? 'selected' : ''}>${n}v${n}</option>`).join('')}</select>
+                <button class="lb-btn lb-cta" data-action="quick-arena">${iconSvg(Play)}开始竞技</button></div>
+            </div>
+          </article>
+          <article class="lb-mode lb-mode-ctf">
+            <img class="lb-mode-image" src="/art/ui/screens/battleground.jpg?v=${SCREEN_REV}" alt="双桥要塞夺旗战场"/>
+            <div class="lb-mode-content"><h2>${iconSvg(Flag, 22)}夺旗战场</h2>
+              <p class="lb-mode-tag">先夺 3 旗 · 波次复活</p>
+              <p class="lb-mode-extra">BOSS 战利品 · 随机补给 · 经验商店</p>
+              <div class="lb-mode-controls"><select id="lb-quick-ctf-mode" aria-label="夺旗人数">${[6, 8, 12].map(n => `<option value="ctf${n}v${n}">${n}v${n}</option>`).join('')}</select>
+                <button class="lb-btn lb-cta" data-action="quick-ctf">${iconSvg(Play)}进入战场</button></div>
+            </div>
+          </article>
+          <article class="lb-mode lb-mode-ffa">
+            <img class="lb-mode-image" src="/art/ui/screens/skirmish.jpg?v=${SCREEN_REV}" alt="大乱斗实机画面"/>
+            <div class="lb-mode-content"><h2>${iconSvg(Flame, 22)}大乱斗</h2>
+              <p class="lb-mode-tag">人人为敌 · 击杀达标获胜</p>
+              <div class="lb-mode-controls"><button class="lb-btn lb-cta" data-action="create-ffa">${iconSvg(Play)}快速开始</button></div>
+            </div>
+          </article>
+        </div>
+        <section class="lb-party-band"><div class="lb-section-heading"><h2>${iconSvg(Users)}好友对局</h2><button class="lb-btn lb-secondary-command" data-action="create">${iconSvg(Plus)}创建房间</button></div>
+          <div class="lb-join"><input id="lb-code" maxlength="16" placeholder="房间码" aria-label="房间码" value="${escapeHtml(this.opts.joinCode ?? '')}"/>
+            <button class="lb-btn" data-action="join">加入房间${iconSvg(ArrowRight)}</button>
+            <button class="lb-icon-button" data-action="browse" title="刷新房间列表" aria-label="刷新房间列表">${iconSvg(RefreshCw)}</button><span id="lb-roomlist-hint"></span></div>
+          <div class="lb-room-browser"><div><h3>团队房间</h3><div id="lb-roomlist-pvp" class="lb-roomlist"></div></div><div><h3>大乱斗房间</h3><div id="lb-roomlist-ffa" class="lb-roomlist"></div></div></div>
+        </section>
+        <section class="lb-training-band"><div class="lb-section-heading"><h2>训练与教学</h2></div><div class="lb-training-actions">
+          <button class="lb-btn" data-action="tutorial">${iconSvg(BookOpen)}${tutorialLabel(this.tutorialCompleted())}</button>
+          <button class="lb-btn" data-action="practice">${iconSvg(Target)}训练场 · 无限复活</button></div>
+          <div id="lb-practice" class="lb-practice" hidden><div class="lb-row" id="lb-practice-classes">${ALL_CLASSES.map(c => `<button class="lb-btn lb-small${c.id === this.practiceClass ? ' lb-armed' : ''}" data-action="practice-class" data-class="${c.id}">${escapeHtml(c.name)}</button>`).join('')}</div>
+            <div class="lb-row">${(['easy', 'normal', 'hard'] as const).map((d, i) => `<button class="lb-btn lb-small${d === 'normal' ? ' lb-armed' : ''}" data-action="practice-diff" data-diff="${d}">${['简单', '普通', '困难'][i]}</button>`).join('')}
+              <button class="lb-btn lb-primary" data-action="practice-start">${iconSvg(Play)}开始练习</button></div></div>
+        </section>
+        ${isLocalDev() ? `<details class="lb-devrow"><summary>开发工具</summary><button class="lb-btn lb-small" data-action="dev-testbed">验收试验场</button><button class="lb-btn lb-small" data-action="dev-stress">压测台</button></details>` : ''}
+      </main></section>`;
+  }
+
   private classCardsHtml(): string {
     return ALL_CLASSES.map((c) => `
       <button class="lb-card" data-action="pick-class" data-class="${c.id as string}">
+        <img class="lb-portrait" src="/art/ui/screens/classes/${c.id === 'warrior' ? 'warrior-royal-v1' : c.id}.png?v=${SCREEN_REV}" alt="${escapeHtml(c.name)}"/>
         <span class="lb-card-head"><b>${escapeHtml(c.name)}</b></span>
         <span class="lb-card-role">${escapeHtml(c.role)}</span>
         <span class="lb-card-skills">${c.skills

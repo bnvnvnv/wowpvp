@@ -280,7 +280,25 @@ export class CombatDirector {
    *   → `tickWorld`），不直接改 world。这条与 docs/14 §M16b 的红线一致，
    *   也是这套控制器日后能接到服务器侧当人机的前提。
    */
-  combatMode = false;
+  private combatEnabled = false;
+  private navigator: import('@wowpvp/shared/navigation').SurfaceNavigator | undefined;
+  navigationReady: Promise<void> | undefined;
+  private disposed = false;
+
+  get combatMode(): boolean { return this.combatEnabled; }
+  set combatMode(on: boolean) {
+    this.combatEnabled = on;
+    if (on && !this.navigationReady && this.mapBounds && this.world.obstacles.length) {
+      const bounds = this.mapBounds;
+      this.navigationReady = import('@wowpvp/shared/navigation').then(({ SurfaceNavigator }) => {
+        if (this.disposed) return;
+        this.navigator = new SurfaceNavigator({ geometry: this.world.obstacles, bounds });
+        this.navigator.prepare([...new Set([...this.world.entities.values()].map(e => e.team))]);
+      }).catch((error: unknown) => { console.error('Training navigation initialization failed', error); });
+    }
+  }
+
+  dispose(): void { this.disposed = true; this.navigator?.dispose(); }
 
   /**
    * 合同 C8 练习场缓冲：开局这么多秒内假人不锁定玩家、也不出招。
@@ -920,7 +938,9 @@ export class CombatDirector {
         // P5：`?bot=` 的难度直通决策层（easy 不打断不躲圈，hard 留踢）
         difficulty: this.botDifficulty,
       });
-      this.frameInputs.set(e.id, action.move);
+      const holdingCast = this.store.has(e.id) && action.move.forward === 0 && action.move.strafe === 0;
+      this.frameInputs.set(e.id, holdingCast ? action.move
+        : this.navigator?.combatMove(e, foe, action.move, this.world.time) ?? action.move);
       // P5：假人也会交战斗意志 —— 与玩家的 requestTrinket 走同一条 tick 通道
       if (action.trinket) this.pendingTrinkets.add(e.id);
       if (action.cast) {

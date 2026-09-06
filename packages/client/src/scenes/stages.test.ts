@@ -21,7 +21,7 @@ import { describe, expect, it } from 'vitest';
 import {
   GEOMETRY, RANGE, TUTORIAL_CLEAR_AHEAD, TUTORIAL_CORRIDOR_HALF_WIDTH, box,
 } from '@wowpvp/shared';
-import { TESTBED_STAGE, TUTORIAL_STAGE, type Stage } from './stages.js';
+import { TESTBED_STAGE, TUTORIAL_STAGE, PRACTICE_STAGE, type Stage } from './stages.js';
 import type { DummySpot } from '../combat/dummyLayouts.js';
 
 /**
@@ -64,6 +64,15 @@ const geometryBlocksCorridor = (stage: Stage): string[] => {
   }
   return hits;
 };
+
+describe('practice courtyard', () => {
+  it('starts a three-versus-three fight with a clear movement corridor', () => {
+    expect(PRACTICE_STAGE.dummies.filter((d) => d.ally)).toHaveLength(2);
+    expect(PRACTICE_STAGE.dummies.filter((d) => !d.ally)).toHaveLength(3);
+    expect(PRACTICE_STAGE.dummies.filter(blocksCorridor)).toHaveLength(0);
+    expect(geometryBlocksCorridor(PRACTICE_STAGE)).toEqual([]);
+  });
+});
 
 describe('★★ 教学舞台：出生点正前方的走廊必须是空的', () => {
   it('★★ 没有任何假人挡在正前方 —— 第一环「走 5 米」走得出去', () => {

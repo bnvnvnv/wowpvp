@@ -33,6 +33,9 @@ const BLIP_STYLE: Record<MinimapBlip['kind'], { color: string; r: number; glyph?
   ally: { color: '#6fd0ff', r: 2.8 },
   enemy: { color: '#ff7a6f', r: 2.8 },
   objective: { color: '#ffd76a', r: 3.2 },
+  flagBase: { color: '#f5c34c', r: 5, glyph: 'F' },
+  boss: { color: '#f5b64c', r: 6, glyph: 'B' },
+  shop: { color: '#7ae4ad', r: 5, glyph: '$' },
   // 17.2：旗手与掉落旗帜不能只靠颜色区分，各带一个字形
   flagCarrier: { color: '#ffd76a', r: 4.2, glyph: '⚑' },
   droppedFlag: { color: '#e0c07e', r: 3.6, glyph: '⚐' },
@@ -51,8 +54,8 @@ export class Minimap {
     const dpr = Math.min(devicePixelRatio, 2);
     this.canvas.width = SIZE * dpr;
     this.canvas.height = SIZE * dpr;
-    this.canvas.style.width = `${SIZE}px`;
-    this.canvas.style.height = `${SIZE}px`;
+    this.canvas.style.width = '100%';
+    this.canvas.style.height = '100%';
     wrap.appendChild(this.canvas);
     container.appendChild(wrap);
     const ctx = this.canvas.getContext('2d');
@@ -125,7 +128,7 @@ export class Minimap {
       let clamped = false;
       if (dist > maxR) {
         // 12.2：旗帜信息**持续**可见 —— 超出视野时贴在边缘而不是消失
-        if (isFlagKind(b.kind)) {
+        if (isFlagKind(b.kind) || b.kind === 'boss' || b.kind === 'shop') {
           sx = (sx / dist) * maxR;
           sy = (sy / dist) * maxR;
           clamped = true;
@@ -138,7 +141,7 @@ export class Minimap {
       const px = half + sx;
       const py = half + sy;
 
-      c.fillStyle = st.color;
+      c.fillStyle = isFlagKind(b.kind) && b.team !== undefined ? b.team === 0 ? '#ff827a' : '#74c7fc' : st.color;
       c.globalAlpha = clamped ? 0.75 : 1;
       c.beginPath();
       c.arc(px, py, st.r, 0, Math.PI * 2);
@@ -157,7 +160,7 @@ export class Minimap {
 }
 
 const isFlagKind = (k: MinimapBlip['kind']): boolean =>
-  k === 'flagCarrier' || k === 'droppedFlag';
+  k === 'flagCarrier' || k === 'droppedFlag' || k === 'flagBase';
 
 /**
  * 自检：旗手是 14.4 的关键角色，任何画质下都必须可见。

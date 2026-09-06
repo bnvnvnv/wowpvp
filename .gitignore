@@ -3,6 +3,7 @@ dist/
 build/
 .output/
 *.tsbuildinfo
+*.blend[0-9]
 coverage/
 
 # 编辑器 / 系统

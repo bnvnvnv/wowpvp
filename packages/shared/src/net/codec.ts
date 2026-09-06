@@ -381,7 +381,8 @@ export const parseClientMessage = (raw: string): ParseResult => {
       return { ok: true, msg: { t, armoryId, choice: choice as ArsenalChoice } };
     }
 
-    case 'FfaBuy': {
+    case 'FfaBuy':
+    case 'BattleBuy': {
       const offerId = v['offerId'];
       /**
        * ★ 长度上限 64（与 JoinRoom 的 roomId 同理由，S2）：这是不受信任的
